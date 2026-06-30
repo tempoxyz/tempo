@@ -109,6 +109,26 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) rlp_block_size_bytes: Histogram,
     /// Serialized payload size in bytes for the last payload.
     pub(crate) rlp_block_size_bytes_last: Gauge,
+    /// Encoded BAL bytes emitted per SSMR builder shard.
+    pub(crate) ssmr_builder_shard_bal_bytes: Histogram,
+    /// Encoded BAL bytes emitted by the last SSMR builder shard.
+    pub(crate) ssmr_builder_shard_bal_bytes_last: Gauge,
+    /// Encoded BAL bytes received per SSMR replay shard.
+    pub(crate) ssmr_replay_shard_bal_bytes: Histogram,
+    /// Encoded BAL bytes received by the last SSMR replay shard.
+    pub(crate) ssmr_replay_shard_bal_bytes_last: Gauge,
+    /// Time spent decoding shard-local BALs during SSMR replay.
+    pub(crate) ssmr_replay_bal_decode_duration_seconds: Histogram,
+    /// Time spent executing shard-local BAL replay workers.
+    pub(crate) ssmr_replay_bal_worker_execute_duration_seconds: Histogram,
+    /// Time spent committing shard-local BAL replay outputs in block order.
+    pub(crate) ssmr_replay_bal_ordered_commit_duration_seconds: Histogram,
+    /// Number of SSMR shards replayed through the BAL path.
+    pub(crate) ssmr_replay_bal_shards: Histogram,
+    /// Number of SSMR shards replayed through the serial path.
+    pub(crate) ssmr_replay_serial_shards: Histogram,
+    /// Number of SSMR replay shards missing BAL bytes.
+    pub(crate) ssmr_replay_missing_bal_shards: Histogram,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.

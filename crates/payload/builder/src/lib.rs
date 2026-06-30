@@ -22,7 +22,7 @@ use crate::{
     prewarming::{BestTransactionsPrewarming, SsmrReplayPrewarmer},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
-use alloy_eip7928::bal::Bal;
+use alloy_eip7928::{BlockAccessIndex, bal::Bal};
 use alloy_eips::{
     eip1559::calculate_block_gas_limit,
     eip2718::{Decodable2718, Encodable2718},
@@ -41,7 +41,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
+    ConfigureEvm, Database, Evm, EvmEnvFor, ExecutionCtxFor, NextBlockEnvAttributes, OnStateHook,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -52,8 +52,11 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, SignedTransaction as _, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention, state::EvmState,
+    State,
+    context::Block,
+    database::StateProviderDatabase,
+    db::states::bundle_state::BundleRetention,
+    state::{EvmState, bal::Bal as RevmBal},
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
@@ -71,7 +74,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
+use tempo_evm::{
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
+};
 use tempo_payload_types::{
     SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplayCommand, SsmrReplaySource,
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -131,12 +136,14 @@ struct SsmrRecoveredTransaction {
 #[derive(Debug)]
 struct SsmrPendingRecoveredShard {
     transactions: Vec<Option<SsmrRecoveredTx>>,
+    block_access_list: Option<Bytes>,
     recovered_count: usize,
 }
 
 #[derive(Debug)]
 struct SsmrRecoveredBatch {
     transactions: Vec<SsmrRecoveredTx>,
+    block_access_list: Option<Bytes>,
     decode_elapsed: Duration,
     recover_elapsed: Duration,
     queue_wait_elapsed: Duration,
@@ -159,7 +166,7 @@ enum SsmrRecoveredReplayEvent {
 
 #[derive(Debug, Default)]
 struct SsmrReplayProgress {
-    pending_transactions: VecDeque<SsmrRecoveredTx>,
+    pending_batches: VecDeque<SsmrRecoveredBatch>,
     replay_finished: bool,
     source_wait_elapsed: Duration,
     recovery_wall_elapsed: Duration,
@@ -187,10 +194,13 @@ impl SsmrReplayProgress {
                         prewarmer.prewarm(&tx.transaction);
                     }
                 }
-                self.pending_transactions.extend(batch.transactions);
-                self.max_recovered_tx_ahead = self
-                    .max_recovered_tx_ahead
-                    .max(self.pending_transactions.len());
+                self.pending_batches.push_back(batch);
+                self.max_recovered_tx_ahead = self.max_recovered_tx_ahead.max(
+                    self.pending_batches
+                        .iter()
+                        .map(|batch| batch.transactions.len())
+                        .sum(),
+                );
             }
             SsmrRecoveredReplayEvent::Finish {
                 source_wait_elapsed,
@@ -263,7 +273,7 @@ impl SsmrReplayProgress {
 
     fn recovery_closed_error(&self) -> PayloadBuilderError {
         warn!(
-            pending_transactions = self.pending_transactions.len(),
+            pending_batches = self.pending_batches.len(),
             replay_finished = self.replay_finished,
             ssmr_replay_transactions = self.transactions,
             ssmr_replay_shards = self.shards,
@@ -290,9 +300,10 @@ struct SsmrReplayRecoveryState {
 }
 
 impl SsmrPendingRecoveredShard {
-    fn new(tx_count: usize) -> Self {
+    fn new(tx_count: usize, block_access_list: Option<Bytes>) -> Self {
         Self {
             transactions: std::iter::repeat_with(|| None).take(tx_count).collect(),
+            block_access_list,
             recovered_count: 0,
         }
     }
@@ -354,51 +365,53 @@ impl SsmrReplayRecoveryState {
     ) -> Result<Option<SsmrRecoveredBatch>, String> {
         let mut batch = SsmrRecoveredBatch {
             transactions: Vec::new(),
+            block_access_list: None,
             decode_elapsed: Duration::ZERO,
             recover_elapsed: Duration::ZERO,
             queue_wait_elapsed: Duration::ZERO,
             completed_shards: 0,
         };
 
-        'drain: while let Some(shard_len) = self
+        let Some(shard_len) = self
             .pending_shards
             .get(&self.next_ready_shard_index)
             .map(SsmrPendingRecoveredShard::len)
-        {
-            while self.next_ready_tx_index < shard_len {
-                let tx = self
-                    .pending_shards
-                    .get_mut(&self.next_ready_shard_index)
-                    .and_then(|shard| shard.transactions[self.next_ready_tx_index].take());
-                let Some(tx) = tx else {
-                    break 'drain;
-                };
+        else {
+            return Ok(None);
+        };
 
-                if self.next_ready_shard_index == 0
-                    && self.next_ready_tx_index == 0
-                    && self.first_tx_recovery_elapsed.is_none()
-                    && let Some(start) = recovery_wall_start
-                {
-                    self.first_tx_recovery_elapsed = Some(start.elapsed());
-                }
+        while self.next_ready_tx_index < shard_len {
+            let tx = self
+                .pending_shards
+                .get_mut(&self.next_ready_shard_index)
+                .and_then(|shard| shard.transactions[self.next_ready_tx_index].take());
+            let Some(tx) = tx else {
+                return Ok(None);
+            };
 
-                self.next_ready_tx_index += 1;
-                batch.push(tx);
+            if self.next_ready_shard_index == 0
+                && self.next_ready_tx_index == 0
+                && self.first_tx_recovery_elapsed.is_none()
+                && let Some(start) = recovery_wall_start
+            {
+                self.first_tx_recovery_elapsed = Some(start.elapsed());
             }
 
-            if self.next_ready_tx_index == shard_len {
-                let Some(shard) = self.pending_shards.remove(&self.next_ready_shard_index) else {
-                    return Err(format!(
-                        "SSMR replay lost ready shard {}",
-                        self.next_ready_shard_index
-                    ));
-                };
-                debug_assert_eq!(shard.recovered_count, shard_len);
-                self.next_ready_shard_index += 1;
-                self.next_ready_tx_index = 0;
-                batch.completed_shards += 1;
-            }
+            self.next_ready_tx_index += 1;
+            batch.push(tx);
         }
+
+        let Some(shard) = self.pending_shards.remove(&self.next_ready_shard_index) else {
+            return Err(format!(
+                "SSMR replay lost ready shard {}",
+                self.next_ready_shard_index
+            ));
+        };
+        debug_assert_eq!(shard.recovered_count, shard_len);
+        batch.block_access_list = shard.block_access_list;
+        self.next_ready_shard_index += 1;
+        self.next_ready_tx_index = 0;
+        batch.completed_shards += 1;
 
         Ok(batch.has_work().then_some(batch))
     }
@@ -567,10 +580,14 @@ fn insert_ssmr_replay_shard(
     state: &mut SsmrReplayRecoveryState,
     shard_index: u64,
     tx_count: usize,
+    block_access_list: Option<Bytes>,
 ) -> bool {
     if state
         .pending_shards
-        .insert(shard_index, SsmrPendingRecoveredShard::new(tx_count))
+        .insert(
+            shard_index,
+            SsmrPendingRecoveredShard::new(tx_count, block_access_list),
+        )
         .is_some()
     {
         let _ = send_ssmr_replay_event(
@@ -646,16 +663,24 @@ where
             source_wait_elapsed += wait_start.elapsed();
 
             match command {
-                Ok(SsmrReplayCommand::Shard { transactions }) => {
+                Ok(SsmrReplayCommand::Shard {
+                    transactions,
+                    block_access_list,
+                }) => {
                     let shard_index = next_shard_index;
                     next_shard_index += 1;
                     if recovery_wall_start.is_none() {
                         recovery_wall_start = Some(Instant::now());
                     }
                     let tx_count = transactions.len();
+                    let bal_bytes = block_access_list
+                        .as_ref()
+                        .map(|bal| bal.len())
+                        .unwrap_or_default();
                     debug!(
                         ssmr_replay_shard_index = shard_index,
                         ssmr_replay_shard_transactions = tx_count,
+                        ssmr_replay_shard_bal_bytes = bal_bytes,
                         ssmr_replay_inflight_recovery_jobs = recovery_state.inflight_recovery_jobs,
                         ssmr_replay_pending_shards = recovery_state.pending_shards.len(),
                         "SSMR replay source received shard"
@@ -665,6 +690,7 @@ where
                         &mut recovery_state,
                         shard_index,
                         tx_count,
+                        block_access_list,
                     ) {
                         return;
                     }
@@ -785,6 +811,269 @@ where
     });
 
     ready_rx
+}
+
+struct SsmrBalReplayJob {
+    local_index: usize,
+    global_index: usize,
+    tx: SsmrRecoveredTx,
+}
+
+struct SsmrBalReplayOutput {
+    local_index: usize,
+    global_index: usize,
+    tx: SsmrRecoveredTx,
+    is_payment: bool,
+    result: TempoTxResult,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SsmrBalReplayTimings {
+    bal_decode_elapsed: Duration,
+    worker_execute_elapsed: Duration,
+    ordered_commit_elapsed: Duration,
+}
+
+impl SsmrBalReplayTimings {
+    fn total_elapsed(self) -> Duration {
+        self.bal_decode_elapsed + self.worker_execute_elapsed + self.ordered_commit_elapsed
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_ssmr_bal_replay_batch<Provider, E>(
+    task_executor: &TaskExecutor,
+    evm_config: &TempoEvmConfig,
+    provider: Provider,
+    parent_hash: B256,
+    evm_env: EvmEnvFor<TempoEvmConfig>,
+    ctx: ExecutionCtxFor<'_, TempoEvmConfig>,
+    beneficiary: Address,
+    executor: &mut E,
+    roots_tx: &Sender<(BuilderTx, TempoReceipt)>,
+    bal_task_handle: Option<&BalTaskHandle>,
+    batch: SsmrRecoveredBatch,
+    global_first_tx_index: usize,
+    is_t5: bool,
+    tx_gas_limit_cap: u64,
+    non_shared_gas_limit: u64,
+    general_gas_limit: u64,
+    is_osaka: bool,
+    estimated_rlp_block_size: &mut usize,
+    cumulative_gas_used: &mut u64,
+    cumulative_state_gas_used: &mut u64,
+    non_payment_gas_used: &mut u64,
+    payment_transactions: &mut u64,
+    reverted_transactions: &mut u64,
+    total_fees: &mut U256,
+) -> Result<SsmrBalReplayTimings, PayloadBuilderError>
+where
+    Provider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    E: BlockExecutor<Transaction = TempoTxEnvelope, Receipt = TempoReceipt, Result = TempoTxResult>,
+{
+    if batch.transactions.is_empty() {
+        return Ok(SsmrBalReplayTimings::default());
+    }
+
+    let Some(encoded_bal) = batch.block_access_list else {
+        return Err(PayloadBuilderError::other(std::io::Error::other(
+            "SSMR BAL replay shard missing BAL data",
+        )));
+    };
+    let bal_decode_start = Instant::now();
+    let mut encoded_bal_ref = encoded_bal.as_ref();
+    let alloy_bal = Bal::decode(&mut encoded_bal_ref).map_err(PayloadBuilderError::other)?;
+    let revm_bal = RevmBal::try_from(Vec::<_>::from(alloy_bal.clone()))
+        .map_err(|error| PayloadBuilderError::other(std::io::Error::other(format!("{error:?}"))))?;
+    let revm_bal = Arc::new(revm_bal);
+    let bal_decode_elapsed = bal_decode_start.elapsed();
+
+    let mut projected_gas_used = *cumulative_gas_used;
+    let mut projected_non_payment_gas_used = *non_payment_gas_used;
+    for tx in &batch.transactions {
+        let max_regular_gas_used =
+            core::cmp::min(tx.transaction.inner().gas_limit(), tx_gas_limit_cap);
+        if projected_gas_used + max_regular_gas_used > non_shared_gas_limit {
+            return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                    transaction_gas_limit: tx.transaction.inner().gas_limit(),
+                    block_available_gas: non_shared_gas_limit - projected_gas_used,
+                },
+            )));
+        }
+
+        let is_payment = if is_t5 {
+            tx.transaction.inner().is_payment_v2()
+        } else {
+            tx.transaction.inner().is_payment_v1()
+        };
+        if !is_payment && projected_non_payment_gas_used + max_regular_gas_used > general_gas_limit
+        {
+            return Err(PayloadBuilderError::other(
+                TempoPoolTransactionError::ExceedsNonPaymentLimit,
+            ));
+        }
+        if is_payment {
+            *payment_transactions += 1;
+        } else {
+            projected_non_payment_gas_used += max_regular_gas_used;
+        }
+        projected_gas_used += max_regular_gas_used;
+
+        let estimated_block_size_with_tx = *estimated_rlp_block_size + tx.tx_rlp_length;
+        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: estimated_block_size_with_tx,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
+        *estimated_rlp_block_size = estimated_block_size_with_tx;
+    }
+
+    let tx_count = batch.transactions.len();
+    let worker_execute_start = Instant::now();
+    let worker_count = task_executor
+        .bal_streaming_pool()
+        .current_num_threads()
+        .max(1)
+        .min(tx_count);
+    let (job_tx, job_rx) = crossbeam_channel::unbounded::<SsmrBalReplayJob>();
+    let (result_tx, result_rx) =
+        crossbeam_channel::bounded::<Result<SsmrBalReplayOutput, String>>(tx_count);
+
+    task_executor.bal_streaming_pool().in_place_scope(|scope| {
+        for _ in 0..worker_count {
+            let job_rx = job_rx.clone();
+            let result_tx = result_tx.clone();
+            let provider = provider.clone();
+            let evm_config = evm_config.clone();
+            let evm_env = evm_env.clone();
+            let ctx = ctx.clone();
+            let revm_bal = Arc::clone(&revm_bal);
+            scope.spawn(move |_| {
+                while let Ok(job) = job_rx.recv() {
+                    let result = (|| -> Result<SsmrBalReplayOutput, String> {
+                        let state_provider =
+                            provider.state_by_block_hash(parent_hash).map_err(|error| {
+                                format!("failed opening SSMR replay state: {error}")
+                            })?;
+                        let state = StateProviderDatabase::new(state_provider);
+                        let mut db = State::builder()
+                            .with_database(
+                                Box::new(state) as Box<dyn Database<Error = ProviderError>>
+                            )
+                            .with_bal(Arc::clone(&revm_bal))
+                            .with_bundle_update()
+                            .build();
+                        let evm = evm_config.evm_with_env(&mut db, evm_env.clone());
+                        let mut worker_executor = evm_config.create_executor(evm, ctx.clone());
+                        worker_executor.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+                        worker_executor
+                            .evm_mut()
+                            .db_mut()
+                            .set_bal_index(BlockAccessIndex::new(job.global_index as u64 + 1));
+                        let is_payment = if is_t5 {
+                            job.tx.transaction.inner().is_payment_v2()
+                        } else {
+                            job.tx.transaction.inner().is_payment_v1()
+                        };
+                        let result = worker_executor
+                            .execute_transaction_without_commit(&job.tx.transaction)
+                            .map_err(|error| {
+                                format!("SSMR BAL replay transaction failed: {error}")
+                            })?;
+
+                        Ok(SsmrBalReplayOutput {
+                            local_index: job.local_index,
+                            global_index: job.global_index,
+                            tx: job.tx,
+                            is_payment,
+                            result,
+                        })
+                    })();
+
+                    if result_tx.send(result).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(result_tx);
+
+        for (local_index, tx) in batch.transactions.into_iter().enumerate() {
+            if job_tx
+                .send(SsmrBalReplayJob {
+                    local_index,
+                    global_index: global_first_tx_index + local_index,
+                    tx,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+        drop(job_tx);
+    });
+    let worker_execute_elapsed = worker_execute_start.elapsed();
+
+    let mut outputs: Vec<Option<SsmrBalReplayOutput>> =
+        std::iter::repeat_with(|| None).take(tx_count).collect();
+    for _ in 0..tx_count {
+        let output = result_rx.recv().map_err(|_| {
+            PayloadBuilderError::other(std::io::Error::other("SSMR BAL replay workers closed"))
+        })?;
+        let output =
+            output.map_err(|error| PayloadBuilderError::other(std::io::Error::other(error)))?;
+        let Some(slot) = outputs.get_mut(output.local_index) else {
+            return Err(PayloadBuilderError::other(std::io::Error::other(
+                "SSMR BAL replay worker returned out-of-range output",
+            )));
+        };
+        if slot.is_some() {
+            return Err(PayloadBuilderError::other(std::io::Error::other(
+                "SSMR BAL replay worker returned duplicate output",
+            )));
+        }
+        *slot = Some(output);
+    }
+
+    let ordered_commit_start = Instant::now();
+    for (commit_offset, output) in outputs.into_iter().enumerate() {
+        let output = output.ok_or_else(|| {
+            PayloadBuilderError::other(std::io::Error::other(
+                "SSMR BAL replay worker missing output",
+            ))
+        })?;
+        debug_assert_eq!(output.global_index, global_first_tx_index + commit_offset);
+        *cumulative_gas_used += output.result.block_gas_used();
+        *cumulative_state_gas_used += output.result.state_gas_used();
+        if !output.is_payment {
+            *non_payment_gas_used += output.result.block_gas_used();
+        }
+        *total_fees += output.result.validator_fee();
+
+        let _ = executor.commit_transaction(output.result);
+        if let Some(bal_task_handle) = bal_task_handle {
+            bal_task_handle.bump_bal_index();
+        }
+        let receipt = executor.receipts().last().unwrap().clone();
+        if !receipt.success {
+            *reverted_transactions += 1;
+        }
+        let _ = roots_tx.send((BuilderTx::Owned(Box::new(output.tx.transaction)), receipt));
+    }
+    let ordered_commit_elapsed = ordered_commit_start.elapsed();
+
+    Ok(SsmrBalReplayTimings {
+        bal_decode_elapsed,
+        worker_execute_elapsed,
+        ordered_commit_elapsed,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1227,10 +1516,14 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task(
-            attributes.ssmr_builder_sink(),
-            attributes.ssmr_shard_target_bytes(),
-        );
+        let mut ssmr_packer = attributes.ssmr_builder_sink().map(|sink| {
+            SsmrShardPacker::new(
+                sink,
+                attributes.ssmr_shard_target_bytes().unwrap_or(0),
+                self.metrics.clone(),
+            )
+        });
+        let (roots_tx, roots_rx) = self.spawn_roots_task();
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -1276,8 +1569,16 @@ where
         let mut ssmr_replay_recovery_worker_count = 0usize;
         let mut ssmr_replay_max_recovered_tx_ahead = 0usize;
         let mut ssmr_replay_execute_elapsed = Duration::ZERO;
+        let mut ssmr_replay_bal_decode_elapsed = Duration::ZERO;
+        let mut ssmr_replay_bal_worker_execute_elapsed = Duration::ZERO;
+        let mut ssmr_replay_bal_ordered_commit_elapsed = Duration::ZERO;
         let mut ssmr_replay_shards = 0u64;
         let mut ssmr_replay_transactions = 0u64;
+        let mut ssmr_replay_bal_shards = 0u64;
+        let mut ssmr_replay_serial_shards = 0u64;
+        let mut ssmr_replay_missing_bal_shards = 0u64;
+        let mut ssmr_replay_shard_bal_bytes_total = 0usize;
+        let mut ssmr_replay_shard_bal_bytes_last = 0usize;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -1306,90 +1607,161 @@ where
                 replay_progress
                     .drain_ready_events(&recovered_events, ssmr_replay_prewarmer.as_ref())?;
 
-                if let Some(tx) = replay_progress.pending_transactions.pop_front() {
-                    let SsmrRecoveredTx {
-                        transaction: recovered,
-                        tx_rlp_length,
-                        pool_lookup_elapsed,
-                        pool_hit,
-                        decode_elapsed,
-                        recover_elapsed,
-                        queue_wait_elapsed: _,
-                    } = tx;
-                    ssmr_replay_pool_lookup_elapsed += pool_lookup_elapsed;
-                    if pool_hit {
-                        ssmr_replay_pool_hits += 1;
+                if let Some(batch) = replay_progress.pending_batches.pop_front() {
+                    for tx in &batch.transactions {
+                        ssmr_replay_pool_lookup_elapsed += tx.pool_lookup_elapsed;
+                        if tx.pool_hit {
+                            ssmr_replay_pool_hits += 1;
+                        } else {
+                            ssmr_replay_pool_misses += 1;
+                        }
+                    }
+                    ssmr_replay_decode_elapsed += batch.decode_elapsed;
+                    ssmr_replay_recover_elapsed += batch.recover_elapsed;
+                    ssmr_replay_decode_recover_elapsed +=
+                        batch.decode_elapsed + batch.recover_elapsed;
+
+                    let shard_bal_bytes = batch
+                        .block_access_list
+                        .as_ref()
+                        .map(|bal| bal.len())
+                        .unwrap_or_default();
+                    ssmr_replay_shard_bal_bytes_total += shard_bal_bytes;
+                    ssmr_replay_shard_bal_bytes_last = shard_bal_bytes;
+                    self.metrics
+                        .ssmr_replay_shard_bal_bytes
+                        .record(shard_bal_bytes as f64);
+                    self.metrics
+                        .ssmr_replay_shard_bal_bytes_last
+                        .set(shard_bal_bytes as f64);
+
+                    if batch.block_access_list.is_some() {
+                        ssmr_replay_bal_shards += 1;
+                        let tx_count = batch.transactions.len();
+                        let replay_evm_env = executor.evm().evm_env();
+                        let replay_beneficiary = executor.evm().block().beneficiary;
+                        let replay_tx_gas_limit_cap =
+                            executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX);
+                        let timings = execute_ssmr_bal_replay_batch(
+                            &self.executor,
+                            &self.evm_config,
+                            self.provider.clone(),
+                            parent_header.hash(),
+                            replay_evm_env,
+                            ctx.clone(),
+                            replay_beneficiary,
+                            &mut executor,
+                            &roots_tx,
+                            bal_task_handle.as_ref(),
+                            batch,
+                            replay_progress.transactions as usize,
+                            hardfork.is_t5(),
+                            replay_tx_gas_limit_cap,
+                            non_shared_gas_limit,
+                            general_gas_limit,
+                            is_osaka,
+                            &mut estimated_rlp_block_size,
+                            &mut cumulative_gas_used,
+                            &mut cumulative_state_gas_used,
+                            &mut non_payment_gas_used,
+                            &mut payment_transactions,
+                            &mut reverted_transactions,
+                            &mut total_fees,
+                        )?;
+                        ssmr_replay_execute_elapsed += timings.total_elapsed();
+                        ssmr_replay_bal_decode_elapsed += timings.bal_decode_elapsed;
+                        ssmr_replay_bal_worker_execute_elapsed += timings.worker_execute_elapsed;
+                        ssmr_replay_bal_ordered_commit_elapsed += timings.ordered_commit_elapsed;
+                        pool_transactions_yielded += tx_count as u64;
+                        pool_transactions_included += tx_count as u64;
+                        replay_progress.transactions += tx_count as u64;
+                        trace!(
+                            ssmr_replay_shard_transactions = tx_count,
+                            ?timings,
+                            "SSMR BAL replay shard executed"
+                        );
                     } else {
-                        ssmr_replay_pool_misses += 1;
-                    }
-                    ssmr_replay_decode_elapsed += decode_elapsed;
-                    ssmr_replay_recover_elapsed += recover_elapsed;
-                    ssmr_replay_decode_recover_elapsed += decode_elapsed + recover_elapsed;
+                        ssmr_replay_serial_shards += 1;
+                        ssmr_replay_missing_bal_shards += 1;
+                        for tx in batch.transactions {
+                            let SsmrRecoveredTx {
+                                transaction: recovered,
+                                tx_rlp_length,
+                                pool_lookup_elapsed: _,
+                                pool_hit: _,
+                                decode_elapsed: _,
+                                recover_elapsed: _,
+                                queue_wait_elapsed: _,
+                            } = tx;
 
-                    let max_regular_gas_used = core::cmp::min(
-                        recovered.inner().gas_limit(),
-                        executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-                    );
-                    if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                        return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
-                            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                                transaction_gas_limit: recovered.inner().gas_limit(),
-                                block_available_gas: non_shared_gas_limit - cumulative_gas_used,
-                            },
-                        )));
-                    }
-
-                    let is_payment = if hardfork.is_t5() {
-                        recovered.inner().is_payment_v2()
-                    } else {
-                        recovered.inner().is_payment_v1()
-                    };
-                    if !is_payment
-                        && non_payment_gas_used + max_regular_gas_used > general_gas_limit
-                    {
-                        return Err(PayloadBuilderError::other(
-                            TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                        ));
-                    }
-
-                    if is_payment {
-                        payment_transactions += 1;
-                    }
-
-                    let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
-                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                        return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                            rlp_length: estimated_block_size_with_tx,
-                            max_rlp_length: MAX_RLP_BLOCK_SIZE,
-                        }));
-                    }
-
-                    let execute_start = Instant::now();
-                    executor
-                        .execute_transaction_with_result_closure(&recovered, |result| {
-                            cumulative_gas_used += result.block_gas_used();
-                            cumulative_state_gas_used += result.state_gas_used();
-                            if !is_payment {
-                                non_payment_gas_used += result.block_gas_used();
+                            let max_regular_gas_used = core::cmp::min(
+                                recovered.inner().gas_limit(),
+                                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                            );
+                            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                                return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
+                                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                                        transaction_gas_limit: recovered.inner().gas_limit(),
+                                        block_available_gas: non_shared_gas_limit - cumulative_gas_used,
+                                    },
+                                )));
                             }
-                            total_fees += result.validator_fee();
-                        })
-                        .map_err(PayloadBuilderError::evm)?;
-                    ssmr_replay_execute_elapsed += execute_start.elapsed();
-                    trace!("SSMR replay transaction executed");
-                    if let Some(bal_task_handle) = &bal_task_handle {
-                        bal_task_handle.bump_bal_index();
-                    }
 
-                    pool_transactions_yielded += 1;
-                    pool_transactions_included += 1;
-                    replay_progress.transactions += 1;
-                    estimated_rlp_block_size += tx_rlp_length;
-                    let receipt = executor.receipts().last().unwrap().clone();
-                    if !receipt.success {
-                        reverted_transactions += 1;
+                            let is_payment = if hardfork.is_t5() {
+                                recovered.inner().is_payment_v2()
+                            } else {
+                                recovered.inner().is_payment_v1()
+                            };
+                            if !is_payment
+                                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
+                            {
+                                return Err(PayloadBuilderError::other(
+                                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                ));
+                            }
+
+                            if is_payment {
+                                payment_transactions += 1;
+                            }
+
+                            let estimated_block_size_with_tx =
+                                estimated_rlp_block_size + tx_rlp_length;
+                            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                                return Err(PayloadBuilderError::other(
+                                    ConsensusError::BlockTooLarge {
+                                        rlp_length: estimated_block_size_with_tx,
+                                        max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                                    },
+                                ));
+                            }
+
+                            let execute_start = Instant::now();
+                            executor
+                                .execute_transaction_with_result_closure(&recovered, |result| {
+                                    cumulative_gas_used += result.block_gas_used();
+                                    cumulative_state_gas_used += result.state_gas_used();
+                                    if !is_payment {
+                                        non_payment_gas_used += result.block_gas_used();
+                                    }
+                                    total_fees += result.validator_fee();
+                                })
+                                .map_err(PayloadBuilderError::evm)?;
+                            ssmr_replay_execute_elapsed += execute_start.elapsed();
+                            if let Some(bal_task_handle) = &bal_task_handle {
+                                bal_task_handle.bump_bal_index();
+                            }
+
+                            pool_transactions_yielded += 1;
+                            pool_transactions_included += 1;
+                            replay_progress.transactions += 1;
+                            estimated_rlp_block_size += tx_rlp_length;
+                            let receipt = executor.receipts().last().unwrap().clone();
+                            if !receipt.success {
+                                reverted_transactions += 1;
+                            }
+                            let _ = roots_tx.send((BuilderTx::Owned(Box::new(recovered)), receipt));
+                        }
                     }
-                    let _ = roots_tx.send((BuilderTx::Owned(Box::new(recovered)), receipt));
 
                     continue;
                 }
@@ -1640,6 +2012,12 @@ where
                 if !receipt.success {
                     reverted_transactions += 1;
                 }
+                maybe_push_ssmr_transaction(
+                    &mut ssmr_packer,
+                    bal_task_handle.as_ref(),
+                    &pool_tx.transaction,
+                    pool_tx.gas_limit(),
+                );
                 let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
             };
 
@@ -1727,6 +2105,12 @@ where
                 if !receipt.success {
                     reverted_transactions += 1;
                 }
+                maybe_push_ssmr_transaction(
+                    &mut ssmr_packer,
+                    bal_task_handle.as_ref(),
+                    tx.inner(),
+                    tx.inner().gas_limit(),
+                );
                 let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
             }
 
@@ -1764,6 +2148,12 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
+            maybe_push_ssmr_transaction(
+                &mut ssmr_packer,
+                bal_task_handle.as_ref(),
+                system_tx.inner(),
+                system_tx.inner().gas_limit(),
+            );
             let _ = roots_tx.send((
                 BuilderTx::Owned(Box::new(system_tx)),
                 executor.receipts().last().unwrap().clone(),
@@ -1781,6 +2171,13 @@ where
         self.metrics
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
+
+        if let Some(packer) = ssmr_packer.take() {
+            let block_access_list = bal_task_handle
+                .as_ref()
+                .and_then(BalTaskHandle::snapshot_block_access_list);
+            packer.finish(block_access_list);
+        }
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
@@ -2019,6 +2416,26 @@ where
         self.metrics
             .rlp_block_size_bytes_last
             .set(recorded_block_size_bytes as f64);
+        if is_ssmr_replay {
+            self.metrics
+                .ssmr_replay_bal_decode_duration_seconds
+                .record(ssmr_replay_bal_decode_elapsed);
+            self.metrics
+                .ssmr_replay_bal_worker_execute_duration_seconds
+                .record(ssmr_replay_bal_worker_execute_elapsed);
+            self.metrics
+                .ssmr_replay_bal_ordered_commit_duration_seconds
+                .record(ssmr_replay_bal_ordered_commit_elapsed);
+            self.metrics
+                .ssmr_replay_bal_shards
+                .record(ssmr_replay_bal_shards as f64);
+            self.metrics
+                .ssmr_replay_serial_shards
+                .record(ssmr_replay_serial_shards as f64);
+            self.metrics
+                .ssmr_replay_missing_bal_shards
+                .record(ssmr_replay_missing_bal_shards as f64);
+        }
 
         info!(
             parent_hash = ?block.parent_hash(),
@@ -2061,8 +2478,16 @@ where
             ?ssmr_replay_decode_elapsed,
             ?ssmr_replay_recover_elapsed,
             ?ssmr_replay_execute_elapsed,
+            ?ssmr_replay_bal_decode_elapsed,
+            ?ssmr_replay_bal_worker_execute_elapsed,
+            ?ssmr_replay_bal_ordered_commit_elapsed,
             ssmr_replay_shards,
             ssmr_replay_transactions,
+            ssmr_replay_bal_shards,
+            ssmr_replay_serial_shards,
+            ssmr_replay_missing_bal_shards,
+            ssmr_replay_shard_bal_bytes_total,
+            ssmr_replay_shard_bal_bytes_last,
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
@@ -2119,8 +2544,6 @@ where
 
     fn spawn_roots_task(
         &self,
-        ssmr_sink: Option<SsmrBuilderSink>,
-        ssmr_shard_target_bytes: Option<usize>,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
@@ -2138,9 +2561,6 @@ where
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
-                let mut ssmr_packer = ssmr_sink
-                    .map(|sink| SsmrShardPacker::new(sink, ssmr_shard_target_bytes.unwrap_or(0)));
-
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
@@ -2149,9 +2569,6 @@ where
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
                     encoded_block_transactions.push(&tx, &buf);
-                    if let Some(packer) = &mut ssmr_packer {
-                        packer.push(Bytes::copy_from_slice(&buf), tx.gas_limit());
-                    }
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -2161,9 +2578,6 @@ where
                     receipt.encode_2718(&mut buf);
                     receipts_root.push_next(&buf);
                     receipts_bloom |= receipt.bloom();
-                }
-                if let Some(packer) = ssmr_packer {
-                    packer.finish();
                 }
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
@@ -2190,6 +2604,9 @@ where
                 match msg {
                     BalMessage::BumpIndex => {
                         bal_state.bump_bal_index();
+                    }
+                    BalMessage::Snapshot(reply_tx) => {
+                        let _ = reply_tx.send(encode_bal_snapshot(&bal_state));
                     }
                     BalMessage::State(state) => {
                         bal_state.commit(&state);
@@ -2233,6 +2650,12 @@ impl BalTaskHandle {
         let _ = self.msg_tx.send(BalMessage::BumpIndex);
     }
 
+    fn snapshot_block_access_list(&self) -> Option<Bytes> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.msg_tx.send(BalMessage::Snapshot(reply_tx)).ok()?;
+        reply_rx.recv().ok().flatten()
+    }
+
     fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
         self.bal_rx
     }
@@ -2241,10 +2664,39 @@ impl BalTaskHandle {
 enum BalMessage {
     State(EvmState),
     BumpIndex,
+    Snapshot(mpsc::Sender<Option<Bytes>>),
+}
+
+fn encode_bal_snapshot(bal_state: &reth_revm::database_interface::bal::BalState) -> Option<Bytes> {
+    let bal: Bal = bal_state.bal_builder()?.into_alloy_bal().into();
+    let mut encoded = Vec::new();
+    bal.encode(&mut encoded);
+    Some(encoded.into())
+}
+
+fn maybe_push_ssmr_transaction<T>(
+    ssmr_packer: &mut Option<SsmrShardPacker>,
+    bal_task_handle: Option<&BalTaskHandle>,
+    tx: &T,
+    gas_estimate: u64,
+) where
+    T: Encodable2718 + ?Sized,
+{
+    let Some(packer) = ssmr_packer.as_mut() else {
+        return;
+    };
+
+    let mut encoded = Vec::new();
+    tx.encode_2718(&mut encoded);
+    if packer.push(encoded.into(), gas_estimate) {
+        let block_access_list = bal_task_handle.and_then(BalTaskHandle::snapshot_block_access_list);
+        packer.flush(block_access_list);
+    }
 }
 
 struct SsmrShardPacker {
     sink: SsmrBuilderSink,
+    metrics: TempoPayloadBuilderMetrics,
     target_bytes: usize,
     shard_index: u64,
     first_tx_index: u64,
@@ -2256,9 +2708,14 @@ struct SsmrShardPacker {
 }
 
 impl SsmrShardPacker {
-    fn new(sink: SsmrBuilderSink, target_bytes: usize) -> Self {
+    fn new(
+        sink: SsmrBuilderSink,
+        target_bytes: usize,
+        metrics: TempoPayloadBuilderMetrics,
+    ) -> Self {
         Self {
             sink,
+            metrics,
             target_bytes: if target_bytes == 0 {
                 DEFAULT_SSMR_SHARD_TARGET_BYTES
             } else {
@@ -2274,16 +2731,14 @@ impl SsmrShardPacker {
         }
     }
 
-    fn push(&mut self, tx: Bytes, gas_estimate: u64) {
+    fn push(&mut self, tx: Bytes, gas_estimate: u64) -> bool {
         self.pending_bytes += tx.as_ref().len();
         self.cumulative_tx_bytes += tx.as_ref().len() as u64;
         self.cumulative_gas_estimate = self.cumulative_gas_estimate.saturating_add(gas_estimate);
         self.pending_transactions.push(tx);
         self.next_tx_index += 1;
 
-        if self.pending_bytes >= self.current_target_bytes() {
-            self.flush();
-        }
+        self.pending_bytes >= self.current_target_bytes()
     }
 
     fn current_target_bytes(&self) -> usize {
@@ -2294,13 +2749,24 @@ impl SsmrShardPacker {
         }
     }
 
-    fn finish(mut self) {
-        self.flush();
+    fn finish(mut self, block_access_list: Option<Bytes>) {
+        self.flush(block_access_list.clone());
         if self.shard_index == 0 {
+            let bal_bytes = block_access_list
+                .as_ref()
+                .map(|bal| bal.len())
+                .unwrap_or_default();
+            self.metrics
+                .ssmr_builder_shard_bal_bytes
+                .record(bal_bytes as f64);
+            self.metrics
+                .ssmr_builder_shard_bal_bytes_last
+                .set(bal_bytes as f64);
             debug!(
                 ssmr_builder_shard_index = 0,
                 ssmr_builder_first_tx_index = 0,
                 ssmr_builder_shard_transactions = 0,
+                ssmr_builder_shard_bal_bytes = bal_bytes,
                 ssmr_builder_cumulative_tx_bytes = 0,
                 ssmr_builder_cumulative_gas_estimate = 0,
                 "emitted SSMR builder shard"
@@ -2309,6 +2775,7 @@ impl SsmrShardPacker {
                 shard_index: 0,
                 first_tx_index: 0,
                 transactions: Vec::new(),
+                block_access_list,
                 cumulative_tx_bytes: 0,
                 cumulative_gas_estimate: 0,
             }));
@@ -2325,15 +2792,26 @@ impl SsmrShardPacker {
         });
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self, block_access_list: Option<Bytes>) {
         if self.pending_transactions.is_empty() {
             return;
         }
 
+        let bal_bytes = block_access_list
+            .as_ref()
+            .map(|bal| bal.len())
+            .unwrap_or_default();
+        self.metrics
+            .ssmr_builder_shard_bal_bytes
+            .record(bal_bytes as f64);
+        self.metrics
+            .ssmr_builder_shard_bal_bytes_last
+            .set(bal_bytes as f64);
         let shard = SsmrBuilderShard {
             shard_index: self.shard_index,
             first_tx_index: self.first_tx_index,
             transactions: std::mem::take(&mut self.pending_transactions),
+            block_access_list,
             cumulative_tx_bytes: self.cumulative_tx_bytes,
             cumulative_gas_estimate: self.cumulative_gas_estimate,
         };
@@ -2341,6 +2819,7 @@ impl SsmrShardPacker {
             ssmr_builder_shard_index = shard.shard_index,
             ssmr_builder_first_tx_index = shard.first_tx_index,
             ssmr_builder_shard_transactions = shard.transactions.len(),
+            ssmr_builder_shard_bal_bytes = bal_bytes,
             ssmr_builder_cumulative_tx_bytes = shard.cumulative_tx_bytes,
             ssmr_builder_cumulative_gas_estimate = shard.cumulative_gas_estimate,
             "emitted SSMR builder shard"
@@ -2490,11 +2969,12 @@ mod tests {
             sink_events.lock().unwrap().push(event);
         });
 
-        let mut packer = SsmrShardPacker::new(sink, 5);
-        packer.push(Bytes::from_static(b"aa"), 10);
-        packer.push(Bytes::from_static(b"bbb"), 20);
-        packer.push(Bytes::from_static(b"c"), 30);
-        packer.finish();
+        let mut packer = SsmrShardPacker::new(sink, 5, TempoPayloadBuilderMetrics::default());
+        assert!(!packer.push(Bytes::from_static(b"aa"), 10));
+        assert!(packer.push(Bytes::from_static(b"bbb"), 20));
+        packer.flush(None);
+        assert!(!packer.push(Bytes::from_static(b"c"), 30));
+        packer.finish(None);
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 3);
@@ -2503,6 +2983,7 @@ mod tests {
                 assert_eq!(shard.shard_index, 0);
                 assert_eq!(shard.first_tx_index, 0);
                 assert_eq!(shard.transactions.len(), 2);
+                assert_eq!(shard.block_access_list, None);
                 assert_eq!(shard.cumulative_tx_bytes, 5);
                 assert_eq!(shard.cumulative_gas_estimate, 30);
             }
@@ -2513,6 +2994,7 @@ mod tests {
                 assert_eq!(shard.shard_index, 1);
                 assert_eq!(shard.first_tx_index, 2);
                 assert_eq!(shard.transactions.len(), 1);
+                assert_eq!(shard.block_access_list, None);
                 assert_eq!(shard.cumulative_tx_bytes, 6);
                 assert_eq!(shard.cumulative_gas_estimate, 60);
             }
@@ -2535,7 +3017,7 @@ mod tests {
             sink_events.lock().unwrap().push(event);
         });
 
-        SsmrShardPacker::new(sink, 5).finish();
+        SsmrShardPacker::new(sink, 5, TempoPayloadBuilderMetrics::default()).finish(None);
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 2);
@@ -2544,6 +3026,7 @@ mod tests {
                 assert_eq!(shard.shard_index, 0);
                 assert_eq!(shard.first_tx_index, 0);
                 assert!(shard.transactions.is_empty());
+                assert_eq!(shard.block_access_list, None);
                 assert_eq!(shard.cumulative_tx_bytes, 0);
                 assert_eq!(shard.cumulative_gas_estimate, 0);
             }
@@ -2559,6 +3042,28 @@ mod tests {
     }
 
     #[test]
+    fn ssmr_packer_attaches_bal_to_flushed_shard() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink: SsmrBuilderSink = Arc::new(move |event| {
+            sink_events.lock().unwrap().push(event);
+        });
+
+        let mut packer = SsmrShardPacker::new(sink, 5, TempoPayloadBuilderMetrics::default());
+        assert!(packer.push(Bytes::from_static(b"aaaaa"), 10));
+        packer.flush(Some(Bytes::from_static(b"bal0")));
+        packer.finish(None);
+
+        let events = events.lock().unwrap();
+        match &events[0] {
+            SsmrBuilderEvent::Shard(shard) => {
+                assert_eq!(shard.block_access_list, Some(Bytes::from_static(b"bal0")));
+            }
+            other => panic!("expected shard, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn ssmr_packer_flushes_first_shard_early() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink_events = events.clone();
@@ -2566,11 +3071,16 @@ mod tests {
             sink_events.lock().unwrap().push(event);
         });
 
-        let mut packer = SsmrShardPacker::new(sink, DEFAULT_SSMR_SHARD_TARGET_BYTES);
-        packer.push(Bytes::from(vec![0; 4 * 1024]), 10);
-        packer.push(Bytes::from(vec![0; 1024]), 20);
-        packer.push(Bytes::from(vec![0; 6 * 1024]), 30);
-        packer.finish();
+        let mut packer = SsmrShardPacker::new(
+            sink,
+            DEFAULT_SSMR_SHARD_TARGET_BYTES,
+            TempoPayloadBuilderMetrics::default(),
+        );
+        assert!(!packer.push(Bytes::from(vec![0; 4 * 1024]), 10));
+        assert!(packer.push(Bytes::from(vec![0; 1024]), 20));
+        packer.flush(None);
+        assert!(!packer.push(Bytes::from(vec![0; 6 * 1024]), 30));
+        packer.finish(None);
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 3);
@@ -2579,6 +3089,7 @@ mod tests {
                 assert_eq!(shard.shard_index, 0);
                 assert_eq!(shard.first_tx_index, 0);
                 assert_eq!(shard.transactions.len(), 2);
+                assert_eq!(shard.block_access_list, None);
                 assert_eq!(
                     shard.cumulative_tx_bytes,
                     DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES as u64
@@ -2592,6 +3103,7 @@ mod tests {
                 assert_eq!(shard.shard_index, 1);
                 assert_eq!(shard.first_tx_index, 2);
                 assert_eq!(shard.transactions.len(), 1);
+                assert_eq!(shard.block_access_list, None);
                 assert_eq!(
                     shard.cumulative_tx_bytes,
                     (DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES + 6 * 1024) as u64

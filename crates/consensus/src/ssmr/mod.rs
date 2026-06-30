@@ -66,6 +66,8 @@ pub(crate) struct SsmrFlags {
     pub(crate) bal_enabled: bool,
     /// Whether shards contain only EIP-2718 transaction bytes.
     pub(crate) tx_only: bool,
+    /// Whether shards carry BAL data for optimistic BAL replay.
+    pub(crate) shard_bal_enabled: bool,
 }
 
 impl SsmrFlags {
@@ -73,12 +75,14 @@ impl SsmrFlags {
         Self {
             bal_enabled,
             tx_only: true,
+            shard_bal_enabled: bal_enabled,
         }
     }
 }
 
 /// Transaction bytes carried in a single ordered shard.
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
 pub(crate) struct SsmrShardPayload {
     /// Shard index. `SsmrStart` always carries index `0`.
     pub(crate) shard_index: u64,
@@ -90,6 +94,8 @@ pub(crate) struct SsmrShardPayload {
     pub(crate) cumulative_tx_bytes: u64,
     /// Cumulative gas estimate observed through this shard.
     pub(crate) cumulative_gas_estimate: u64,
+    /// Encoded BAL data usable to replay the shard optimistically.
+    pub(crate) block_access_list: Option<Bytes>,
 }
 
 impl SsmrShardPayload {
@@ -98,7 +104,15 @@ impl SsmrShardPayload {
     }
 
     pub(crate) fn byte_len(&self) -> usize {
-        self.transactions.iter().map(|tx| tx.as_ref().len()).sum()
+        self.transactions
+            .iter()
+            .map(|tx| tx.as_ref().len())
+            .sum::<usize>()
+            + self
+                .block_access_list
+                .as_ref()
+                .map(|bal| bal.as_ref().len())
+                .unwrap_or_default()
     }
 }
 
@@ -407,6 +421,7 @@ mod tests {
                 .iter()
                 .map(|tx| Bytes(RawBytes::copy_from_slice(tx)))
                 .collect(),
+            block_access_list: None,
             cumulative_tx_bytes: txs.iter().map(|tx| tx.len() as u64).sum(),
             cumulative_gas_estimate: 21_000 * txs.len() as u64,
         }
@@ -447,6 +462,25 @@ mod tests {
             let encoded = message.clone().encode();
             assert_eq!(SsmrMessage::decode(encoded.as_ref()).unwrap(), message);
         }
+    }
+
+    #[test]
+    fn shard_bal_round_trips() {
+        let block_access_list = Bytes(RawBytes::from_static(b"bal"));
+        let mut shard = payload(1, 2, &[b"tx2"]);
+        shard.block_access_list = Some(block_access_list.clone());
+        let message = SsmrMessage::TxShard(SsmrTxShard {
+            stream_key: stream_key(),
+            shard,
+        });
+
+        let encoded = message.clone().encode();
+
+        assert_eq!(SsmrMessage::decode(encoded.as_ref()).unwrap(), message);
+        let SsmrMessage::TxShard(decoded) = SsmrMessage::decode(encoded.as_ref()).unwrap() else {
+            panic!("expected shard");
+        };
+        assert_eq!(decoded.shard.block_access_list, Some(block_access_list));
     }
 
     #[test]

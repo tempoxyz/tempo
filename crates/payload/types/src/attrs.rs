@@ -20,6 +20,8 @@ pub struct SsmrBuilderShard {
     pub first_tx_index: u64,
     /// EIP-2718 encoded transactions in final block order.
     pub transactions: Vec<Bytes>,
+    /// Encoded BAL data usable by validators to replay this shard optimistically.
+    pub block_access_list: Option<Bytes>,
     /// Cumulative transaction bytes observed through this shard.
     pub cumulative_tx_bytes: u64,
     /// Cumulative gas estimate observed through this shard.
@@ -46,10 +48,12 @@ pub type SsmrBuilderSink = Arc<dyn Fn(SsmrBuilderEvent) + Send + Sync + 'static>
 /// Ordered SSMR replay command consumed by the payload builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsmrReplayCommand {
-    /// Next in-order tx-only shard.
+    /// Next in-order shard.
     Shard {
         /// EIP-2718 encoded transactions in final block order.
         transactions: Vec<Bytes>,
+        /// Encoded BAL data usable for this shard's optimistic replay.
+        block_access_list: Option<Bytes>,
     },
     /// No more shards will be sent; finish and assemble the replayed payload.
     Finish,
@@ -63,9 +67,12 @@ pub struct SsmrReplaySender {
 
 impl SsmrReplaySender {
     /// Sends the next in-order shard.
-    pub fn send_shard(&self, transactions: Vec<Bytes>) -> bool {
+    pub fn send_shard(&self, transactions: Vec<Bytes>, block_access_list: Option<Bytes>) -> bool {
         self.tx
-            .send(SsmrReplayCommand::Shard { transactions })
+            .send(SsmrReplayCommand::Shard {
+                transactions,
+                block_access_list,
+            })
             .is_ok()
     }
 

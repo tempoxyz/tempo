@@ -134,6 +134,7 @@ impl IntoPayload for SsmrBuilderShard {
             shard_index: self.shard_index,
             first_tx_index: self.first_tx_index,
             transactions: self.transactions,
+            block_access_list: self.block_access_list,
             cumulative_tx_bytes: self.cumulative_tx_bytes,
             cumulative_gas_estimate: self.cumulative_gas_estimate,
         }
@@ -590,6 +591,7 @@ impl Actor {
                 commands.push(ReplaySend::Shard {
                     shard_index: shard.shard_index,
                     transactions: shard.transactions.clone(),
+                    block_access_list: shard.block_access_list.clone(),
                 });
                 stream.next_execution_shard += 1;
             }
@@ -614,16 +616,22 @@ impl Actor {
                 ReplaySend::Shard {
                     shard_index,
                     transactions,
+                    block_access_list,
                 } => {
                     let tx_count = transactions.len();
+                    let bal_bytes = block_access_list
+                        .as_ref()
+                        .map(|bal| bal.len())
+                        .unwrap_or_default();
                     debug!(
                         stream.parent = %key.parent_hash,
                         stream.height = key.block_height,
                         shard.index = shard_index,
                         shard.tx_count = tx_count,
+                        shard.bal_bytes = bal_bytes,
                         "feeding SSMR shard to optimistic execution"
                     );
-                    tx.send_shard(transactions)
+                    tx.send_shard(transactions, block_access_list)
                 }
                 ReplaySend::Finish { sent_shards } => {
                     debug!(
@@ -785,6 +793,7 @@ enum ReplaySend {
     Shard {
         shard_index: u64,
         transactions: Vec<Bytes>,
+        block_access_list: Option<Bytes>,
     },
     Finish {
         sent_shards: u64,
@@ -1103,8 +1112,21 @@ mod tests {
                 .iter()
                 .map(|tx| Bytes::copy_from_slice(tx))
                 .collect(),
+            block_access_list: None,
             cumulative_tx_bytes: transactions.iter().map(|tx| tx.len() as u64).sum(),
             cumulative_gas_estimate: 21_000 * transactions.len() as u64,
+        }
+    }
+
+    fn builder_shard_with_bal(
+        shard_index: u64,
+        first_tx_index: u64,
+        transactions: &[&[u8]],
+        block_access_list: &'static [u8],
+    ) -> SsmrBuilderShard {
+        SsmrBuilderShard {
+            block_access_list: Some(Bytes::from_static(block_access_list)),
+            ..builder_shard(shard_index, first_tx_index, transactions)
         }
     }
 
@@ -1139,6 +1161,27 @@ mod tests {
         );
         assert!(start.flags.tx_only);
         assert!(start.flags.bal_enabled);
+    }
+
+    #[test]
+    fn proposal_stream_preserves_first_shard_bal() {
+        let message = stream()
+            .message_for_event(SsmrBuilderEvent::Shard(builder_shard_with_bal(
+                0,
+                0,
+                &[b"tx0"],
+                b"bal",
+            )))
+            .unwrap();
+
+        let SsmrMessage::Start(start) = message else {
+            panic!("expected start");
+        };
+        assert_eq!(
+            start.first_shard.block_access_list,
+            Some(Bytes::from_static(b"bal"))
+        );
+        assert!(start.flags.shard_bal_enabled);
     }
 
     #[test]
