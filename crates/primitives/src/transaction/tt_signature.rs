@@ -694,13 +694,9 @@ impl TempoSignature {
         }
     }
 
-    /// Get signature type.
-    ///
-    /// Native multisig signatures do not have a primitive key type; callers that may
-    /// receive multisig should use [`TempoSignature::primitive_signature_type`].
-    pub fn signature_type(&self) -> SignatureType {
+    /// Get the primitive signature type, if the outer signature has one.
+    pub fn signature_type(&self) -> Option<SignatureType> {
         self.primitive_signature_type()
-            .expect("native multisig has no primitive signature type")
     }
 
     /// Get the in-memory size of the signature
@@ -739,14 +735,9 @@ impl TempoSignature {
                 // Return the user_address - the root account this transaction is for
                 Ok(keychain_sig.user_address)
             }
-            Self::Multisig(multisig_sig) => {
-                let account = multisig_sig
-                    .recover_account()
-                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
-                let digest = multisig_sig.digest(*sig_hash);
-                let _ = multisig_sig.with_recovered_owners(digest, |_| Ok(()));
-                Ok(account)
-            }
+            Self::Multisig(multisig_sig) => multisig_sig
+                .recover_account()
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new()),
         }
     }
 
@@ -1958,6 +1949,54 @@ mod tests {
         assert_ne!(
             key_id_a, key_id_b,
             "V2 should recover different key_ids for different user_addresses"
+        );
+    }
+
+    #[test]
+    fn test_signature_type_is_none_for_multisig() {
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::ZERO,
+            B256::ZERO,
+            vec![Bytes::from(vec![0xff])],
+            None,
+        ));
+
+        assert_eq!(signature.signature_type(), None);
+        assert_eq!(signature.primitive_signature_type(), None);
+    }
+
+    #[test]
+    fn test_recover_signer_multisig_only_recovers_account() {
+        use crate::transaction::{
+            InitMultisig, MultisigOwner, derive_multisig_account,
+            verify_trusted_multisig_owner_signatures,
+        };
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x42),
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: Address::repeat_byte(0x11),
+                weight: 1,
+            }],
+        };
+        let config_id = config.config_id().unwrap();
+        let account = derive_multisig_account(config_id);
+        let inner_hash = B256::repeat_byte(0x24);
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            config_id,
+            vec![Bytes::from(vec![0xff])],
+            Some(config.clone()),
+        ));
+
+        assert_eq!(signature.recover_signer(&inner_hash).unwrap(), account);
+
+        let multisig_signature = signature.as_multisig().unwrap();
+        let digest = multisig_signature.digest(inner_hash);
+        assert!(
+            verify_trusted_multisig_owner_signatures(digest, multisig_signature, &config).is_err(),
+            "stateful multisig authorization should still reject the invalid owner signature"
         );
     }
 
