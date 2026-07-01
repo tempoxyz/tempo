@@ -530,7 +530,6 @@ where
         );
         state_root
     })
-    .map_err(Into::into)
 }
 
 fn use_parallel_trie(trie_workers: usize) -> bool {
