@@ -96,6 +96,9 @@ const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
 /// `config_ids[account]` plus the packed `{ threshold, owner_count }` header.
 const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 2;
 
+/// Approximate buffer for the LOG3/no-data `MultisigInitialized` event emitted during bootstrap.
+const NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER: u64 = 1_500;
+
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
@@ -301,7 +304,9 @@ fn calculate_native_multisig_bootstrap_storage_gas(
         sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
     }
 
-    let regular_gas = sstore_cost.saturating_mul(num_sstores);
+    let regular_gas = sstore_cost
+        .saturating_mul(num_sstores)
+        .saturating_add(NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER);
     let state_gas = gas_params
         .get(GasId::sstore_set_state_gas())
         .saturating_mul(num_sstores);
@@ -3997,12 +4002,13 @@ mod tests {
         let storage_slots = native_multisig_bootstrap_storage_slots(&config);
         assert_eq!(storage_slots, 2 + config.owners.len() as u64);
 
-        let expected_storage_gas = SSTORE_CREATE_COST * storage_slots;
+        let expected_storage_gas =
+            SSTORE_CREATE_COST * storage_slots + NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER;
         let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + expected_storage_gas;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
-            "bootstrap should charge config_id, packed header, and one owner slot per owner"
+            "bootstrap should charge config_id, packed header, one owner slot per owner, and an event buffer"
         );
         assert_eq!(
             multisig_gas.initial_state_gas, base_gas.initial_state_gas,
