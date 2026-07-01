@@ -172,20 +172,6 @@ impl PolicyData {
 }
 
 impl ReceivePolicyConfig {
-    fn sender_policy_data(&self) -> PolicyData {
-        PolicyData {
-            policy_type: self.sender_policy_type,
-            admin: Address::ZERO,
-        }
-    }
-
-    fn token_filter_data(&self) -> PolicyData {
-        PolicyData {
-            policy_type: self.token_filter_type,
-            admin: Address::ZERO,
-        }
-    }
-
     fn sender_policy_type(&self) -> Result<PolicyType> {
         self.sender_policy_type
             .try_into()
@@ -336,8 +322,11 @@ impl TIP403Registry {
             return Ok(None);
         }
 
-        let token_filter_data = config.token_filter_data();
-        if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
+        if !self.is_authorized_cached_simple(
+            config.token_filter_id,
+            token,
+            config.token_filter_type,
+        )? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::TOKEN_FILTER,
@@ -345,8 +334,11 @@ impl TIP403Registry {
             )));
         }
 
-        let sender_policy_data = config.sender_policy_data();
-        if !self.is_authorized_simple(config.sender_policy_id, sender, Some(sender_policy_data))? {
+        if !self.is_authorized_cached_simple(
+            config.sender_policy_id,
+            sender,
+            config.sender_policy_type,
+        )? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::RECEIVE_POLICY,
@@ -781,6 +773,40 @@ impl TIP403Registry {
             None => self.get_policy_data(policy_id)?,
         };
         self.is_authorized_simple_inner(policy_id, user, &data)
+    }
+
+    /// Authorization using the simple policy type cached in a receive policy.
+    fn is_authorized_cached_simple(
+        &self,
+        policy_id: u64,
+        user: Address,
+        policy_type: u8,
+    ) -> Result<bool> {
+        if let Some(auth) = self.builtin_authorization(policy_id) {
+            return Ok(auth);
+        }
+
+        // Preserve the simple-policy gas order: read the policy set before checking type.
+        let is_in_set = self.policy_set[policy_id][user].read()?;
+
+        match policy_type {
+            policy_type if policy_type == PolicyType::WHITELIST as u8 => Ok(is_in_set),
+            policy_type if policy_type == PolicyType::BLACKLIST as u8 => Ok(!is_in_set),
+            policy_type => {
+                let data = PolicyData {
+                    policy_type,
+                    admin: Address::ZERO,
+                };
+                match data.policy_type()? {
+                    PolicyType::WHITELIST => Ok(is_in_set),
+                    PolicyType::BLACKLIST => Ok(!is_in_set),
+                    PolicyType::COMPOUND => {
+                        Err(TIP403RegistryError::incompatible_policy_type().into())
+                    }
+                    PolicyType::__Invalid => unreachable!(),
+                }
+            }
+        }
     }
 
     /// Authorization check for simple (non-compound) policies.
