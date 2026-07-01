@@ -275,6 +275,7 @@ ed25519-consensus = { version = "2.1.0", default-features = false }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 either = "1"
 eyre = "0.6.12"
+fdlimit = "0.3.0"
 futures = "0.3.31"
 governor = "0.10.4"
 http = "1.4.0"

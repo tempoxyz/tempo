@@ -56,7 +56,7 @@ use reth_trie_db::DatabaseStateRoot;
 use reth_trie_parallel::StorageRootTargets;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_primitives::TempoPrimitives;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Magic bytes for the state bloat binary format (8 bytes)
 const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
@@ -150,6 +150,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         N: CliNodeTypes<ChainSpec = C::ChainSpec>,
     {
         info!(target: "tempo::cli", "Tempo init-from-binary-dump starting");
+
+        match fdlimit::raise_fd_limit() {
+            Ok(fdlimit::Outcome::LimitRaised { from, to }) => {
+                debug!(target: "tempo::cli", from, to, "Raised file descriptor limit");
+            }
+            Ok(fdlimit::Outcome::Unsupported) => {}
+            Err(err) => warn!(target: "tempo::cli", %err, "Failed to raise file descriptor limit"),
+        }
 
         let workers = self.workers.resolve();
         info!(target: "tempo::cli", workers, "Resolved init-from-binary-dump workers");

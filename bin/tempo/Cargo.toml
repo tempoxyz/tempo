@@ -104,6 +104,7 @@ reth-trie-db.workspace = true
 reth-trie-parallel.workspace = true
 clap.workspace = true
 eyre.workspace = true
+fdlimit.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true
 tokio.workspace = true

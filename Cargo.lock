@@ -12864,6 +12864,7 @@ dependencies = [
  "commonware-runtime",
  "commonware-utils",
  "eyre",
+ "fdlimit",
  "futures",
  "jiff",
  "opentelemetry-otlp 0.31.1",
