@@ -236,7 +236,7 @@ pub(crate) mod marshal {
             (true, Some((floor, tip))) => Ok(FinalizationRange { floor, tip }),
             (true, None) if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
-                tip: genesis_finalized_point(execution_node),
+                tip: execution_finalized,
             }),
             (true, None) => Err(eyre!(
                 "strict consensus startup requires a finalized certificate archive unless the \
@@ -328,13 +328,11 @@ pub(crate) mod marshal {
             .canonical_in_memory_state()
             .get_finalized_num_hash()
             .map(|nh| (Height::new(nh.number), Digest(nh.hash)))
-            .unwrap_or_else(|| genesis_finalized_point(execution_node))
-    }
-
-    fn genesis_finalized_point(execution_node: &TempoFullNode) -> (Height, Digest) {
-        (
-            Height::zero(),
-            Digest(execution_node.chain_spec().genesis_hash()),
-        )
+            .unwrap_or_else(|| {
+                (
+                    Height::zero(),
+                    Digest(execution_node.chain_spec().genesis_hash()),
+                )
+            })
     }
 }
