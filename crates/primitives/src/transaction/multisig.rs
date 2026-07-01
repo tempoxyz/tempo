@@ -1030,6 +1030,60 @@ mod tests {
     }
 
     #[test]
+    fn multisig_signature_shape_rejects_oversized_owner_signature() {
+        let signature = MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        );
+
+        assert_eq!(
+            signature.validate_shape(),
+            Err("multisig owner signature too large")
+        );
+    }
+
+    #[test]
+    fn multisig_signature_decode_rejects_oversized_owner_signature() {
+        let signature = MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        );
+        let mut encoded = Vec::new();
+        signature.encode(&mut encoded);
+        let mut input = encoded.as_slice();
+
+        assert!(
+            MultisigSignature::decode(&mut input).is_err(),
+            "RLP decode should reject oversized owner approval bytes"
+        );
+    }
+
+    #[test]
+    fn tempo_signature_decode_rejects_oversized_multisig_owner_signature() {
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        ));
+
+        assert!(
+            TempoSignature::from_bytes(&signature.to_bytes()).is_err(),
+            "TempoSignature decode should reject multisig payloads with oversized owner approvals"
+        );
+    }
+
+    #[test]
     fn multisig_signature_roundtrips_through_tempo_signature_bytes() {
         let (signer, owner) = generate_secp256k1_keypair();
         let config = sorted_secp_config(&[(owner, 1)], 1);

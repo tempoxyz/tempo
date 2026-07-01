@@ -2978,8 +2978,8 @@ mod tests {
         tip_fee_manager::TipFeeManager,
     };
     use tempo_primitives::transaction::{
-        Call, InitMultisig, MultisigOwner, MultisigSignature, RecoveredTempoAuthorization,
-        TempoSignature, TempoSignedAuthorization,
+        Call, InitMultisig, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MultisigOwner, MultisigSignature,
+        RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     };
 
@@ -3651,6 +3651,40 @@ mod tests {
                 )) if reason.contains("invalid nested multisig owner signature")
             ),
             "nested native multisig owner signatures must not carry bootstrap init"
+        );
+    }
+
+    #[test]
+    fn native_multisig_authorization_rejects_oversized_owner_approval_before_decode() {
+        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
+        let account = config.derive_account().unwrap();
+        let signature = MultisigSignature::new(
+            account,
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        );
+        let mut config_cache = std::collections::HashMap::new();
+        let multisig = NativeMultisig::new();
+
+        let result = verify_native_multisig_authorization::<CacheDB<EmptyDB>>(
+            &multisig,
+            &mut config_cache,
+            B256::repeat_byte(0x42),
+            &signature,
+            &config,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                )) if reason.contains("too large")
+            ),
+            "oversized owner approval should be rejected before owner approval decode"
         );
     }
 
