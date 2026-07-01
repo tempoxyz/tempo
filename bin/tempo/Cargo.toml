@@ -98,8 +98,10 @@ reth-prune-types.workspace = true
 reth-rpc-server-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
+reth-tasks.workspace = true
 reth-trie.workspace = true
 reth-trie-db.workspace = true
+reth-trie-parallel.workspace = true
 clap.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
