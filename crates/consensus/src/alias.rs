@@ -200,7 +200,7 @@ pub(crate) mod marshal {
             strict_startup = config.strict_startup,
             "setting marshal sync floor"
         );
-        mailbox.set_floor(startup_floor_height).await;
+        mailbox.set_floor(last_finalized_height).await;
 
         Ok(Initialized {
             actor,
