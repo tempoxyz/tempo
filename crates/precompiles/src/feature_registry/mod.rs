@@ -10,12 +10,10 @@ use crate::{
     validator_config_v2::ValidatorConfigV2,
 };
 use alloy::primitives::{Address, B256, U256};
-use tempo_contracts::precompiles::{
-    FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry, ValidatorConfigV2Error,
-};
+use tempo_contracts::precompiles::{FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry};
 use tempo_precompiles_macros::contract;
 
-// Activation requires 80% support from the active validator set, represented exactly as 4/5.
+// Activation requires 80% support from the current committee, represented exactly as 4/5.
 const ACTIVATION_QUORUM_NUMERATOR: u64 = 4;
 const ACTIVATION_QUORUM_DENOMINATOR: u64 = 5;
 
@@ -31,8 +29,8 @@ pub struct FeatureRegistry {
     scheduled_feature_head: B256,
     /// Earliest activation epoch for the scheduled feature head, or zero when none is scheduled.
     scheduled_activation_epoch: u64,
-    /// Latest feature head reported ready by each validator address.
-    validator_confirmed_feature_head: Mapping<Address, B256>,
+    /// Latest feature head reported ready by each proposer public key.
+    validator_confirmed_feature_head: Mapping<B256, B256>,
 }
 
 impl FeatureRegistry {
@@ -76,45 +74,22 @@ impl FeatureRegistry {
             .into())
     }
 
-    /// Returns whether `validator` reported readiness for the scheduled feature head.
+    /// Returns whether `public_key` reported readiness for the scheduled feature head.
     pub fn validator_confirmed_scheduled_feature_readiness(
         &self,
-        validator: Address,
+        public_key: B256,
     ) -> Result<bool> {
         let feature_head = self.scheduled_feature_head.read()?;
-        self.validator_confirmed_feature_head(validator, feature_head)
+        self.validator_confirmed_feature_head(public_key, feature_head)
     }
 
     fn validator_confirmed_feature_head(
         &self,
-        validator: Address,
+        public_key: B256,
         feature_head: B256,
     ) -> Result<bool> {
         Ok(feature_head != B256::ZERO
-            && self.validator_confirmed_feature_head[validator].read()? == feature_head)
-    }
-
-    pub fn validator_confirmed_scheduled_feature_readiness_by_public_key(
-        &self,
-        public_key: B256,
-    ) -> Result<bool> {
-        let validator = self.validator_address_by_public_key(public_key)?;
-        self.validator_confirmed_scheduled_feature_readiness(validator)
-    }
-
-    fn validator_address_by_public_key(&self, public_key: B256) -> Result<Address> {
-        let validator = ValidatorConfigV2::new().validator_by_public_key(public_key)?;
-        if validator.deactivatedAtHeight != 0 {
-            return Err(ValidatorConfigV2Error::validator_already_deactivated().into());
-        }
-
-        Ok(validator.validatorAddress)
-    }
-
-    fn validator_address_by_epoch_public_key(&self, public_key: B256) -> Result<Address> {
-        Ok(ValidatorConfigV2::new()
-            .validator_by_public_key(public_key)?
-            .validatorAddress)
+            && self.validator_confirmed_feature_head[public_key].read()? == feature_head)
     }
 
     pub fn report_feature_readiness(&mut self, msg_sender: Address, ready: bool) -> Result<()> {
@@ -133,15 +108,15 @@ impl FeatureRegistry {
         else {
             return Err(FeatureRegistryError::proposer_public_key_unavailable().into());
         };
-        let validator = self.validator_address_by_public_key(B256::from(public_key))?;
+        let public_key = B256::from(public_key);
         if ready {
-            self.validator_confirmed_feature_head[validator].write(feature_head)?;
-        } else if self.validator_confirmed_feature_head[validator].read()? == feature_head {
-            self.validator_confirmed_feature_head[validator].write(B256::ZERO)?;
+            self.validator_confirmed_feature_head[public_key].write(feature_head)?;
+        } else if self.validator_confirmed_feature_head[public_key].read()? == feature_head {
+            self.validator_confirmed_feature_head[public_key].write(B256::ZERO)?;
         }
 
         self.emit_event(FeatureRegistryEvent::feature_readiness_reported(
-            validator,
+            public_key,
             feature_head,
             ready,
         ))
@@ -209,7 +184,7 @@ impl FeatureRegistry {
             .unwrap_or(B256::ZERO))
     }
 
-    /// Returns current active-validator readiness for the scheduled feature head.
+    /// Returns current-committee readiness for the scheduled feature head.
     pub fn scheduled_feature_support(
         &self,
     ) -> Result<IFeatureRegistry::scheduledFeatureSupportReturn> {
@@ -225,7 +200,7 @@ impl FeatureRegistry {
         Ok((U256::from(support), U256::from(required)).into())
     }
 
-    /// Returns whether the scheduled feature head has enough active-validator readiness.
+    /// Returns whether the scheduled feature head has enough current-committee readiness.
     pub fn has_scheduled_feature_quorum(&self) -> Result<bool> {
         let support = self.scheduled_feature_support()?;
         Ok(!support.required.is_zero() && support.support >= support.required)
@@ -243,8 +218,7 @@ impl FeatureRegistry {
         let required = required_activation_count(committee_public_keys.len());
         let mut support = 0usize;
         for public_key in committee_public_keys {
-            let validator = self.validator_address_by_epoch_public_key(*public_key)?;
-            if self.validator_confirmed_feature_head(validator, feature_head)? {
+            if self.validator_confirmed_feature_head(*public_key, feature_head)? {
                 support += 1;
             }
         }
@@ -252,7 +226,7 @@ impl FeatureRegistry {
         Ok((support, required))
     }
 
-    /// Activates the scheduled feature head if its target epoch is current and has quorum.
+    /// Activates the scheduled feature head if its target epoch is next and has quorum.
     ///
     /// Returns the activated feature head, or `None` if no feature activated.
     pub fn activate_scheduled_feature_head(&mut self) -> Result<Option<B256>> {
@@ -260,7 +234,9 @@ impl FeatureRegistry {
         let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
         let current_epoch = self.storage.epoch(self.storage.block_number());
 
-        if scheduled_activation_epoch != current_epoch {
+        if scheduled_feature_head == B256::ZERO
+            || scheduled_activation_epoch != current_epoch.saturating_add(1)
+        {
             return Ok(None);
         }
 

@@ -27,24 +27,24 @@ crate::sol! {
         /// @notice Schedules a feature head for activation at the target epoch.
         function scheduleFeatureHead(bytes32 featureHead, uint64 activationEpoch) external;
 
-        /// @notice Activates the scheduled feature head during block processing. System caller only.
+        /// @notice Activates the scheduled feature head at the end of the epoch before activation. System caller only.
         /// @return activatedFeatureHead The activated feature head, or zero if no feature activated.
         function activateScheduledFeatureHead() external returns (bytes32 activatedFeatureHead);
 
         /// @notice Cancels the scheduled feature head before activation.
         function cancelScheduledFeatureHead() external;
 
-        /// @notice Returns whether a validator reported readiness for the scheduled feature head.
-        function validatorConfirmedScheduledFeatureReadiness(address validator) external view returns (bool);
+        /// @notice Returns whether a proposer public key reported readiness for the scheduled feature head.
+        function validatorConfirmedScheduledFeatureReadiness(bytes32 publicKey) external view returns (bool);
 
-        /// @notice Returns current active-validator readiness for the scheduled feature head.
+        /// @notice Returns current-committee readiness for the scheduled feature head.
         function scheduledFeatureSupport() external view returns (uint256 support, uint256 required);
 
-        /// @notice Returns whether the scheduled feature head has quorum readiness from the active validator set.
+        /// @notice Returns whether the scheduled feature head has quorum readiness from the current committee.
         function hasScheduledFeatureQuorum() external view returns (bool);
 
-        /// @notice Emitted when a validator reports readiness for a feature head.
-        event FeatureReadinessReported(address indexed validator, bytes32 indexed featureHead, bool ready);
+        /// @notice Emitted when a proposer public key reports readiness for a feature head.
+        event FeatureReadinessReported(bytes32 indexed publicKey, bytes32 indexed featureHead, bool ready);
 
         /// @notice Emitted when a feature head is scheduled for activation.
         event FeatureHeadScheduled(bytes32 indexed featureHead, uint64 activationEpoch);

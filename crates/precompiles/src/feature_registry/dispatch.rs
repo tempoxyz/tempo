@@ -43,7 +43,7 @@ impl Precompile for FeatureRegistry {
                         })
                     },
                     validatorConfirmedScheduledFeatureReadiness(call) => view(call, |call| {
-                        self.validator_confirmed_scheduled_feature_readiness(call.validator)
+                        self.validator_confirmed_scheduled_feature_readiness(call.publicKey)
                     }),
                     scheduledFeatureSupport(call) => {
                         view(call, |_| self.scheduled_feature_support())
@@ -386,14 +386,14 @@ mod tests {
 
             registry.report_feature_readiness(Address::ZERO, true)?;
 
-            assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
-            assert!(!registry.validator_confirmed_feature_head(validator, NEXT_FEATURE_HEAD)?);
+            assert!(registry.validator_confirmed_feature_head(public_key, FEATURE_HEAD)?);
+            assert!(!registry.validator_confirmed_feature_head(public_key, NEXT_FEATURE_HEAD)?);
 
             registry.scheduled_feature_head.write(NEXT_FEATURE_HEAD)?;
             registry.report_feature_readiness(Address::ZERO, true)?;
 
-            assert!(!registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
-            assert!(registry.validator_confirmed_feature_head(validator, NEXT_FEATURE_HEAD)?);
+            assert!(!registry.validator_confirmed_feature_head(public_key, FEATURE_HEAD)?);
+            assert!(registry.validator_confirmed_feature_head(public_key, NEXT_FEATURE_HEAD)?);
 
             Ok(())
         })
@@ -413,14 +413,14 @@ mod tests {
             set_proposer_public_key(&mut registry, public_key);
 
             registry.report_feature_readiness(Address::ZERO, true)?;
-            assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+            assert!(registry.validator_confirmed_feature_head(public_key, FEATURE_HEAD)?);
 
             registry.report_feature_readiness(Address::ZERO, false)?;
-            assert!(!registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+            assert!(!registry.validator_confirmed_feature_head(public_key, FEATURE_HEAD)?);
 
-            registry.validator_confirmed_feature_head[validator].write(NEXT_FEATURE_HEAD)?;
+            registry.validator_confirmed_feature_head[public_key].write(NEXT_FEATURE_HEAD)?;
             registry.report_feature_readiness(Address::ZERO, false)?;
-            assert!(registry.validator_confirmed_feature_head(validator, NEXT_FEATURE_HEAD)?);
+            assert!(registry.validator_confirmed_feature_head(public_key, NEXT_FEATURE_HEAD)?);
 
             Ok(())
         })
@@ -479,7 +479,7 @@ mod tests {
             let call = IFeatureRegistry::reportFeatureReadinessCall { ready: true };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
-            assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+            assert!(registry.validator_confirmed_feature_head(public_key, FEATURE_HEAD)?);
 
             Ok(())
         })
@@ -504,14 +504,14 @@ mod tests {
 
             let result = registry.call(&input, Address::ZERO)?;
             assert!(!result.is_revert());
-            assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+            assert!(registry.validator_confirmed_feature_head(public_key, FEATURE_HEAD)?);
 
             Ok(())
         })
     }
 
     #[test]
-    fn feature_head_support_counts_active_validator_readiness() -> eyre::Result<()> {
+    fn feature_head_support_counts_current_committee_readiness() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::repeat_byte(0xaa);
         StorageCtx::enter(&mut storage, || {
@@ -552,19 +552,81 @@ mod tests {
     }
 
     #[test]
-    fn activate_scheduled_feature_head_waits_for_activation_epoch() -> eyre::Result<()> {
+    fn readiness_does_not_follow_reused_validator_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(1);
+        let owner = Address::repeat_byte(0xaa);
+        let validator = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let old_public_key = add_test_validator(owner, validator, 1)?;
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_feature_head.write(FEATURE_HEAD)?;
+            registry.scheduled_activation_epoch.write(21)?;
+            set_proposer_public_key(&mut registry, old_public_key);
+            registry.report_feature_readiness(Address::ZERO, true)?;
+
+            ValidatorConfigV2::new().deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+            )?;
+            let new_public_key = add_test_validator(owner, validator, 2)?;
+            set_current_committee(vec![new_public_key])?;
+
+            assert!(registry.validator_confirmed_feature_head(old_public_key, FEATURE_HEAD)?);
+            assert!(!registry.validator_confirmed_feature_head(new_public_key, FEATURE_HEAD)?);
+
+            let support = registry.scheduled_feature_support()?;
+            assert_eq!(support.support, U256::ZERO);
+            assert_eq!(support.required, U256::from(1));
+            assert!(!registry.has_scheduled_feature_quorum()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn deactivated_current_committee_key_can_still_report_readiness() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(1);
+        let owner = Address::repeat_byte(0xaa);
+        let validator = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            ValidatorConfigV2::new().deactivate_validator(
+                owner,
+                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+            )?;
+            set_current_committee(vec![public_key])?;
+
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_feature_head.write(FEATURE_HEAD)?;
+            registry.scheduled_activation_epoch.write(21)?;
+            set_proposer_public_key(&mut registry, public_key);
+            registry.report_feature_readiness(Address::ZERO, true)?;
+
+            let support = registry.scheduled_feature_support()?;
+            assert_eq!(support.support, U256::from(1));
+            assert_eq!(support.required, U256::from(1));
+            assert!(registry.has_scheduled_feature_quorum()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activate_scheduled_feature_head_waits_for_epoch_before_activation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_block_number(20);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
-            registry.scheduled_activation_epoch.write(21)?;
+            registry.scheduled_activation_epoch.write(22)?;
 
             assert_eq!(registry.activate_scheduled_feature_head()?, None);
             assert_eq!(registry.active_feature_head()?, B256::ZERO);
 
             let scheduled = registry.scheduled_feature_head()?;
             assert_eq!(scheduled.featureHead, FEATURE_HEAD);
-            assert_eq!(scheduled.activationEpoch, 21);
+            assert_eq!(scheduled.activationEpoch, 22);
 
             Ok(())
         })
@@ -572,7 +634,7 @@ mod tests {
 
     #[test]
     fn activate_scheduled_feature_head_requires_quorum_and_clears_schedule() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_block_number(21);
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(20);
         let owner = Address::repeat_byte(0xaa);
         StorageCtx::enter(&mut storage, || {
             initialize_validator_config_owner(owner)?;
@@ -595,7 +657,7 @@ mod tests {
 
     #[test]
     fn activate_scheduled_feature_head_activates_with_quorum() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_block_number(21);
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(20);
         let owner = Address::repeat_byte(0xaa);
         let validator = Address::repeat_byte(0x01);
         StorageCtx::enter(&mut storage, || {
@@ -623,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn activate_scheduled_feature_head_dispatch_requires_system_caller() -> eyre::Result<()> {
+    fn feature_activation_dispatch_requires_system_caller() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
@@ -680,14 +742,15 @@ mod tests {
     #[test]
     fn scheduled_readiness_dispatch_returns_encoded_readiness() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let validator = Address::repeat_byte(0x01);
+        let public_key = B256::repeat_byte(0x01);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
-            registry.validator_confirmed_feature_head[validator].write(FEATURE_HEAD)?;
+            registry.validator_confirmed_feature_head[public_key].write(FEATURE_HEAD)?;
 
-            let call =
-                IFeatureRegistry::validatorConfirmedScheduledFeatureReadinessCall { validator };
+            let call = IFeatureRegistry::validatorConfirmedScheduledFeatureReadinessCall {
+                publicKey: public_key,
+            };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert!(bool::abi_decode(&result.bytes)?);

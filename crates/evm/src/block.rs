@@ -258,7 +258,7 @@ where
         Ok(())
     }
 
-    /// Activates a scheduled feature head once the consensus epoch reaches the target epoch.
+    /// Activates a scheduled feature head at the end of the epoch before activation.
     fn maybe_activate_scheduled_feature_head(&mut self) -> Result<(), BlockExecutionError> {
         if !self.evm().cfg.spec.is_t9() {
             return Ok(());
@@ -266,7 +266,7 @@ where
 
         let block_number = self.evm().block().number.saturating_to::<u64>();
         let epoch_length = self.evm().block().epoch_length.get();
-        if !block_number.is_multiple_of(epoch_length) {
+        if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
 
@@ -631,7 +631,6 @@ where
         }
         if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
-            self.maybe_activate_scheduled_feature_head()?;
         }
 
         Ok(())
@@ -763,6 +762,7 @@ where
             self.validate_shared_gas(&[])?;
         }
 
+        self.maybe_activate_scheduled_feature_head()?;
         self.apply_current_committee_system_call()?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
@@ -1985,7 +1985,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_clears_scheduled_feature_head_without_current_committee_quorum() {
+    fn test_epoch_end_activates_scheduled_feature_head_without_current_committee_quorum() {
         // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
@@ -1999,10 +1999,11 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .with_runtime_spec(TempoHardfork::T9)
             .with_epoch_length(NonZeroU64::new(10).expect("non-zero epoch length"))
-            .with_block_number(20)
+            .with_block_number(19)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        executor.maybe_activate_scheduled_feature_head().unwrap();
         drop(executor);
 
         let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
@@ -2012,7 +2013,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_waits_for_scheduled_feature_head_epoch() {
+    fn test_apply_pre_execution_ignores_scheduled_feature_head() {
         // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
@@ -2041,39 +2042,6 @@ mod tests {
             word_from_b256(test_feature_head())
         );
         assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(21));
-    }
-
-    #[test]
-    fn test_apply_pre_execution_waits_for_first_block_of_epoch_to_activate_feature_head() {
-        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
-        db.insert_account_with_storage(
-            FEATURE_REGISTRY_ADDRESS,
-            AccountInfo::default(),
-            feature_registry_storage(B256::ZERO, test_feature_head(), 2),
-        );
-
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_runtime_spec(TempoHardfork::T9)
-            .with_epoch_length(NonZeroU64::new(10).expect("non-zero epoch length"))
-            .with_block_number(21)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-        drop(executor);
-
-        let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
-        assert_eq!(
-            acc.storage_slot(U256::ZERO).unwrap(),
-            word_from_b256(B256::ZERO)
-        );
-        assert_eq!(
-            acc.storage_slot(U256::from(1)).unwrap(),
-            word_from_b256(test_feature_head())
-        );
-        assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(2));
     }
 
     #[test]

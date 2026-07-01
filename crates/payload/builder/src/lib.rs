@@ -290,7 +290,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
 
                     let ready = supports_feature_head(scheduled.featureHead);
                     let already_reported_ready = FeatureRegistry::new()
-                        .validator_confirmed_scheduled_feature_readiness_by_public_key(public_key)
+                        .validator_confirmed_scheduled_feature_readiness(public_key)
                         .map_err(PayloadBuilderError::other)?;
                     Ok((ready != already_reported_ready).then_some((scheduled.featureHead, ready)))
                 },
