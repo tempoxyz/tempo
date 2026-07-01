@@ -93,6 +93,8 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        in_flight: 0,
+                        source_exhausted: false,
                     },
                 );
             });
@@ -114,8 +116,14 @@ impl BestTransactionsPrewarming {
 
         pool.in_place_scope(|scope| {
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                if ctx.prewarm.parallel && ctx.source_exhausted {
+                    ctx.send_end_if_ready();
+                    return;
+                }
+
                 let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+                    ctx.source_exhausted = true;
+                    ctx.send_end_if_ready();
                     return;
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
@@ -131,6 +139,10 @@ impl BestTransactionsPrewarming {
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
+                if parallel {
+                    ctx.in_flight += 1;
+                }
+
                 if !parallel {
                     let _ = ctx
                         .transactions_tx
@@ -142,7 +154,7 @@ impl BestTransactionsPrewarming {
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    let _ = commands_tx.send(BestTransactionsCommand::PrewarmComplete);
                 });
             };
 
@@ -156,6 +168,12 @@ impl BestTransactionsPrewarming {
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
+                        advance(&mut ctx);
+                    }
+                    BestTransactionsCommand::PrewarmComplete => {
+                        if ctx.prewarm.parallel {
+                            ctx.in_flight = ctx.in_flight.saturating_sub(1);
+                        }
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid {
@@ -464,6 +482,18 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    in_flight: usize,
+    source_exhausted: bool,
+}
+
+impl<Txs, Provider> BestTransactionsPrewarmingContext<Txs, Provider> {
+    fn send_end_if_ready(&mut self) {
+        if self.prewarm.parallel && self.in_flight > 0 {
+            return;
+        }
+
+        let _ = self.transactions_tx.send(None);
+    }
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -579,6 +609,7 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    PrewarmComplete,
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<PrewarmedTransaction>>,
@@ -781,6 +812,15 @@ mod tests {
         txs: Vec<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
     ) -> TestPrewarming {
+        prewarming_with_executor_and_parallel(executor, txs, log, false)
+    }
+
+    fn prewarming_with_executor_and_parallel(
+        executor: TaskExecutor,
+        txs: Vec<BestTransaction>,
+        log: Arc<Mutex<TestLog>>,
+        parallel: bool,
+    ) -> TestPrewarming {
         let evm_config = TempoEvmConfig::moderato();
         let provider =
             NoopProvider::<TempoChainSpec, TempoPrimitives>::new(evm_config.chain_spec().clone());
@@ -825,7 +865,7 @@ mod tests {
                 cache: None,
                 evm_env,
                 stop: Arc::default(),
-                parallel: false,
+                parallel,
             },
             TestBestTransactions::new(txs, log),
         );
@@ -878,6 +918,18 @@ mod tests {
             .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn parallel_prewarming_does_not_end_before_in_flight_transaction() {
+        let sender = Address::random();
+        let txs = vec![test_tx(sender, 0)];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming =
+            prewarming_with_executor_and_parallel(TaskExecutor::test(), txs, log, true);
+
+        assert!(prewarming.next().is_some());
+        assert!(prewarming.next().is_none());
     }
 
     #[test]
