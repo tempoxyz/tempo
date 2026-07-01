@@ -7,7 +7,7 @@ use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
 use reth_node_builder::NodeAdapter;
 use reth_primitives_traits::AlloyBlockHeader as _;
-use reth_provider::ChainSpecProvider;
+use reth_provider::{ChainSpecProvider, DatabaseProviderFactory, HashedPostStateProvider};
 use reth_rpc_eth_api::{
     RpcBlock, RpcNodeCore,
     helpers::{EthCall, LoadBlock, LoadState, SpawnBlocking},
@@ -71,11 +71,19 @@ pub trait TempoSimulateApi {
 
 /// Implementation of `tempo_simulateV1`.
 #[derive(Debug, Clone)]
-pub struct TempoSimulate<N: FullNodeTypes<Types = TempoNode>> {
+pub struct TempoSimulate<N>
+where
+    N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
+{
     eth_api: TempoEthApi<NodeAdapter<N>>,
 }
 
-impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
+impl<N> TempoSimulate<N>
+where
+    N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
+{
     pub fn new(eth_api: TempoEthApi<NodeAdapter<N>>) -> Self {
         Self { eth_api }
     }
@@ -118,7 +126,11 @@ fn extract_tip20_targets(
 }
 
 #[async_trait::async_trait]
-impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimulate<N> {
+impl<N> TempoSimulateApiServer for TempoSimulate<N>
+where
+    N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
+{
     async fn simulate_v1(
         &self,
         payload: alloy_rpc_types_eth::simulate::SimulatePayload<
@@ -177,7 +189,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
     }
 }
 
-impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
+impl<N> TempoSimulate<N>
+where
+    N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
+{
     /// Resolves TIP-20 token metadata for the given addresses using state at the target block.
     async fn resolve_token_metadata(
         &self,

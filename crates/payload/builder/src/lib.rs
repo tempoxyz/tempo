@@ -60,6 +60,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
+use reth_trie::root_from_full_hashed_state;
 use std::{
     sync::{
         Arc,
@@ -71,7 +72,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm,
-    proof_trie::proof_trie_input_from_bundle_state,
+    proof_trie::proof_hashed_state_from_provider_and_bundle,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -1206,8 +1207,8 @@ where
 
     fn proof_root_for_payload_timestamp(
         &self,
-        state_root_provider: &impl StateRootProvider,
-        parent_header: &TempoHeader,
+        state_provider: &impl HashedPostStateProvider,
+        _parent_header: &TempoHeader,
         bundle_state: &reth_revm::db::states::bundle_state::BundleState,
         timestamp: u64,
     ) -> Result<Option<B256>, BlockExecutionError> {
@@ -1217,16 +1218,18 @@ where
         }
 
         let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
-        let proof_trie_input = proof_trie_input_from_bundle_state(bundle_state, provable_accounts);
+        let proof_state = proof_hashed_state_from_provider_and_bundle(
+            state_provider,
+            bundle_state,
+            provable_accounts,
+        )
+        .map_err(BlockExecutionError::other)?;
 
-        if proof_trie_input.state.is_empty() {
-            return Ok(Some(parent_header.proof_root.unwrap_or(EMPTY_ROOT_HASH)));
+        if proof_state.is_empty() {
+            return Ok(Some(EMPTY_ROOT_HASH));
         }
 
-        // Compute the proof root through the same provider path used by the serial state-root
-        // fallback after filtering and hashing the bundle state into proof-trie input.
-        state_root_provider
-            .state_root_from_nodes(proof_trie_input)
+        root_from_full_hashed_state(proof_state)
             .map(Some)
             .map_err(BlockExecutionError::other)
     }

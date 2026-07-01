@@ -88,6 +88,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
             parent_root,
             expected_root,
             state_updates,
+            full_state_accounts: Some(provable_accounts.to_vec()),
             retain_trie_data: true,
         }))
     }
