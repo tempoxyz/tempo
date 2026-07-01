@@ -525,11 +525,13 @@ where
             self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS)?;
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
         }
         if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
+        }
+        if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS)?;
         }
 
         Ok(())
@@ -740,7 +742,7 @@ mod tests {
         database::EmptyDB,
     };
     use std::sync::{Arc, Mutex};
-    use tempo_chainspec::spec::DEV;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
@@ -1706,8 +1708,35 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_deploys_t6_precompile_code() {
-        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+    fn test_apply_pre_execution_t6_does_not_deploy_native_multisig_code() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        executor.evm_mut().ctx_mut().block.inner.timestamp = U256::from(
+            TempoHardfork::T6
+                .moderato_activation_timestamp()
+                .expect("T6 is active on moderato"),
+        );
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(NATIVE_MULTISIG_ADDRESS).unwrap();
+        let info = acc.account_info();
+        assert!(
+            info.is_none() || info.unwrap().is_empty_code_hash(),
+            "NativeMultisig code should not be deployed before T8"
+        );
+
+        let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_t8_native_multisig_code() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1718,10 +1747,6 @@ mod tests {
         drop(executor);
 
         let acc = db.load_cache_account(NATIVE_MULTISIG_ADDRESS).unwrap();
-        let info = acc.account_info().unwrap();
-        assert!(!info.is_empty_code_hash());
-
-        let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }
