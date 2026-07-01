@@ -58,6 +58,9 @@ impl NativeMultisig {
         account_path: &mut Vec<Address>,
         load_config: &mut impl FnMut(Address) -> Result<InitMultisig, NativeMultisigAuthError>,
     ) -> Result<u8, NativeMultisigAuthError> {
+        signature
+            .validate_shape()
+            .map_err(NativeMultisigAuthError::validation_failed)?;
         config
             .validate()
             .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))?;
@@ -98,9 +101,9 @@ impl NativeMultisig {
                 }
             };
 
-            weight_accumulator.record_owner(owner).map_err(|err| {
-                NativeMultisigAuthError::validation_failed(err.as_str())
-            })?;
+            weight_accumulator
+                .record_owner(owner)
+                .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))?;
 
             if let Some(nested_signature) = nested_signature {
                 if account_path.len() >= MAX_MULTISIG_NESTING_DEPTH {

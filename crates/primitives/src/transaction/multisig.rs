@@ -290,7 +290,8 @@ impl InitMultisig {
     pub fn account(&self) -> Result<Address, MultisigConfigError> {
         self.validate()?;
 
-        let owner_count = encode_multisig_owner_count(self.owners.len())?;
+        let owner_count =
+            u8::try_from(self.owners.len()).expect("validated multisig owner count fits in u8");
         let mut input = Vec::with_capacity(
             MULTISIG_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * (20 + 1),
         );
@@ -353,8 +354,7 @@ impl InitMultisig {
 }
 
 /// Native multisig transaction signature.
-#[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing(canonical))]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -369,11 +369,9 @@ pub struct MultisigSignature {
     init: Option<InitMultisig>,
     /// Cached multisig digest for the transaction hash this signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
-    #[rlp(skip, default)]
     cached_digest: OnceLock<(B256, Address, B256)>,
     /// Cached primitive recovered owner addresses for the digest this multisig signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
-    #[rlp(skip, default)]
     cached_recovered_owners: OnceLock<(B256, Vec<Address>)>,
 }
 
@@ -433,6 +431,13 @@ impl MultisigSignature {
         }
         if self.signatures.iter().any(|sig| sig.is_empty()) {
             return Err("multisig owner signature cannot be empty");
+        }
+        if self
+            .signatures
+            .iter()
+            .any(|sig| sig.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
+        {
+            return Err("multisig owner signature too large");
         }
         Ok(())
     }
@@ -548,6 +553,52 @@ impl Hash for MultisigSignature {
     }
 }
 
+#[derive(alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing(canonical))]
+struct MultisigSignatureWire {
+    account: Address,
+    signatures: Vec<Bytes>,
+    init: Option<InitMultisig>,
+}
+
+impl From<&MultisigSignature> for MultisigSignatureWire {
+    fn from(value: &MultisigSignature) -> Self {
+        Self {
+            account: value.account,
+            signatures: value.signatures.clone(),
+            init: value.init.clone(),
+        }
+    }
+}
+
+impl TryFrom<MultisigSignatureWire> for MultisigSignature {
+    type Error = alloy_rlp::Error;
+
+    fn try_from(value: MultisigSignatureWire) -> alloy_rlp::Result<Self> {
+        let signature = Self::new(value.account, value.signatures, value.init);
+        signature
+            .validate_shape()
+            .map_err(alloy_rlp::Error::Custom)?;
+        Ok(signature)
+    }
+}
+
+impl alloy_rlp::Decodable for MultisigSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        MultisigSignatureWire::decode(buf).and_then(TryInto::try_into)
+    }
+}
+
+impl alloy_rlp::Encodable for MultisigSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        MultisigSignatureWire::from(self).encode(out);
+    }
+
+    fn length(&self) -> usize {
+        MultisigSignatureWire::from(self).length()
+    }
+}
+
 /// Returns whether an address is eligible to be a native multisig account.
 pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
     !account.is_zero() && !account.is_virtual() && !account.is_precompile(spec)
@@ -641,25 +692,26 @@ fn verify_recovered_multisig_owners(
     verify_ordered_owner_weights(owners, config).map_err(MultisigQuorumError::as_str)
 }
 
-fn encode_multisig_owner_count(owner_count: usize) -> Result<u8, MultisigConfigError> {
-    if owner_count == 0 {
-        return Err(MultisigConfigError::EmptyOwners);
-    }
-    if owner_count > MAX_MULTISIG_OWNERS {
-        return Err(MultisigConfigError::TooManyOwners);
-    }
-    Ok(owner_count as u8)
-}
-
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let len = u.int_in_range(1..=MAX_MULTISIG_OWNERS)?;
         let mut signatures = Vec::new();
         for _ in 0..len {
-            signatures.push(Bytes::from(Vec::<u8>::arbitrary(u)?));
+            let mut signature = Vec::<u8>::arbitrary(u)?;
+            if signature.is_empty() {
+                signature.push(0);
+            }
+            signature.truncate(MAX_MULTISIG_OWNER_SIGNATURE_BYTES);
+            signatures.push(Bytes::from(signature));
         }
-        Ok(Self::new(u.arbitrary()?, signatures, u.arbitrary()?))
+
+        let mut account = Address::arbitrary(u)?;
+        if account.is_zero() {
+            account = Address::repeat_byte(1);
+        }
+
+        Ok(Self::new(account, signatures, u.arbitrary()?))
     }
 }
 
