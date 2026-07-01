@@ -28,7 +28,6 @@ pub const MAX_MULTISIG_OWNERS: usize = 10;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-const MULTISIG_CONFIG_DOMAIN: &[u8] = b"tempo:multisig:config";
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
 /// Native multisig owner entry.
@@ -51,7 +50,7 @@ pub struct MultisigOwner {
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct InitMultisig {
-    /// Caller-chosen salt mixed into the permanent config ID.
+    /// Caller-chosen salt mixed into the derived account address.
     pub salt: B256,
     /// Minimum total owner weight required to authorize a transaction.
     pub threshold: u32,
@@ -60,14 +59,9 @@ pub struct InitMultisig {
 }
 
 impl InitMultisig {
-    /// Returns the permanent config ID derived from this initial config.
-    pub fn config_id(&self) -> Result<B256, &'static str> {
-        derive_multisig_config_id(self)
-    }
-
     /// Returns the native multisig account address derived from this initial config.
     pub fn account(&self) -> Result<Address, &'static str> {
-        self.config_id().map(derive_multisig_account)
+        derive_multisig_account(self)
     }
 
     /// Returns a heuristic for the in-memory size of the config.
@@ -85,8 +79,6 @@ impl InitMultisig {
 pub struct MultisigSignature {
     /// Native multisig account address.
     account: Address,
-    /// Permanent config ID derived from the initial multisig config.
-    config_id: B256,
     /// Encoded primitive owner signatures over the multisig digest.
     signatures: Vec<Bytes>,
     /// Initial native multisig config for bootstrapping this account.
@@ -94,7 +86,7 @@ pub struct MultisigSignature {
     /// Cached multisig digest for the transaction hash this signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
     #[rlp(skip, default)]
-    cached_digest: OnceLock<(B256, Address, B256, B256)>,
+    cached_digest: OnceLock<(B256, Address, B256)>,
     /// Cached recovered owner addresses for the digest this multisig signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
     #[rlp(skip, default)]
@@ -102,15 +94,9 @@ pub struct MultisigSignature {
 }
 
 impl MultisigSignature {
-    pub fn new(
-        account: Address,
-        config_id: B256,
-        signatures: Vec<Bytes>,
-        init: Option<InitMultisig>,
-    ) -> Self {
+    pub fn new(account: Address, signatures: Vec<Bytes>, init: Option<InitMultisig>) -> Self {
         Self {
             account,
-            config_id,
             signatures,
             init,
             cached_digest: OnceLock::new(),
@@ -121,11 +107,6 @@ impl MultisigSignature {
     /// Returns the native multisig account address.
     pub fn account(&self) -> Address {
         self.account
-    }
-
-    /// Returns the permanent config ID.
-    pub fn config_id(&self) -> B256 {
-        self.config_id
     }
 
     /// Returns encoded primitive owner signatures.
@@ -146,15 +127,8 @@ impl MultisigSignature {
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
     pub fn recover_account(&self) -> Result<Address, &'static str> {
         validate_multisig_signature_shape(self)?;
-        if self.account != derive_multisig_account(self.config_id) {
-            return Err("multisig account does not match config_id");
-        }
         if let Some(init) = &self.init {
-            let init_config_id = init.config_id()?;
-            if init_config_id != self.config_id {
-                return Err("multisig init does not match config_id");
-            }
-            if derive_multisig_account(init_config_id) != self.account {
+            if init.account()? != self.account {
                 return Err("multisig init does not derive account");
             }
         }
@@ -163,8 +137,8 @@ impl MultisigSignature {
 
     /// Performs only the registered-account stateless payload checks.
     ///
-    /// Registered accounts are already bound to their canonical config ID by native multisig
-    /// storage, so the derived-account check can be skipped on the steady-state path.
+    /// Registered accounts are already bound to native multisig storage, so the derived-account
+    /// check can be skipped on the steady-state path.
     pub fn validate_registered_shape(&self) -> Result<(), &'static str> {
         validate_multisig_signature_shape(self)?;
         if self.init.is_some() {
@@ -175,27 +149,23 @@ impl MultisigSignature {
 
     /// Returns the multisig owner-approval digest for this signature and caches it on first use.
     pub fn digest(&self, inner_digest: B256) -> B256 {
-        if let Some((cached_inner, cached_account, cached_config_id, cached_digest)) =
-            self.cached_digest.get()
+        if let Some((cached_inner, cached_account, cached_digest)) = self.cached_digest.get()
             && *cached_inner == inner_digest
             && *cached_account == self.account
-            && *cached_config_id == self.config_id
         {
             return *cached_digest;
         }
 
-        let digest = multisig_digest(inner_digest, self.account, self.config_id);
+        let digest = multisig_digest(inner_digest, self.account);
         if self.cached_digest.get().is_none() {
             #[allow(clippy::useless_conversion)]
             let _ = self
                 .cached_digest
-                .set((inner_digest, self.account, self.config_id, digest).into());
+                .set((inner_digest, self.account, digest).into());
         }
-        if let Some((cached_inner, cached_account, cached_config_id, cached_digest)) =
-            self.cached_digest.get()
+        if let Some((cached_inner, cached_account, cached_digest)) = self.cached_digest.get()
             && *cached_inner == inner_digest
             && *cached_account == self.account
-            && *cached_config_id == self.config_id
         {
             return *cached_digest;
         }
@@ -243,7 +213,6 @@ impl MultisigSignature {
 impl PartialEq for MultisigSignature {
     fn eq(&self, other: &Self) -> bool {
         self.account == other.account
-            && self.config_id == other.config_id
             && self.signatures == other.signatures
             && self.init == other.init
     }
@@ -254,7 +223,6 @@ impl Eq for MultisigSignature {}
 impl Hash for MultisigSignature {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.account.hash(state);
-        self.config_id.hash(state);
         self.signatures.hash(state);
         self.init.hash(state);
     }
@@ -304,8 +272,8 @@ pub fn validate_multisig_config(config: &InitMultisig) -> Result<u32, &'static s
 pub fn validate_multisig_signature_shape(
     signature: &MultisigSignature,
 ) -> Result<(), &'static str> {
-    if signature.config_id == B256::ZERO {
-        return Err("multisig config_id cannot be zero");
+    if signature.account.is_zero() {
+        return Err("multisig account cannot be zero");
     }
     if signature.signatures.is_empty() {
         return Err("multisig signatures cannot be empty");
@@ -323,13 +291,13 @@ pub fn validate_multisig_signature_shape(
     Ok(())
 }
 
-/// Derives the permanent config ID for an initial native multisig config.
-pub fn derive_multisig_config_id(config: &InitMultisig) -> Result<B256, &'static str> {
+/// Derives the native multisig account address for an initial config.
+pub fn derive_multisig_account(config: &InitMultisig) -> Result<Address, &'static str> {
     validate_multisig_config(config)?;
 
     let mut input =
-        Vec::with_capacity(MULTISIG_CONFIG_DOMAIN.len() + 32 + 8 + config.owners.len() * (20 + 4));
-    input.extend_from_slice(MULTISIG_CONFIG_DOMAIN);
+        Vec::with_capacity(MULTISIG_ACCOUNT_DOMAIN.len() + 32 + 8 + config.owners.len() * (20 + 4));
+    input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
     input.extend_from_slice(config.salt.as_slice());
     input.extend_from_slice(&config.threshold.to_be_bytes());
     input.extend_from_slice(&(config.owners.len() as u32).to_be_bytes());
@@ -338,19 +306,11 @@ pub fn derive_multisig_config_id(config: &InitMultisig) -> Result<B256, &'static
         input.extend_from_slice(&owner.weight.to_be_bytes());
     }
 
-    let config_id = keccak256(input);
-    if config_id == B256::ZERO {
-        return Err("multisig config_id cannot be zero");
+    let account = Address::from_slice(&keccak256(input)[12..]);
+    if account.is_zero() {
+        return Err("multisig account cannot be zero");
     }
-    Ok(config_id)
-}
-
-/// Derives the native multisig account address for a config ID.
-pub fn derive_multisig_account(config_id: B256) -> Address {
-    let mut input = [0u8; MULTISIG_ACCOUNT_DOMAIN.len() + 32];
-    input[..MULTISIG_ACCOUNT_DOMAIN.len()].copy_from_slice(MULTISIG_ACCOUNT_DOMAIN);
-    input[MULTISIG_ACCOUNT_DOMAIN.len()..].copy_from_slice(config_id.as_slice());
-    Address::from_slice(&keccak256(input)[12..])
+    Ok(account)
 }
 
 /// Returns whether an address is eligible to be a derived native multisig account.
@@ -362,17 +322,15 @@ pub fn is_valid_multisig_account(account: Address) -> bool {
 }
 
 /// Computes the digest that native multisig owners approve.
-pub fn multisig_digest(inner_digest: B256, account: Address, config_id: B256) -> B256 {
-    let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 32];
+pub fn multisig_digest(inner_digest: B256, account: Address) -> B256 {
+    let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20];
     let mut offset = 0;
     input[offset..offset + MULTISIG_SIGNATURE_DOMAIN.len()]
         .copy_from_slice(MULTISIG_SIGNATURE_DOMAIN);
     offset += MULTISIG_SIGNATURE_DOMAIN.len();
     input[offset..offset + 32].copy_from_slice(inner_digest.as_slice());
     offset += 32;
-    input[offset..offset + 20].copy_from_slice(account.as_slice());
-    offset += 20;
-    input[offset..].copy_from_slice(config_id.as_slice());
+    input[offset..].copy_from_slice(account.as_slice());
     keccak256(input)
 }
 
@@ -505,12 +463,7 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
         for _ in 0..len {
             signatures.push(Bytes::from(Vec::<u8>::arbitrary(u)?));
         }
-        Ok(Self::new(
-            u.arbitrary()?,
-            u.arbitrary()?,
-            signatures,
-            u.arbitrary()?,
-        ))
+        Ok(Self::new(u.arbitrary()?, signatures, u.arbitrary()?))
     }
 }
 
@@ -540,13 +493,9 @@ mod tests {
         }
     }
 
-    fn encoded_multisig_without_init_slot(
-        account: Address,
-        config_id: B256,
-        signatures: Vec<Vec<u8>>,
-    ) -> Vec<u8> {
+    fn encoded_multisig_without_init_slot(account: Address, signatures: Vec<Vec<u8>>) -> Vec<u8> {
         let signatures = signatures.into_iter().map(Bytes::from).collect::<Vec<_>>();
-        let payload_length = account.length() + config_id.length() + signatures.length();
+        let payload_length = account.length() + signatures.length();
         let mut encoded = Vec::new();
         alloy_rlp::Header {
             list: true,
@@ -554,18 +503,16 @@ mod tests {
         }
         .encode(&mut encoded);
         account.encode(&mut encoded);
-        config_id.encode(&mut encoded);
         signatures.encode(&mut encoded);
         encoded
     }
 
     fn encoded_multisig_with_empty_init_placeholder(
         account: Address,
-        config_id: B256,
         signatures: Vec<Vec<u8>>,
     ) -> Vec<u8> {
         let signatures = signatures.into_iter().map(Bytes::from).collect::<Vec<_>>();
-        let payload_length = account.length() + config_id.length() + signatures.length() + 1;
+        let payload_length = account.length() + signatures.length() + 1;
         let mut encoded = Vec::new();
         alloy_rlp::Header {
             list: true,
@@ -573,24 +520,19 @@ mod tests {
         }
         .encode(&mut encoded);
         account.encode(&mut encoded);
-        config_id.encode(&mut encoded);
         signatures.encode(&mut encoded);
         encoded.push(alloy_rlp::EMPTY_STRING_CODE);
         encoded
     }
 
     #[test]
-    fn config_derivation_is_stable_and_validates_owner_order() {
+    fn account_derivation_is_stable_and_validates_owner_order() {
         let owner_a = Address::from([0x11; 20]);
         let owner_b = Address::from([0x22; 20]);
         let config = sorted_secp_config(&[(owner_b, 2), (owner_a, 1)], 2);
 
         validate_multisig_config(&config).expect("config is valid");
-        assert_eq!(config.config_id().unwrap(), config.config_id().unwrap());
-        assert_eq!(
-            config.account().unwrap(),
-            derive_multisig_account(config.config_id().unwrap())
-        );
+        assert_eq!(config.account().unwrap(), config.account().unwrap());
 
         let unsorted = InitMultisig {
             salt: B256::ZERO,
@@ -610,16 +552,12 @@ mod tests {
     }
 
     #[test]
-    fn config_derivation_includes_salt() {
+    fn account_derivation_includes_salt() {
         let owner = Address::from([0x11; 20]);
         let zero_salt = sorted_secp_config(&[(owner, 1)], 1);
         let mut nonzero_salt = zero_salt.clone();
         nonzero_salt.salt = B256::repeat_byte(0x42);
 
-        assert_ne!(
-            zero_salt.config_id().unwrap(),
-            nonzero_salt.config_id().unwrap()
-        );
         assert_ne!(
             zero_salt.account().unwrap(),
             nonzero_salt.account().unwrap()
@@ -628,13 +566,41 @@ mod tests {
     }
 
     #[test]
+    fn owner_signature_cannot_replay_across_accounts_with_same_owners() {
+        let (signer, owner) = generate_secp256k1_keypair();
+        let mut config_a = sorted_secp_config(&[(owner, 1)], 1);
+        config_a.salt = B256::repeat_byte(0x11);
+        let mut config_b = sorted_secp_config(&[(owner, 1)], 1);
+        config_b.salt = B256::repeat_byte(0x22);
+
+        let account_a = config_a.account().unwrap();
+        let account_b = config_b.account().unwrap();
+        assert_ne!(account_a, account_b);
+
+        let inner_digest = B256::repeat_byte(0x42);
+        let digest_a = multisig_digest(inner_digest, account_a);
+        let signature = sign_hash(&signer, &digest_a).to_bytes();
+
+        assert!(
+            verify_multisig_owner_signatures(digest_a, &[signature.clone()], &config_a).is_ok()
+        );
+        assert!(
+            verify_multisig_owner_signatures(
+                multisig_digest(inner_digest, account_b),
+                &[signature],
+                &config_b,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn verifies_weighted_owner_signatures_in_sorted_order() {
         let (signer_a, owner_a) = generate_secp256k1_keypair();
         let (signer_b, owner_b) = generate_secp256k1_keypair();
         let config = sorted_secp_config(&[(owner_a, 1), (owner_b, 1)], 2);
-        let config_id = config.config_id().unwrap();
-        let account = derive_multisig_account(config_id);
-        let digest = multisig_digest(B256::repeat_byte(0x42), account, config_id);
+        let account = config.account().unwrap();
+        let digest = multisig_digest(B256::repeat_byte(0x42), account);
 
         let mut signed = [
             (owner_a, sign_hash(&signer_a, &digest).to_bytes()),
@@ -658,9 +624,8 @@ mod tests {
     #[test]
     fn multisig_signature_without_init_omits_trailing_slot() {
         let account = Address::repeat_byte(0x11);
-        let config_id = B256::repeat_byte(0x22);
         let signatures = vec![Bytes::from(vec![0x03, 0x04])];
-        let signature = MultisigSignature::new(account, config_id, signatures.clone(), None);
+        let signature = MultisigSignature::new(account, signatures.clone(), None);
 
         let mut encoded = Vec::new();
         signature.encode(&mut encoded);
@@ -668,7 +633,6 @@ mod tests {
             encoded,
             encoded_multisig_without_init_slot(
                 account,
-                config_id,
                 signatures
                     .iter()
                     .map(|signature| signature.to_vec())
@@ -686,7 +650,6 @@ mod tests {
     fn multisig_signature_rejects_empty_init_placeholder() {
         let encoded = encoded_multisig_with_empty_init_placeholder(
             Address::repeat_byte(0x11),
-            B256::repeat_byte(0x22),
             vec![vec![0x03, 0x04]],
         );
 
@@ -698,16 +661,11 @@ mod tests {
     fn multisig_signature_roundtrips_through_tempo_signature_bytes() {
         let (signer, owner) = generate_secp256k1_keypair();
         let config = sorted_secp_config(&[(owner, 1)], 1);
-        let config_id = config.config_id().unwrap();
-        let account = derive_multisig_account(config_id);
+        let account = config.account().unwrap();
         let signature_hash = B256::ZERO;
-        let digest = multisig_digest(signature_hash, account, config_id);
-        let signature = MultisigSignature::new(
-            account,
-            config_id,
-            vec![sign_hash(&signer, &digest).to_bytes()],
-            None,
-        );
+        let digest = multisig_digest(signature_hash, account);
+        let signature =
+            MultisigSignature::new(account, vec![sign_hash(&signer, &digest).to_bytes()], None);
         let tempo_signature = TempoSignature::Multisig(signature.clone());
 
         let encoded = tempo_signature.to_bytes();
@@ -725,13 +683,11 @@ mod tests {
         let (signer, owner) = generate_secp256k1_keypair();
         let mut config = sorted_secp_config(&[(owner, 1)], 1);
         config.salt = B256::repeat_byte(0x33);
-        let config_id = config.config_id().unwrap();
-        let account = derive_multisig_account(config_id);
+        let account = config.account().unwrap();
         let signature_hash = B256::ZERO;
-        let digest = multisig_digest(signature_hash, account, config_id);
+        let digest = multisig_digest(signature_hash, account);
         let signature = MultisigSignature::new(
             account,
-            config_id,
             vec![sign_hash(&signer, &digest).to_bytes()],
             Some(config),
         );
@@ -753,10 +709,9 @@ mod tests {
                 proptest::collection::vec(any::<u8>(), 0..256),
                 (
                     any::<Address>(),
-                    any::<B256>(),
                     proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..128), 0..=MAX_MULTISIG_OWNERS),
-                ).prop_map(|(account, config_id, signatures)| {
-                    encoded_multisig_without_init_slot(account, config_id, signatures)
+                ).prop_map(|(account, signatures)| {
+                    encoded_multisig_without_init_slot(account, signatures)
                 }),
             ],
         ) {

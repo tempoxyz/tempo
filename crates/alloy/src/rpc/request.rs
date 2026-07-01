@@ -1,7 +1,7 @@
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError};
 use alloy_contract::{CallBuilder, CallDecoder};
 use alloy_eips::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
 use core::num::NonZeroU64;
@@ -83,10 +83,6 @@ pub struct TempoTransactionRequest {
     /// Initial native multisig config for bootstrapping a derived account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multisig_init: Option<InitMultisig>,
-
-    /// Native multisig config ID for simulating an already-initialized multisig account.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multisig_config_id: Option<B256>,
 
     /// Number of native multisig owner signatures to model during RPC simulation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,7 +421,6 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
             multisig_init: None,
-            multisig_config_id: None,
             multisig_signature_count: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
@@ -439,11 +434,9 @@ impl From<AASigned> for TempoTransactionRequest {
         let (tx, signature, _) = value.into_parts();
         let multisig = signature.as_multisig();
         let multisig_init = multisig.and_then(|multisig| multisig.init().cloned());
-        let multisig_config_id = multisig.map(|multisig| multisig.config_id());
         let multisig_signature_count = multisig.map(|multisig| multisig.signature_count());
         Self {
             multisig_init,
-            multisig_config_id,
             multisig_signature_count,
             ..tx.into()
         }

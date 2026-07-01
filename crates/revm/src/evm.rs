@@ -1,6 +1,6 @@
 use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -70,9 +70,8 @@ pub struct TempoEvm<DB: Database, I> {
     ///
     /// Values are inserted only after the native multisig storage path has loaded and validated the
     /// config. The cache is cleared when the EVM moves to a new block or when a transaction directly
-    /// touches the native multisig precompile, because config updates use the same `(account,
-    /// config_id)` key.
-    pub(crate) native_multisig_config_cache: HashMap<(Address, B256), InitMultisig>,
+    /// touches the native multisig precompile, because config updates mutate account-scoped config.
+    pub(crate) native_multisig_config_cache: HashMap<Address, InitMultisig>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -907,18 +906,16 @@ mod tests {
                 })
                 .collect(),
         };
-        let config_id = config.config_id().map_err(eyre::Report::msg)?;
         let account = config.account().map_err(eyre::Report::msg)?;
         let tx = TxBuilder::new()
             .call_identity(&[])
             .gas_limit(2_000_000)
             .build();
-        let digest = multisig_digest(tx.signature_hash(), account, config_id);
+        let digest = multisig_digest(tx.signature_hash(), account);
         let owner_signature =
             PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
         let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
             account,
-            config_id,
             vec![owner_signature],
             Some(config.clone()),
         )));
@@ -945,9 +942,8 @@ mod tests {
             || -> eyre::Result<()> {
                 let multisig = NativeMultisig::new();
                 assert!(multisig.is_multisig_account(account)?);
-                assert_eq!(multisig.get_multisig_config_id(account)?, config_id);
                 assert_eq!(
-                    multisig.get_multisig_config(account, config_id)?.threshold,
+                    multisig.get_multisig_config(account)?.threshold,
                     config.threshold
                 );
                 Ok(())

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, B256, TxKind, U256};
+use alloy_primitives::{Address, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -93,8 +93,8 @@ const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
 
 /// Persistent storage rows created by native multisig bootstrap before owner rows:
-/// `config_ids[account]` plus the packed `{ threshold, owner_count }` header.
-const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 2;
+/// the packed `{ threshold, owner_count }` account header.
+const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 1;
 
 /// Approximate buffer for the LOG3/no-data `MultisigInitialized` event emitted during bootstrap.
 const NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER: u64 = 1_500;
@@ -148,19 +148,18 @@ fn cached_is_native_multisig_account<DB: Database>(
 }
 
 fn cached_native_multisig_config<DB: Database>(
-    cache: &mut HashMap<(Address, B256), InitMultisig>,
+    cache: &mut HashMap<Address, InitMultisig>,
     multisig: &NativeMultisig,
     account: Address,
-    config_id: B256,
 ) -> Result<InitMultisig, EVMError<DB::Error, TempoInvalidTransaction>> {
-    if let Some(config) = cache.get(&(account, config_id)) {
+    if let Some(config) = cache.get(&account) {
         return Ok(config.clone());
     }
 
     let config = multisig
-        .load_registered_config(account, config_id)
+        .load_registered_config(account)
         .map_err(map_native_multisig_error::<DB>)?;
-    cache.insert((account, config_id), config.clone());
+    cache.insert(account, config.clone());
     Ok(config)
 }
 
@@ -286,8 +285,7 @@ fn native_multisig_bootstrap_storage_slots(init: &InitMultisig) -> u64 {
 /// The committed bootstrap write is a protocol pre-execution write. It runs without TIP-1060
 /// storage-credit accounting because this intrinsic charge includes the creditable portion.
 /// The packed native multisig layout creates exactly:
-/// - one `config_ids[account]` slot
-/// - one packed header slot containing threshold and owner count
+/// - one packed account header slot containing threshold and owner count
 /// - one packed owner slot per owner
 #[inline]
 fn calculate_native_multisig_bootstrap_storage_gas(
@@ -1182,7 +1180,7 @@ where
             .unwrap_or_default();
 
         let spec = cfg.spec();
-        let mut native_multisig_bootstrap: Option<(Address, B256, InitMultisig)> = None;
+        let mut native_multisig_bootstrap: Option<(Address, InitMultisig)> = None;
 
         if spec.is_t8() {
             let tempo_tx_env = tx.tempo_tx_env.as_ref();
@@ -1328,15 +1326,13 @@ where
                         .into());
                     }
 
-                    let digest = multisig_signature.digest(tempo_tx_env.signature_hash);
-
                     if caller_is_multisig {
                         let config = cached_native_multisig_config::<DB>(
                             native_multisig_config_cache,
                             &multisig,
                             multisig_signature.account(),
-                            multisig_signature.config_id(),
                         )?;
+                        let digest = multisig_signature.digest(tempo_tx_env.signature_hash);
                         if is_rpc_simulation {
                             validate_rpc_multisig_mock_signatures(
                                 &config,
@@ -1384,19 +1380,6 @@ where
                             .into());
                         }
                         if init_config
-                            .config_id()
-                            .map_err(|reason| {
-                                TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                                    reason: reason.to_string(),
-                                }
-                            })?
-                            != multisig_signature.config_id()
-                        {
-                            return Err(native_multisig_invalid_transaction_error::<DB>(
-                                "multisig_init does not match signature config_id",
-                            ));
-                        }
-                        if init_config
                             .account()
                             .map_err(|reason| {
                                 TempoInvalidTransaction::NativeMultisigInvalidTransaction {
@@ -1421,6 +1404,7 @@ where
                                 }
                             })?;
                         } else {
+                            let digest = multisig_signature.digest(tempo_tx_env.signature_hash);
                             verify_multisig_owner_signatures(
                                 digest,
                                 multisig_signature.signatures(),
@@ -1432,11 +1416,8 @@ where
                                 }
                             })?;
                         }
-                        native_multisig_bootstrap = Some((
-                            multisig_signature.account(),
-                            multisig_signature.config_id(),
-                            init_config.clone(),
-                        ));
+                        native_multisig_bootstrap =
+                            Some((multisig_signature.account(), init_config.clone()));
                     }
 
                     Ok(())
@@ -1893,7 +1874,7 @@ where
         // Native multisig bootstrap is validated before fee collection, but the config write must
         // happen in the committed pre-execution phase. This also seeds the transient
         // bootstrapped-account guard before user calls can reach the multisig precompile.
-        if let Some((account, config_id, config)) = native_multisig_bootstrap {
+        if let Some((account, config)) = native_multisig_bootstrap {
             StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 block,
@@ -1903,12 +1884,12 @@ where
                 || {
                     let mut multisig = NativeMultisig::new();
                     multisig
-                        .store_initial_config(account, config_id, &config)
+                        .store_initial_config(account, &config)
                         .map_err(map_native_multisig_error::<DB>)
                 },
             )?;
             native_multisig_account_cache.insert(account, true);
-            native_multisig_config_cache.insert((account, config_id), config);
+            native_multisig_config_cache.insert(account, config);
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
@@ -3110,11 +3091,10 @@ mod tests {
 
     fn store_native_multisig_account(test: &mut TestHandlerEvm, config: &InitMultisig) {
         let account = config.account().unwrap();
-        let config_id = config.config_id().unwrap();
         StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut multisig = NativeMultisig::new();
             multisig.initialize()?;
-            multisig.store_initial_config(account, config_id, config)
+            multisig.store_initial_config(account, config)
         })
         .expect("native multisig setup succeeds");
     }
@@ -3301,12 +3281,10 @@ mod tests {
     #[test]
     fn test_t7_rejects_native_multisig_signature() {
         let config = native_multisig_config();
-        let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
-                config_id,
                 vec![Bytes::from_static(&[0xaa; 65])],
                 Some(config),
             )),
@@ -3393,12 +3371,10 @@ mod tests {
     #[test]
     fn test_t8_bootstrap_auth_list_rejects_current_multisig_authority() {
         let config = native_multisig_config();
-        let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
-                config_id,
                 vec![Bytes::from_static(&[0xaa; 65])],
                 Some(config),
             )),
@@ -3449,10 +3425,9 @@ mod tests {
                 })
                 .collect(),
         };
-        let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
         let signature_hash = B256::repeat_byte(0x42);
-        let digest = multisig_digest(signature_hash, account, config_id);
+        let digest = multisig_digest(signature_hash, account);
         let owner_signature = PrimitiveSignature::Secp256k1(
             signers[0]
                 .sign_hash_sync(&digest)
@@ -3463,7 +3438,6 @@ mod tests {
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
-                config_id,
                 vec![owner_signature],
                 Some(config.clone()),
             )),
@@ -3487,9 +3461,8 @@ mod tests {
         StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let multisig = NativeMultisig::new();
             assert!(multisig.is_multisig_account(account)?);
-            assert_eq!(multisig.get_multisig_config_id(account)?, config_id);
             assert_eq!(
-                multisig.get_multisig_config(account, config_id)?.threshold,
+                multisig.get_multisig_config(account)?.threshold,
                 config.threshold
             );
             Ok::<_, TempoPrecompileError>(())
@@ -3500,12 +3473,10 @@ mod tests {
     #[test]
     fn test_t8_rpc_simulation_accepts_mock_registered_multisig_signature() {
         let config = native_multisig_config();
-        let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
-                config_id,
                 vec![Bytes::from_static(&[0xaa; 65])],
                 None,
             )),
@@ -3526,9 +3497,7 @@ mod tests {
         test.validate_against_state_and_deduct_caller()
             .expect("RPC simulation should accept mock native multisig signatures");
         assert_eq!(
-            test.evm
-                .native_multisig_config_cache
-                .get(&(account, config_id)),
+            test.evm.native_multisig_config_cache.get(&account),
             Some(&config),
             "registered multisig validation should cache the validated config"
         );
@@ -3851,7 +3820,6 @@ mod tests {
         let mut multisig_env = base_env.clone();
         multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
             Address::from([0x44; 20]),
-            B256::from([0x55; 32]),
             vec![owner_signature],
             None,
         ));
@@ -3896,7 +3864,6 @@ mod tests {
         let mut multisig_env = base_env.clone();
         multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
             Address::from([0x44; 20]),
-            B256::from([0x55; 32]),
             vec![owner_signature.clone(), owner_signature],
             None,
         ));
@@ -3939,7 +3906,6 @@ mod tests {
         let mut multisig_env = base_env.clone();
         multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
             Address::from([0x44; 20]),
-            B256::from([0x55; 32]),
             vec![owner_signature],
             None,
         ));
@@ -3979,7 +3945,6 @@ mod tests {
         let mut multisig_env = base_env.clone();
         multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
             config.account().unwrap(),
-            config.config_id().unwrap(),
             vec![owner_signature],
             Some(config.clone()),
         ));
@@ -4000,7 +3965,7 @@ mod tests {
         .unwrap();
 
         let storage_slots = native_multisig_bootstrap_storage_slots(&config);
-        assert_eq!(storage_slots, 2 + config.owners.len() as u64);
+        assert_eq!(storage_slots, 1 + config.owners.len() as u64);
 
         let expected_storage_gas =
             SSTORE_CREATE_COST * storage_slots + NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER;
@@ -4008,7 +3973,7 @@ mod tests {
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
-            "bootstrap should charge config_id, packed header, one owner slot per owner, and an event buffer"
+            "bootstrap should charge packed account header, one owner slot per owner, and an event buffer"
         );
         assert_eq!(
             multisig_gas.initial_state_gas, base_gas.initial_state_gas,
@@ -6808,7 +6773,6 @@ mod tests {
         #[test]
         fn test_t8_registered_multisig_can_use_keychain_signature() {
             let config = native_multisig_config();
-            let config_id = config.config_id().unwrap();
             let account = config.account().unwrap();
             let access_key = Address::repeat_byte(0x44);
             let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T8, None, false);
@@ -6816,7 +6780,7 @@ mod tests {
             StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut multisig = NativeMultisig::new();
                 multisig.initialize()?;
-                multisig.store_initial_config(account, config_id, &config)?;
+                multisig.store_initial_config(account, &config)?;
 
                 let mut keychain = AccountKeychain::new();
                 keychain.initialize()?;

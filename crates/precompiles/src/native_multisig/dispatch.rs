@@ -17,14 +17,9 @@ impl Precompile for NativeMultisig {
             |call| match call {
                 INativeMultisig::INativeMultisigCalls {
                     isMultisigAccount(call) => view(call, |c| self.is_multisig_account(c.account)),
-                    getMultisigConfigId(call) => {
-                        view(call, |c| self.get_multisig_config_id(c.account))
-                    },
-                    getMultisigConfig(call) => {
-                        view(call, |c| self.get_multisig_config(c.account, c.configId))
-                    },
+                    getMultisigConfig(call) => view(call, |c| self.get_multisig_config(c.account)),
                     updateMultisigConfig(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.update_multisig_config(sender, c.configId, c.threshold, c.owners)
+                        self.update_multisig_config(sender, c.threshold, c.owners)
                     })
                 }
             }

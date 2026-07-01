@@ -384,9 +384,7 @@ fn populate_native_multisig_simulation_hints(
     request: &mut TempoTransactionRequest,
     db: &mut impl Database<Error: Into<EthApiError>>,
 ) -> Result<(), EthApiError> {
-    if request.multisig_init.is_some()
-        || (request.multisig_config_id.is_some() && request.multisig_signature_count.is_some())
-    {
+    if request.multisig_init.is_some() || request.multisig_signature_count.is_some() {
         return Ok(());
     }
 
@@ -394,17 +392,10 @@ fn populate_native_multisig_simulation_hints(
         return Ok(());
     };
 
-    let Some((config_id, signature_count)) = load_native_multisig_simulation_hints(
-        from,
-        request.multisig_config_id,
-        request.multisig_signature_count,
-        db,
-    )?
-    else {
+    let Some(signature_count) = load_native_multisig_simulation_hints(from, db)? else {
         return Ok(());
     };
 
-    request.multisig_config_id.get_or_insert(config_id);
     request
         .multisig_signature_count
         .get_or_insert(signature_count);
@@ -414,55 +405,30 @@ fn populate_native_multisig_simulation_hints(
 
 fn load_native_multisig_simulation_hints(
     from: Address,
-    multisig_config_id: Option<B256>,
-    multisig_signature_count: Option<usize>,
     db: &mut impl Database<Error: Into<EthApiError>>,
-) -> Result<Option<(B256, usize)>, EthApiError> {
-    let config_id_slot = NativeMultisig::config_id_storage_slot(from);
-    let config_id_word = db
-        .storage(NATIVE_MULTISIG_ADDRESS, config_id_slot)
-        .map_err(Into::into)?;
-    if config_id_word.is_zero() {
-        return Ok(None);
-    }
-
-    let config_id = if let Some(config_id) = multisig_config_id {
-        config_id
-    } else {
-        let config_id = B256::from(config_id_word.to_be_bytes::<32>());
-        if config_id.is_zero() {
-            return Err(EthApiError::InvalidParams(
-                "native multisig account is missing config_id".to_string(),
-            ));
-        }
-        config_id
-    };
-
-    let signature_count = match multisig_signature_count {
-        Some(signature_count) => signature_count,
-        None => native_multisig_signature_count_for_threshold(from, config_id, db)?,
-    };
-
-    Ok(Some((config_id, signature_count)))
+) -> Result<Option<usize>, EthApiError> {
+    native_multisig_signature_count_for_threshold(from, db)
 }
 
 fn native_multisig_signature_count_for_threshold(
     account: Address,
-    config_id: B256,
     db: &mut impl Database<Error: Into<EthApiError>>,
-) -> Result<usize, EthApiError> {
+) -> Result<Option<usize>, EthApiError> {
     let (threshold_slot, threshold_offset) =
-        NativeMultisig::config_threshold_storage_slot(account, config_id);
+        NativeMultisig::account_threshold_storage_slot(account);
     let threshold = read_native_multisig_u32(db, threshold_slot, threshold_offset)?;
+
+    let (owners_len_slot, owners_len_offset) =
+        NativeMultisig::account_owners_len_storage_slot(account);
+    let owner_count = read_native_multisig_u32(db, owners_len_slot, owners_len_offset)? as usize;
+    if threshold == 0 && owner_count == 0 {
+        return Ok(None);
+    }
     if threshold == 0 {
         return Err(EthApiError::InvalidParams(
             "native multisig config has zero threshold".to_string(),
         ));
     }
-
-    let (owners_len_slot, owners_len_offset) =
-        NativeMultisig::config_owners_len_storage_slot(account, config_id);
-    let owner_count = read_native_multisig_u32(db, owners_len_slot, owners_len_offset)? as usize;
     if owner_count == 0 {
         return Err(EthApiError::InvalidParams(
             "native multisig config has no owners".to_string(),
@@ -477,7 +443,7 @@ fn native_multisig_signature_count_for_threshold(
     let mut signed_weight = 0u64;
     for index in 0..owner_count {
         let (weight_slot, weight_offset) =
-            NativeMultisig::config_owner_weight_storage_slot(account, config_id, index);
+            NativeMultisig::config_owner_weight_storage_slot(account, index);
         let weight = read_native_multisig_u32(db, weight_slot, weight_offset)?;
         signed_weight = signed_weight
             .checked_add(u64::from(weight))
@@ -485,7 +451,7 @@ fn native_multisig_signature_count_for_threshold(
                 EthApiError::InvalidParams("native multisig owner weight overflow".to_string())
             })?;
         if signed_weight >= u64::from(threshold) {
-            return Ok(index + 1);
+            return Ok(Some(index + 1));
         }
     }
 

@@ -26,11 +26,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                 let signature = if let Some(init) = self.multisig_init.as_ref() {
                     create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
                         .map_err(|err| ValueError::new(self.clone(), err))?
-                } else if let Some(config_id) = self.multisig_config_id {
-                    create_mock_native_multisig_sig_for_config(
+                } else if let Some(signature_count) = self.multisig_signature_count {
+                    create_mock_native_multisig_sig_for_account(
                         self.inner.from.unwrap_or_default(),
-                        config_id,
-                        self.multisig_signature_count.unwrap_or(1),
+                        signature_count,
                         &key_type,
                         self.key_data.as_ref(),
                     )
@@ -57,7 +56,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     tempo_authorization_list,
                     key_authorization,
                     multisig_init,
-                    multisig_config_id,
                     multisig_signature_count,
                     valid_before,
                     valid_after,
@@ -79,7 +77,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             tempo_authorization_list,
                             key_authorization,
                             multisig_init,
-                            multisig_config_id,
                             multisig_signature_count,
                             valid_before,
                             valid_after,
@@ -101,7 +98,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             tempo_authorization_list,
                             key_authorization,
                             multisig_init,
-                            multisig_config_id,
                             multisig_signature_count,
                             valid_before,
                             valid_after,
@@ -148,7 +144,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             nonce_key,
             key_authorization,
             multisig_init,
-            multisig_config_id,
             multisig_signature_count,
             valid_before,
             valid_after,
@@ -165,7 +160,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 || nonce_key.is_some()
                 || key_authorization.is_some()
                 || multisig_init.is_some()
-                || multisig_config_id.is_some()
+                || multisig_signature_count.is_some()
                 || key_id.is_some()
                 || fee_payer.is_some()
                 || valid_before.is_some()
@@ -178,11 +173,10 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 let mock_signature = if let Some(init) = multisig_init.as_ref() {
                     create_mock_native_multisig_sig(init, &key_type, key_data.as_ref())
                         .map_err(|err| EthApiError::InvalidParams(err.to_string()))?
-                } else if let Some(config_id) = multisig_config_id {
-                    create_mock_native_multisig_sig_for_config(
+                } else if let Some(signature_count) = multisig_signature_count {
+                    create_mock_native_multisig_sig_for_account(
                         caller_addr,
-                        config_id,
-                        multisig_signature_count.unwrap_or(1),
+                        signature_count,
                         &key_type,
                         key_data.as_ref(),
                     )
@@ -239,37 +233,29 @@ fn create_mock_native_multisig_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
 ) -> Result<TempoSignature, &'static str> {
-    use tempo_primitives::transaction::{MultisigSignature, derive_multisig_account};
+    use tempo_primitives::transaction::MultisigSignature;
 
-    let config_id = init.config_id()?;
     let signature_count = mock_multisig_signature_count_for_threshold(init)?;
     let signatures =
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?;
 
     Ok(TempoSignature::Multisig(MultisigSignature::new(
-        derive_multisig_account(config_id),
-        config_id,
+        init.account()?,
         signatures,
         Some(init.clone()),
     )))
 }
 
-fn create_mock_native_multisig_sig_for_config(
+fn create_mock_native_multisig_sig_for_account(
     account: Address,
-    config_id: B256,
     signature_count: usize,
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
 ) -> Result<TempoSignature, &'static str> {
-    use tempo_primitives::transaction::{MultisigSignature, derive_multisig_account};
-
-    if account != derive_multisig_account(config_id) {
-        return Err("multisig config_id does not derive transaction caller");
-    }
+    use tempo_primitives::transaction::MultisigSignature;
 
     Ok(TempoSignature::Multisig(MultisigSignature::new(
         account,
-        config_id,
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?,
         None,
     )))
@@ -464,7 +450,7 @@ mod tests {
     use tempo_primitives::{
         TempoTransaction,
         transaction::{
-            Call, FEE_PAYER_SIGNATURE_MARKER, InitMultisig, MultisigOwner, derive_multisig_account,
+            Call, FEE_PAYER_SIGNATURE_MARKER, InitMultisig, MultisigOwner,
             tt_signature::PrimitiveSignature,
         },
     };
@@ -514,8 +500,7 @@ mod tests {
                 weight: 1,
             }],
         };
-        let config_id = init.config_id().expect("valid config");
-        let account = derive_multisig_account(config_id);
+        let account = init.account().expect("valid config");
         let target = address!("0x2222222222222222222222222222222222222222");
 
         let req = TempoTransactionRequest {
@@ -543,12 +528,11 @@ mod tests {
 
         assert_eq!(multisig_sig.init(), Some(&init));
         assert_eq!(multisig_sig.account(), account);
-        assert_eq!(multisig_sig.config_id(), config_id);
         assert_eq!(multisig_sig.signature_count(), 1);
     }
 
     #[test]
-    fn test_try_into_tx_env_embeds_existing_multisig_config_id_in_signature() {
+    fn test_try_into_tx_env_uses_existing_multisig_signature_count_hint() {
         let init = InitMultisig {
             salt: B256::repeat_byte(0x66),
             threshold: 2,
@@ -563,8 +547,7 @@ mod tests {
                 },
             ],
         };
-        let config_id = init.config_id().expect("valid config");
-        let account = derive_multisig_account(config_id);
+        let account = init.account().expect("valid config");
         let target = address!("0x3333333333333333333333333333333333333333");
 
         let req = TempoTransactionRequest {
@@ -578,7 +561,6 @@ mod tests {
                 chain_id: Some(4217),
                 ..Default::default()
             },
-            multisig_config_id: Some(config_id),
             multisig_signature_count: Some(2),
             key_type: Some(SignatureType::P256),
             ..Default::default()
@@ -594,7 +576,6 @@ mod tests {
 
         assert_eq!(multisig_sig.init(), None);
         assert_eq!(multisig_sig.account(), account);
-        assert_eq!(multisig_sig.config_id(), config_id);
         assert_eq!(multisig_sig.signature_count(), 2);
         assert!(multisig_sig.signatures().iter().all(|sig| sig.len() > 65));
     }

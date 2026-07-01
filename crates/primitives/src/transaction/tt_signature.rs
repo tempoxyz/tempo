@@ -1469,9 +1469,8 @@ mod tests {
     #[test]
     fn test_tempo_signature_65_byte_multisig_shape_decodes_as_secp256k1() {
         let account = Address::repeat_byte(0x11);
-        let config_id = B256::repeat_byte(0x22);
-        let signatures = vec![Bytes::from(vec![0x33, 0x33, 0x33, 0x33, 0x33, 0x01])];
-        let payload_length = account.length() + config_id.length() + signatures.length();
+        let signatures = vec![Bytes::from(vec![0x33; 39])];
+        let payload_length = account.length() + signatures.length();
 
         let mut sig_bytes = vec![SIGNATURE_TYPE_MULTISIG];
         alloy_rlp::Header {
@@ -1480,7 +1479,6 @@ mod tests {
         }
         .encode(&mut sig_bytes);
         account.encode(&mut sig_bytes);
-        config_id.encode(&mut sig_bytes);
         signatures.encode(&mut sig_bytes);
 
         assert_eq!(sig_bytes.len(), SECP256K1_SIGNATURE_LENGTH);
@@ -1956,7 +1954,6 @@ mod tests {
     fn test_signature_type_is_none_for_multisig() {
         let signature = TempoSignature::Multisig(MultisigSignature::new(
             Address::ZERO,
-            B256::ZERO,
             vec![Bytes::from(vec![0xff])],
             None,
         ));
@@ -1968,8 +1965,7 @@ mod tests {
     #[test]
     fn test_recover_signer_multisig_only_recovers_account() {
         use crate::transaction::{
-            InitMultisig, MultisigOwner, derive_multisig_account,
-            verify_trusted_multisig_owner_signatures,
+            InitMultisig, MultisigOwner, verify_trusted_multisig_owner_signatures,
         };
 
         let config = InitMultisig {
@@ -1980,12 +1976,10 @@ mod tests {
                 weight: 1,
             }],
         };
-        let config_id = config.config_id().unwrap();
-        let account = derive_multisig_account(config_id);
+        let account = config.account().unwrap();
         let inner_hash = B256::repeat_byte(0x24);
         let signature = TempoSignature::Multisig(MultisigSignature::new(
             account,
-            config_id,
             vec![Bytes::from(vec![0xff])],
             Some(config.clone()),
         ));

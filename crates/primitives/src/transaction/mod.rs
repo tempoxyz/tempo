@@ -23,8 +23,8 @@ pub use key_authorization::{
 pub use multisig::{
     InitMultisig, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_MULTISIG_OWNERS,
     MULTISIG_SIGNATURE_DOMAIN, MultisigOwner, MultisigSignature, SIGNATURE_TYPE_MULTISIG,
-    derive_multisig_account, derive_multisig_config_id, is_valid_multisig_account, multisig_digest,
-    validate_multisig_config, validate_multisig_signature_shape, verify_multisig_owner_signatures,
+    derive_multisig_account, is_valid_multisig_account, multisig_digest, validate_multisig_config,
+    validate_multisig_signature_shape, verify_multisig_owner_signatures,
     verify_trusted_multisig_owner_signatures,
 };
 pub use tempo_transaction::{

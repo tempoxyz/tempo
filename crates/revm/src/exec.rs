@@ -146,7 +146,7 @@ mod tests {
         evm.native_multisig_account_cache
             .insert(Address::repeat_byte(0x42), true);
         evm.native_multisig_config_cache.insert(
-            (Address::repeat_byte(0x42), B256::repeat_byte(0x24)),
+            Address::repeat_byte(0x42),
             tempo_primitives::transaction::InitMultisig {
                 salt: B256::ZERO,
                 threshold: 1,
