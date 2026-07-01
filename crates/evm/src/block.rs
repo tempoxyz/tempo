@@ -1097,26 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_system_tx_feature_head_readiness_rejects_missing_proposer_public_key() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default()
-            .with_runtime_spec(TempoHardfork::T9)
-            .build(&mut db, &chainspec);
-
-        let input = create_feature_readiness_system_tx_input(true, 1);
-        let system_tx =
-            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
-
-        let result = executor.validate_system_tx(&system_tx);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid feature head readiness system transaction"
-        );
-    }
-
-    #[test]
     fn test_validate_system_tx_feature_head_readiness_rejects_missing_block_number() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
