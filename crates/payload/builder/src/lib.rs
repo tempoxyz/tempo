@@ -2375,9 +2375,6 @@ where
                 }
 
                 trace!("Transaction executed");
-                if let Some(bal_task_handle) = &bal_task_handle {
-                    bal_task_handle.bump_bal_index();
-                }
 
                 pool_transactions_included += 1;
                 estimated_rlp_block_size += tx_rlp_length;
@@ -3638,6 +3635,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
     use reth_primitives_traits::Block as _;
+    use reth_revm::state::{Account, EvmStorageSlot, TransactionId};
     use std::sync::Mutex;
     use tempo_payload_types::EncodedBlock;
     use tempo_primitives::{
@@ -3951,6 +3949,56 @@ mod tests {
             vec![
                 (BlockAccessIndex::PRE_EXECUTION, 30),
                 (BlockAccessIndex::new(2), 50),
+            ]
+        );
+    }
+
+    fn ssmr_test_evm_state(address: Address, key: U256, original: U256, present: U256) -> EvmState {
+        let mut account = Account::default();
+        account.storage.insert(
+            key,
+            EvmStorageSlot::new_changed(original, present, TransactionId::ZERO),
+        );
+        EvmState::from_iter([(address, account)])
+    }
+
+    fn ssmr_decode_revm_bal(bytes: Bytes) -> RevmBal {
+        let mut bytes = bytes.as_ref();
+        let alloy_bal = Bal::decode(&mut bytes).expect("test BAL should decode");
+        RevmBal::try_from(Vec::<_>::from(alloy_bal)).expect("test BAL should convert")
+    }
+
+    #[test]
+    fn ssmr_builder_bal_snapshots_transaction_indices_without_gap() {
+        let address = Address::repeat_byte(0x42);
+        let key = U256::from(7);
+        let mut state = BuilderBalState::new();
+
+        state.bump_index();
+        state.commit(&ssmr_test_evm_state(
+            address,
+            key,
+            U256::ZERO,
+            U256::from(11),
+        ));
+        state.bump_index();
+        let _ = state.snapshot(0, 1).expect("first shard BAL");
+
+        state.commit(&ssmr_test_evm_state(
+            address,
+            key,
+            U256::from(11),
+            U256::from(22),
+        ));
+        state.bump_index();
+        let shard = ssmr_decode_revm_bal(state.snapshot(1, 2).expect("second shard BAL"));
+        let writes = &shard.accounts[&address].storage.storage[&key].writes;
+
+        assert_eq!(
+            writes,
+            &vec![
+                (BlockAccessIndex::PRE_EXECUTION, U256::from(11)),
+                (BlockAccessIndex::new(1), U256::from(22)),
             ]
         );
     }
