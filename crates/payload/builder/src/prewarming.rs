@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_evm::FromRecoveredTx;
@@ -11,7 +14,7 @@ use reth_evm::{Evm, EvmEnvFor};
 use reth_primitives_traits::Recovered;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -22,6 +25,32 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<PrewarmEvmState> = const { RefCell::new(None) };
+}
+
+fn with_thread_local_prewarm_evm<Provider, R>(
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    f: impl FnOnce(&mut TempoEvm<StateProviderDatabase<StateProviderBox>>) -> R,
+) -> Option<R>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    PREWARM_EVM_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.is_none() {
+            *state = prewarm.evm_for_ctx();
+        }
+        state.as_mut().map(f)
+    })
+}
+
+fn clear_thread_local_prewarm_evm() {
+    PREWARM_EVM_STATE.with(|state| {
+        *state.borrow_mut() = None;
+    });
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -84,11 +113,6 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -165,7 +189,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            clear_thread_local_prewarm_evm()
+        });
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -181,12 +207,10 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = with_thread_local_prewarm_evm(&prewarm, |evm| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
-
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
@@ -247,7 +271,8 @@ impl BestTransactionsPrewarming {
                 validator_fee: evm.validator_fee(),
                 expiring_nonce,
             }))
-        });
+        })
+        .flatten();
 
         PrewarmedTransaction { tx, replay }
     }
@@ -313,11 +338,6 @@ impl SsmrReplayPrewarmer {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let init = prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| init.evm_for_ctx());
-            });
-
             while let Ok(command) = commands_rx.recv() {
                 match command {
                     SsmrReplayPrewarmingCommand::Prewarm(tx) => {
@@ -338,7 +358,9 @@ impl SsmrReplayPrewarmer {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            clear_thread_local_prewarm_evm()
+        });
     }
 
     fn prewarm_transaction<Provider>(
@@ -351,11 +373,7 @@ impl SsmrReplayPrewarmer {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
-
+        let _ = with_thread_local_prewarm_evm(&prewarm, |evm| {
             if prewarm.is_stopped() {
                 return;
             }
