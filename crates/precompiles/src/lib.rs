@@ -963,6 +963,47 @@ mod tests {
     }
 
     #[test]
+    fn test_dispatch_macro_validates_calldata_from_t8() -> eyre::Result<()> {
+        alloy::sol! {
+            interface IValidateDispatchTest {
+                function account(address value) external;
+            }
+        }
+
+        let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                dispatch!(
+                    calldata,
+                    |call| match call {
+                        IValidateDispatchTest::IValidateDispatchTestCalls {
+                            account(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"account"), 0)),
+                        }
+                    }
+                )
+            })
+        };
+
+        let mut dirty_address_calldata = IValidateDispatchTest::accountCall {
+            value: Address::repeat_byte(0x11),
+        }
+        .abi_encode();
+        dirty_address_calldata[4] = 1;
+
+        // Pre-T8 preserves legacy unchecked ABI decoding.
+        let pre_t8 = call_with_spec(TempoHardfork::T7, &dirty_address_calldata)?;
+        assert!(!pre_t8.is_revert());
+        assert_eq!(pre_t8.bytes.as_ref(), b"account");
+
+        // T8+ rejects non-canonical ABI values through `abi_decode_validate`.
+        let t8 = call_with_spec(TempoHardfork::T8, &dirty_address_calldata)?;
+        assert!(t8.is_revert());
+        assert!(t8.bytes.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
     fn test_input_cost_returns_non_zero_for_input() {
         // Empty input should cost 0
         assert_eq!(input_cost(0), 0);

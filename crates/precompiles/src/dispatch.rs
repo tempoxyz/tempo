@@ -184,7 +184,12 @@ macro_rules! dispatch {
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
-                        return crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
+                        let decode = if crate::storage::StorageCtx.spec().is_t8() {
+                            <Calls as alloy::sol_types::SolInterface>::abi_decode_validate
+                        } else {
+                            <Calls as alloy::sol_types::SolInterface>::abi_decode
+                        };
+                        return crate::dispatch::dispatch_call($calldata, decode, |$call| match $match_call {
                             $(Calls::$variant($binding) => $body,)*
                         });
                     }
