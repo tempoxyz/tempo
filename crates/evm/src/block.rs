@@ -376,7 +376,15 @@ where
                 ));
             }
 
-            self.validate_feature_registry_system_tx(tx, &block_number)?;
+            let input = system_tx_input_without_block_number(
+                tx.input(),
+                &block_number,
+                "invalid feature head readiness system transaction",
+            )?;
+
+            IFeatureRegistry::reportFeatureReadinessCall::abi_decode_validate(input).map_err(
+                |_| BlockValidationError::msg("invalid feature head readiness system transaction"),
+            )?;
 
             seen_feature_readiness_report = true;
         } else {
@@ -387,28 +395,6 @@ where
             seen_subblocks_signatures,
             seen_feature_readiness_report,
         })
-    }
-
-    fn validate_feature_registry_system_tx(
-        &self,
-        tx: &TempoTxEnvelope,
-        block_number: &[u8],
-    ) -> Result<(), BlockValidationError> {
-        let input = system_tx_input_without_block_number(
-            tx.input(),
-            block_number,
-            "invalid feature head readiness system transaction",
-        )?;
-        IFeatureRegistry::reportFeatureReadinessCall::abi_decode_validate(input).map_err(|_| {
-            BlockValidationError::msg("invalid feature head readiness system transaction")
-        })?;
-        if self.evm().block().proposer_public_key.is_none() {
-            return Err(BlockValidationError::msg(
-                "invalid feature head readiness system transaction",
-            ));
-        }
-
-        Ok(())
     }
 
     pub(crate) fn validate_shared_gas(
