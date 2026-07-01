@@ -21,18 +21,18 @@ use alloy::primitives::{Address, B256, U256};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 struct StoredMultisigOwner {
     owner: Address,
-    // `u8` caps total configured weight at 255 and leaves spare bytes in this
-    // packed owner slot for future owner metadata.
+    // One-byte weights leave spare bytes in this packed owner slot for future
+    // owner metadata.
     weight: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 struct StoredMultisigHeader {
-    // `u8` is enough for the 255 max total weight and leaves spare bytes in the
-    // packed account header slot for future account metadata.
+    // One-byte thresholds leave spare bytes in the packed account header slot
+    // for future account metadata.
     threshold: u8,
-    // `MAX_MULTISIG_OWNERS` is 10, so one byte is enough for owner count.
-    owner_count: u8,
+    // Encodes `owners.len() - 1`, so one byte supports 1 through 256 owners.
+    owner_count_minus_one: u8,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -65,10 +65,10 @@ impl NativeMultisig {
         (threshold.slot(), threshold.offset())
     }
 
-    pub fn account_owners_len_storage_slot(account: Address) -> (U256, Option<usize>) {
+    pub fn account_owner_count_minus_one_storage_slot(account: Address) -> (U256, Option<usize>) {
         let multisig = Self::new();
-        let owner_count = &multisig.accounts[account].owner_count;
-        (owner_count.slot(), owner_count.offset())
+        let owner_count_minus_one = &multisig.accounts[account].owner_count_minus_one;
+        (owner_count_minus_one.slot(), owner_count_minus_one.offset())
     }
 
     pub fn config_owner_weight_storage_slot(
@@ -90,7 +90,7 @@ impl NativeMultisig {
 
     pub fn is_multisig_account(&self, account: Address) -> Result<bool> {
         let header = self.accounts[account].read()?;
-        Ok(header.threshold != 0 || header.owner_count != 0)
+        Ok(header.threshold != 0 || header.owner_count_minus_one != 0)
     }
 
     pub fn get_multisig_config(&self, account: Address) -> Result<INativeMultisig::MultisigConfig> {
@@ -128,7 +128,7 @@ impl NativeMultisig {
 
         validate_multisig_config(config).map_err(|_| NativeMultisigError::invalid_config())?;
         let existing = self.accounts[account].read()?;
-        if existing.threshold != 0 || existing.owner_count != 0 {
+        if existing.threshold != 0 || existing.owner_count_minus_one != 0 {
             return Err(NativeMultisigError::account_already_initialized().into());
         }
 
@@ -179,17 +179,17 @@ impl NativeMultisig {
 
     fn read_stored_config(&self, account: Address) -> Result<StoredMultisigConfig> {
         let header = self.accounts[account].read()?;
-        if header.threshold == 0 || header.owner_count == 0 {
+        if header.threshold == 0 {
             return Err(NativeMultisigError::config_not_found().into());
         }
-        let owner_count = header.owner_count as usize;
+        let owner_count = stored_owner_count(header);
         if owner_count > MAX_MULTISIG_OWNERS {
             return Err(NativeMultisigError::invalid_config().into());
         }
 
         let mut owners = Vec::new();
-        for index in 0..header.owner_count {
-            owners.push(self.owners[account][u32::from(index)].read()?);
+        for index in 0..owner_count {
+            owners.push(self.owners[account][index as u32].read()?);
         }
 
         Ok(StoredMultisigConfig {
@@ -199,22 +199,20 @@ impl NativeMultisig {
     }
 
     fn write_stored_config(&mut self, account: Address, config: &InitMultisig) -> Result<()> {
-        let previous_owner_count = self.accounts[account]
-            .read()?
-            .owner_count
-            .min(MAX_MULTISIG_OWNERS as u8);
-        let owner_count =
-            u8::try_from(config.owners.len()).map_err(|_| NativeMultisigError::invalid_config())?;
+        let previous_owner_count =
+            stored_owner_count(self.accounts[account].read()?).min(MAX_MULTISIG_OWNERS);
+        let owner_count = config.owners.len();
+        let owner_count_minus_one = encode_stored_owner_count_minus_one(owner_count)?;
 
         self.accounts[account].write(StoredMultisigHeader {
             threshold: config.threshold,
-            owner_count,
+            owner_count_minus_one,
         })?;
         for (index, owner) in config.owners.iter().enumerate() {
             self.owners[account][index as u32].write(owner.into())?;
         }
         for index in owner_count..previous_owner_count {
-            self.owners[account][u32::from(index)].delete()?;
+            self.owners[account][index as u32].delete()?;
         }
 
         Ok(())
@@ -228,6 +226,21 @@ impl From<&MultisigOwner> for StoredMultisigOwner {
             weight: value.weight,
         }
     }
+}
+
+fn stored_owner_count(header: StoredMultisigHeader) -> usize {
+    if header.threshold == 0 {
+        0
+    } else {
+        usize::from(header.owner_count_minus_one) + 1
+    }
+}
+
+fn encode_stored_owner_count_minus_one(owner_count: usize) -> Result<u8> {
+    if owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
+        return Err(NativeMultisigError::invalid_config().into());
+    }
+    Ok((owner_count - 1) as u8)
 }
 
 fn abi_config_to_init(
@@ -292,9 +305,6 @@ fn validate_abi_config_shape(
             .ok_or_else(NativeMultisigError::invalid_weight)?;
     }
 
-    if total_weight > u16::from(u8::MAX) {
-        return Err(NativeMultisigError::invalid_weight().into());
-    }
     if u16::from(threshold) > total_weight {
         return Err(NativeMultisigError::invalid_threshold().into());
     }
@@ -378,6 +388,21 @@ mod tests {
         ]
     }
 
+    fn indexed_owner(index: u16) -> Address {
+        let mut bytes = [0u8; 20];
+        bytes[18..].copy_from_slice(&index.to_be_bytes());
+        Address::from(bytes)
+    }
+
+    fn max_abi_owners() -> Vec<INativeMultisig::MultisigOwner> {
+        (1..=MAX_MULTISIG_OWNERS as u16)
+            .map(|index| INativeMultisig::MultisigOwner {
+                owner: indexed_owner(index),
+                weight: 1,
+            })
+            .collect()
+    }
+
     fn assert_config_unchanged(multisig: &NativeMultisig, account: Address) -> Result<()> {
         assert!(multisig.is_multisig_account(account)?);
         let stored = multisig.get_multisig_config(account)?;
@@ -424,7 +449,7 @@ mod tests {
         let (threshold_slot, threshold_offset) =
             NativeMultisig::account_threshold_storage_slot(account);
         let (owner_count_slot, owner_count_offset) =
-            NativeMultisig::account_owners_len_storage_slot(account);
+            NativeMultisig::account_owner_count_minus_one_storage_slot(account);
         assert_eq!(threshold_slot, owner_count_slot);
         assert_ne!(threshold_offset, owner_count_offset);
 
@@ -441,6 +466,38 @@ mod tests {
             multisig.set_tx_origin(account)?;
             multisig.update_multisig_config(account, 2, abi_owners())?;
             assert_eq!(multisig.get_multisig_config(account)?.threshold, 2);
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn store_and_read_256_owner_config() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let owners = max_abi_owners();
+        let config = InitMultisig {
+            salt: B256::ZERO,
+            threshold: u8::MAX,
+            owners: owners
+                .iter()
+                .map(|owner| MultisigOwner {
+                    owner: owner.owner,
+                    weight: owner.weight,
+                })
+                .collect(),
+        };
+        let account = config.account().unwrap();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, &config)?;
+
+            let stored = multisig.get_multisig_config(account)?;
+            assert_eq!(stored.threshold, u8::MAX);
+            assert_eq!(stored.owners, owners);
+
             Ok::<_, TempoPrecompileError>(())
         })?;
 
@@ -554,23 +611,6 @@ mod tests {
             invalid_weight_owners[0].weight = 0;
             assert!(matches!(
                 multisig.update_multisig_config(account, 1, invalid_weight_owners),
-                Err(TempoPrecompileError::NativeMultisigError(
-                    NativeMultisigError::InvalidWeight(_)
-                ))
-            ));
-
-            let overweight_owners = vec![
-                INativeMultisig::MultisigOwner {
-                    owner: address!("0000000000000000000000000000000000000011"),
-                    weight: 128,
-                },
-                INativeMultisig::MultisigOwner {
-                    owner: address!("0000000000000000000000000000000000000022"),
-                    weight: 128,
-                },
-            ];
-            assert!(matches!(
-                multisig.update_multisig_config(account, u8::MAX, overweight_owners),
                 Err(TempoPrecompileError::NativeMultisigError(
                     NativeMultisigError::InvalidWeight(_)
                 ))

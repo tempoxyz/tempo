@@ -418,22 +418,19 @@ fn native_multisig_signature_count_for_threshold(
         NativeMultisig::account_threshold_storage_slot(account);
     let threshold = read_native_multisig_u8(db, threshold_slot, threshold_offset)?;
 
-    let (owners_len_slot, owners_len_offset) =
-        NativeMultisig::account_owners_len_storage_slot(account);
-    let owner_count = read_native_multisig_u8(db, owners_len_slot, owners_len_offset)? as usize;
-    if threshold == 0 && owner_count == 0 {
-        return Ok(None);
-    }
+    let (owner_count_slot, owner_count_offset) =
+        NativeMultisig::account_owner_count_minus_one_storage_slot(account);
+    let owner_count_minus_one = read_native_multisig_u8(db, owner_count_slot, owner_count_offset)?;
     if threshold == 0 {
+        if owner_count_minus_one == 0 {
+            return Ok(None);
+        }
         return Err(EthApiError::InvalidParams(
             "native multisig config has zero threshold".to_string(),
         ));
     }
-    if owner_count == 0 {
-        return Err(EthApiError::InvalidParams(
-            "native multisig config has no owners".to_string(),
-        ));
-    }
+
+    let owner_count = usize::from(owner_count_minus_one) + 1;
     if owner_count > MAX_MULTISIG_OWNERS {
         return Err(EthApiError::InvalidParams(
             "native multisig config has too many owners".to_string(),
