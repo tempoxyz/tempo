@@ -203,39 +203,6 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the native multisig initialization config attached to this transaction.
-    pub fn set_multisig_init(&mut self, multisig_init: InitMultisig) {
-        self.multisig_init = Some(multisig_init);
-    }
-
-    /// Builder-pattern method for setting the native multisig initialization config.
-    pub fn with_multisig_init(mut self, multisig_init: InitMultisig) -> Self {
-        self.multisig_init = Some(multisig_init);
-        self
-    }
-
-    /// Set the native multisig config ID for an already-initialized account.
-    pub fn set_multisig_config_id(&mut self, multisig_config_id: B256) {
-        self.multisig_config_id = Some(multisig_config_id);
-    }
-
-    /// Builder-pattern method for setting the native multisig config ID.
-    pub fn with_multisig_config_id(mut self, multisig_config_id: B256) -> Self {
-        self.multisig_config_id = Some(multisig_config_id);
-        self
-    }
-
-    /// Set the number of native multisig owner signatures to model during RPC simulation.
-    pub fn set_multisig_signature_count(&mut self, multisig_signature_count: usize) {
-        self.multisig_signature_count = Some(multisig_signature_count);
-    }
-
-    /// Builder-pattern method for setting the native multisig owner signature count.
-    pub fn with_multisig_signature_count(mut self, multisig_signature_count: usize) -> Self {
-        self.multisig_signature_count = Some(multisig_signature_count);
-        self
-    }
-
     /// Set the valid_before timestamp for expiring nonces ([TIP-1009]).
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
@@ -536,15 +503,6 @@ pub trait TempoCallBuilderExt {
 
     /// Sets the `key_authorization` field in the [`TempoTransaction`] transaction.
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self;
-
-    /// Sets the native multisig initialization config for request building and simulation.
-    fn multisig_init(self, multisig_init: InitMultisig) -> Self;
-
-    /// Sets the native multisig config ID for request building and simulation.
-    fn multisig_config_id(self, multisig_config_id: B256) -> Self;
-
-    /// Sets the native multisig owner signature count for simulation.
-    fn multisig_signature_count(self, multisig_signature_count: usize) -> Self;
 }
 
 impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
@@ -580,18 +538,6 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self {
         self.map(|request| request.with_key_authorization(key_authorization))
-    }
-
-    fn multisig_init(self, multisig_init: InitMultisig) -> Self {
-        self.map(|request| request.with_multisig_init(multisig_init))
-    }
-
-    fn multisig_config_id(self, multisig_config_id: B256) -> Self {
-        self.map(|request| request.with_multisig_config_id(multisig_config_id))
-    }
-
-    fn multisig_signature_count(self, multisig_signature_count: usize) -> Self {
-        self.map(|request| request.with_multisig_signature_count(multisig_signature_count))
     }
 }
 

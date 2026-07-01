@@ -19,21 +19,21 @@ use crate::{
 use alloy::primitives::{Address, B256, U256};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
-pub struct StoredMultisigOwner {
-    pub owner: Address,
-    pub weight: u32,
+struct StoredMultisigOwner {
+    owner: Address,
+    weight: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct StoredMultisigHeader {
-    pub threshold: u32,
-    pub owner_count: u32,
+struct StoredMultisigHeader {
+    threshold: u32,
+    owner_count: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StoredMultisigConfig {
-    pub threshold: u32,
-    pub owners: Vec<StoredMultisigOwner>,
+struct StoredMultisigConfig {
+    threshold: u32,
+    owners: Vec<StoredMultisigOwner>,
 }
 
 /// Native multisig account storage.
@@ -92,7 +92,7 @@ impl NativeMultisig {
         self.tx_origin.t_write(origin)
     }
 
-    pub fn set_bootstrapped_account(&mut self, account: Address) -> Result<()> {
+    fn set_bootstrapped_account(&mut self, account: Address) -> Result<()> {
         self.bootstrapped_account.t_write(account)
     }
 
@@ -118,11 +118,6 @@ impl NativeMultisig {
 
         let stored = self.load_stored_config(account, config_id)?;
         Ok(stored_config_to_abi(stored))
-    }
-
-    pub fn load_current_config(&self, account: Address, config_id: B256) -> Result<InitMultisig> {
-        let stored = self.load_stored_config(account, config_id)?;
-        stored_config_to_init(stored)
     }
 
     pub fn load_registered_config(
