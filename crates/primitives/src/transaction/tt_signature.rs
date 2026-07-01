@@ -1964,9 +1964,7 @@ mod tests {
 
     #[test]
     fn test_recover_signer_multisig_only_recovers_account() {
-        use crate::transaction::{
-            InitMultisig, MultisigOwner, verify_trusted_multisig_owner_signatures,
-        };
+        use crate::transaction::{InitMultisig, MultisigOwner};
 
         let config = InitMultisig {
             salt: B256::repeat_byte(0x42),
@@ -1989,7 +1987,9 @@ mod tests {
         let multisig_signature = signature.as_multisig().unwrap();
         let digest = multisig_signature.digest(inner_hash);
         assert!(
-            verify_trusted_multisig_owner_signatures(digest, multisig_signature, &config).is_err(),
+            multisig_signature
+                .verify_with_trusted_config(digest, &config)
+                .is_err(),
             "stateful multisig authorization should still reject the invalid owner signature"
         );
     }

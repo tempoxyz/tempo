@@ -9,7 +9,6 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::transaction::{
     InitMultisig, MAX_MULTISIG_OWNERS, MultisigOwner, is_valid_multisig_account,
-    validate_multisig_config,
 };
 
 use crate::{
@@ -126,7 +125,9 @@ impl NativeMultisig {
             return Err(NativeMultisigError::invalid_account().into());
         }
 
-        validate_multisig_config(config).map_err(|_| NativeMultisigError::invalid_config())?;
+        config
+            .validate()
+            .map_err(|_| NativeMultisigError::invalid_config())?;
         let existing = self.accounts[account].read()?;
         if existing.threshold != 0 || existing.owner_count != 0 {
             return Err(NativeMultisigError::account_already_initialized().into());
@@ -244,7 +245,9 @@ fn abi_config_to_init(
         threshold,
         owners,
     };
-    validate_multisig_config(&config).map_err(|_| NativeMultisigError::invalid_config())?;
+    config
+        .validate()
+        .map_err(|_| NativeMultisigError::invalid_config())?;
     Ok(config)
 }
 
@@ -313,7 +316,9 @@ fn stored_config_to_init(value: StoredMultisigConfig) -> Result<InitMultisig> {
         threshold: value.threshold,
         owners,
     };
-    validate_multisig_config(&config).map_err(|_| NativeMultisigError::invalid_config())?;
+    config
+        .validate()
+        .map_err(|_| NativeMultisigError::invalid_config())?;
     Ok(config)
 }
 

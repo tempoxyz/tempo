@@ -65,7 +65,7 @@ use tempo_primitives::{
     transaction::{
         InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, PrimitiveSignature,
         SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature, calc_gas_balance_spending,
-        validate_calls, validate_multisig_config,
+        validate_calls,
     },
 };
 
@@ -182,7 +182,7 @@ fn validate_rpc_multisig_mock_signatures(
     config: &InitMultisig,
     signature_count: usize,
 ) -> Result<(), &'static str> {
-    validate_multisig_config(config)?;
+    config.validate()?;
     if signature_count == 0 {
         return Err("multisig signatures cannot be empty");
     }
@@ -230,7 +230,9 @@ fn verify_native_multisig_authorization_inner<DB: Database>(
     config: &InitMultisig,
     account_path: &mut Vec<Address>,
 ) -> Result<u8, EVMError<DB::Error, TempoInvalidTransaction>> {
-    validate_multisig_config(config).map_err(native_multisig_validation_failed_error::<DB>)?;
+    config
+        .validate()
+        .map_err(native_multisig_validation_failed_error::<DB>)?;
 
     let digest = signature.digest(inner_digest);
     let mut recovered_weight = 0u16;

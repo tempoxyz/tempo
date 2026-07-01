@@ -63,9 +63,87 @@ pub struct InitMultisig {
 }
 
 impl InitMultisig {
+    /// Validates this native multisig config and returns its total owner weight.
+    pub fn validate(&self) -> Result<u8, &'static str> {
+        if self.owners.is_empty() {
+            return Err("multisig owners cannot be empty");
+        }
+        if self.owners.len() > MAX_MULTISIG_OWNERS {
+            return Err("too many multisig owners");
+        }
+        if self.threshold == 0 {
+            return Err("multisig threshold cannot be zero");
+        }
+
+        let mut total_weight = 0u16;
+        let mut prev_owner = None;
+        for owner in &self.owners {
+            if owner.owner.is_zero() {
+                return Err("multisig owner cannot be zero");
+            }
+            if owner.weight == 0 {
+                return Err("multisig owner weight cannot be zero");
+            }
+            if prev_owner.is_some_and(|prev| prev >= owner.owner) {
+                return Err("multisig owners must be strictly ascending");
+            }
+            prev_owner = Some(owner.owner);
+            total_weight = total_weight
+                .checked_add(u16::from(owner.weight))
+                .ok_or("multisig owner weight overflow")?;
+        }
+
+        if total_weight > u16::from(u8::MAX) {
+            return Err("multisig total owner weight exceeds u8::MAX");
+        }
+        if u16::from(self.threshold) > total_weight {
+            return Err("multisig threshold exceeds total owner weight");
+        }
+
+        Ok(total_weight as u8)
+    }
+
+    /// Derives the native multisig account address for this initial config.
+    pub fn derive_account(&self) -> Result<Address, &'static str> {
+        self.validate()?;
+
+        let owner_count = encode_multisig_owner_count(self.owners.len())?;
+        let mut input = Vec::with_capacity(
+            MULTISIG_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * (20 + 1),
+        );
+        input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
+        input.extend_from_slice(self.salt.as_slice());
+        input.push(self.threshold);
+        input.push(owner_count);
+        for owner in &self.owners {
+            input.extend_from_slice(owner.owner.as_slice());
+            input.push(owner.weight);
+        }
+
+        let account = Address::from_slice(&keccak256(input)[12..]);
+        if account.is_zero() {
+            return Err("multisig account cannot be zero");
+        }
+        Ok(account)
+    }
+
     /// Returns the native multisig account address derived from this initial config.
     pub fn account(&self) -> Result<Address, &'static str> {
-        derive_multisig_account(self)
+        self.derive_account()
+    }
+
+    /// Decodes, verifies, and weight-accounts primitive owner approvals.
+    ///
+    /// This helper does not validate nested multisig owner approvals because that requires state
+    /// access to load each nested account config.
+    pub fn verify_owner_signatures(
+        &self,
+        digest: B256,
+        signatures: &[Bytes],
+    ) -> Result<u8, &'static str> {
+        self.validate()?;
+        let owners = recover_multisig_owner_addresses(digest, signatures)?;
+        verify_recovered_multisig_owners(&owners, self)
     }
 
     /// Returns a heuristic for the in-memory size of the config.
@@ -132,7 +210,7 @@ impl MultisigSignature {
 
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
     pub fn recover_account(&self) -> Result<Address, &'static str> {
-        validate_multisig_signature_shape(self)?;
+        self.validate_shape()?;
         if let Some(init) = &self.init {
             if init.account()? != self.account {
                 return Err("multisig init does not derive account");
@@ -141,12 +219,29 @@ impl MultisigSignature {
         Ok(self.account)
     }
 
+    /// Validates only the stateless signature payload shape.
+    pub fn validate_shape(&self) -> Result<(), &'static str> {
+        if self.account.is_zero() {
+            return Err("multisig account cannot be zero");
+        }
+        if self.signatures.is_empty() {
+            return Err("multisig signatures cannot be empty");
+        }
+        if self.signatures.len() > MAX_MULTISIG_OWNERS {
+            return Err("too many multisig signatures");
+        }
+        if self.signatures.iter().any(|sig| sig.is_empty()) {
+            return Err("multisig owner signature cannot be empty");
+        }
+        Ok(())
+    }
+
     /// Performs only the registered-account stateless payload checks.
     ///
     /// Registered accounts are already bound to native multisig storage, so the derived-account
     /// check can be skipped on the steady-state path.
     pub fn validate_registered_shape(&self) -> Result<(), &'static str> {
-        validate_multisig_signature_shape(self)?;
+        self.validate_shape()?;
         if self.init.is_some() {
             return Err("multisig_init is only allowed when bootstrapping an account");
         }
@@ -211,6 +306,20 @@ impl MultisigSignature {
         f(&owners)
     }
 
+    /// Verifies primitive owner approvals against a config already validated by trusted storage.
+    ///
+    /// This helper does not validate nested multisig owner approvals because that requires state
+    /// access to load each nested account config.
+    pub fn verify_with_trusted_config(
+        &self,
+        digest: B256,
+        config: &InitMultisig,
+    ) -> Result<u8, &'static str> {
+        self.with_recovered_owners(digest, |owners| {
+            verify_recovered_multisig_owners(owners, config)
+        })
+    }
+
     /// Returns a heuristic for the in-memory size of the signature.
     pub fn size(&self) -> usize {
         size_of::<Self>()
@@ -240,84 +349,19 @@ impl Hash for MultisigSignature {
 
 /// Validates a native multisig config and returns its total owner weight.
 pub fn validate_multisig_config(config: &InitMultisig) -> Result<u8, &'static str> {
-    if config.owners.is_empty() {
-        return Err("multisig owners cannot be empty");
-    }
-    if config.owners.len() > MAX_MULTISIG_OWNERS {
-        return Err("too many multisig owners");
-    }
-    if config.threshold == 0 {
-        return Err("multisig threshold cannot be zero");
-    }
-
-    let mut total_weight = 0u16;
-    let mut prev_owner = None;
-    for owner in &config.owners {
-        if owner.owner.is_zero() {
-            return Err("multisig owner cannot be zero");
-        }
-        if owner.weight == 0 {
-            return Err("multisig owner weight cannot be zero");
-        }
-        if prev_owner.is_some_and(|prev| prev >= owner.owner) {
-            return Err("multisig owners must be strictly ascending");
-        }
-        prev_owner = Some(owner.owner);
-        total_weight = total_weight
-            .checked_add(u16::from(owner.weight))
-            .ok_or("multisig owner weight overflow")?;
-    }
-
-    if total_weight > u16::from(u8::MAX) {
-        return Err("multisig total owner weight exceeds u8::MAX");
-    }
-    if u16::from(config.threshold) > total_weight {
-        return Err("multisig threshold exceeds total owner weight");
-    }
-
-    Ok(total_weight as u8)
+    config.validate()
 }
 
 /// Validates only the stateless signature payload shape.
 pub fn validate_multisig_signature_shape(
     signature: &MultisigSignature,
 ) -> Result<(), &'static str> {
-    if signature.account.is_zero() {
-        return Err("multisig account cannot be zero");
-    }
-    if signature.signatures.is_empty() {
-        return Err("multisig signatures cannot be empty");
-    }
-    if signature.signatures.len() > MAX_MULTISIG_OWNERS {
-        return Err("too many multisig signatures");
-    }
-    if signature.signatures.iter().any(|sig| sig.is_empty()) {
-        return Err("multisig owner signature cannot be empty");
-    }
-    Ok(())
+    signature.validate_shape()
 }
 
 /// Derives the native multisig account address for an initial config.
 pub fn derive_multisig_account(config: &InitMultisig) -> Result<Address, &'static str> {
-    validate_multisig_config(config)?;
-
-    let owner_count = encode_multisig_owner_count(config.owners.len())?;
-    let mut input =
-        Vec::with_capacity(MULTISIG_ACCOUNT_DOMAIN.len() + 32 + 2 + config.owners.len() * (20 + 1));
-    input.extend_from_slice(MULTISIG_ACCOUNT_DOMAIN);
-    input.extend_from_slice(config.salt.as_slice());
-    input.push(config.threshold);
-    input.push(owner_count);
-    for owner in &config.owners {
-        input.extend_from_slice(owner.owner.as_slice());
-        input.push(owner.weight);
-    }
-
-    let account = Address::from_slice(&keccak256(input)[12..]);
-    if account.is_zero() {
-        return Err("multisig account cannot be zero");
-    }
-    Ok(account)
+    config.derive_account()
 }
 
 /// Returns whether an address is eligible to be a derived native multisig account.
@@ -377,9 +421,7 @@ pub fn verify_multisig_owner_signatures(
     signatures: &[Bytes],
     config: &InitMultisig,
 ) -> Result<u8, &'static str> {
-    validate_multisig_config(config)?;
-    let owners = recover_multisig_owner_addresses(digest, signatures)?;
-    verify_recovered_multisig_owners(&owners, config)
+    config.verify_owner_signatures(digest, signatures)
 }
 
 /// Verifies primitive owner approvals against a config already validated by trusted storage.
@@ -391,9 +433,7 @@ pub fn verify_trusted_multisig_owner_signatures(
     signature: &MultisigSignature,
     config: &InitMultisig,
 ) -> Result<u8, &'static str> {
-    signature.with_recovered_owners(digest, |owners| {
-        verify_recovered_multisig_owners(owners, config)
-    })
+    signature.verify_with_trusted_config(digest, config)
 }
 
 fn verify_recovered_multisig_owners(
@@ -560,7 +600,7 @@ mod tests {
         let owner_b = Address::from([0x22; 20]);
         let config = sorted_secp_config(&[(owner_b, 2), (owner_a, 1)], 2);
 
-        validate_multisig_config(&config).expect("config is valid");
+        config.validate().expect("config is valid");
         assert_eq!(config.account().unwrap(), config.account().unwrap());
 
         let unsorted = InitMultisig {
@@ -577,7 +617,7 @@ mod tests {
                 },
             ],
         };
-        assert!(validate_multisig_config(&unsorted).is_err());
+        assert!(unsorted.validate().is_err());
     }
 
     #[test]
@@ -591,7 +631,7 @@ mod tests {
             zero_salt.account().unwrap(),
             nonzero_salt.account().unwrap()
         );
-        validate_multisig_config(&zero_salt).expect("zero salt is valid");
+        zero_salt.validate().expect("zero salt is valid");
     }
 
     #[test]
@@ -601,7 +641,7 @@ mod tests {
             .collect::<Vec<_>>();
         let config = sorted_secp_config(&owners, u8::MAX);
 
-        assert_eq!(validate_multisig_config(&config), Ok(u8::MAX));
+        assert_eq!(config.validate(), Ok(u8::MAX));
         assert!(config.account().is_ok());
     }
 
@@ -612,10 +652,7 @@ mod tests {
             .collect::<Vec<_>>();
         let config = sorted_secp_config(&owners, u8::MAX);
 
-        assert_eq!(
-            validate_multisig_config(&config),
-            Err("too many multisig owners")
-        );
+        assert_eq!(config.validate(), Err("too many multisig owners"));
     }
 
     #[test]
@@ -625,7 +662,7 @@ mod tests {
         let config = sorted_secp_config(&[(owner_a, 128), (owner_b, 128)], u8::MAX);
 
         assert_eq!(
-            validate_multisig_config(&config),
+            config.validate(),
             Err("multisig total owner weight exceeds u8::MAX")
         );
     }
@@ -647,15 +684,14 @@ mod tests {
         let signature = sign_hash(&signer, &digest_a).to_bytes();
 
         assert!(
-            verify_multisig_owner_signatures(digest_a, &[signature.clone()], &config_a).is_ok()
+            config_a
+                .verify_owner_signatures(digest_a, &[signature.clone()])
+                .is_ok()
         );
         assert!(
-            verify_multisig_owner_signatures(
-                multisig_digest(inner_digest, account_b),
-                &[signature],
-                &config_b,
-            )
-            .is_err()
+            config_b
+                .verify_owner_signatures(multisig_digest(inner_digest, account_b), &[signature],)
+                .is_err()
         );
     }
 
@@ -678,12 +714,16 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            verify_multisig_owner_signatures(digest, &signatures, &config).unwrap(),
+            config.verify_owner_signatures(digest, &signatures).unwrap(),
             2
         );
 
         let one_signature = vec![signatures[0].clone()];
-        assert!(verify_multisig_owner_signatures(digest, &one_signature, &config).is_err());
+        assert!(
+            config
+                .verify_owner_signatures(digest, &one_signature)
+                .is_err()
+        );
     }
 
     #[test]
