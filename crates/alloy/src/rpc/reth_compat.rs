@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn test_try_into_tx_env_sets_channel_open_context_hash_for_rpc_simulation() {
+    fn test_try_into_tx_env_sets_unique_tx_identifier_for_rpc_simulation() {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let target = address!("0x2222222222222222222222222222222222222222");
 
@@ -622,13 +622,13 @@ mod tests {
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert_eq!(
-            tx_env.channel_open_context_hash(),
+            tx_env.unique_tx_identifier(),
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
         assert_ne!(
-            tx_env.channel_open_context_hash(),
+            tx_env.unique_tx_identifier(),
             Some(B256::ZERO),
-            "RPC simulations must seed a non-zero context hash so TIP20ChannelReserve.open() does not treat it as unset"
+            "RPC simulations must seed a non-zero transaction identifier so validation does not treat it as unset"
         );
     }
 
