@@ -623,12 +623,14 @@ impl TipFeeManager {
 
             let pool_id = self.pool_id(user_token, validator_token);
             let mut pool = self.pools[pool_id].read()?;
+            let pool_slot = pool.encode_to_slot()?;
             pool.apply_swap(amount_in, amount_out)?;
             self.pools[pool_id].write(pool)?;
 
             actions.record_always(StorageAction::FeeAmmSwap(
                 self.address,
                 pool_id.mapping_slot(self.pools.slot()),
+                pool_slot,
                 amount_in,
             ));
 

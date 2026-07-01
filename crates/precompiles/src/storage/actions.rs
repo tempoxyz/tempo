@@ -7,25 +7,41 @@ pub enum StorageAction {
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
     /// Records an SSTORE opcode.
-    Sstore(Address, U256, U256),
+    ///
+    /// `address` - Account address
+    /// `key` - Storage slot key
+    /// `sload_value` - Slot value before store
+    /// `value` - New value to store
+    Sstore(Address, U256, U256, U256),
     /// Records an increment of a storage slot by delta.
     ///
     /// If the slot **was** zero before incrementing,
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
-    Sinc(Address, U256, U256),
+    ///
+    /// `address` - Account address
+    /// `key` - Storage slot key
+    /// `sload_value` - Slot value before increment
+    /// `delta` - Amount to increment by
+    Sinc(Address, U256, U256, U256),
     /// Records a decrement of a storage slot by delta.
     ///
     /// If the slot **became** zero as a result of decrementing,
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
-    Sdec(Address, U256, U256),
+    ///
+    /// `address` - Account address
+    /// `key` - Storage slot key
+    /// `sload_value` - Slot value before decrement
+    /// `delta` - Amount to decrement by
+    Sdec(Address, U256, U256, U256),
     /// Records a FeeAMM pool fee swap over a packed pool slot.
     ///
     /// `address` - FeeAMM contract address.
     /// `key` - Storage slot key.
+    /// `sload_value` - Packed pool slot value before the swap.
     /// `amount_in` - Amount of tokens to swap in.
     ///
     /// `amount_out` can be calculated using [`compute_amount_out`](crate::tip_fee_manager::amm::compute_amount_out).
-    FeeAmmSwap(Address, U256, U256),
+    FeeAmmSwap(Address, U256, U256, U256),
 }
 
 impl StorageAction {
@@ -174,24 +190,49 @@ mod tests {
         actions.record(StorageAction::Sload(address, key, U256::from(1)));
 
         actions.unrecorded(|| {
-            actions.record(StorageAction::Sstore(address, key, U256::from(2)));
+            actions.record(StorageAction::Sstore(
+                address,
+                key,
+                U256::from(1),
+                U256::from(2),
+            ));
 
             actions.unrecorded(|| {
-                actions.record(StorageAction::Sinc(address, key, U256::from(3)));
-                actions.record_always(StorageAction::FeeAmmSwap(address, key, U256::from(4)));
+                actions.record(StorageAction::Sinc(
+                    address,
+                    key,
+                    U256::from(2),
+                    U256::from(3),
+                ));
+                actions.record_always(StorageAction::FeeAmmSwap(
+                    address,
+                    key,
+                    U256::from(3),
+                    U256::from(4),
+                ));
             });
 
-            actions.record(StorageAction::Sdec(address, key, U256::from(6)));
+            actions.record(StorageAction::Sdec(
+                address,
+                key,
+                U256::from(5),
+                U256::from(6),
+            ));
         });
 
-        actions.record(StorageAction::Sstore(address, key, U256::from(8)));
+        actions.record(StorageAction::Sstore(
+            address,
+            key,
+            U256::from(1),
+            U256::from(8),
+        ));
 
         assert_eq!(
             actions.take(),
             Some(vec![
                 StorageAction::Sload(address, key, U256::from(1)),
-                StorageAction::FeeAmmSwap(address, key, U256::from(4)),
-                StorageAction::Sstore(address, key, U256::from(8)),
+                StorageAction::FeeAmmSwap(address, key, U256::from(3), U256::from(4)),
+                StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
             ])
         );
     }

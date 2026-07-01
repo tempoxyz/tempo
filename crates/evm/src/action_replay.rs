@@ -116,47 +116,48 @@ where
                 StorageAction::Sload(address, key, value) => {
                     // We don't need to check `replay_state.has_store` here,
                     // as `sload_exact` is already checking it
-                    let _ = self.replay_state.sload_exact(db, address, key, value)?;
+                    let _ = self.replay_state.sload(db, address, key, value)?;
                 }
-                StorageAction::Sstore(address, key, value) => {
+                StorageAction::Sstore(address, key, sload_value, value) => {
                     if self.replay_state.has_write(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
+                    let _ = self.replay_state.sload(db, address, key, sload_value)?;
                     self.replay_state
                         .sstore(address, key, value, WriteKind::Store)?;
                 }
-                StorageAction::Sinc(address, key, delta) => {
+                StorageAction::Sinc(address, key, value, delta) => {
                     if self.replay_state.has_store(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
                     let value = self
                         .replay_state
-                        .sload_current(db, address, key)?
+                        .sload(db, address, key, value)?
                         .checked_add(delta)
                         .ok_or(StorageActionReplayError::Overflow)?;
                     self.replay_state
                         .sstore(address, key, value, WriteKind::Delta)?;
                 }
-                StorageAction::Sdec(address, key, delta) => {
+                StorageAction::Sdec(address, key, value, delta) => {
                     if self.replay_state.has_store(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
                     let value = self
                         .replay_state
-                        .sload_current(db, address, key)?
+                        .sload(db, address, key, value)?
                         .checked_sub(delta)
                         .ok_or(StorageActionReplayError::Underflow)?;
                     self.replay_state
                         .sstore(address, key, value, WriteKind::Delta)?;
                 }
-                StorageAction::FeeAmmSwap(address, key, amount_in) => {
+                StorageAction::FeeAmmSwap(address, key, value, amount_in) => {
                     if self.replay_state.has_store(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
-                    let pool_slot = self.replay_state.sload_current(db, address, key)?;
+                    let pool_slot = self.replay_state.sload(db, address, key, value)?;
                     let mut pool = Pool::decode_from_slot(pool_slot);
                     pool.apply_swap(
                         amount_in,
@@ -405,10 +406,9 @@ impl StorageActionReplayState {
         value: U256,
         kind: WriteKind,
     ) -> Result<(), BlockExecutionError> {
-        // `Sstore` actions record only the new value. The transaction-start
-        // value must already be established by a load, otherwise replay would
-        // invent `original` from current state and reuse gas/refund data from a
-        // different storage transition.
+        // The transaction-start value must already be established by a load,
+        // otherwise replay would invent `original` from current state and reuse
+        // gas/refund data from a different storage transition.
         let change = self
             .tx_changes
             .get_mut(&address)
@@ -452,7 +452,7 @@ impl StorageActionReplayState {
     }
 
     /// Returns the current value for a slot and validates that it matches the expected value.
-    fn sload_exact<DB: Database>(
+    fn sload<DB: Database>(
         &mut self,
         db: &mut State<DB>,
         address: Address,
@@ -498,32 +498,6 @@ impl StorageActionReplayState {
                     return Err(StorageActionReplayError::ActionConflict.into());
                 }
 
-                change.insert(SlotChange {
-                    original: current,
-                    current,
-                    write_kind: None,
-                });
-                Ok(current)
-            }
-        }
-    }
-
-    /// Returns the current value for a slot.
-    ///
-    /// If it was previously written, returns the value from the transaction change.
-    /// Otherwise, returns the value from the database.
-    fn sload_current<DB: Database>(
-        &mut self,
-        db: &mut State<DB>,
-        address: Address,
-        slot: U256,
-    ) -> Result<U256, BlockExecutionError> {
-        match self.tx_changes.entry(address).or_default().entry(slot) {
-            Entry::Occupied(change) => Ok(change.get().current),
-            Entry::Vacant(change) => {
-                let current = db
-                    .storage(address, slot)
-                    .map_err(BlockExecutionError::other)?;
                 change.insert(SlotChange {
                     original: current,
                     current,
@@ -645,7 +619,7 @@ mod tests {
         let mut replay_state = StorageActionReplayState::default();
 
         let err = replay_state
-            .sload_exact(&mut db, address, slot, U256::from(10))
+            .sload(&mut db, address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&err),
@@ -673,7 +647,7 @@ mod tests {
 
         assert_eq!(
             replay_state
-                .sload_exact(&mut db, address, slot, U256::from(10))
+                .sload(&mut db, address, slot, U256::from(10))
                 .expect("recorded sload should avoid backing storage lookup"),
             U256::from(10),
         );
@@ -696,8 +670,8 @@ mod tests {
 
         assert_eq!(
             replay_state
-                .sload_current(&mut db, address, slot)
-                .expect("load current storage"),
+                .sload(&mut db, address, slot, U256::from(10))
+                .expect("load exact storage"),
             U256::from(10),
         );
         replay_state
@@ -705,7 +679,7 @@ mod tests {
             .expect("store loaded slot");
 
         let err = replay_state
-            .sload_exact(&mut db, address, slot, U256::from(10))
+            .sload(&mut db, address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&err),
@@ -726,7 +700,7 @@ mod tests {
             .insert(slot, WriteKind::Delta);
 
         let err = replay_state
-            .sload_exact(&mut db, address, slot, U256::from(10))
+            .sload(&mut db, address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&err),
@@ -750,15 +724,15 @@ mod tests {
     }
 
     #[test]
-    fn current_sload_allows_semantic_rebase() {
+    fn sload_exact_records_matching_load_for_delta_write() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let mut db = state_with_storage(address, slot, U256::from(11));
         let mut replay_state = StorageActionReplayState::default();
 
         let current = replay_state
-            .sload_current(&mut db, address, slot)
-            .expect("load current storage");
+            .sload(&mut db, address, slot, U256::from(11))
+            .expect("load exact storage");
         replay_state
             .sstore(address, slot, current + U256::from(3), WriteKind::Delta)
             .expect("store loaded slot");

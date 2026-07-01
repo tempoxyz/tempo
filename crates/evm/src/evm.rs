@@ -509,26 +509,30 @@ mod tests {
     #[derive(Default)]
     struct StorageState {
         reconstructed: BTreeMap<(Address, U256), U256>,
-        original_values: BTreeMap<(Address, U256), U256>,
         first_loads: BTreeMap<(Address, U256), U256>,
     }
 
     impl StorageState {
-        fn get_or_init_storage(&mut self, key: (Address, U256)) -> U256 {
+        fn apply_sload_value(
+            &mut self,
+            key: (Address, U256),
+            value: U256,
+            action: &str,
+            hardfork: TempoHardfork,
+        ) -> U256 {
             match self.reconstructed.get(&key) {
-                Some(current) => *current,
-                None => {
+                Some(current) => {
                     let (address, slot) = key;
-
-                    let original = *self
-                        .original_values
-                        .get(&key)
-                        .unwrap_or_else(|| panic!("No prior SLOAD for {address:?}:{slot:?}",));
-
-                    self.first_loads.insert(key, original);
-                    self.reconstructed.insert(key, original);
-
-                    original
+                    assert_eq!(
+                        *current, value,
+                        "{action} SLOAD value must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
+                    );
+                    *current
+                }
+                None => {
+                    self.first_loads.insert(key, value);
+                    self.reconstructed.insert(key, value);
+                    value
                 }
             }
         }
@@ -540,56 +544,40 @@ mod tests {
         hardfork: TempoHardfork,
     ) {
         let mut storage_state = StorageState::default();
-        for (address, account) in state {
-            for (slot, storage_slot) in &account.storage {
-                storage_state
-                    .original_values
-                    .insert((*address, *slot), storage_slot.original_value());
-            }
-        }
 
         for action in actions {
             match *action {
                 StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
-                    match storage_state.reconstructed.get(&key) {
-                        Some(previous) => assert_eq!(
-                            *previous, value,
-                            "SLOAD must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
-                        ),
-                        None => {
-                            storage_state.first_loads.insert(key, value);
-                            storage_state.reconstructed.insert(key, value);
-                        }
-                    }
+                    storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
                 }
-                StorageAction::Sstore(address, slot, value) => {
+                StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
-                    assert!(
-                        storage_state.reconstructed.contains_key(&key),
-                        "SSTORE without prior SLOAD for {address:?}:{slot:?} on {hardfork:?}",
-                    );
+                    storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::Sinc(address, slot, delta) => {
+                StorageAction::Sinc(address, slot, sload_value, delta) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "SINC", hardfork);
                     let value = current.checked_add(delta).unwrap_or_else(|| {
                         panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::Sdec(address, slot, delta) => {
+                StorageAction::Sdec(address, slot, sload_value, delta) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "SDEC", hardfork);
                     let value = current.checked_sub(delta).unwrap_or_else(|| {
                         panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                StorageAction::FeeAmmSwap(address, slot, sload_value, amount_in) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
                     let mut pool = Pool::decode_from_slot(current);
                     pool.apply_swap(
                         amount_in,
@@ -652,30 +640,30 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sstore(address, slot, value) => {
+                StorageAction::Sstore(address, slot, sload_value, value) => {
                     format!(
-                        "Sstore({}, {}, {value})",
+                        "Sstore({}, {}, {sload_value}, {value})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sinc(address, slot, delta) => {
+                StorageAction::Sinc(address, slot, sload_value, delta) => {
                     format!(
-                        "Sinc({}, {}, {delta})",
+                        "Sinc({}, {}, {sload_value}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sdec(address, slot, delta) => {
+                StorageAction::Sdec(address, slot, sload_value, delta) => {
                     format!(
-                        "Sdec({}, {}, {delta})",
+                        "Sdec({}, {}, {sload_value}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                StorageAction::FeeAmmSwap(address, slot, sload_value, amount_in) => {
                     format!(
-                        "FeeAmmSwap({}, {}, {amount_in})",
+                        "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
                         labels.address(address),
                         labels.slot(address, slot),
                     )
