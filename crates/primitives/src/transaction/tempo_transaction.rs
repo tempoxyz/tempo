@@ -446,8 +446,12 @@ impl TempoTransaction {
             signature_length(&self.fee_payer_signature) +
             // authorization_list
             self.tempo_authorization_list.length() +
-            // key_authorization is a trailing optional.
-            self.key_authorization.as_ref().map_or(0, Encodable::length)
+            // key_authorization (only included if present)
+            if let Some(key_auth) = &self.key_authorization {
+                key_auth.length()
+            } else {
+                0 // No bytes when None
+            }
     }
 
     pub(crate) fn rlp_encode_fields(
@@ -488,9 +492,11 @@ impl TempoTransaction {
         // Encode authorization_list
         self.tempo_authorization_list.encode(out);
 
+        // Encode key_authorization (truly optional - only encoded if present)
         if let Some(key_auth) = &self.key_authorization {
             key_auth.encode(out);
         }
+        // No bytes at all when None - maintains backwards compatibility
     }
 
     /// Public version for normal RLP encoding
@@ -579,15 +585,23 @@ impl TempoTransaction {
 
         let tempo_authorization_list = Decodable::decode(buf)?;
 
-        // Decode trailing optional key_authorization. In AASigned context, the
-        // remaining byte after these fields is usually a signature RLP string; do
-        // not consume it unless it is an RLP list.
-        let mut key_authorization = None;
-        if let Some(&first) = buf.first()
-            && first >= 0xc0
-        {
-            key_authorization = Some(Decodable::decode(buf)?);
-        }
+        // Decode optional key_authorization field at the end
+        // Check if the next byte looks like it could be a KeyAuthorization (RLP list)
+        // KeyAuthorization is encoded as a list, so it would start with 0xc0-0xf7 (short list) or 0xf8-0xff (long list)
+        // If it's a bytes string (0x80-0xbf for short, 0xb8-0xbf for long), it's not a
+        // KeyAuthorization and most likely a signature bytes following the AA transaction.
+        let key_authorization = if let Some(&first) = buf.first() {
+            // Check if this looks like an RLP list (KeyAuthorization is always a list)
+            if first >= 0xc0 {
+                // This could be a KeyAuthorization
+                Some(Decodable::decode(buf)?)
+            } else {
+                // This is likely not a KeyAuthorization (probably signature bytes in AASigned context)
+                None
+            }
+        } else {
+            None
+        };
 
         let tx = Self {
             chain_id,
