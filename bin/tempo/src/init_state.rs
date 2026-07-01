@@ -4,11 +4,12 @@
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
 
 use std::{
-    collections::HashSet,
+    cmp::Reverse,
+    collections::{BinaryHeap, HashSet},
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -66,11 +67,11 @@ const VERSION: u16 = 1;
 /// ETL collector file size (200 MiB per temp file before spilling a new one).
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
 
-/// Maximum number of storage entries to hash per worker batch.
-const WORKER_CHUNK_SIZE: usize = 100;
+/// Maximum number of binary dump storage entries to send per worker batch.
+const COLLECTION_CHUNK_SIZE: usize = 8192;
 
-/// Bounded channel depth for the hashing worker thread.
-const HASH_WORKER_QUEUE_DEPTH: usize = 256;
+/// Bounded channel depth for each collection worker.
+const COLLECTION_WORKER_QUEUE_DEPTH: usize = 32;
 
 /// Number of unique storage-history keys to buffer per worker before sending.
 const STORAGE_HISTORY_CHUNK_SIZE: usize = 8192;
@@ -78,6 +79,8 @@ const STORAGE_HISTORY_CHUNK_SIZE: usize = 8192;
 /// Bounded channel depth for each storage-history writer.
 const STORAGE_HISTORY_WORKER_QUEUE_DEPTH: usize = 64;
 
+type DumpEntry = [u8; 64];
+type StorageCollector = Collector<Vec<u8>, CompactU256>;
 type StorageHistoryEntry = (alloy_primitives::Address, B256);
 type StorageHistoryChunk = Vec<StorageHistoryEntry>;
 
@@ -124,11 +127,11 @@ pub struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoCha
     #[arg(value_name = "BINARY_DUMP_FILE")]
     state: PathBuf,
 
-    /// Number of workers to use for storage-history and trie-root parallel phases.
+    /// Number of workers to use across collection, storage-history, and trie-root phases.
     ///
     /// Use `auto` to resolve to one less than the available CPU count, with a minimum of 1.
-    /// A value of 1 preserves the historical single-writer storage-history and serial trie
-    /// behavior.
+    /// A value of 1 preserves the historical single-worker collection, single-writer
+    /// storage-history, and serial trie behavior.
     #[arg(
         long,
         default_value = "auto",
@@ -150,6 +153,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let workers = self.workers.resolve();
         info!(target: "tempo::cli", workers, "Resolved init-from-binary-dump workers");
+
         let etl_dir = self
             .env
             .datadir
@@ -176,57 +180,28 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             .wrap_err_with(|| format!("failed to open {}", self.state.display()))?;
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, file);
 
-        let mut total_entries = 0u64;
+        let total_entries: u64;
         let mut total_blocks = 0u64;
 
         // Track addresses and their account data for hashing
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
         let mut genesis_storage_keys = HashSet::new();
 
-        // ETL collectors: accumulate entries sorted, spill to disk when full
-        let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
-            Vec::with_capacity(WORKER_CHUNK_SIZE);
-        let mut storage_changeset_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
-        let mut storage_history_collector: Collector<Vec<u8>, CompactU256> =
+        let mut genesis_storage_changeset_collector: StorageCollector =
             Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
 
         for (index, entry) in provider_rw.storage_changeset(0)? {
             let raw_key = raw_storage_key(index.address(), entry.key);
             genesis_storage_keys.insert(raw_key.clone());
-            storage_changeset_collector
+            genesis_storage_changeset_collector
                 .insert(raw_key, CompactU256::from(entry.value))
                 .wrap_err("storage changeset ETL insert of genesis storage failed")?;
         }
 
-        // Single worker thread for keccak hashing: owns the hashed ETL collector, receives
-        // batches over a bounded channel, and returns the collector when the sender drops.
-        let (hash_tx, hash_rx) = mpsc::sync_channel::<
-            Vec<(alloy_primitives::Address, B256, CompactU256)>,
-        >(HASH_WORKER_QUEUE_DEPTH);
-        let hashed_etl_dir = etl_dir;
-        let hash_worker =
-            thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
-                let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
-                    Collector::new(ETL_FILE_SIZE, Some(hashed_etl_dir));
-                while let Ok(chunk) = hash_rx.recv() {
-                    let mut last_addr = alloy_primitives::Address::ZERO;
-                    let mut hashed_addr = B256::ZERO;
-                    for (address, slot, value) in chunk {
-                        if address != last_addr {
-                            last_addr = address;
-                            hashed_addr = keccak256(address);
-                        }
-                        let mut hashed_key = Vec::with_capacity(64);
-                        hashed_key.extend_from_slice(hashed_addr.as_slice());
-                        hashed_key.extend_from_slice(keccak256(slot).as_slice());
-                        hashed_collector
-                            .insert(hashed_key, value)
-                            .wrap_err("hashed ETL insert failed")?;
-                    }
-                }
-                Ok(hashed_collector)
-            });
+        let genesis_storage_keys = Arc::new(genesis_storage_keys);
+        let mut collection_pool =
+            CollectionWorkerPool::new(workers, etl_dir.clone(), genesis_storage_keys)?;
+        let mut collection_chunk = CollectionChunk::new(alloy_primitives::Address::ZERO);
 
         // Process blocks from binary file
         loop {
@@ -291,7 +266,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 e.insert(account);
             }
 
-            // Read entries into the hashed ETL collector.
+            if !collection_chunk.entries.is_empty() && collection_chunk.address != address {
+                let chunk = std::mem::replace(&mut collection_chunk, CollectionChunk::new(address));
+                collection_pool.send(chunk)?;
+            }
+            collection_chunk.address = address;
+
+            // Read entries into collection-worker batches.
             let mut entry_buf = [0u8; 64];
             let start = Instant::now();
             let mut last_log = start;
@@ -301,37 +282,12 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     .read_exact(&mut entry_buf)
                     .wrap_err("failed to read storage entry")?;
 
-                let slot = B256::from_slice(&entry_buf[..32]);
-                let value = U256::from_be_bytes::<32>(entry_buf[32..64].try_into().unwrap());
-
-                // Skip zero values (they represent deletion)
-                if value.is_zero() {
-                    continue;
-                }
-
-                let compact_value = CompactU256::from(value);
-
-                let raw_key = raw_storage_key(address, slot);
-                if !genesis_storage_keys.contains(&raw_key) {
-                    storage_changeset_collector
-                        .insert(raw_key.clone(), CompactU256::from(U256::ZERO))
-                        .wrap_err("storage changeset ETL insert failed")?;
-                    storage_history_collector
-                        .insert(raw_key, CompactU256::from(U256::ZERO))
-                        .wrap_err("storage history ETL insert failed")?;
-                }
-
-                // Queue raw data for parallel hashing
-                hash_chunk.push((address, slot, compact_value));
-
-                // Send full batches to the hashing worker thread.
-                if hash_chunk.len() >= WORKER_CHUNK_SIZE {
+                collection_chunk.entries.push(entry_buf);
+                if collection_chunk.entries.len() >= COLLECTION_CHUNK_SIZE {
                     let chunk =
-                        std::mem::replace(&mut hash_chunk, Vec::with_capacity(WORKER_CHUNK_SIZE));
-                    hash_tx.send(chunk).wrap_err("hash worker disconnected")?;
+                        std::mem::replace(&mut collection_chunk, CollectionChunk::new(address));
+                    collection_pool.send(chunk)?;
                 }
-
-                total_entries += 1;
 
                 log_collection_progress(&address, i, pair_count, start, &mut last_log);
             }
@@ -339,16 +295,42 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             total_blocks += 1;
         }
 
-        // Send any remaining entries to the worker and join.
-        if !hash_chunk.is_empty() {
-            hash_tx
-                .send(std::mem::take(&mut hash_chunk))
-                .wrap_err("hash worker disconnected")?;
+        if !collection_chunk.entries.is_empty() {
+            collection_pool.send(collection_chunk)?;
         }
-        drop(hash_tx);
-        let mut hashed_collector = hash_worker
-            .join()
-            .map_err(|_| eyre::eyre!("hash worker panicked"))??;
+        let collection_results = collection_pool.finish()?;
+        let active_collection_workers = collection_results
+            .iter()
+            .filter(|result| result.entries > 0)
+            .count();
+        let collection_worker_chunks: usize =
+            collection_results.iter().map(|result| result.chunks).sum();
+        let collection_worker_pairs: usize =
+            collection_results.iter().map(|result| result.pairs).sum();
+        let collection_worker_entries: usize =
+            collection_results.iter().map(|result| result.entries).sum();
+        total_entries = collection_worker_entries as u64;
+
+        let mut hashed_collectors = Vec::with_capacity(collection_results.len() + 1);
+        let mut storage_changeset_collectors = Vec::with_capacity(collection_results.len() + 1);
+        let mut storage_history_collectors = Vec::with_capacity(collection_results.len());
+
+        for result in collection_results {
+            hashed_collectors.push(result.hashed_collector);
+            storage_changeset_collectors.push(result.storage_changeset_collector);
+            storage_history_collectors.push(result.storage_history_collector);
+        }
+        storage_changeset_collectors.push(genesis_storage_changeset_collector);
+
+        info!(
+            target: "tempo::cli",
+            workers,
+            active_collection_workers,
+            collection_worker_chunks,
+            collection_worker_pairs,
+            collection_worker_entries,
+            "Collection workers finished"
+        );
 
         info!(
             target: "tempo::cli",
@@ -359,6 +341,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Merge existing genesis hashed storage into the collector.
         {
+            let mut genesis_hashed_collector: StorageCollector =
+                Collector::new(ETL_FILE_SIZE, Some(etl_dir));
             let tx = provider_rw.tx_ref();
             let mut cursor = tx.cursor_read::<tables::HashedStorages>()?;
             let mut genesis_count = 0usize;
@@ -368,11 +352,12 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 let mut key = Vec::with_capacity(64);
                 key.extend_from_slice(hashed_address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
-                hashed_collector
+                genesis_hashed_collector
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis hashed storage failed")?;
                 genesis_count += 1;
             }
+            hashed_collectors.push(genesis_hashed_collector);
             info!(
                 target: "tempo::cli",
                 genesis_count,
@@ -388,26 +373,29 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let storage_changeset_factory = provider_factory.clone();
         let storage_changeset_worker = thread::spawn(move || {
-            write_storage_changesets(storage_changeset_factory, storage_changeset_collector)
+            write_storage_changesets(storage_changeset_factory, storage_changeset_collectors)
         });
 
         let trie_provider_factory = provider_factory.clone();
         let storage_history_factory = provider_factory;
         let storage_history_worker = thread::spawn(move || {
-            write_storage_history(storage_history_factory, storage_history_collector, workers)
+            write_storage_history(storage_history_factory, storage_history_collectors, workers)
         });
 
         // Load sorted entries from each ETL collector into its database table.
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
         // the same composite key, and bulk-insert via append_dup.
         // The table is cleared first so append_dup ordering is guaranteed.
-        let total_hashes = hashed_collector.len();
+        let total_hashes = hashed_collectors
+            .iter()
+            .map(|collector| collector.len())
+            .sum::<usize>();
         provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
         let mut hashed_cursor = provider_rw
             .tx_ref()
             .cursor_dup_write::<tables::HashedStorages>()?;
-        load_etl_to_cursor(
-            &mut hashed_collector,
+        load_etl_collectors_to_cursor(
+            &mut hashed_collectors,
             total_hashes,
             "hashed storage",
             |k, v| {
@@ -761,9 +749,185 @@ fn full_trie_prefix_sets_from_hashed_accounts(
     prefix_sets.freeze()
 }
 
+struct CollectionChunk {
+    address: alloy_primitives::Address,
+    entries: Vec<DumpEntry>,
+}
+
+impl CollectionChunk {
+    fn new(address: alloy_primitives::Address) -> Self {
+        Self {
+            address,
+            entries: Vec::with_capacity(COLLECTION_CHUNK_SIZE),
+        }
+    }
+}
+
+struct CollectionWorkerResult {
+    hashed_collector: StorageCollector,
+    storage_changeset_collector: StorageCollector,
+    storage_history_collector: StorageCollector,
+    chunks: usize,
+    pairs: usize,
+    entries: usize,
+}
+
+struct CollectionWorkerPool {
+    senders: Vec<mpsc::SyncSender<CollectionChunk>>,
+    handles: Vec<thread::JoinHandle<eyre::Result<CollectionWorkerResult>>>,
+    next_worker: usize,
+}
+
+impl CollectionWorkerPool {
+    fn new(
+        worker_count: usize,
+        etl_dir: PathBuf,
+        genesis_storage_keys: Arc<HashSet<Vec<u8>>>,
+    ) -> eyre::Result<Self> {
+        let worker_count = worker_count.max(1);
+        let mut senders = Vec::with_capacity(worker_count);
+        let mut handles = Vec::with_capacity(worker_count);
+
+        for worker_id in 0..worker_count {
+            let (tx, rx) = mpsc::sync_channel::<CollectionChunk>(COLLECTION_WORKER_QUEUE_DEPTH);
+            let worker_etl_dir = etl_dir.clone();
+            let worker_genesis_storage_keys = Arc::clone(&genesis_storage_keys);
+            let handle = thread::Builder::new()
+                .name(format!("tempo-state-collect-{worker_id}"))
+                .spawn(move || {
+                    collection_worker_loop(
+                        rx,
+                        worker_etl_dir,
+                        ETL_FILE_SIZE,
+                        worker_genesis_storage_keys,
+                    )
+                })
+                .wrap_err("failed to spawn collection worker")?;
+            senders.push(tx);
+            handles.push(handle);
+        }
+
+        Ok(Self {
+            senders,
+            handles,
+            next_worker: 0,
+        })
+    }
+
+    fn send(&mut self, chunk: CollectionChunk) -> eyre::Result<()> {
+        if chunk.entries.is_empty() {
+            return Ok(());
+        }
+
+        let worker = self.next_worker;
+        self.next_worker = (self.next_worker + 1) % self.senders.len();
+        self.senders[worker]
+            .send(chunk)
+            .map_err(|_| eyre::eyre!("collection worker disconnected"))?;
+        Ok(())
+    }
+
+    fn finish(self) -> eyre::Result<Vec<CollectionWorkerResult>> {
+        let Self {
+            senders,
+            handles,
+            next_worker: _,
+        } = self;
+        drop(senders);
+
+        let mut results = Vec::with_capacity(handles.len());
+        for handle in handles {
+            results.push(
+                handle
+                    .join()
+                    .map_err(|_| eyre::eyre!("collection worker panicked"))??,
+            );
+        }
+        Ok(results)
+    }
+}
+
+fn collection_worker_loop(
+    rx: mpsc::Receiver<CollectionChunk>,
+    etl_dir: PathBuf,
+    etl_file_size: usize,
+    genesis_storage_keys: Arc<HashSet<Vec<u8>>>,
+) -> eyre::Result<CollectionWorkerResult> {
+    let mut hashed_collector = Collector::new(etl_file_size, Some(etl_dir.clone()));
+    let mut storage_changeset_collector = Collector::new(etl_file_size, Some(etl_dir.clone()));
+    let mut storage_history_collector = Collector::new(etl_file_size, Some(etl_dir));
+    let mut chunks = 0usize;
+    let mut pairs = 0usize;
+    let mut entries = 0usize;
+
+    while let Ok(chunk) = rx.recv() {
+        chunks += 1;
+        pairs += chunk.entries.len();
+        entries += collect_dump_chunk(
+            chunk,
+            &genesis_storage_keys,
+            &mut hashed_collector,
+            &mut storage_changeset_collector,
+            &mut storage_history_collector,
+        )?;
+    }
+
+    Ok(CollectionWorkerResult {
+        hashed_collector,
+        storage_changeset_collector,
+        storage_history_collector,
+        chunks,
+        pairs,
+        entries,
+    })
+}
+
+fn collect_dump_chunk(
+    chunk: CollectionChunk,
+    genesis_storage_keys: &HashSet<Vec<u8>>,
+    hashed_collector: &mut StorageCollector,
+    storage_changeset_collector: &mut StorageCollector,
+    storage_history_collector: &mut StorageCollector,
+) -> eyre::Result<usize> {
+    let hashed_addr = keccak256(chunk.address);
+    let zero = CompactU256::from(U256::ZERO);
+    let mut entries = 0usize;
+
+    for entry in chunk.entries {
+        if entry[32..].iter().all(|byte| *byte == 0) {
+            continue;
+        }
+
+        let slot = B256::from_slice(&entry[..32]);
+        let value = U256::from_be_bytes::<32>(entry[32..64].try_into().unwrap());
+        let compact_value = CompactU256::from(value);
+
+        let raw_key = raw_storage_key(chunk.address, slot);
+        if !genesis_storage_keys.contains(raw_key.as_slice()) {
+            storage_changeset_collector
+                .insert(raw_key.clone(), zero.clone())
+                .wrap_err("storage changeset ETL insert failed")?;
+            storage_history_collector
+                .insert(raw_key, zero.clone())
+                .wrap_err("storage history ETL insert failed")?;
+        }
+
+        let mut hashed_key = Vec::with_capacity(64);
+        hashed_key.extend_from_slice(hashed_addr.as_slice());
+        hashed_key.extend_from_slice(keccak256(slot).as_slice());
+        hashed_collector
+            .insert(hashed_key, compact_value)
+            .wrap_err("hashed ETL insert failed")?;
+
+        entries += 1;
+    }
+
+    Ok(entries)
+}
+
 fn write_storage_changesets<P>(
     provider: P,
-    mut collector: Collector<Vec<u8>, CompactU256>,
+    mut collectors: Vec<StorageCollector>,
 ) -> eyre::Result<()>
 where
     P: StaticFileProviderFactory + Send + 'static,
@@ -776,9 +940,9 @@ where
 
     let mut writer = provider.get_static_file_writer(0, StaticFileSegment::StorageChangeSets)?;
     writer.begin_storage_changeset(0)?;
-    let total = collector.len();
-    load_storage_etl(
-        &mut collector,
+    let total = collectors.iter().map(|collector| collector.len()).sum();
+    load_storage_etl_collectors(
+        &mut collectors,
         total,
         "storage changeset",
         |address, key, value| {
@@ -797,7 +961,7 @@ where
 
 fn write_storage_history<P>(
     provider: P,
-    mut collector: Collector<Vec<u8>, CompactU256>,
+    mut collectors: Vec<StorageCollector>,
     worker_count: usize,
 ) -> eyre::Result<()>
 where
@@ -806,23 +970,27 @@ where
     info!(target: "tempo::cli", worker_count, "Writing storage history...");
 
     let rocksdb = provider.rocksdb_provider();
-    let total = collector.len();
+    let total = collectors.iter().map(|collector| collector.len()).sum();
     if worker_count <= 1 {
         let mut batch = rocksdb.batch_with_auto_commit();
         let block_zero_history =
             tables::BlockNumberList::new([0]).expect("single block is always sorted");
-        let entries =
-            load_storage_history_etl(&mut collector, total, "storage history", |entry| {
-                write_storage_history_entry(&mut batch, &block_zero_history, entry)
-            })?;
+        let entries = load_storage_history_etl_collectors(
+            &mut collectors,
+            total,
+            "storage history",
+            |entry| write_storage_history_entry(&mut batch, &block_zero_history, entry),
+        )?;
         batch.commit()?;
         info!(target: "tempo::cli", entries, "Storage history written");
     } else {
         let mut pool = StorageHistoryWorkerPool::new(worker_count, rocksdb)?;
-        let entries =
-            load_storage_history_etl(&mut collector, total, "storage history", |entry| {
-                pool.send(entry)
-            })?;
+        let entries = load_storage_history_etl_collectors(
+            &mut collectors,
+            total,
+            "storage history",
+            |entry| pool.send(entry),
+        )?;
         let results = pool.finish()?;
         let active_workers = results.iter().filter(|result| result.entries > 0).count();
         let worker_entries: usize = results.iter().map(|result| result.entries).sum();
@@ -994,100 +1162,76 @@ fn decode_raw_storage_key(key: &[u8]) -> (alloy_primitives::Address, B256) {
     )
 }
 
-/// Iterate a raw storage ETL collector, deduplicate consecutive entries with the
+/// Iterate raw storage ETL collectors, deduplicate consecutive entries with the
 /// same `(address, slot)` key, and call `write` for each unique entry.
-fn load_storage_etl(
-    collector: &mut Collector<Vec<u8>, CompactU256>,
+fn load_storage_etl_collectors(
+    collectors: &mut [StorageCollector],
     total: usize,
     label: &str,
     mut write: impl FnMut(alloy_primitives::Address, B256, U256) -> eyre::Result<()>,
 ) -> eyre::Result<()> {
-    let total = total.max(1);
-    let interval = (total / 10).max(1);
-    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
-    for (index, item) in collector.iter()?.enumerate() {
-        if index > 0 && index % interval == 0 {
-            info!(
-                target: "tempo::cli",
-                progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
-                "Inserting {label}"
-            );
-        }
-
-        let (key, value) = item.wrap_err("ETL iteration failed")?;
-        if let Some((ref prev_key, ref prev_val)) = pending
-            && *prev_key != key
-        {
-            let (address, storage_key) = decode_raw_storage_key(prev_key);
-            write(
-                address,
-                storage_key,
-                CompactU256::decompress_owned(prev_val.clone())?.into(),
-            )?;
-        }
-        pending = Some((key, value));
-    }
-
-    if let Some((key, val)) = pending {
+    load_etl_collectors(collectors, total, label, |key, value| {
         let (address, storage_key) = decode_raw_storage_key(&key);
         write(
             address,
             storage_key,
-            CompactU256::decompress_owned(val)?.into(),
-        )?;
-    }
-
-    Ok(())
+            CompactU256::decompress_owned(value)?.into(),
+        )
+    })
 }
 
-fn load_storage_history_etl(
-    collector: &mut Collector<Vec<u8>, CompactU256>,
+fn load_storage_history_etl_collectors(
+    collectors: &mut [StorageCollector],
     total: usize,
     label: &str,
     mut write: impl FnMut(StorageHistoryEntry) -> eyre::Result<()>,
 ) -> eyre::Result<usize> {
-    let total = total.max(1);
-    let interval = (total / 10).max(1);
-    let mut pending: Option<Vec<u8>> = None;
     let mut entries = 0usize;
-    for (index, item) in collector.iter()?.enumerate() {
-        if index > 0 && index % interval == 0 {
-            info!(
-                target: "tempo::cli",
-                progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
-                "Inserting {label}"
-            );
-        }
-
-        let (key, _) = item.wrap_err("ETL iteration failed")?;
-        if let Some(ref prev_key) = pending
-            && *prev_key != key
-        {
-            write(decode_raw_storage_key(prev_key))?;
-            entries += 1;
-        }
-        pending = Some(key);
-    }
-
-    if let Some(key) = pending {
+    load_etl_collectors(collectors, total, label, |key, _| {
         write(decode_raw_storage_key(&key))?;
         entries += 1;
-    }
-
+        Ok(())
+    })?;
     Ok(entries)
 }
 
-/// Iterate a sorted ETL collector, deduplicate consecutive entries with the same key
+/// Iterate sorted ETL collectors, deduplicate consecutive entries with the same key
 /// (keeping the last value), and call `append` for each unique entry.
-fn load_etl_to_cursor(
-    collector: &mut Collector<Vec<u8>, CompactU256>,
+fn load_etl_collectors_to_cursor(
+    collectors: &mut [StorageCollector],
     total: usize,
     label: &str,
     mut append: impl FnMut(&[u8], U256) -> Result<(), reth_db_api::DatabaseError>,
 ) -> eyre::Result<()> {
+    load_etl_collectors(collectors, total, label, |key, value| {
+        append(&key, CompactU256::decompress_owned(value)?.into()).wrap_err("cursor append failed")
+    })
+}
+
+fn load_etl_collectors(
+    collectors: &mut [StorageCollector],
+    total: usize,
+    label: &str,
+    mut write: impl FnMut(Vec<u8>, Vec<u8>) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let total = total.max(1);
     let interval = (total / 10).max(1);
+    let mut iterators = Vec::with_capacity(collectors.len());
+    for collector in collectors.iter_mut() {
+        iterators.push(collector.iter()?);
+    }
+
+    let mut heap = BinaryHeap::<(Reverse<(Vec<u8>, Vec<u8>)>, usize)>::new();
+    for (collector_id, iterator) in iterators.iter_mut().enumerate() {
+        if let Some(item) = iterator.next() {
+            let (key, value) = item.wrap_err("ETL iteration failed")?;
+            heap.push((Reverse((key, value)), collector_id));
+        }
+    }
+
     let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
-    for (index, item) in collector.iter()?.enumerate() {
+    let mut index = 0usize;
+    while let Some((Reverse((key, value)), collector_id)) = heap.pop() {
         if index > 0 && index % interval == 0 {
             info!(
                 target: "tempo::cli",
@@ -1096,21 +1240,22 @@ fn load_etl_to_cursor(
             );
         }
 
-        let (key, value) = item.wrap_err("ETL iteration failed")?;
-        if let Some((ref prev_key, ref prev_val)) = pending
-            && *prev_key != key
+        if let Some((prev_key, prev_val)) = pending.take()
+            && prev_key != key
         {
-            append(
-                prev_key,
-                CompactU256::decompress_owned(prev_val.clone())?.into(),
-            )
-            .wrap_err("cursor append failed")?;
+            write(prev_key, prev_val)?;
         }
         pending = Some((key, value));
+
+        if let Some(item) = iterators[collector_id].next() {
+            let (key, value) = item.wrap_err("ETL iteration failed")?;
+            heap.push((Reverse((key, value)), collector_id));
+        }
+
+        index += 1;
     }
     if let Some((key, val)) = pending {
-        append(&key, CompactU256::decompress_owned(val)?.into())
-            .wrap_err("cursor append failed")?;
+        write(key, val)?;
     }
     Ok(())
 }
@@ -1138,6 +1283,7 @@ fn log_collection_progress(
         *last_log = Instant::now();
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,6 +1301,102 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[24..].copy_from_slice(&value.to_be_bytes());
         B256::from(bytes)
+    }
+
+    fn dump_entry(slot: B256, value: U256) -> DumpEntry {
+        let mut entry = [0u8; 64];
+        entry[..32].copy_from_slice(slot.as_slice());
+        entry[32..].copy_from_slice(&value.to_be_bytes::<32>());
+        entry
+    }
+
+    #[test]
+    fn collect_dump_chunk_filters_zeroes_and_skips_genesis_raw_keys() -> eyre::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let account = address(7);
+        let new_slot = slot(1);
+        let zero_slot = slot(2);
+        let genesis_slot = slot(3);
+
+        let mut genesis_storage_keys = HashSet::new();
+        genesis_storage_keys.insert(raw_storage_key(account, genesis_slot));
+
+        let chunk = CollectionChunk {
+            address: account,
+            entries: vec![
+                dump_entry(new_slot, U256::from(11)),
+                dump_entry(zero_slot, U256::ZERO),
+                dump_entry(genesis_slot, U256::from(33)),
+            ],
+        };
+
+        let mut hashed_collector = Collector::new(128, Some(tempdir.path().to_path_buf()));
+        let mut changeset_collector = Collector::new(128, Some(tempdir.path().to_path_buf()));
+        let mut history_collector = Collector::new(128, Some(tempdir.path().to_path_buf()));
+
+        let entries = collect_dump_chunk(
+            chunk,
+            &genesis_storage_keys,
+            &mut hashed_collector,
+            &mut changeset_collector,
+            &mut history_collector,
+        )?;
+
+        assert_eq!(entries, 2);
+
+        let changeset_total = changeset_collector.len();
+        let mut changeset_output = Vec::new();
+        load_storage_etl_collectors(
+            std::slice::from_mut(&mut changeset_collector),
+            changeset_total,
+            "test changeset",
+            |address, key, value| {
+                changeset_output.push((address, key, value));
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(changeset_output, vec![(account, new_slot, U256::ZERO)]);
+
+        let history_total = history_collector.len();
+        let mut history_output = Vec::new();
+        load_storage_etl_collectors(
+            std::slice::from_mut(&mut history_collector),
+            history_total,
+            "test history",
+            |address, key, value| {
+                history_output.push((address, key, value));
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(history_output, vec![(account, new_slot, U256::ZERO)]);
+
+        let hashed_total = hashed_collector.len();
+        let mut hashed_output = Vec::new();
+        load_etl_collectors_to_cursor(
+            std::slice::from_mut(&mut hashed_collector),
+            hashed_total,
+            "test hashed",
+            |key, value| {
+                hashed_output.push((key.to_vec(), value));
+                Ok::<_, reth_db_api::DatabaseError>(())
+            },
+        )?;
+
+        assert_eq!(hashed_output.len(), 2);
+        assert!(
+            hashed_output
+                .iter()
+                .any(|(_, value)| *value == U256::from(11))
+        );
+        assert!(
+            hashed_output
+                .iter()
+                .any(|(_, value)| *value == U256::from(33))
+        );
+
+        Ok(())
     }
 
     fn sample_storage_history_collector() -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
@@ -1196,17 +1438,27 @@ mod tests {
         let mut output = Vec::new();
 
         if worker_count <= 1 {
-            load_storage_history_etl(&mut collector, total, "test storage history", |entry| {
-                output.push(encoded_storage_history_entry(entry));
-                Ok(())
-            })?;
+            load_storage_history_etl_collectors(
+                std::slice::from_mut(&mut collector),
+                total,
+                "test storage history",
+                |entry| {
+                    output.push(encoded_storage_history_entry(entry));
+                    Ok(())
+                },
+            )?;
         } else {
             let mut shards = vec![Vec::new(); worker_count];
-            load_storage_history_etl(&mut collector, total, "test storage history", |entry| {
-                let shard = storage_history_shard(entry.0, entry.1, worker_count);
-                shards[shard].push(encoded_storage_history_entry(entry));
-                Ok(())
-            })?;
+            load_storage_history_etl_collectors(
+                std::slice::from_mut(&mut collector),
+                total,
+                "test storage history",
+                |entry| {
+                    let shard = storage_history_shard(entry.0, entry.1, worker_count);
+                    shards[shard].push(encoded_storage_history_entry(entry));
+                    Ok(())
+                },
+            )?;
             output = shards.into_iter().flatten().collect();
             output.sort();
         }
