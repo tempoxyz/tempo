@@ -382,7 +382,17 @@ async fn test_block_building_reports_scheduled_feature_readiness_once() -> eyre:
             .await?
     );
 
+    inject_non_payment_txs(&mut setup.node, chain_id, 1, 42).await?;
+
     let first_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
+    let mut first_transactions = first_payload.block().body().transactions();
+    let first_tx = first_transactions
+        .next()
+        .ok_or_else(|| eyre::eyre!("payload should contain readiness report"))?;
+    assert!(first_tx.is_system_tx());
+    assert_eq!(first_tx.to(), Some(FEATURE_REGISTRY_ADDRESS));
+    assert!(first_transactions.any(|tx| tx.gas_limit() > 0));
+
     let reports = feature_readiness_reports(&first_payload)?;
     assert_eq!(reports.len(), 1);
     assert!(reports[0].ready);

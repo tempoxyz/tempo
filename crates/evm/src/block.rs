@@ -42,7 +42,7 @@ use tracing::trace;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
     /// Start of block system transactions.
-    StartOfBlock,
+    StartOfBlock { seen_feature_readiness_report: bool },
     /// Basic section of the block. Includes arbitrary transactions chosen by the proposer.
     ///
     /// Must use at most `non_shared_gas_left` gas.
@@ -52,10 +52,7 @@ pub(crate) enum BlockSection {
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
-    System {
-        seen_subblocks_signatures: bool,
-        seen_feature_readiness_report: bool,
-    },
+    System { seen_subblocks_signatures: bool },
 }
 
 /// Builder for [`TempoReceipt`].
@@ -183,7 +180,9 @@ where
                 chain_spec,
                 TempoReceiptBuilder::default(),
             ),
-            section: BlockSection::StartOfBlock,
+            section: BlockSection::StartOfBlock {
+                seen_feature_readiness_report: false,
+            },
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
@@ -320,15 +319,7 @@ where
         let mut seen_subblocks_signatures = match self.section {
             BlockSection::System {
                 seen_subblocks_signatures,
-                ..
             } => seen_subblocks_signatures,
-            _ => false,
-        };
-        let mut seen_feature_readiness_report = match self.section {
-            BlockSection::System {
-                seen_feature_readiness_report,
-                ..
-            } => seen_feature_readiness_report,
             _ => false,
         };
 
@@ -364,6 +355,16 @@ where
 
             seen_subblocks_signatures = true;
         } else if to == FEATURE_REGISTRY_ADDRESS {
+            let seen_feature_readiness_report = match self.section {
+                BlockSection::StartOfBlock {
+                    seen_feature_readiness_report,
+                } => seen_feature_readiness_report,
+                _ => {
+                    return Err(BlockValidationError::msg(
+                        "feature head readiness system transaction must be first",
+                    ));
+                }
+            };
             if seen_feature_readiness_report {
                 return Err(BlockValidationError::msg(
                     "duplicate feature head readiness system transaction",
@@ -386,14 +387,15 @@ where
                 |_| BlockValidationError::msg("invalid feature head readiness system transaction"),
             )?;
 
-            seen_feature_readiness_report = true;
+            return Ok(BlockSection::StartOfBlock {
+                seen_feature_readiness_report: true,
+            });
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }
 
         Ok(BlockSection::System {
             seen_subblocks_signatures,
-            seen_feature_readiness_report,
         })
     }
 
@@ -533,7 +535,7 @@ where
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
+                BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     Ok(BlockSection::SubBlock {
                         proposer: tx_proposer,
                     })
@@ -554,7 +556,7 @@ where
             }
         } else {
             match self.section {
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
+                BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
                     {
@@ -710,7 +712,7 @@ where
         self.section = next_section;
 
         match self.section {
-            BlockSection::StartOfBlock => {
+            BlockSection::StartOfBlock { .. } => {
                 // no gas spending for start-of-block system transactions
             }
             BlockSection::NonShared => {
@@ -752,7 +754,6 @@ where
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
                 seen_subblocks_signatures,
-                ..
             } => seen_subblocks_signatures,
             _ => false,
         };
@@ -988,7 +989,6 @@ mod tests {
             result.unwrap(),
             BlockSection::System {
                 seen_subblocks_signatures: true,
-                seen_feature_readiness_report: false,
             }
         );
     }
@@ -1051,7 +1051,6 @@ mod tests {
         let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: true,
-                seen_feature_readiness_report: false,
             })
             .build(&mut db, &chainspec);
 
@@ -1089,8 +1088,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            BlockSection::System {
-                seen_subblocks_signatures: false,
+            BlockSection::StartOfBlock {
                 seen_feature_readiness_report: true,
             }
         );
@@ -1125,8 +1123,7 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let executor = TestExecutorBuilder::default()
             .with_runtime_spec(TempoHardfork::T9)
-            .with_section(BlockSection::System {
-                seen_subblocks_signatures: false,
+            .with_section(BlockSection::StartOfBlock {
                 seen_feature_readiness_report: true,
             })
             .build(&mut db, &chainspec);
@@ -1139,6 +1136,28 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "duplicate feature head readiness system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_feature_head_readiness_rejects_after_block_start() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let mut builder = TestExecutorBuilder::default()
+            .with_runtime_spec(TempoHardfork::T9)
+            .with_section(BlockSection::NonShared);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let executor = builder.build(&mut db, &chainspec);
+        let input = create_feature_readiness_system_tx_input(true, 1);
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "feature head readiness system transaction must be first"
         );
     }
 
@@ -1505,7 +1524,6 @@ mod tests {
         let executor2 = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
-                seen_feature_readiness_report: false,
             })
             .build(&mut db2, &chainspec);
 
@@ -1556,7 +1574,6 @@ mod tests {
         let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
-                seen_feature_readiness_report: false,
             })
             .build(&mut db, &chainspec);
 

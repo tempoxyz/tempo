@@ -211,15 +211,13 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
-    /// Builds system transactions to seal the block.
+    /// Builds system transactions that must execute before user transactions.
     ///
-    /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// - Subblocks signatures - validates subblock signatures
+    /// Returns a vector of system transactions that must be executed at the start of each block:
     /// - Feature readiness confirmation - reports that validator is ready for the scheduled feature head
-    fn build_seal_block_txs(
+    fn build_start_block_txs(
         &self,
         evm: &mut TempoEvm<impl Database>,
-        subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
@@ -229,23 +227,38 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             txs.push(tx);
         }
 
+        txs
+    }
+
+    /// Builds system transactions to seal the block.
+    ///
+    /// Returns a vector of system transactions that must be executed at the end of each block:
+    /// - Subblocks signatures - validates subblock signatures
+    fn build_seal_block_txs(
+        &self,
+        evm: &TempoEvm<impl Database>,
+        subblocks: &[RecoveredSubBlock],
+    ) -> Vec<Recovered<TempoTxEnvelope>> {
         if subblocks.is_empty() && evm.cfg.spec.is_t4() {
             // Post-T4, omit the subblocks metadata transaction if there are no subblocks
-            return txs;
+            return vec![];
         }
+
+        let chain_spec = self.provider.chain_spec();
+        let chain_id = Some(chain_spec.chain().id());
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
             .iter()
             .map(|s| s.metadata())
             .collect::<Vec<SubBlockMetadata>>();
-        txs.push(Self::system_tx(
+
+        vec![Self::system_tx(
             chain_id,
             Address::ZERO,
             alloy_rlp::encode(&subblocks_metadata),
             evm.block.number,
-        ));
-        txs
+        )]
     }
 
     fn build_feature_readiness_report_tx(
@@ -612,8 +625,9 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(executor.evm_mut(), &subblocks);
-        for tx in &system_txs {
+        let start_system_txs = self.build_start_block_txs(executor.evm_mut());
+        let seal_system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
+        for tx in start_system_txs.iter().chain(seal_system_txs.iter()) {
             estimated_rlp_block_size += tx.inner().length();
         }
         let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
@@ -626,6 +640,28 @@ where
                 rlp_length: estimated_rlp_block_size,
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
+        }
+
+        let mut system_txs_execution_elapsed = Duration::ZERO;
+        if !start_system_txs.is_empty() {
+            let system_txs_execution_start = Instant::now();
+            let _system_txs_span =
+                debug_span!(target: "payload_builder", "execute_start_system_txs").entered();
+            for system_tx in start_system_txs {
+                executor
+                    .execute_transaction(&system_tx)
+                    .map_err(PayloadBuilderError::evm)?;
+                if let Some(bal_task_handle) = &bal_task_handle {
+                    bal_task_handle.bump_bal_index();
+                }
+
+                let _ = roots_tx.send((
+                    BuilderTx::Owned(Box::new(system_tx)),
+                    executor.receipts().last().unwrap().clone(),
+                ));
+            }
+            drop(_system_txs_span);
+            system_txs_execution_elapsed += system_txs_execution_start.elapsed();
         }
 
         let base_fee = executor.evm().block().basefee;
@@ -961,7 +997,7 @@ where
         let system_txs_execution_start = Instant::now();
         let _system_txs_span =
             debug_span!(target: "payload_builder", "execute_system_txs").entered();
-        for system_tx in system_txs {
+        for system_tx in seal_system_txs {
             executor
                 .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
@@ -975,7 +1011,7 @@ where
             ));
         }
         drop(_system_txs_span);
-        let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
+        system_txs_execution_elapsed += system_txs_execution_start.elapsed();
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
