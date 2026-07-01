@@ -360,12 +360,9 @@ impl Hash for MultisigSignature {
     }
 }
 
-/// Returns whether an address is eligible to be a derived native multisig account.
+/// Returns whether an address is eligible to be a native multisig account.
 pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
-    !account.is_zero()
-        && !account.is_tip20()
-        && !account.is_virtual()
-        && !account.is_precompile(spec)
+    !account.is_zero() && !account.is_virtual() && !account.is_precompile(spec)
 }
 
 /// Computes the digest that native multisig owners approve.
@@ -494,6 +491,9 @@ mod tests {
     };
     use proptest::prelude::*;
     use sha2::{Digest, Sha256};
+    use tempo_contracts::precompiles::{
+        NATIVE_MULTISIG_ADDRESS, PATH_USD_ADDRESS, SYSTEM_PRECOMPILES,
+    };
 
     fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> InitMultisig {
         let mut owners = owners
@@ -650,6 +650,31 @@ mod tests {
             config.validate(),
             Err("multisig total owner weight exceeds u8::MAX")
         );
+    }
+
+    #[test]
+    fn multisig_account_eligibility_uses_current_hardfork_precompile_set() {
+        assert!(is_valid_multisig_account(
+            NATIVE_MULTISIG_ADDRESS,
+            TempoHardfork::T7
+        ));
+        assert!(!is_valid_multisig_account(
+            NATIVE_MULTISIG_ADDRESS,
+            TempoHardfork::T8
+        ));
+        assert!(!is_valid_multisig_account(
+            PATH_USD_ADDRESS,
+            TempoHardfork::Genesis
+        ));
+
+        for &(precompile, activated) in SYSTEM_PRECOMPILES {
+            if activated <= TempoHardfork::T8 {
+                assert!(
+                    !is_valid_multisig_account(precompile, TempoHardfork::T8),
+                    "{precompile} should not be eligible as a native multisig account"
+                );
+            }
+        }
     }
 
     #[test]
