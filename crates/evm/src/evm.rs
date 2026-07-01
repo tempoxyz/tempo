@@ -126,6 +126,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self.inner
     }
 
+    /// Clears block-scoped execution caches on the inner EVM.
+    pub fn clear_block_caches(&mut self) {
+        self.inner.clear_block_caches();
+    }
+
     /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most
     /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
     pub fn validator_fee(&self) -> alloy_primitives::U256 {
