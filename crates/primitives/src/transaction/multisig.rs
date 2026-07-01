@@ -6,7 +6,7 @@ use alloc::{
 };
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use core::hash::{Hash, Hasher};
-use tempo_contracts::TempoHardfork;
+use tempo_contracts::{TempoHardfork, precompiles::INativeMultisig};
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -204,6 +204,24 @@ pub struct MultisigOwner {
     pub owner: Address,
     /// Nonzero owner weight.
     pub weight: u8,
+}
+
+impl From<INativeMultisig::MultisigOwner> for MultisigOwner {
+    fn from(value: INativeMultisig::MultisigOwner) -> Self {
+        Self {
+            owner: value.owner,
+            weight: value.weight,
+        }
+    }
+}
+
+impl From<MultisigOwner> for INativeMultisig::MultisigOwner {
+    fn from(value: MultisigOwner) -> Self {
+        Self {
+            owner: value.owner,
+            weight: value.weight,
+        }
+    }
 }
 
 /// Initial native multisig config carried by the first transaction.

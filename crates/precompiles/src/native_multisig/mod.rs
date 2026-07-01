@@ -195,9 +195,7 @@ impl NativeMultisig {
             } => {
                 let mut owners = Vec::with_capacity(owner_count);
                 for index in 0..owner_count {
-                    owners.push(stored_owner_to_init(
-                        self.owners[account][index as u32].read()?,
-                    ));
+                    owners.push(self.owners[account][index as u32].read()?.into());
                 }
 
                 let config = InitMultisig {
@@ -227,7 +225,7 @@ impl NativeMultisig {
         for (index, owner) in config.owners.iter().enumerate() {
             self.owners[account][index as u32].write(owner.into())?;
         }
-        for index in usize::from(owner_count)..previous_owner_count.min(MAX_MULTISIG_OWNERS) {
+        for index in usize::from(owner_count)..previous_owner_count {
             self.owners[account][index as u32].delete()?;
         }
 
@@ -261,14 +259,20 @@ impl From<&MultisigOwner> for StoredMultisigOwner {
     }
 }
 
+impl From<StoredMultisigOwner> for MultisigOwner {
+    fn from(value: StoredMultisigOwner) -> Self {
+        Self {
+            owner: value.owner,
+            weight: value.weight,
+        }
+    }
+}
+
 fn abi_config_to_init(
     threshold: u8,
     owners: Vec<INativeMultisig::MultisigOwner>,
 ) -> Result<InitMultisig> {
-    let owners = owners
-        .into_iter()
-        .map(abi_owner_to_init)
-        .collect::<Vec<_>>();
+    let owners = owners.into_iter().map(Into::into).collect::<Vec<_>>();
     let config = InitMultisig {
         salt: B256::ZERO,
         threshold,
@@ -276,13 +280,6 @@ fn abi_config_to_init(
     };
     config.validate().map_err(map_multisig_config_error)?;
     Ok(config)
-}
-
-fn abi_owner_to_init(value: INativeMultisig::MultisigOwner) -> MultisigOwner {
-    MultisigOwner {
-        owner: value.owner,
-        weight: value.weight,
-    }
 }
 
 fn map_multisig_config_error(err: MultisigConfigError) -> TempoPrecompileError {
@@ -307,24 +304,10 @@ fn map_multisig_config_error(err: MultisigConfigError) -> TempoPrecompileError {
     }
 }
 
-fn stored_owner_to_init(value: StoredMultisigOwner) -> MultisigOwner {
-    MultisigOwner {
-        owner: value.owner,
-        weight: value.weight,
-    }
-}
-
 fn init_config_to_abi(value: InitMultisig) -> INativeMultisig::MultisigConfig {
     INativeMultisig::MultisigConfig {
         threshold: value.threshold,
-        owners: value.owners.into_iter().map(init_owner_to_abi).collect(),
-    }
-}
-
-fn init_owner_to_abi(value: MultisigOwner) -> INativeMultisig::MultisigOwner {
-    INativeMultisig::MultisigOwner {
-        owner: value.owner,
-        weight: value.weight,
+        owners: value.owners.into_iter().map(Into::into).collect(),
     }
 }
 
