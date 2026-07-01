@@ -233,14 +233,14 @@ fn create_mock_native_multisig_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
 ) -> Result<TempoSignature, &'static str> {
-    use tempo_primitives::transaction::MultisigSignature;
+    use tempo_primitives::transaction::{MultisigConfigError, MultisigSignature};
 
     let signature_count = mock_multisig_signature_count_for_threshold(init)?;
     let signatures =
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?;
 
     Ok(TempoSignature::Multisig(MultisigSignature::new(
-        init.account()?,
+        init.account().map_err(MultisigConfigError::as_str)?,
         signatures,
         Some(init.clone()),
     )))

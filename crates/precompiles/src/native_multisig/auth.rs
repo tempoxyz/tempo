@@ -59,7 +59,7 @@ impl NativeMultisig {
     ) -> Result<u8, NativeMultisigAuthError> {
         config
             .validate()
-            .map_err(NativeMultisigAuthError::validation_failed)?;
+            .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))?;
 
         let digest = signature.digest(inner_digest);
         let mut recovered_weight = 0u16;

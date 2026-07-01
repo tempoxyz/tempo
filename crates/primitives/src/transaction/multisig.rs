@@ -28,6 +28,58 @@ pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE
 
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
+/// Native multisig config validation error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigConfigError {
+    /// The owner list is empty.
+    EmptyOwners,
+    /// The owner list exceeds [`MAX_MULTISIG_OWNERS`].
+    TooManyOwners,
+    /// The threshold is zero.
+    ZeroThreshold,
+    /// An owner address is zero.
+    ZeroOwner,
+    /// An owner weight is zero.
+    ZeroWeight,
+    /// The owner list contains a duplicate owner.
+    DuplicateOwner,
+    /// The owner list is not strictly ascending.
+    OwnersNotAscending,
+    /// Owner weight accumulation overflowed.
+    WeightOverflow,
+    /// Total owner weight exceeds `u8::MAX`.
+    TotalWeightExceedsMax,
+    /// The threshold exceeds total owner weight.
+    ThresholdExceedsWeight,
+    /// The derived multisig account address is zero.
+    DerivedAccountZero,
+}
+
+impl MultisigConfigError {
+    /// Returns the stable validation message for this error.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyOwners => "multisig owners cannot be empty",
+            Self::TooManyOwners => "too many multisig owners",
+            Self::ZeroThreshold => "multisig threshold cannot be zero",
+            Self::ZeroOwner => "multisig owner cannot be zero",
+            Self::ZeroWeight => "multisig owner weight cannot be zero",
+            Self::DuplicateOwner => "multisig owners cannot contain duplicates",
+            Self::OwnersNotAscending => "multisig owners must be strictly ascending",
+            Self::WeightOverflow => "multisig owner weight overflow",
+            Self::TotalWeightExceedsMax => "multisig total owner weight exceeds u8::MAX",
+            Self::ThresholdExceedsWeight => "multisig threshold exceeds total owner weight",
+            Self::DerivedAccountZero => "multisig account cannot be zero",
+        }
+    }
+}
+
+impl core::fmt::Display for MultisigConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Native multisig owner entry.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -58,47 +110,53 @@ pub struct InitMultisig {
 
 impl InitMultisig {
     /// Validates this native multisig config and returns its total owner weight.
-    pub fn validate(&self) -> Result<u8, &'static str> {
+    pub fn validate(&self) -> Result<u8, MultisigConfigError> {
         if self.owners.is_empty() {
-            return Err("multisig owners cannot be empty");
+            return Err(MultisigConfigError::EmptyOwners);
         }
         if self.owners.len() > MAX_MULTISIG_OWNERS {
-            return Err("too many multisig owners");
+            return Err(MultisigConfigError::TooManyOwners);
         }
         if self.threshold == 0 {
-            return Err("multisig threshold cannot be zero");
+            return Err(MultisigConfigError::ZeroThreshold);
         }
 
         let mut total_weight = 0u16;
         let mut prev_owner = None;
         for owner in &self.owners {
             if owner.owner.is_zero() {
-                return Err("multisig owner cannot be zero");
+                return Err(MultisigConfigError::ZeroOwner);
             }
             if owner.weight == 0 {
-                return Err("multisig owner weight cannot be zero");
+                return Err(MultisigConfigError::ZeroWeight);
             }
-            if prev_owner.is_some_and(|prev| prev >= owner.owner) {
-                return Err("multisig owners must be strictly ascending");
+            if let Some(prev) = prev_owner {
+                if prev == owner.owner {
+                    return Err(MultisigConfigError::DuplicateOwner);
+                }
+                if prev > owner.owner {
+                    return Err(MultisigConfigError::OwnersNotAscending);
+                }
             }
+
             prev_owner = Some(owner.owner);
             total_weight = total_weight
                 .checked_add(u16::from(owner.weight))
-                .ok_or("multisig owner weight overflow")?;
+                .ok_or(MultisigConfigError::WeightOverflow)?;
         }
 
         if total_weight > u16::from(u8::MAX) {
-            return Err("multisig total owner weight exceeds u8::MAX");
+            return Err(MultisigConfigError::TotalWeightExceedsMax);
         }
         if u16::from(self.threshold) > total_weight {
-            return Err("multisig threshold exceeds total owner weight");
+            return Err(MultisigConfigError::ThresholdExceedsWeight);
         }
 
         Ok(total_weight as u8)
     }
 
     /// Derives the native multisig account address for this initial config.
-    pub fn account(&self) -> Result<Address, &'static str> {
+    pub fn account(&self) -> Result<Address, MultisigConfigError> {
         self.validate()?;
 
         let owner_count = encode_multisig_owner_count(self.owners.len())?;
@@ -116,7 +174,7 @@ impl InitMultisig {
 
         let account = Address::from_slice(&keccak256(input)[12..]);
         if account.is_zero() {
-            return Err("multisig account cannot be zero");
+            return Err(MultisigConfigError::DerivedAccountZero);
         }
         Ok(account)
     }
@@ -124,7 +182,7 @@ impl InitMultisig {
     /// Validates RPC simulation mock multisig signatures by treating the first
     /// `signature_count` configured owners as signers.
     pub fn validate_rpc_mock_signatures(&self, signature_count: usize) -> Result<(), &'static str> {
-        self.validate()?;
+        self.validate().map_err(MultisigConfigError::as_str)?;
         if signature_count == 0 {
             return Err("multisig signatures cannot be empty");
         }
@@ -154,7 +212,7 @@ impl InitMultisig {
         digest: B256,
         signatures: &[Bytes],
     ) -> Result<u8, &'static str> {
-        self.validate()?;
+        self.validate().map_err(MultisigConfigError::as_str)?;
         let owners = recover_multisig_owner_addresses(digest, signatures)?;
         verify_recovered_multisig_owners(&owners, self)
     }
@@ -225,7 +283,7 @@ impl MultisigSignature {
     pub fn recover_account(&self) -> Result<Address, &'static str> {
         self.validate_shape()?;
         if let Some(init) = &self.init
-            && init.account()? != self.account
+            && init.account().map_err(MultisigConfigError::as_str)? != self.account
         {
             return Err("multisig init does not derive account");
         }
@@ -454,12 +512,12 @@ fn verify_recovered_multisig_owners(
     u8::try_from(recovered_weight).map_err(|_| "multisig recovered owner weight overflow")
 }
 
-fn encode_multisig_owner_count(owner_count: usize) -> Result<u8, &'static str> {
+fn encode_multisig_owner_count(owner_count: usize) -> Result<u8, MultisigConfigError> {
     if owner_count == 0 {
-        return Err("multisig owners cannot be empty");
+        return Err(MultisigConfigError::EmptyOwners);
     }
     if owner_count > MAX_MULTISIG_OWNERS {
-        return Err("too many multisig owners");
+        return Err(MultisigConfigError::TooManyOwners);
     }
     Ok(owner_count as u8)
 }
@@ -637,7 +695,7 @@ mod tests {
             .collect::<Vec<_>>();
         let config = sorted_secp_config(&owners, u8::MAX);
 
-        assert_eq!(config.validate(), Err("too many multisig owners"));
+        assert_eq!(config.validate(), Err(MultisigConfigError::TooManyOwners));
     }
 
     #[test]
@@ -648,7 +706,7 @@ mod tests {
 
         assert_eq!(
             config.validate(),
-            Err("multisig total owner weight exceeds u8::MAX")
+            Err(MultisigConfigError::TotalWeightExceedsMax)
         );
     }
 
