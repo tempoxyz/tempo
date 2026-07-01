@@ -22,10 +22,7 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, B256, FixedBytes, U256};
-use std::{
-    cell::Cell,
-    ops::{Index, IndexMut},
-};
+use std::ops::{Deref, DerefMut, Index, IndexMut};
 use tempo_precompiles_macros::Storable;
 
 /// Physical storage layout version for an order record.
@@ -145,6 +142,37 @@ impl V1Order {
     }
 }
 
+/// Logical order data paired with the physical layout version it was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StoredOrder {
+    order: Order,
+    version: OrderVersion,
+}
+
+impl StoredOrder {
+    fn new(order: Order, version: OrderVersion) -> Self {
+        Self { order, version }
+    }
+
+    pub(crate) fn into_order(self) -> Order {
+        self.order
+    }
+}
+
+impl Deref for StoredOrder {
+    type Target = Order;
+
+    fn deref(&self) -> &Self::Target {
+        &self.order
+    }
+}
+
+impl DerefMut for StoredOrder {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.order
+    }
+}
+
 /// Version-aware storage handler for a single DEX order.
 #[derive(Debug, Clone)]
 pub(crate) struct OrderHandler {
@@ -154,9 +182,6 @@ pub(crate) struct OrderHandler {
     order_id: u128,
     /// Contract address whose storage contains the order mapping.
     address: Address,
-    /// Cached physical layout version for this record.
-    /// NOTE: Storage checkpoint rollbacks do not reset it. Clear manually if execution continues.
-    pub(crate) version: Cell<Option<OrderVersion>>,
 }
 
 impl OrderHandler {
@@ -166,31 +191,57 @@ impl OrderHandler {
             base_slot,
             order_id,
             address,
-            version: Cell::new(None),
         }
     }
 
-    /// Returns a storage handler for the order's maker address.
-    pub(crate) fn maker(&self) -> StorageResult<Slot<Address>> {
-        let loc = match self.version()? {
+    /// Returns a storage handler for the order's maker address using a known layout version.
+    pub(crate) fn maker_for_version(&self, version: OrderVersion) -> Slot<Address> {
+        let loc = match version {
             OrderVersion::Legacy => __packing_legacy_order::MAKER_LOC,
             OrderVersion::V1 => __packing_v1_order::MAKER_LOC,
         };
 
-        Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
+        Slot::new_at_loc(self.base_slot, loc, self.address)
     }
 
     /// Returns a storage handler for the order's remaining amount.
+    #[cfg(test)]
     pub(crate) fn remaining(&self) -> StorageResult<Slot<u128>> {
-        self.u128_field(
+        Ok(self.u128_field_for(
+            self.version()?,
+            __packing_legacy_order::REMAINING_LOC,
+            __packing_v1_order::REMAINING_LOC,
+        ))
+    }
+
+    /// Returns a storage handler for the order's remaining amount using a known layout version.
+    pub(crate) fn remaining_for(&self, order: &StoredOrder) -> Slot<u128> {
+        self.u128_field_for(
+            order.version,
             __packing_legacy_order::REMAINING_LOC,
             __packing_v1_order::REMAINING_LOC,
         )
     }
 
     /// Returns a storage handler for the previous linked-list pointer.
+    #[cfg(test)]
     pub(crate) fn prev(&self) -> StorageResult<Slot<u128>> {
-        self.u128_field(
+        Ok(self.u128_field_for(
+            self.version()?,
+            __packing_legacy_order::PREV_LOC,
+            __packing_v1_order::PREV_LOC,
+        ))
+    }
+
+    /// Returns a storage handler for the previous pointer using a known layout version.
+    pub(crate) fn prev_for(&self, order: &StoredOrder) -> Slot<u128> {
+        self.prev_for_version(order.version)
+    }
+
+    /// Returns a storage handler for the previous pointer using a known layout version.
+    pub(crate) fn prev_for_version(&self, version: OrderVersion) -> Slot<u128> {
+        self.u128_field_for(
+            version,
             __packing_legacy_order::PREV_LOC,
             __packing_v1_order::PREV_LOC,
         )
@@ -198,44 +249,102 @@ impl OrderHandler {
 
     /// Returns a storage handler for the next linked-list pointer.
     pub(crate) fn next(&self) -> StorageResult<Slot<u128>> {
-        self.u128_field(
+        Ok(self.u128_field_for(
+            self.version()?,
+            __packing_legacy_order::NEXT_LOC,
+            __packing_v1_order::NEXT_LOC,
+        ))
+    }
+
+    /// Returns a storage handler for the next pointer using a known layout version.
+    pub(crate) fn next_for_version(&self, version: OrderVersion) -> Slot<u128> {
+        self.u128_field_for(
+            version,
             __packing_legacy_order::NEXT_LOC,
             __packing_v1_order::NEXT_LOC,
         )
     }
 
     /// Selects the version-specific location for a mutable `u128` field.
-    fn u128_field(
+    fn u128_field_for(
         &self,
+        version: OrderVersion,
         legacy: packing::FieldLocation,
         v1: packing::FieldLocation,
-    ) -> StorageResult<Slot<u128>> {
-        let loc = match self.version()? {
+    ) -> Slot<u128> {
+        let loc = match version {
             OrderVersion::Legacy => legacy,
             OrderVersion::V1 => v1,
         };
 
-        Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
+        Slot::new_at_loc(self.base_slot, loc, self.address)
     }
 
-    /// Clears the cached physical storage version so the next access re-detects it from storage.
-    pub(crate) fn clear_version_cache(&self) {
-        self.version.set(None);
-    }
-
-    /// Returns the cached physical storage version, detecting and caching it if needed.
+    /// Returns the physical storage version by detecting it from storage.
     pub(crate) fn version(&self) -> StorageResult<OrderVersion> {
         if !StorageCtx.spec().is_t8() {
             return Ok(OrderVersion::Legacy);
         }
 
-        if let Some(version) = self.version.get() {
-            return Ok(version);
+        OrderVersion::try_from(self.load(self.base_slot)?)
+    }
+
+    /// Reads the order and returns it with the physical layout version used for decoding.
+    pub(crate) fn read_stored(&self) -> StorageResult<StoredOrder> {
+        let version = self.version()?;
+        let order = match version {
+            OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL)?,
+            OrderVersion::V1 => {
+                V1Order::load(self, self.base_slot, LayoutCtx::FULL)?.into_order(self.order_id)
+            }
+        };
+
+        Ok(StoredOrder::new(order, version))
+    }
+
+    /// Deletes the physical slots using a known layout version.
+    pub(crate) fn delete_for(&mut self, order: &StoredOrder) -> StorageResult<()> {
+        self.delete_for_version(order.version)
+    }
+
+    /// Writes the order using the currently stored layout version already obtained from storage.
+    pub(crate) fn write_for(&mut self, current: &StoredOrder, value: Order) -> StorageResult<()> {
+        self.write_for_version(current.version, value, true)
+    }
+
+    fn write_for_version(
+        &mut self,
+        version: OrderVersion,
+        value: Order,
+        clear_legacy_tail: bool,
+    ) -> StorageResult<()> {
+        debug_assert_eq!(value.order_id, self.order_id);
+
+        if !StorageCtx.spec().is_t8() {
+            return value.store(self, self.base_slot, LayoutCtx::FULL);
         }
 
-        let version = OrderVersion::try_from(self.load(self.base_slot)?)?;
-        self.version.set(Some(version));
-        Ok(version)
+        V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+        if matches!(version, OrderVersion::Legacy) && clear_legacy_tail {
+            for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
+                self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn delete_for_version(&mut self, version: OrderVersion) -> StorageResult<()> {
+        let slot_count = match version {
+            OrderVersion::Legacy => LegacyOrder::SLOTS,
+            OrderVersion::V1 => V1Order::SLOTS,
+        };
+
+        for offset in 0..slot_count {
+            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -250,65 +359,28 @@ impl StorageOps for OrderHandler {
 }
 
 impl Handler<Order> for OrderHandler {
-    /// Reads the order using the cached or detected physical layout version.
+    /// Reads the order using the detected physical layout version.
     fn read(&self) -> StorageResult<Order> {
-        match self.version()? {
-            OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
-            OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
-                .map(|res| res.into_order(self.order_id)),
-        }
+        self.read_stored().map(StoredOrder::into_order)
     }
 
-    /// Writes the order, migrating T8 records to V1 and updating the cached version.
+    /// Writes the order, migrating T8 records to V1.
     fn write(&mut self, value: Order) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
 
         if !StorageCtx.spec().is_t8() {
-            value.store(self, self.base_slot, LayoutCtx::FULL)?;
-            self.version.set(Some(OrderVersion::Legacy));
-            return Ok(());
+            return value.store(self, self.base_slot, LayoutCtx::FULL);
         }
 
-        match self.version.get() {
-            Some(OrderVersion::Legacy) => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-                for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
-                    self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-                }
-            }
-            Some(OrderVersion::V1) => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-            }
-            None => {
-                let current_slot0 = self.load(self.base_slot)?;
-                let current_version = OrderVersion::try_from(current_slot0)?;
+        let current_slot0 = self.load(self.base_slot)?;
+        let current_version = OrderVersion::try_from(current_slot0)?;
 
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-                if matches!(current_version, OrderVersion::Legacy) && !current_slot0.is_zero() {
-                    for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
-                        self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-                    }
-                }
-            }
-        }
-
-        self.version.set(Some(OrderVersion::V1));
-        Ok(())
+        self.write_for_version(current_version, value, !current_slot0.is_zero())
     }
 
-    /// Deletes the physical slots for the cached or detected order layout.
+    /// Deletes the physical slots for the detected order layout.
     fn delete(&mut self) -> StorageResult<()> {
-        let slot_count = match self.version()? {
-            OrderVersion::Legacy => LegacyOrder::SLOTS,
-            OrderVersion::V1 => V1Order::SLOTS,
-        };
-
-        for offset in 0..slot_count {
-            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-        }
-
-        self.version.set(None);
-        Ok(())
+        self.delete_for_version(self.version()?)
     }
 
     fn t_read(&self) -> StorageResult<Order> {
@@ -542,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_version_field_write_skips_version_sload() -> eyre::Result<()> {
+    fn test_stored_order_field_write_skips_version_sload() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
@@ -551,13 +623,13 @@ mod tests {
             let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
             exchange.orders[id].write(order)?;
 
-            let uncached_exchange = StablecoinDEX::new();
             StorageCtx.reset_counters();
-            uncached_exchange.orders[id].remaining()?.write(900)?;
+            exchange.orders[id].remaining()?.write(900)?;
             assert_eq!(StorageCtx.counter_sload(), 2);
 
+            let stored = exchange.orders[id].read_stored()?;
             StorageCtx.reset_counters();
-            exchange.orders[id].remaining()?.write(800)?;
+            exchange.orders[id].remaining_for(&stored).write(800)?;
             assert_eq!(StorageCtx.counter_sload(), 1);
 
             let loaded = exchange.orders[id].read()?;
@@ -733,12 +805,11 @@ mod tests {
     fn store_legacy_order(handler: &OrderHandler, order: Order) -> StorageResult<()> {
         let mut storage = handler.clone();
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)?;
-        handler.version.set(Some(OrderVersion::Legacy));
         Ok(())
     }
 
     #[test]
-    fn test_clear_version_cache_redetects_after_checkpoint_revert() -> eyre::Result<()> {
+    fn test_version_redetects_after_checkpoint_revert() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
@@ -754,8 +825,6 @@ mod tests {
                 assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
             }
 
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
-            exchange.orders[id].clear_version_cache();
             assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
 
             exchange.orders[id].next()?.write(99)?;

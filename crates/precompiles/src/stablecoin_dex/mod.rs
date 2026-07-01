@@ -11,7 +11,7 @@ pub mod order;
 pub mod orderbook;
 
 pub use order::Order;
-use order::OrderMapping;
+use order::{OrderMapping, OrderVersion, StoredOrder};
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
     quote_to_base, tick_to_price, validate_tick_spacing,
@@ -119,13 +119,6 @@ impl StablecoinDEX {
         Ok(())
     }
 
-    /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
-    fn delete_order(&mut self, order: &Order) -> Result<u64> {
-        StorageCredits::new()
-            .track_minted_credits(self.address, || self.orders[order.order_id()].delete())
-            .map(|(_, credits)| credits)
-    }
-
     /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
     fn rewrite_order(&mut self, order: Order) -> Result<u64> {
         StorageCredits::new()
@@ -133,10 +126,20 @@ impl StablecoinDEX {
             .map(|(_, credits)| credits)
     }
 
+    /// Rewrites an order using its known physical layout and returns minted DEX TIP-1060 credits.
+    fn rewrite_stored_order(&mut self, current: &StoredOrder, order: Order) -> Result<u64> {
+        StorageCredits::new()
+            .track_minted_credits(self.address, || {
+                self.orders[order.order_id()].write_for(current, order)
+            })
+            .map(|(_, credits)| credits)
+    }
+
     /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
     fn unlink_neighbor_and_credit_maker(
         &mut self,
         order_id: u128,
+        version: OrderVersion,
         update: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
         let (_, credits) =
@@ -145,17 +148,19 @@ impl StablecoinDEX {
             return Ok(());
         }
 
-        let maker = self.orders[order_id].maker()?.read()?;
+        let maker = self.orders[order_id].maker_for_version(version).read()?;
         self.credit_dex_storage_slots(maker, credits)
     }
 
-    /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
-    fn delete_order_and_track_deltas(
+    /// Deletes a versioned order and tracks the maker's minted DEX TIP-1060 credits.
+    fn delete_stored_order_and_track_deltas(
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
-        order: &Order,
+        order: &StoredOrder,
     ) -> Result<()> {
-        let credits = self.delete_order(order)?;
+        let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
+            self.orders[order.order_id()].delete_for(order)
+        })?;
         storage_credits.credit_slots(order.maker(), credits);
         Ok(())
     }
@@ -665,7 +670,16 @@ impl StablecoinDEX {
     ///
     /// On T7+, `charge_credits` spends maker credits. Keep it `false` for taker-triggered flips
     /// so takers cannot consume the maker's credit balance.
-    fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
+    fn commit_order_to_book(&mut self, order: Order, charge_credits: bool) -> Result<()> {
+        self.commit_order_to_book_with_current_layout(order, charge_credits, None)
+    }
+
+    fn commit_order_to_book_with_current_layout(
+        &mut self,
+        mut order: Order,
+        charge_credits: bool,
+        current: Option<&StoredOrder>,
+    ) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
@@ -719,7 +733,12 @@ impl StablecoinDEX {
             (true, spec) if spec.is_t7() => self.write_order_spending_dex_storage_credits(order),
             // T8+ flip rewrites credit deleted order slots without spending maker credits.
             (false, spec) if spec.is_t8() => {
-                let (maker, credits) = (order.maker(), self.rewrite_order(order)?);
+                let maker = order.maker();
+                let credits = if let Some(current) = current {
+                    self.rewrite_stored_order(current, order)?
+                } else {
+                    self.rewrite_order(order)?
+                };
                 self.credit_dex_storage_slots(maker, credits)
             }
             // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
@@ -879,7 +898,7 @@ impl StablecoinDEX {
 
     fn flip_in_place(
         &mut self,
-        order: &Order,
+        order: &StoredOrder,
         base_token: Address,
         quote_token: Address,
     ) -> Result<()> {
@@ -923,7 +942,7 @@ impl StablecoinDEX {
         debug_assert_eq!(order.order_id(), flipped.order_id());
         debug_assert_eq!(order.book_key(), flipped.book_key());
         // In-place flips are taker-triggered, so don't spend maker credits.
-        self.commit_order_to_book(flipped, false)?;
+        self.commit_order_to_book_with_current_layout(flipped, false, Some(order))?;
 
         // Emit OrderFlipped event for flip order
         self.emit_event(StablecoinDEXEvents::OrderFlipped(
@@ -947,7 +966,7 @@ impl StablecoinDEX {
     /// Partially fill an order with the specified amount. Fill amount is denominated in base token.
     fn partial_fill_order(
         &mut self,
-        order: &mut Order,
+        order: &mut StoredOrder,
         level: &mut TickLevel,
         fill_amount: u128,
         taker: Address,
@@ -957,7 +976,7 @@ impl StablecoinDEX {
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
         self.orders[order.order_id()]
-            .remaining()?
+            .remaining_for(order)
             .write(new_remaining)?;
         order.remaining = new_remaining;
 
@@ -1014,10 +1033,10 @@ impl StablecoinDEX {
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
-        order: &mut Order,
+        order: &mut StoredOrder,
         mut level: TickLevel,
         taker: Address,
-    ) -> Result<(u128, Option<(TickLevel, Order)>)> {
+    ) -> Result<(u128, Option<(TickLevel, StoredOrder)>)> {
         debug_assert_eq!(order.book_key(), book_key);
 
         let orderbook = self.books[book_key].read()?;
@@ -1072,11 +1091,6 @@ impl StablecoinDEX {
                     return Err(res.unwrap_err());
                 }
 
-                // Execution continues after rollback, so discard the reverted layout version cache.
-                if self.storage.spec().is_t8() {
-                    self.orders[order.order_id()].clear_version_cache();
-                }
-
                 if self.storage.spec().is_t5() {
                     self.emit_event(StablecoinDEXEvents::flip_failed(
                         order.order_id(),
@@ -1092,11 +1106,11 @@ impl StablecoinDEX {
             // record must be deleted to avoid leaving an orphan in storage.
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
-                self.delete_order_and_track_deltas(storage_credits, order)?;
+                self.delete_stored_order_and_track_deltas(storage_credits, order)?;
             }
         } else {
             // Non-flip filled order: always delete.
-            self.delete_order_and_track_deltas(storage_credits, order)?;
+            self.delete_stored_order_and_track_deltas(storage_credits, order)?;
         }
 
         // Advance tick if liquidity is exhausted
@@ -1125,15 +1139,16 @@ impl StablecoinDEX {
                 let new_level = self.books[book_key]
                     .tick_level_handler(tick, order.is_bid())
                     .read()?;
-                let new_order = self.orders[new_level.head].read()?;
+                let new_order = self.orders[new_level.head].read_stored()?;
 
                 Some((new_level, new_order))
             }
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
+            let new_order = self.orders[order.next()].read_stored()?;
             let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
-                self.orders[order.next()].prev()?.delete()
+                self.orders[order.next()].prev_for(&new_order).delete()
             })?;
 
             let new_liquidity = level
@@ -1146,7 +1161,6 @@ impl StablecoinDEX {
                 .tick_level_handler_mut(order.tick(), order.is_bid())
                 .write(level)?;
 
-            let new_order = self.orders[order.next()].read()?;
             storage_credits.credit_slots(new_order.maker(), credits);
 
             Some((level, new_order))
@@ -1165,7 +1179,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let mut order = self.orders[level.head].read_stored()?;
 
         let mut total_amount_in: u128 = 0;
 
@@ -1246,7 +1260,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let mut order = self.orders[level.head].read_stored()?;
 
         let mut total_amount_out: u128 = 0;
 
@@ -1347,7 +1361,7 @@ impl StablecoinDEX {
     /// - `OrderDoesNotExist` — order ID not found or already fully filled
     /// - `Unauthorized` — only the order maker can cancel their order
     pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
-        let order = self.orders[order_id].read()?;
+        let order = self.orders[order_id].read_stored()?;
 
         if order.maker().is_zero() {
             return Err(StablecoinDEXError::order_does_not_exist().into());
@@ -1365,23 +1379,29 @@ impl StablecoinDEX {
     }
 
     /// Cancel an active order (already in the orderbook)
-    fn cancel_active_order(&mut self, order: Order) -> Result<()> {
+    fn cancel_active_order(&mut self, order: StoredOrder) -> Result<()> {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
 
         // Update linked list
         if order.prev() != 0 {
-            self.unlink_neighbor_and_credit_maker(order.prev(), |s| {
-                s.orders[order.prev()].next()?.write(order.next())
+            let prev_version = self.orders[order.prev()].version()?;
+            self.unlink_neighbor_and_credit_maker(order.prev(), prev_version, |s| {
+                s.orders[order.prev()]
+                    .next_for_version(prev_version)
+                    .write(order.next())
             })?;
         } else {
             level.head = order.next();
         }
 
         if order.next() != 0 {
-            self.unlink_neighbor_and_credit_maker(order.next(), |s| {
-                s.orders[order.next()].prev()?.write(order.prev())
+            let next_version = self.orders[order.next()].version()?;
+            self.unlink_neighbor_and_credit_maker(order.next(), next_version, |s| {
+                s.orders[order.next()]
+                    .prev_for_version(next_version)
+                    .write(order.prev())
             })?;
         } else {
             level.tail = order.prev();
@@ -1440,7 +1460,9 @@ impl StablecoinDEX {
         }
 
         // Clear the order from storage
-        let credits = self.delete_order(&order)?;
+        let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
+            self.orders[order.order_id()].delete_for(&order)
+        })?;
         self.credit_dex_storage_slots(order.maker(), credits)?;
 
         // Emit OrderCancelled event
@@ -1459,7 +1481,7 @@ impl StablecoinDEX {
     /// - `OrderDoesNotExist` — order ID not found or already fully filled
     /// - `OrderNotStale` — order maker is still authorized by TIP-403 policy
     pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
-        let order = self.orders[order_id].read()?;
+        let order = self.orders[order_id].read_stored()?;
 
         if order.maker().is_zero() {
             return Err(StablecoinDEXError::order_does_not_exist().into());

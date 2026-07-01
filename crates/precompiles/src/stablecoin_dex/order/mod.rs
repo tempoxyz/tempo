@@ -5,7 +5,7 @@
 //! automatically place opposite-side orders when filled.
 
 mod storage;
-pub(crate) use storage::OrderMapping;
+pub(crate) use storage::{OrderMapping, OrderVersion, StoredOrder};
 
 use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
 use alloy::primitives::{Address, B256};
