@@ -469,19 +469,12 @@ fn is_invalidated_buffered_transaction(
 /// Returns true if the transaction is a candidate for parallel prewarming.
 fn is_parallel_candidate(tx: &BestTransaction) -> bool {
     // Payment lane transactions
-    if !tx.transaction.is_payment() {
-        return false;
-    }
-    // 2D or expiring nonces only, no protocol nonces
-    if tx
-        .transaction
-        .nonce_key()
-        .is_none_or(|nonce_key| nonce_key == U256::ZERO)
-    {
-        return false;
-    }
-
-    true
+    tx.transaction.is_payment()
+        // 2D or expiring nonces, no protocol nonces
+        && tx
+            .transaction
+            .nonce_key()
+            .is_some()
 }
 
 #[cfg(test)]
