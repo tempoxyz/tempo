@@ -102,6 +102,7 @@ impl NonceManager {
 
     /// Checks if a hash has been seen and is still valid (not expired).
     /// NOTE: internally used by the transaction pool.
+    #[inline]
     pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
         let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
@@ -127,6 +128,7 @@ impl NonceManager {
     /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
     /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
     /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
+    #[inline]
     pub fn check_and_mark_expiring_nonce(
         &mut self,
         expiring_nonce_hash: B256,
