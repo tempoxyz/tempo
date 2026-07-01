@@ -11,6 +11,8 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, U256, uint};
 
+use crate::ed25519::PublicKey;
+
 /// Tempo EVM block environment.
 #[derive(Debug, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -25,6 +27,9 @@ pub struct TempoBlockEnv {
 
     /// Number of blocks in a consensus epoch.
     pub epoch_length: NonZeroU64,
+
+    /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
+    pub proposer_public_key: Option<PublicKey>,
 }
 
 impl Default for TempoBlockEnv {
@@ -33,6 +38,7 @@ impl Default for TempoBlockEnv {
             inner: Default::default(),
             timestamp_millis_part: 0,
             epoch_length: NonZeroU64::MIN,
+            proposer_public_key: None,
         }
     }
 }

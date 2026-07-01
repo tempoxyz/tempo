@@ -384,10 +384,6 @@ where
             ..
         } = config;
 
-        // Consensus payload builds are one-shot. `--dev` mode keeps the standard
-        // payload job behavior where later attempts may improve the best payload.
-        let build_once = !self.config.is_dev;
-
         macro_rules! check_cancel {
             () => {
                 if cancel.is_cancelled() {
@@ -682,10 +678,7 @@ where
             }
 
             let Some(mut pool_tx) = best_txs.next() else {
-                if build_once
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
+                if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1313,14 +1306,7 @@ where
 
         drop(db);
         self.executor.spawn_drop(state_provider);
-        if build_once {
-            Ok(BuildOutcome::Freeze(payload))
-        } else {
-            Ok(BuildOutcome::Better {
-                payload,
-                cached_reads,
-            })
-        }
+        Ok(BuildOutcome::Freeze(payload))
     }
 
     fn spawn_roots_task(
