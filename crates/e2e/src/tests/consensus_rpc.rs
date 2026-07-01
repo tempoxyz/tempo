@@ -177,6 +177,14 @@ fn get_identity_transition_proof_after_full_dkg() {
             first_full_dkg_epoch - 1
         );
 
+        // Schedule the second full DKG after the first boundary has already
+        // recorded its flag, but before waiting into epoch 2. Otherwise the
+        // scheduling tx can miss the epoch-2 boundary in fast test runs.
+        execution_runtime
+            .set_next_full_dkg_ceremony_v2(http_url.clone(), second_full_dkg_epoch)
+            .await
+            .unwrap();
+
         // Wait for full DKG to complete
         wait_for_validators_to_reach_epoch(&context, first_full_dkg_epoch + 1, how_many_signers)
             .await;
@@ -191,10 +199,6 @@ fn get_identity_transition_proof_after_full_dkg() {
         );
 
         // --- Second full DKG ---
-        execution_runtime
-            .set_next_full_dkg_ceremony_v2(http_url.clone(), second_full_dkg_epoch)
-            .await
-            .unwrap();
 
         let outcome_before_second = wait_for_outcome(
             &context,
