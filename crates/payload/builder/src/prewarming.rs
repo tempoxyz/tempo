@@ -474,7 +474,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
         && tx
             .transaction
             .nonce_key()
-            .is_some()
+            .is_some_and(|nonce_key| !nonce_key.is_zero())
 }
 
 #[cfg(test)]
