@@ -534,11 +534,17 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
 mod tests {
     use super::*;
     use crate::transaction::{
-        TempoSignature,
+        PrimitiveSignature, TempoSignature, derive_p256_address,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+        tt_signature::{P256SignatureWithPreHash, normalize_p256_s},
     };
     use alloy_rlp::{Decodable, Encodable};
+    use p256::{
+        ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
+        elliptic_curve::rand_core::OsRng,
+    };
     use proptest::prelude::*;
+    use sha2::{Digest, Sha256};
 
     fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> InitMultisig {
         let mut owners = owners
@@ -560,6 +566,36 @@ mod tests {
         let mut bytes = [0u8; 20];
         bytes[18..].copy_from_slice(&index.to_be_bytes());
         Address::from(bytes)
+    }
+
+    fn generate_p256_keypair() -> (P256SigningKey, B256, B256, Address) {
+        let signing_key = P256SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let encoded_point = verifying_key.to_encoded_point(false);
+        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
+        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
+        let owner = derive_p256_address(&pub_key_x, &pub_key_y);
+        (signing_key, pub_key_x, pub_key_y, owner)
+    }
+
+    fn sign_p256_owner_approval_with_prehash(
+        signing_key: &P256SigningKey,
+        digest: B256,
+        pub_key_x: B256,
+        pub_key_y: B256,
+    ) -> Bytes {
+        let prehashed = B256::from_slice(Sha256::digest(digest).as_ref());
+        let signature: p256::ecdsa::Signature =
+            signing_key.sign_prehash(prehashed.as_slice()).unwrap();
+        let sig_bytes = signature.to_bytes();
+        PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::from_slice(&sig_bytes[..32]),
+            s: normalize_p256_s(&sig_bytes[32..64]).expect("p256 crate produces valid s"),
+            pub_key_x,
+            pub_key_y,
+            pre_hash: true,
+        })
+        .to_bytes()
     }
 
     fn encoded_multisig_without_init_slot(account: Address, signatures: Vec<Vec<u8>>) -> Vec<u8> {
@@ -723,6 +759,35 @@ mod tests {
             config
                 .verify_owner_signatures(digest, &one_signature)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_p256_owner_prehash_flag() {
+        let (signer, pub_key_x, pub_key_y, owner) = generate_p256_keypair();
+        let config = sorted_secp_config(&[(owner, 1)], 1);
+        let account = config.account().unwrap();
+        let digest = multisig_digest(B256::repeat_byte(0x42), account);
+
+        let canonical_signature =
+            sign_p256_owner_approval_with_prehash(&signer, digest, pub_key_x, pub_key_y);
+        assert_eq!(
+            canonical_signature[canonical_signature.len() - 1],
+            1,
+            "test setup should use canonical pre_hash=true encoding"
+        );
+        assert!(
+            config
+                .verify_owner_signatures(digest, &[canonical_signature.clone()])
+                .is_ok()
+        );
+
+        let mut noncanonical_signature = canonical_signature.to_vec();
+        let flag_index = noncanonical_signature.len() - 1;
+        noncanonical_signature[flag_index] = 2;
+        assert_eq!(
+            config.verify_owner_signatures(digest, &[Bytes::from(noncanonical_signature)]),
+            Err("invalid multisig owner signature")
         );
     }
 

@@ -100,7 +100,7 @@ pub struct WebAuthnSignature {
 
 fn split_p256_signature_fields(
     sig_data: &[u8; P256_SIGNATURE_LENGTH],
-) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
+) -> Result<(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool), &'static str> {
     let (r, sig_data) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
@@ -113,7 +113,12 @@ fn split_p256_signature_fields(
     let (pub_key_y, pre_hash) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
-    (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
+    let pre_hash = match pre_hash[0] {
+        0 => false,
+        1 => true,
+        _ => return Err("Invalid P256 pre_hash flag"),
+    };
+    Ok((r, s, pub_key_x, pub_key_y, pre_hash))
 }
 
 /// Primitive signature types that can be used standalone or within a Keychain signature.
@@ -171,7 +176,7 @@ impl PrimitiveSignature {
                 let sig_data: &[u8; P256_SIGNATURE_LENGTH] = sig_data
                     .try_into()
                     .map_err(|_| "Invalid P256 signature length")?;
-                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data);
+                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data)?;
                 Ok(Self::P256(P256SignatureWithPreHash {
                     r: B256::from_slice(r),
                     s: B256::from_slice(s),
@@ -1502,6 +1507,24 @@ mod tests {
         } else {
             panic!("Expected Primitive(P256) variant");
         }
+    }
+
+    #[test]
+    fn test_p256_from_bytes_rejects_noncanonical_prehash_flag() {
+        let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
+        sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
+
+        sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 0;
+        assert!(TempoSignature::from_bytes(&sig_bytes).is_ok());
+
+        sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 1;
+        assert!(TempoSignature::from_bytes(&sig_bytes).is_ok());
+
+        sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 2;
+        assert_eq!(
+            TempoSignature::from_bytes(&sig_bytes).unwrap_err(),
+            "Invalid P256 pre_hash flag"
+        );
     }
 
     #[test]
