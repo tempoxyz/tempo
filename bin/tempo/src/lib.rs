@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
         assert!(node_cmd.ext.node_args.builder_enable_prewarming);
-        assert!(!node_cmd.ext.node_args.builder_parallel);
+        assert!(node_cmd.ext.node_args.builder_parallel);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
