@@ -6,7 +6,6 @@
 mod budget;
 mod encode;
 mod metrics;
-mod parallel;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
