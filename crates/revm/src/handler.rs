@@ -1140,17 +1140,17 @@ where
                 cfg,
                 tx,
                 actions.clone(),
-                |multisig: NativeMultisig| -> Result<
+                |multisig_precompile: NativeMultisig| -> Result<
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
                     let caller_is_multisig = multisig_cache
-                        .is_multisig_account(&multisig, tx.caller())
+                        .is_multisig_account(&multisig_precompile, tx.caller())
                         .map_err(map_native_multisig_error::<DB>)?;
 
                     if tx.has_fee_payer_signature()
                         && multisig_cache
-                            .is_multisig_account(&multisig, fee_payer)
+                            .is_multisig_account(&multisig_precompile, fee_payer)
                             .map_err(map_native_multisig_error::<DB>)?
                     {
                         return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
@@ -1173,7 +1173,7 @@ where
                         }
 
                         if multisig_cache
-                            .is_multisig_account(&multisig, authority)
+                            .is_multisig_account(&multisig_precompile, authority)
                             .map_err(map_native_multisig_error::<DB>)? {
                             return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                                 reason: format!(
@@ -1269,7 +1269,7 @@ where
 
                     if caller_is_multisig {
                         let config = multisig_cache
-                            .load_registered_config(&multisig, multisig_signature.account())
+                            .load_registered_config(&multisig_precompile, multisig_signature.account())
                             .map_err(map_native_multisig_error::<DB>)?;
                         if is_rpc_simulation {
                             config
@@ -1280,12 +1280,12 @@ where
                                 }
                             })?;
                         } else {
-                            multisig
+                            multisig_precompile
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
                                     &config,
-                                    |acc| { multisig_cache.load_registered_config(&multisig, acc) },
+                                    |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -1333,12 +1333,12 @@ where
                                 }
                             })?;
                         } else {
-                            multisig
+                            multisig_precompile
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
                                     init_config,
-                                    |acc| { multisig_cache.load_registered_config(&multisig, acc) },
+                                    |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
