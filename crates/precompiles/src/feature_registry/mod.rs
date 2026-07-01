@@ -199,13 +199,14 @@ impl FeatureRegistry {
     pub fn activate_scheduled_feature_head_from_system(
         &mut self,
         msg_sender: Address,
-    ) -> Result<()> {
+    ) -> Result<B256> {
         if msg_sender != Address::ZERO {
             return Err(FeatureRegistryError::unauthorized().into());
         }
 
-        self.activate_scheduled_feature_head()?;
-        Ok(())
+        Ok(self
+            .activate_scheduled_feature_head()?
+            .unwrap_or(B256::ZERO))
     }
 
     /// Returns current active-validator readiness for the scheduled feature head.
@@ -252,7 +253,9 @@ impl FeatureRegistry {
     }
 
     /// Activates the scheduled feature head if its target epoch has arrived and has quorum.
-    pub fn activate_scheduled_feature_head(&mut self) -> Result<bool> {
+    ///
+    /// Returns the activated feature head, or `None` if no feature activated.
+    pub fn activate_scheduled_feature_head(&mut self) -> Result<Option<B256>> {
         let scheduled_feature_head = self.scheduled_feature_head.read()?;
         let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
         let current_epoch = self.storage.epoch(self.storage.block_number());
@@ -261,7 +264,7 @@ impl FeatureRegistry {
             || scheduled_activation_epoch == 0
             || scheduled_activation_epoch > current_epoch
         {
-            return Ok(false);
+            return Ok(None);
         }
 
         let active_feature_head = self.active_feature_head.read()?;
@@ -270,19 +273,22 @@ impl FeatureRegistry {
             .feature_head_support_for_public_keys(scheduled_feature_head, &committee_public_keys)?;
         let activated =
             scheduled_feature_head != active_feature_head && required != 0 && support >= required;
-        if activated {
+        let activated_feature_head = if activated {
             self.active_feature_head.write(scheduled_feature_head)?;
             self.emit_event(FeatureRegistryEvent::feature_head_activated(
                 active_feature_head,
                 scheduled_feature_head,
                 scheduled_activation_epoch,
             ))?;
-        }
+            Some(scheduled_feature_head)
+        } else {
+            None
+        };
 
         self.scheduled_feature_head.write(B256::ZERO)?;
         self.scheduled_activation_epoch.write(0)?;
 
-        Ok(activated)
+        Ok(activated_feature_head)
     }
 }
 

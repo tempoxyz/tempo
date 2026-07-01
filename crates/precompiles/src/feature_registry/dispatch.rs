@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`FeatureRegistry`] precompile.
 
 use super::*;
-use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IFeatureRegistry;
@@ -33,7 +33,7 @@ impl Precompile for FeatureRegistry {
                         })
                     },
                     activateScheduledFeatureHead(call) => {
-                        mutate_void(call, msg_sender, |sender, _| {
+                        mutate(call, msg_sender, |sender, _| {
                             self.activate_scheduled_feature_head_from_system(sender)
                         })
                     },
@@ -534,7 +534,7 @@ mod tests {
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
 
-            assert!(!registry.activate_scheduled_feature_head()?);
+            assert_eq!(registry.activate_scheduled_feature_head()?, None);
             assert_eq!(registry.active_feature_head()?, B256::ZERO);
 
             let scheduled = registry.scheduled_feature_head()?;
@@ -557,7 +557,7 @@ mod tests {
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
 
-            assert!(!registry.activate_scheduled_feature_head()?);
+            assert_eq!(registry.activate_scheduled_feature_head()?, None);
             assert_eq!(registry.active_feature_head()?, B256::ZERO);
 
             let scheduled = registry.scheduled_feature_head()?;
@@ -583,7 +583,10 @@ mod tests {
             set_proposer_public_key(&mut registry, public_key);
             registry.report_feature_readiness(Address::ZERO, true)?;
 
-            assert!(registry.activate_scheduled_feature_head()?);
+            assert_eq!(
+                registry.activate_scheduled_feature_head()?,
+                Some(FEATURE_HEAD)
+            );
             assert_eq!(registry.active_feature_head()?, FEATURE_HEAD);
 
             let scheduled = registry.scheduled_feature_head()?;
@@ -605,6 +608,15 @@ mod tests {
             assert!(result.is_revert());
             let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
             assert_eq!(decoded, FeatureRegistryError::unauthorized());
+
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert_eq!(
+                IFeatureRegistry::activateScheduledFeatureHeadCall::abi_decode_returns(
+                    &result.bytes
+                )?,
+                B256::ZERO
+            );
 
             Ok(())
         })

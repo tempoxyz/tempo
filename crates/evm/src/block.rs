@@ -22,11 +22,11 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, features::supports_feature_head, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, FEATURE_REGISTRY_ADDRESS,
     ICurrentCommittee, IFeatureRegistry, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -261,6 +261,16 @@ where
 
     /// Activates a scheduled feature head once the consensus epoch reaches the target epoch.
     fn maybe_activate_scheduled_feature_head(&mut self) -> Result<(), BlockExecutionError> {
+        if !self.evm().cfg.spec.is_t9() {
+            return Ok(());
+        }
+
+        let block_number = self.evm().block().number.saturating_to::<u64>();
+        let epoch_length = self.evm().block().epoch_length.get();
+        if !block_number.is_multiple_of(epoch_length) {
+            return Ok(());
+        }
+
         let calldata = IFeatureRegistry::activateScheduledFeatureHeadCall {}
             .abi_encode()
             .into();
@@ -270,21 +280,31 @@ where
             .transact_system_call(Address::ZERO, FEATURE_REGISTRY_ADDRESS, calldata)
             .map_err(BlockExecutionError::other)?;
 
-        if !result.result.is_success() {
+        let ExecutionResult::Success { output, .. } = &result.result else {
             return Err(
                 BlockValidationError::msg("feature head activation system call failed").into(),
             );
+        };
+
+        let Ok(activated_feature) =
+            IFeatureRegistry::activateScheduledFeatureHeadCall::abi_decode_returns(output.data())
+        else {
+            return Err(BlockValidationError::msg(
+                "failed decoding feature head activation system call output",
+            )
+            .into());
+        };
+
+        if activated_feature != B256::ZERO && !supports_feature_head(activated_feature) {
+            return Err(BlockValidationError::msg(format!(
+                "unsupported activated feature head: {activated_feature}"
+            ))
+            .into());
         }
 
         self.evm_mut().db_mut().commit(result.state);
 
         Ok(())
-    }
-
-    fn is_first_block_of_epoch(&self) -> bool {
-        let epoch_length = self.evm().block().epoch_length.get();
-        let block_number = self.evm().block().number.saturating_to::<u64>();
-        block_number.is_multiple_of(epoch_length)
     }
 
     /// Validates a system transaction.
@@ -621,9 +641,7 @@ where
         }
         if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
-            if self.is_first_block_of_epoch() {
-                self.maybe_activate_scheduled_feature_head()?;
-            }
+            self.maybe_activate_scheduled_feature_head()?;
         }
 
         Ok(())
