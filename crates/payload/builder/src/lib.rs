@@ -783,7 +783,6 @@ where
                 executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
-                    &mut action_replay_state,
                     result_closure,
                     bal_task_handle.is_some(),
                 )

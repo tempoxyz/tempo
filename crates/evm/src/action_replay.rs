@@ -35,7 +35,6 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
-        replay_state: &mut StorageActionReplayState,
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
@@ -47,7 +46,7 @@ where
             expiring_nonce,
             validator_fee,
         } = replay;
-        replay_state.reset_tx_changes();
+        self.replay_state.reset_tx_changes();
 
         // TODO: handle reverted transactions
         if !result.is_success() {
@@ -58,12 +57,11 @@ where
             .replay_actions(
                 tx_env.caller(),
                 actions.drain(..),
-                replay_state,
                 commit_reads,
                 expiring_nonce,
             )
             .inspect_err(|_| {
-                replay_state.reset_tx_changes();
+                self.replay_state.reset_tx_changes();
             })?;
 
         let cfg = self.inner.evm.cfg_env().clone();
@@ -89,7 +87,6 @@ where
         result_closure(&result);
 
         self.commit_transaction(result);
-        replay_state.commit_tx_changes();
 
         Ok(())
     }
@@ -98,7 +95,6 @@ where
         &mut self,
         sender: Address,
         actions: impl IntoIterator<Item = StorageAction>,
-        replay_state: &mut StorageActionReplayState,
         commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<EvmState, BlockExecutionError> {
@@ -106,7 +102,7 @@ where
         let is_expiring_nonce = expiring_nonce.is_some();
 
         if let Some(expiring_nonce) = expiring_nonce {
-            self.apply_expiring_nonce_replay(replay_state, expiring_nonce, block_timestamp)?;
+            self.apply_expiring_nonce_replay(expiring_nonce, block_timestamp)?;
         }
 
         let db = self.inner.evm.db_mut();
@@ -120,42 +116,47 @@ where
                 StorageAction::Sload(address, key, value) => {
                     // We don't need to check `replay_state.has_store` here,
                     // as `sload_exact` is already checking it
-                    let _ = replay_state.sload_exact(db, address, key, value)?;
+                    let _ = self.replay_state.sload_exact(db, address, key, value)?;
                 }
                 StorageAction::Sstore(address, key, value) => {
-                    if replay_state.has_write(address, key) {
+                    if self.replay_state.has_write(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
-                    replay_state.sstore(address, key, value, WriteKind::Store)?;
+                    self.replay_state
+                        .sstore(address, key, value, WriteKind::Store)?;
                 }
                 StorageAction::Sinc(address, key, delta) => {
-                    if replay_state.has_store(address, key) {
+                    if self.replay_state.has_store(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
-                    let value = replay_state
+                    let value = self
+                        .replay_state
                         .sload_current(db, address, key)?
                         .checked_add(delta)
                         .ok_or(StorageActionReplayError::Overflow)?;
-                    replay_state.sstore(address, key, value, WriteKind::Delta)?;
+                    self.replay_state
+                        .sstore(address, key, value, WriteKind::Delta)?;
                 }
                 StorageAction::Sdec(address, key, delta) => {
-                    if replay_state.has_store(address, key) {
+                    if self.replay_state.has_store(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
-                    let value = replay_state
+                    let value = self
+                        .replay_state
                         .sload_current(db, address, key)?
                         .checked_sub(delta)
                         .ok_or(StorageActionReplayError::Underflow)?;
-                    replay_state.sstore(address, key, value, WriteKind::Delta)?;
+                    self.replay_state
+                        .sstore(address, key, value, WriteKind::Delta)?;
                 }
                 StorageAction::FeeAmmSwap(address, key, amount_in) => {
-                    if replay_state.has_store(address, key) {
+                    if self.replay_state.has_store(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
-                    let pool_slot = replay_state.sload_current(db, address, key)?;
+                    let pool_slot = self.replay_state.sload_current(db, address, key)?;
                     let mut pool = Pool::decode_from_slot(pool_slot);
                     pool.apply_swap(
                         amount_in,
@@ -166,7 +167,8 @@ where
                     let value = pool
                         .encode_to_slot()
                         .map_err(|_| StorageActionReplayError::ActionConflict)?;
-                    replay_state.sstore(address, key, value, WriteKind::Delta)?;
+                    self.replay_state
+                        .sstore(address, key, value, WriteKind::Delta)?;
                 }
             }
         }
@@ -183,7 +185,7 @@ where
             state.insert(sender, account);
         }
 
-        for (address, slots) in replay_state.tx_changes.iter() {
+        for (address, slots) in self.replay_state.tx_changes.iter() {
             for (slot, change) in slots {
                 if change.write_kind.is_none() && !commit_reads {
                     continue;
@@ -217,7 +219,6 @@ where
 
     fn apply_expiring_nonce_replay(
         &mut self,
-        replay_state: &mut StorageActionReplayState,
         expiring_nonce: ExpiringNonceReplay,
         block_timestamp: u64,
     ) -> Result<(), BlockExecutionError> {
@@ -228,11 +229,11 @@ where
             return Err(StorageActionReplayError::ActionConflict.into());
         }
 
-        let db = self.evm_mut().db_mut();
+        let db = self.inner.evm_mut().db_mut();
 
         let nonce_manager = NonceManager::new();
         let now = U256::from(block_timestamp);
-        let ptr = replay_state.expiring_nonce.ring_ptr(db)?;
+        let ptr = self.replay_state.expiring_nonce.ring_ptr(db)?;
 
         let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
         let seen_expiry = db
@@ -257,7 +258,7 @@ where
             if !old_expiry.is_zero() && old_expiry > now {
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
-            replay_state.record_sstore(
+            self.replay_state.record_sstore(
                 NONCE_PRECOMPILE_ADDRESS,
                 old_seen_slot,
                 old_expiry,
@@ -266,14 +267,14 @@ where
             );
         }
 
-        replay_state.record_sstore(
+        self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,
             ring_slot,
             old_hash,
             U256::from_be_slice(expiring_nonce.hash.as_slice()),
             WriteKind::Store,
         );
-        replay_state.record_sstore(
+        self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,
             seen_slot,
             seen_expiry,
@@ -285,14 +286,14 @@ where
             .checked_add(U256::ONE)
             .filter(|next| *next < EXPIRING_NONCE_SET_CAPACITY)
             .unwrap_or(U256::ZERO);
-        replay_state.record_sstore(
+        self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,
             nonce_manager.expiring_nonce_ring_ptr.slot(),
             ptr,
             next,
             WriteKind::Store,
         );
-        replay_state.expiring_nonce.set_next_ring_ptr(next);
+        self.replay_state.expiring_nonce.set_next_ring_ptr(next);
 
         Ok(())
     }
@@ -516,7 +517,7 @@ impl StorageActionReplayState {
     }
 
     /// Commits the accumulated transaction changes to the state.
-    fn commit_tx_changes(&mut self) {
+    pub(crate) fn commit_tx_changes(&mut self) {
         for (address, slots) in self.tx_changes.drain() {
             let account_writes = self.writes.entry(address).or_default();
             for (slot, change) in slots {
