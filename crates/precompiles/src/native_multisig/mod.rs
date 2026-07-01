@@ -40,7 +40,7 @@ struct StoredMultisigHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParsedMultisigHeader {
     Uninitialized,
-    Complete { threshold: u8, owner_count: usize },
+    Initialized { threshold: u8, owner_count: usize },
 }
 
 /// Native multisig account storage.
@@ -94,7 +94,7 @@ impl NativeMultisig {
         let header = self.accounts[account].read()?;
         Ok(matches!(
             parse_multisig_header(header)?,
-            ParsedMultisigHeader::Complete { .. }
+            ParsedMultisigHeader::Initialized { .. }
         ))
     }
 
@@ -134,7 +134,7 @@ impl NativeMultisig {
         let existing = self.accounts[account].read()?;
         match parse_multisig_header(existing)? {
             ParsedMultisigHeader::Uninitialized => {}
-            ParsedMultisigHeader::Complete { .. } => {
+            ParsedMultisigHeader::Initialized { .. } => {
                 return Err(NativeMultisigError::account_already_initialized().into());
             }
         }
@@ -189,11 +189,11 @@ impl NativeMultisig {
             ParsedMultisigHeader::Uninitialized => {
                 Err(NativeMultisigError::not_multisig_account().into())
             }
-            ParsedMultisigHeader::Complete {
+            ParsedMultisigHeader::Initialized {
                 threshold,
                 owner_count,
             } => {
-                let mut owners = Vec::with_capacity(owner_count);
+                let mut owners = Vec::new();
                 for index in 0..owner_count {
                     owners.push(self.owners[account][index as u32].read()?.into());
                 }
@@ -242,7 +242,7 @@ fn parse_multisig_header(header: StoredMultisigHeader) -> Result<ParsedMultisigH
             if owner_count > MAX_MULTISIG_OWNERS {
                 return Err(NativeMultisigError::invalid_config().into());
             }
-            Ok(ParsedMultisigHeader::Complete {
+            Ok(ParsedMultisigHeader::Initialized {
                 threshold,
                 owner_count,
             })

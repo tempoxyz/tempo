@@ -411,10 +411,11 @@ impl MultisigSignature {
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
     pub fn recover_account(&self) -> Result<Address, &'static str> {
         self.validate_shape()?;
-        if let Some(init) = &self.init
-            && init.account().map_err(MultisigConfigError::as_str)? != self.account
-        {
-            return Err("multisig init does not derive account");
+        if let Some(init) = &self.init {
+            let init_account = init.account().map_err(MultisigConfigError::as_str)?;
+            if init_account != self.account {
+                return Err("multisig init does not derive account");
+            }
         }
         Ok(self.account)
     }
@@ -922,7 +923,7 @@ mod tests {
 
         assert!(
             config_a
-                .verify_owner_signatures(digest_a, std::slice::from_ref(&signature))
+                .verify_owner_signatures(digest_a, core::slice::from_ref(&signature))
                 .is_ok()
         );
         assert!(
@@ -979,7 +980,7 @@ mod tests {
         );
         assert!(
             config
-                .verify_owner_signatures(digest, std::slice::from_ref(&canonical_signature))
+                .verify_owner_signatures(digest, core::slice::from_ref(&canonical_signature))
                 .is_ok()
         );
 
