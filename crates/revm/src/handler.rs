@@ -1315,11 +1315,7 @@ where
                         }
                         if init_config
                             .account()
-                            .map_err(|reason| {
-                                TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                                    reason: reason.to_string(),
-                                }
-                            })?
+                            .map_err(native_multisig_transaction_error::<DB>)?
                             != tx.caller()
                         {
                             return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
@@ -2946,6 +2942,12 @@ fn map_native_multisig_error<DB: Database>(
             TempoInvalidTransaction::NativeMultisigValidationFailed { reason }.into()
         }
     }
+}
+
+fn native_multisig_transaction_error<DB: Database>(
+    err: impl Into<TempoInvalidTransaction>,
+) -> EVMError<DB::Error, TempoInvalidTransaction> {
+    err.into().into()
 }
 
 #[cfg(test)]

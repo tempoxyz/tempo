@@ -1,6 +1,9 @@
 use super::{PrimitiveSignature, tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH};
 use crate::TempoAddressExt;
-use alloc::vec::Vec;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use core::hash::{Hash, Hasher};
 use tempo_contracts::TempoHardfork;
