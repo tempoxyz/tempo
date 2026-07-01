@@ -17,16 +17,13 @@ sol! {
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
-pub(crate) fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
+pub fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
-pub(crate) fn view<T: SolCall>(
-    call: T,
-    f: impl FnOnce(T) -> Result<T::Return>,
-) -> PrecompileResult {
+pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
@@ -34,7 +31,7 @@ pub(crate) fn view<T: SolCall>(
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
-pub(crate) fn mutate<T: SolCall>(
+pub fn mutate<T: SolCall>(
     call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
@@ -53,7 +50,7 @@ pub(crate) fn mutate<T: SolCall>(
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
-pub(crate) fn mutate_void<T: SolCall>(
+pub fn mutate_void<T: SolCall>(
     call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
@@ -70,7 +67,7 @@ pub(crate) fn mutate_void<T: SolCall>(
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
-pub(crate) fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
+pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
     if StorageCtx.spec().is_t7() {
         StorageCredits::new().set_mode(
             credit_owner,
@@ -82,10 +79,7 @@ pub(crate) fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
-pub(crate) fn charge_input_cost(
-    storage: &mut StorageCtx,
-    calldata: &[u8],
-) -> Option<PrecompileResult> {
+pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
     if storage.deduct_gas(input_cost(calldata.len())).is_err() {
         return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
     }
@@ -127,7 +121,7 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
 /// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
 /// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
 #[inline]
-pub(crate) fn dispatch_call<T>(
+pub fn dispatch_call<T>(
     calldata: &[u8],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
@@ -154,6 +148,7 @@ pub(crate) fn dispatch_call<T>(
     }
 }
 
+#[macro_export]
 macro_rules! dispatch {
     ($calldata:expr, |$call:ident| match $match_call:ident {
         $($iface:ident::$calls:ident {
@@ -173,32 +168,32 @@ macro_rules! dispatch {
                 );)*
             }
 
-            if let Some(selector) = crate::dispatch::selector_from_calldata($calldata) {
+            if let Some(selector) = $crate::dispatch::selector_from_calldata($calldata) {
                 $($($($(
                     if selector == <$iface::[<$variant Call>] as alloy::sol_types::SolCall>::SELECTOR
-                        && !crate::dispatch::$gate(tempo_chainspec::hardfork::TempoHardfork::$hf)
+                        && !$crate::dispatch::$gate(tempo_chainspec::hardfork::TempoHardfork::$hf)
                     {
-                        return crate::dispatch::unknown_selector_result($calldata);
+                        return $crate::dispatch::unknown_selector_result($calldata);
                     }
                 )+)*)*)+
                 $(
                     if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
                         type Calls = $iface::$calls;
-                        return crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
+                        return $crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
                             $(Calls::$variant($binding) => $body,)*
                         });
                     }
                 )*
-                return crate::dispatch::unknown_selector_result($calldata);
+                return $crate::dispatch::unknown_selector_result($calldata);
             }
-            crate::dispatch::missing_selector_result()
+            $crate::dispatch::missing_selector_result()
         }}
     };
 }
 
-pub(crate) use dispatch;
+pub use crate::dispatch;
 
-pub(crate) fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
+pub fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
     calldata.get(..4).map(|selector| {
         selector
             .try_into()
@@ -206,7 +201,7 @@ pub(crate) fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
     })
 }
 
-pub(crate) fn missing_selector_result() -> PrecompileResult {
+pub fn missing_selector_result() -> PrecompileResult {
     let storage = StorageCtx::default();
 
     if storage.spec().is_t1() {
@@ -219,16 +214,16 @@ pub(crate) fn missing_selector_result() -> PrecompileResult {
 }
 
 #[inline]
-pub(crate) fn since(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
+pub fn since(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
     StorageCtx.spec() >= hardfork
 }
 
 #[inline]
-pub(crate) fn until(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
+pub fn until(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
     StorageCtx.spec() < hardfork
 }
 
-pub(crate) fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
+pub fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
     let selector = selector_from_calldata(calldata).expect("calldata len >= 4 after decode");
     StorageCtx::default().error_result(error::TempoPrecompileError::UnknownFunctionSelector(
         selector,
