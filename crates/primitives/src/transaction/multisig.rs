@@ -80,6 +80,116 @@ impl core::fmt::Display for MultisigConfigError {
     }
 }
 
+/// Native multisig quorum validation error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigQuorumError {
+    /// The signature list is empty.
+    EmptySignatures,
+    /// The signature list exceeds [`MAX_MULTISIG_OWNERS`].
+    TooManySignatures,
+    /// A recovered signer is not a configured owner.
+    SignerNotOwner,
+    /// Recovered signers are not strictly ascending.
+    SignersNotAscending,
+    /// Recovered signer weight accumulation overflowed.
+    WeightOverflow,
+    /// Recovered signer weight does not meet the threshold.
+    WeightBelowThreshold,
+}
+
+impl MultisigQuorumError {
+    /// Returns the stable validation message for this error.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptySignatures => "multisig signatures cannot be empty",
+            Self::TooManySignatures => "too many multisig signatures",
+            Self::SignerNotOwner => "multisig signer is not an owner",
+            Self::SignersNotAscending => "multisig recovered owners must be strictly ascending",
+            Self::WeightOverflow => "multisig recovered owner weight overflow",
+            Self::WeightBelowThreshold => "multisig signature weight below threshold",
+        }
+    }
+}
+
+impl core::fmt::Display for MultisigQuorumError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<MultisigQuorumError> for &'static str {
+    fn from(err: MultisigQuorumError) -> Self {
+        err.as_str()
+    }
+}
+
+impl From<MultisigQuorumError> for String {
+    fn from(err: MultisigQuorumError) -> Self {
+        err.as_str().to_string()
+    }
+}
+
+/// Accumulates recovered native multisig owner weights while enforcing owner ordering.
+pub struct MultisigWeightAccumulator<'a> {
+    config: &'a InitMultisig,
+    prev_owner: Option<Address>,
+    recovered_weight: u16,
+    signer_count: usize,
+}
+
+impl<'a> MultisigWeightAccumulator<'a> {
+    /// Creates a new accumulator for a validated native multisig config.
+    pub const fn new(config: &'a InitMultisig) -> Self {
+        Self {
+            config,
+            prev_owner: None,
+            recovered_weight: 0,
+            signer_count: 0,
+        }
+    }
+
+    /// Records one recovered owner address and returns its configured weight.
+    pub fn record_owner(&mut self, owner: Address) -> Result<u8, MultisigQuorumError> {
+        self.signer_count = self
+            .signer_count
+            .checked_add(1)
+            .ok_or(MultisigQuorumError::TooManySignatures)?;
+        if self.signer_count > MAX_MULTISIG_OWNERS {
+            return Err(MultisigQuorumError::TooManySignatures);
+        }
+
+        if self.prev_owner.is_some_and(|prev| prev >= owner) {
+            return Err(MultisigQuorumError::SignersNotAscending);
+        }
+        self.prev_owner = Some(owner);
+
+        let weight = self
+            .config
+            .owners
+            .binary_search_by_key(&owner, |entry| entry.owner)
+            .map(|idx| self.config.owners[idx].weight)
+            .map_err(|_| MultisigQuorumError::SignerNotOwner)?;
+
+        self.recovered_weight = self
+            .recovered_weight
+            .checked_add(u16::from(weight))
+            .ok_or(MultisigQuorumError::WeightOverflow)?;
+        Ok(weight)
+    }
+
+    /// Returns the accumulated weight after enforcing the configured threshold.
+    pub fn finish(self) -> Result<u8, MultisigQuorumError> {
+        if self.signer_count == 0 {
+            return Err(MultisigQuorumError::EmptySignatures);
+        }
+        if self.recovered_weight < u16::from(self.config.threshold) {
+            return Err(MultisigQuorumError::WeightBelowThreshold);
+        }
+
+        u8::try_from(self.recovered_weight).map_err(|_| MultisigQuorumError::WeightOverflow)
+    }
+}
+
 /// Native multisig owner entry.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -190,17 +300,15 @@ impl InitMultisig {
             return Err("too many multisig signatures");
         }
 
-        let mut signed_weight = 0u64;
-        for owner in self.owners.iter().take(signature_count) {
-            signed_weight = signed_weight
-                .checked_add(u64::from(owner.weight))
-                .ok_or("multisig recovered owner weight overflow")?;
-        }
-        if signed_weight < u64::from(self.threshold) {
-            return Err("multisig signature weight below threshold");
-        }
-
-        Ok(())
+        multisig_signature_count_for_threshold(
+            self.owners
+                .iter()
+                .take(signature_count)
+                .map(|owner| owner.weight),
+            self.threshold,
+        )
+        .map(|_| ())
+        .map_err(MultisigQuorumError::as_str)
     }
 
     /// Decodes, verifies, and weight-accounts primitive owner approvals.
@@ -436,6 +544,47 @@ pub fn multisig_digest(inner_digest: B256, account: Address) -> B256 {
     keccak256(input)
 }
 
+/// Returns the number of leading signatures needed for their weights to meet `threshold`.
+pub fn multisig_signature_count_for_threshold(
+    weights: impl IntoIterator<Item = u8>,
+    threshold: u8,
+) -> Result<usize, MultisigQuorumError> {
+    let mut signed_weight = 0u16;
+    let mut count = 0usize;
+
+    for weight in weights {
+        count = count
+            .checked_add(1)
+            .ok_or(MultisigQuorumError::TooManySignatures)?;
+        if count > MAX_MULTISIG_OWNERS {
+            return Err(MultisigQuorumError::TooManySignatures);
+        }
+        signed_weight = signed_weight
+            .checked_add(u16::from(weight))
+            .ok_or(MultisigQuorumError::WeightOverflow)?;
+        if signed_weight >= u16::from(threshold) {
+            return Ok(count);
+        }
+    }
+
+    if count == 0 {
+        return Err(MultisigQuorumError::EmptySignatures);
+    }
+    Err(MultisigQuorumError::WeightBelowThreshold)
+}
+
+/// Verifies recovered owner order, membership, and accumulated weight for a validated config.
+pub fn verify_ordered_owner_weights(
+    owners: &[Address],
+    config: &InitMultisig,
+) -> Result<u8, MultisigQuorumError> {
+    let mut accumulator = MultisigWeightAccumulator::new(config);
+    for &owner in owners {
+        accumulator.record_owner(owner)?;
+    }
+    accumulator.finish()
+}
+
 fn recover_multisig_owner_addresses(
     digest: B256,
     signatures: &[Bytes],
@@ -467,49 +616,7 @@ fn verify_recovered_multisig_owners(
     owners: &[Address],
     config: &InitMultisig,
 ) -> Result<u8, &'static str> {
-    if owners.is_empty() {
-        return Err("multisig signatures cannot be empty");
-    }
-    if owners.len() > MAX_MULTISIG_OWNERS {
-        return Err("too many multisig signatures");
-    }
-
-    if let ([owner], [configured_owner]) = (owners, config.owners.as_slice()) {
-        if *owner != configured_owner.owner {
-            return Err("multisig signer is not an owner");
-        }
-        let recovered_weight = u16::from(configured_owner.weight);
-        if recovered_weight < u16::from(config.threshold) {
-            return Err("multisig signature weight below threshold");
-        }
-
-        return Ok(configured_owner.weight);
-    }
-
-    let mut recovered_weight = 0u16;
-    let mut prev_owner = None;
-    for &owner in owners {
-        if prev_owner.is_some_and(|prev| prev >= owner) {
-            return Err("multisig recovered owners must be strictly ascending");
-        }
-        prev_owner = Some(owner);
-
-        let configured_owner = config
-            .owners
-            .binary_search_by_key(&owner, |entry| entry.owner)
-            .map(|idx| &config.owners[idx])
-            .map_err(|_| "multisig signer is not an owner")?;
-
-        recovered_weight = recovered_weight
-            .checked_add(u16::from(configured_owner.weight))
-            .ok_or("multisig recovered owner weight overflow")?;
-    }
-
-    if recovered_weight < u16::from(config.threshold) {
-        return Err("multisig signature weight below threshold");
-    }
-
-    u8::try_from(recovered_weight).map_err(|_| "multisig recovered owner weight overflow")
+    verify_ordered_owner_weights(owners, config).map_err(MultisigQuorumError::as_str)
 }
 
 fn encode_multisig_owner_count(owner_count: usize) -> Result<u8, MultisigConfigError> {
@@ -707,6 +814,47 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err(MultisigConfigError::TotalWeightExceedsMax)
+        );
+    }
+
+    #[test]
+    fn shared_quorum_helpers_verify_order_and_threshold() {
+        let owner_a = indexed_owner(1);
+        let owner_b = indexed_owner(2);
+        let owner_c = indexed_owner(3);
+        let config = sorted_secp_config(&[(owner_a, 1), (owner_b, 3), (owner_c, 2)], 4);
+
+        assert_eq!(
+            verify_ordered_owner_weights(&[owner_a, owner_b], &config),
+            Ok(4)
+        );
+        assert_eq!(
+            verify_ordered_owner_weights(&[owner_b], &config),
+            Err(MultisigQuorumError::WeightBelowThreshold)
+        );
+        assert_eq!(
+            verify_ordered_owner_weights(&[owner_b, owner_a], &config),
+            Err(MultisigQuorumError::SignersNotAscending)
+        );
+        assert_eq!(
+            verify_ordered_owner_weights(&[indexed_owner(4)], &config),
+            Err(MultisigQuorumError::SignerNotOwner)
+        );
+
+        assert_eq!(
+            multisig_signature_count_for_threshold(
+                config.owners.iter().map(|owner| owner.weight),
+                4
+            ),
+            Ok(2)
+        );
+        assert_eq!(
+            multisig_signature_count_for_threshold([1, 2], 4),
+            Err(MultisigQuorumError::WeightBelowThreshold)
+        );
+        assert_eq!(
+            multisig_signature_count_for_threshold([], 1),
+            Err(MultisigQuorumError::EmptySignatures)
         );
     }
 

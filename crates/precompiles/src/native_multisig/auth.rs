@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, B256};
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, TempoSignature,
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, MultisigWeightAccumulator,
+    TempoSignature,
 };
 
 use super::NativeMultisig;
@@ -62,8 +63,7 @@ impl NativeMultisig {
             .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))?;
 
         let digest = signature.digest(inner_digest);
-        let mut recovered_weight = 0u16;
-        let mut prev_owner = None;
+        let mut weight_accumulator = MultisigWeightAccumulator::new(config);
 
         for signature_bytes in signature.signatures() {
             let owner_approval = TempoSignature::from_bytes(signature_bytes).map_err(|reason| {
@@ -98,20 +98,9 @@ impl NativeMultisig {
                 }
             };
 
-            if prev_owner.is_some_and(|prev| prev >= owner) {
-                return Err(NativeMultisigAuthError::validation_failed(
-                    "multisig recovered owners must be strictly ascending",
-                ));
-            }
-            prev_owner = Some(owner);
-
-            let configured_owner = config
-                .owners
-                .binary_search_by_key(&owner, |entry| entry.owner)
-                .map(|idx| &config.owners[idx])
-                .map_err(|_| {
-                    NativeMultisigAuthError::validation_failed("multisig signer is not an owner")
-                })?;
+            weight_accumulator.record_owner(owner).map_err(|err| {
+                NativeMultisigAuthError::validation_failed(err.as_str())
+            })?;
 
             if let Some(nested_signature) = nested_signature {
                 if account_path.len() >= MAX_MULTISIG_NESTING_DEPTH {
@@ -136,24 +125,10 @@ impl NativeMultisig {
                 )?;
                 account_path.pop();
             }
-
-            recovered_weight = recovered_weight
-                .checked_add(u16::from(configured_owner.weight))
-                .ok_or_else(|| {
-                    NativeMultisigAuthError::validation_failed(
-                        "multisig recovered owner weight overflow",
-                    )
-                })?;
         }
 
-        if recovered_weight < u16::from(config.threshold) {
-            return Err(NativeMultisigAuthError::validation_failed(
-                "multisig signature weight below threshold",
-            ));
-        }
-
-        u8::try_from(recovered_weight).map_err(|_| {
-            NativeMultisigAuthError::validation_failed("multisig recovered owner weight overflow")
-        })
+        weight_accumulator
+            .finish()
+            .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))
     }
 }

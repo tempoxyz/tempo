@@ -233,14 +233,22 @@ fn create_mock_native_multisig_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
 ) -> Result<TempoSignature, &'static str> {
-    use tempo_primitives::transaction::{MultisigConfigError, MultisigSignature};
+    use tempo_primitives::transaction::{
+        MultisigConfigError, MultisigQuorumError, MultisigSignature,
+        multisig_signature_count_for_threshold,
+    };
 
-    let signature_count = mock_multisig_signature_count_for_threshold(init)?;
+    let account = init.account().map_err(MultisigConfigError::as_str)?;
+    let signature_count = multisig_signature_count_for_threshold(
+        init.owners.iter().map(|owner| owner.weight),
+        init.threshold,
+    )
+    .map_err(MultisigQuorumError::as_str)?;
     let signatures =
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?;
 
     Ok(TempoSignature::Multisig(MultisigSignature::new(
-        init.account().map_err(MultisigConfigError::as_str)?,
+        account,
         signatures,
         Some(init.clone()),
     )))
@@ -259,22 +267,6 @@ fn create_mock_native_multisig_sig_for_account(
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?,
         None,
     )))
-}
-
-fn mock_multisig_signature_count_for_threshold(
-    init: &tempo_primitives::transaction::InitMultisig,
-) -> Result<usize, &'static str> {
-    let mut signed_weight = 0u64;
-    for (index, owner) in init.owners.iter().enumerate() {
-        signed_weight = signed_weight
-            .checked_add(u64::from(owner.weight))
-            .ok_or("multisig mock signature weight overflow")?;
-        if signed_weight >= u64::from(init.threshold) {
-            return Ok(index + 1);
-        }
-    }
-
-    Err("multisig mock signature weight below threshold")
 }
 
 fn create_mock_native_multisig_owner_signatures(
