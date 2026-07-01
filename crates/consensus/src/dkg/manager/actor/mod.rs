@@ -245,7 +245,7 @@ where
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        backfill: impl Stream<Item = TempoHeader> + FusedStream,
+        backfill: impl Stream<Item = TempoHeader>,
     ) -> eyre::Result<()>
     where
         TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
@@ -316,6 +316,7 @@ where
         });
 
         tokio::pin!(backfill);
+        let mut backfilling = true;
         loop {
             let mut shutdown = self.context.stopped().fuse();
             select!(
@@ -325,23 +326,28 @@ where
                     break Err(eyre!("shutdown triggered"));
                 }
 
-            Some(header) = backfill.next() => {
-                    self.do_backfill(
-                        header,
-                        &state,
-                        &round,
-                        &mut round_sender,
-                        storage,
-                        &mut dealer_state,
-                        &mut player_state,
-                    )
-                    .await;
+                header = backfill.next()
+                , if backfilling
+                => {
+                    if let Some(header) = header {
+                        self.do_backfill(
+                            header,
+                            &state,
+                            &round,
+                            &mut round_sender,
+                            storage,
+                            &mut dealer_state,
+                            &mut player_state,
+                        )
+                        .await;
+                    } else {
+                        backfilling = false;
+                    }
                 }
 
 
-                // TODO: only do this if backfill_headers is finished
                 Some((cause, block, ack)) = self.pending_finalized_blocks.next()
-                , if backfill.is_terminated()
+                , if !backfilling
                 => {
                     let should_break = match self
                         .handle_finalized_header(
@@ -592,7 +598,7 @@ where
                 "backfills must be constructed such that they never cross epoch boundaries"
             ),
             Ok(None) => {}
-            Err(error) => warn!(%error, "backfilliling block failed; carrying on"),
+            Err(error) => warn!(%error, "backfilling block failed; carrying on"),
         }
     }
 
@@ -1353,7 +1359,7 @@ fn backfill_headers_for_state<TStorageContext>(
     node: std::sync::Arc<TempoFullNode>,
     marshal: crate::alias::marshal::Mailbox,
     target_height: Height,
-) -> impl Stream<Item = TempoHeader> + FusedStream + use<TStorageContext>
+) -> impl Stream<Item = TempoHeader> + use<TStorageContext>
 where
     TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
 {
