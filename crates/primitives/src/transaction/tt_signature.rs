@@ -94,12 +94,8 @@ pub struct WebAuthnSignature {
 }
 
 fn split_p256_signature_fields(
-    sig_data: &[u8],
-) -> Result<(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool), &'static str> {
-    if sig_data.len() != P256_SIGNATURE_LENGTH {
-        return Err("Invalid P256 signature length");
-    }
-
+    sig_data: &[u8; P256_SIGNATURE_LENGTH],
+) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
     let (r, sig_data) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
@@ -112,7 +108,7 @@ fn split_p256_signature_fields(
     let (pub_key_y, pre_hash) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
-    Ok((r, s, pub_key_x, pub_key_y, pre_hash[0] != 0))
+    (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
 }
 
 /// Primitive signature types that can be used standalone or within a Keychain signature.
@@ -167,7 +163,10 @@ impl PrimitiveSignature {
 
         match type_id {
             SIGNATURE_TYPE_P256 => {
-                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data)?;
+                let sig_data: &[u8; P256_SIGNATURE_LENGTH] = sig_data
+                    .try_into()
+                    .map_err(|_| "Invalid P256 signature length")?;
+                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data);
                 Ok(Self::P256(P256SignatureWithPreHash {
                     r: B256::from_slice(r),
                     s: B256::from_slice(s),
