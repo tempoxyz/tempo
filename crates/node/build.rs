@@ -27,11 +27,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sha = env::var("VERGEN_GIT_SHA")?;
     let sha_short = &sha[0..7];
 
-    let is_dirty = env::var("VERGEN_GIT_DIRTY")? == "true";
+    let is_dirty = env::var("VERGEN_GIT_DIRTY").is_ok_and(|dirty| dirty == "true");
     // > git describe --always --tags
     // if not on a tag: v0.2.0-beta.3-82-g1939939b
     // if on a tag: v0.2.0-beta.3
-    let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")?.ends_with(&format!("-g{sha_short}"));
+    let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
+        .map(|describe| describe.ends_with(&format!("-g{sha_short}")))
+        .unwrap_or(true);
     let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };
     println!("cargo:rustc-env=RETH_VERSION_SUFFIX={version_suffix}");
 

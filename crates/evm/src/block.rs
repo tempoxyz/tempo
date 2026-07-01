@@ -1,4 +1,4 @@
-use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
+use crate::{StorageActionReplayState, TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
@@ -21,7 +21,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -106,6 +106,30 @@ pub struct TempoTxResult {
 }
 
 impl TempoTxResult {
+    /// Creates a new [`TempoTxResult`] from a precomputed result and state.
+    pub(crate) fn new_precomputed(
+        tx: &TempoTxEnvelope,
+        result: ExecutionResult<TempoHaltReason>,
+        state: EvmState,
+        next_section: BlockSection,
+        is_payment: bool,
+        block_gas_used: u64,
+        validator_fee: U256,
+    ) -> Self {
+        Self {
+            inner: EthTxResult {
+                result: ResultAndState::new(result, state),
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section,
+            is_payment,
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
+            block_gas_used,
+            validator_fee,
+        }
+    }
+
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
@@ -146,9 +170,11 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
-    shared_gas_limit: u64,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
+    pub(crate) replay_state: StorageActionReplayState,
+
+    shared_gas_limit: u64,
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
@@ -179,6 +205,7 @@ where
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
+            replay_state: StorageActionReplayState::default(),
         }
     }
 
@@ -608,6 +635,8 @@ where
                 // no gas spending for end-of-block system transactions
             }
         }
+
+        self.replay_state.commit_tx_changes();
 
         gas_output
     }

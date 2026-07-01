@@ -376,13 +376,20 @@ jobs:
         with:
           script: |
             if (process.env.BENCH_PR) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: parseInt(process.env.BENCH_PR, 10),
+              });
               const ref = process.env.BENCH_PR_HEAD_REF || '${{ github.ref_name }}';
               const sha = process.env.BENCH_PR_HEAD_SHA || '${{ github.sha }}';
               core.setOutput('head-ref', ref);
               core.setOutput('head-sha', sha);
+              core.setOutput('base-ref', pr.base.ref);
             } else {
               core.setOutput('head-ref', '${{ github.ref_name }}');
               core.setOutput('head-sha', '${{ github.sha }}');
+              core.setOutput('base-ref', 'main');
             }
 
       - name: Resolve baseline and feature refs
@@ -396,6 +403,7 @@ jobs:
           INPUT_SHA: ${{ github.sha }}
           INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
           INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
+          INPUT_PR_BASE_REF: ${{ steps.pr-info.outputs.base-ref }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -405,6 +413,7 @@ jobs:
             const featureArg = process.env.INPUT_FEATURE;
             const baselineNameArg = process.env.INPUT_BASELINE_NAME;
             const featureNameArg = process.env.INPUT_FEATURE_NAME;
+            const baseRef = process.env.INPUT_PR_BASE_REF || 'main';
 
             let baselineRef, baselineName, featureRef, featureName;
 
@@ -418,11 +427,12 @@ jobs:
               baselineName = baselineNameArg || baselineArg;
             } else {
               try {
-                baselineRef = run('git merge-base HEAD origin/main');
+                run(`git fetch origin "${baseRef}" --quiet`);
+                baselineRef = run(`git merge-base HEAD "origin/${baseRef}"`);
               } catch {
                 baselineRef = process.env.INPUT_SHA;
               }
-              baselineName = baselineNameArg || 'main';
+              baselineName = baselineNameArg || 'merge-base';
             }
 
             if (featureArg) {
