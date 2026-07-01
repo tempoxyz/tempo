@@ -153,40 +153,55 @@ def txgen-merge-values [base: any, patch: any] {
     if (txgen-is-record $base) and (txgen-is-record $patch) {
         mut merged = $base
         for entry in ($patch | transpose key value) {
-            let append = ($entry.key | str ends-with "+")
-            let key = if $append {
-                $entry.key | str replace --regex '\+$' ''
-            } else {
-                $entry.key
-            }
-            let current = ($merged | get -o $key)
+            let current = ($merged | get -o $entry.key)
 
-            if $append {
-                if not (txgen-is-list $entry.value) {
-                    error make { msg: $"patch field '($entry.key)' must be a list" }
-                }
-                if $current == null {
-                    $merged = ($merged | insert $key $entry.value)
-                } else if (txgen-is-list $current) {
-                    $merged = ($merged | upsert $key ($current | append $entry.value))
-                } else {
-                    error make { msg: $"cannot append to non-list field '($key)'" }
-                }
-            } else if $current == null {
+            if $current == null {
                 let value = if (txgen-is-record $entry.value) {
                     txgen-merge-values {} $entry.value
                 } else {
                     $entry.value
                 }
-                $merged = ($merged | insert $key $value)
+                $merged = ($merged | insert $entry.key $value)
             } else {
-                $merged = ($merged | upsert $key (txgen-merge-values $current $entry.value))
+                $merged = ($merged | upsert $entry.key (txgen-merge-values $current $entry.value))
             }
         }
         return $merged
     }
 
     $patch
+}
+
+def txgen-append-values [base: any, patch: any] {
+    if (txgen-is-record $patch) {
+        if $base != null and not (txgen-is-record $base) {
+            error make { msg: "cannot append nested fields into a non-record value" }
+        }
+
+        mut merged = if $base == null { {} } else { $base }
+        for entry in ($patch | transpose key value) {
+            let current = ($merged | get -o $entry.key)
+            let value = (txgen-append-values $current $entry.value)
+            if $current == null {
+                $merged = ($merged | insert $entry.key $value)
+            } else {
+                $merged = ($merged | upsert $entry.key $value)
+            }
+        }
+        return $merged
+    }
+
+    if (txgen-is-list $patch) {
+        if $base == null {
+            return $patch
+        }
+        if not (txgen-is-list $base) {
+            error make { msg: "cannot append a list into a non-list value" }
+        }
+        return ($base | append $patch)
+    }
+
+    error make { msg: "append section leaves must be lists" }
 }
 
 def txgen-tip20-pieces-dir [] {
@@ -204,6 +219,29 @@ def txgen-load-tip20-piece [piece: string] {
     }
 
     open $piece_path
+}
+
+def txgen-apply-tip20-piece [spec: record, piece_name: string] {
+    let piece = (txgen-load-tip20-piece $piece_name)
+    let keys = ($piece | columns)
+    for key in $keys {
+        if $key not-in ["merge" "append"] {
+            error make { msg: $"tip20 txgen piece ($piece_name) has unknown section '($key)'; expected merge or append" }
+        }
+    }
+
+    mut out = $spec
+    let merge_patch = ($piece | get -o merge)
+    if $merge_patch != null {
+        $out = (txgen-merge-values $out $merge_patch)
+    }
+
+    let append_patch = ($piece | get -o append)
+    if $append_patch != null {
+        $out = (txgen-append-values $out $append_patch)
+    }
+
+    $out
 }
 
 def txgen-tip20-piece-name [dimension: string, value: string] {
@@ -258,9 +296,10 @@ def txgen-replace-placeholders [value: any, replacements: record] {
 }
 
 def txgen-assemble-tip20-spec [scenario: record] {
-    mut spec = (txgen-load-tip20-piece "base")
+    mut spec = {}
+    $spec = (txgen-apply-tip20-piece $spec "base")
     for piece in (txgen-tip20-scenario-pieces $scenario) {
-        $spec = (txgen-merge-values $spec (txgen-load-tip20-piece $piece))
+        $spec = (txgen-apply-tip20-piece $spec $piece)
     }
 
     txgen-replace-placeholders $spec (txgen-tip20-placeholder-values $scenario)

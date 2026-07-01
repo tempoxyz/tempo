@@ -1,3 +1,4 @@
-templates:
-  tip20_transfer:
-    gas_limit: 300000
+merge:
+  templates:
+    tip20_transfer:
+      gas_limit: 300000
