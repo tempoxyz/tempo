@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn store_read_and_update_config() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let config = init_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn invalid_update_does_not_deactivate_multisig() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let config = init_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn update_config_validates_explicit_config_id() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let config = init_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn update_config_returns_specific_config_errors() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let config = init_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();

@@ -520,12 +520,12 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T6 hardfork enabled and a funded account.
-    fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+    /// Create an EVM with T8 hardfork enabled and a funded account.
+    fn create_funded_evm_t8(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T6;
-        cfg.gas_params = tempo_gas_params(TempoHardfork::T6);
+        cfg.spec = TempoHardfork::T8;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T8);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -889,7 +889,7 @@ mod tests {
     // ==================== End Test Utility Functions ====================
 
     #[test]
-    fn test_t6_bootstrap_multisig_persists_after_transaction_commit() -> eyre::Result<()> {
+    fn test_t8_bootstrap_multisig_persists_after_transaction_commit() -> eyre::Result<()> {
         let mut signers = [
             PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
             PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
@@ -923,7 +923,7 @@ mod tests {
             Some(config.clone()),
         )));
 
-        let mut evm = create_funded_evm_t6(account);
+        let mut evm = create_funded_evm_t8(account);
         StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
             NativeMultisig::new().initialize()
         })?;

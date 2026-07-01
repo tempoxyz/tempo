@@ -1179,7 +1179,7 @@ where
         let spec = cfg.spec();
         let mut native_multisig_bootstrap: Option<(Address, B256, InitMultisig)> = None;
 
-        if spec.is_t6() {
+        if spec.is_t8() {
             let tempo_tx_env = tx.tempo_tx_env.as_ref();
             let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
             let is_rpc_simulation =
@@ -2258,7 +2258,7 @@ where
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
             let has_native_multisig_fields = aa_env.signature.is_multisig();
 
-            if has_native_multisig_fields && !cfg.spec.is_t6() {
+            if has_native_multisig_fields && !cfg.spec.is_t8() {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
             }
 
@@ -2709,7 +2709,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_regular_gas += tempo_signature_verification_gas(signature);
 
     // 2b. Native multisig bootstrap storage costs.
-    if spec.is_t6()
+    if spec.is_t8()
         && let Some(init) = signature
             .as_multisig()
             .and_then(|multisig_signature| multisig_signature.init())
@@ -3294,7 +3294,42 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_aa_auth_list_rejects_native_multisig_authority() {
+    fn test_t7_rejects_native_multisig_signature() {
+        let config = native_multisig_config();
+        let config_id = config.config_id().unwrap();
+        let account = config.account().unwrap();
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                config_id,
+                vec![Bytes::from_static(&[0xaa; 65])],
+                Some(config),
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T7, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+        });
+
+        let result = test.validate_env();
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::NativeMultisigNotActive
+                ))
+            ),
+            "native multisig signatures should be rejected before T8"
+        );
+    }
+
+    #[test]
+    fn test_t8_aa_auth_list_rejects_native_multisig_authority() {
         let config = native_multisig_config();
         let authority = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
@@ -3309,7 +3344,7 @@ mod tests {
             tempo_authorization_list: vec![tempo_authorization(authority)],
             ..Default::default()
         };
-        let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
             tx_env.inner.caller = Address::random();
         });
         store_native_multisig_account(&mut test, &config);
@@ -3327,10 +3362,10 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_standard_auth_list_rejects_native_multisig_authority() {
+    fn test_t8_standard_auth_list_rejects_native_multisig_authority() {
         let config = native_multisig_config();
         let authority = config.account().unwrap();
-        let mut test = TestHandlerEvm::tx(TempoHardfork::T6, |tx_env| {
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T8, |tx_env| {
             tx_env.inner.caller = Address::random();
             tx_env.inner.kind = TxKind::Call(Address::random());
             tx_env.inner.authorization_list =
@@ -3351,7 +3386,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_bootstrap_auth_list_rejects_current_multisig_authority() {
+    fn test_t8_bootstrap_auth_list_rejects_current_multisig_authority() {
         let config = native_multisig_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
@@ -3370,7 +3405,7 @@ mod tests {
             tempo_authorization_list: vec![tempo_authorization(account)],
             ..Default::default()
         };
-        let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
             tx_env.inner.caller = account;
         });
 
@@ -3387,7 +3422,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_bootstrap_multisig_persists_initial_config() {
+    fn test_t8_bootstrap_multisig_persists_initial_config() {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
@@ -3436,7 +3471,7 @@ mod tests {
             tx_hash: B256::repeat_byte(0x24),
             ..Default::default()
         };
-        let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
             tx_env.inner.caller = account;
             tx_env.inner.kind = TxKind::Call(Address::random());
         });
@@ -3458,7 +3493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_rpc_simulation_accepts_mock_registered_multisig_signature() {
+    fn test_t8_rpc_simulation_accepts_mock_registered_multisig_signature() {
         let config = native_multisig_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
@@ -3476,7 +3511,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
             tx_env.inner.caller = account;
             tx_env.inner.kind = TxKind::Call(Address::random());
             tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
@@ -3804,7 +3839,7 @@ mod tests {
 
     #[test]
     fn test_aa_gas_native_multisig_1_of_1_secp256k1_overhead() {
-        let gas_params = tempo_gas_params(TempoHardfork::T6);
+        let gas_params = tempo_gas_params(TempoHardfork::T8);
         let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
         let owner_signature =
             PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
@@ -3820,14 +3855,14 @@ mod tests {
             &base_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
+            TempoHardfork::T8,
         )
         .unwrap();
         let multisig_gas = calculate_aa_batch_intrinsic_gas(
             &multisig_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -3849,7 +3884,7 @@ mod tests {
 
     #[test]
     fn test_aa_gas_native_multisig_extra_secp256k1_owner_overhead() {
-        let gas_params = tempo_gas_params(TempoHardfork::T6);
+        let gas_params = tempo_gas_params(TempoHardfork::T8);
         let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
         let owner_signature =
             PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
@@ -3865,14 +3900,14 @@ mod tests {
             &base_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
+            TempoHardfork::T8,
         )
         .unwrap();
         let multisig_gas = calculate_aa_batch_intrinsic_gas(
             &multisig_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -3886,7 +3921,7 @@ mod tests {
 
     #[test]
     fn test_aa_gas_native_multisig_p256_owner_overhead() {
-        let gas_params = tempo_gas_params(TempoHardfork::T6);
+        let gas_params = tempo_gas_params(TempoHardfork::T8);
         let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
         let owner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::ZERO,
@@ -3908,14 +3943,14 @@ mod tests {
             &base_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
+            TempoHardfork::T8,
         )
         .unwrap();
         let multisig_gas = calculate_aa_batch_intrinsic_gas(
             &multisig_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -3928,10 +3963,10 @@ mod tests {
     }
 
     #[test]
-    fn test_aa_gas_native_multisig_bootstrap_charges_packed_storage_slots_t7() {
+    fn test_aa_gas_native_multisig_bootstrap_charges_packed_storage_slots_t8() {
         use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
 
-        let gas_params = tempo_gas_params(TempoHardfork::T7);
+        let gas_params = tempo_gas_params(TempoHardfork::T8);
         let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
         let owner_signature =
             PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
@@ -3948,14 +3983,14 @@ mod tests {
             &base_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T7,
+            TempoHardfork::T8,
         )
         .unwrap();
         let multisig_gas = calculate_aa_batch_intrinsic_gas(
             &multisig_env,
             &gas_params,
             None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T7,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -3971,60 +4006,7 @@ mod tests {
         );
         assert_eq!(
             multisig_gas.initial_state_gas, base_gas.initial_state_gas,
-            "T7 storage-credit accounting stays in regular intrinsic gas"
-        );
-    }
-
-    #[test]
-    fn test_aa_gas_native_multisig_bootstrap_populates_state_gas_with_amsterdam_params() {
-        let gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T6, true);
-        let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
-        let owner_signature =
-            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
-        let config = native_multisig_config();
-        let mut multisig_env = base_env.clone();
-        multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
-            config.account().unwrap(),
-            config.config_id().unwrap(),
-            vec![owner_signature],
-            Some(config.clone()),
-        ));
-
-        let base_gas = calculate_aa_batch_intrinsic_gas(
-            &base_env,
-            &gas_params,
-            None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
-        )
-        .unwrap();
-        let multisig_gas = calculate_aa_batch_intrinsic_gas(
-            &multisig_env,
-            &gas_params,
-            None::<std::iter::Empty<&AccessListItem>>,
-            TempoHardfork::T6,
-        )
-        .unwrap();
-
-        let storage_slots = native_multisig_bootstrap_storage_slots(&config);
-        let expected_regular_storage = gas_params
-            .get(GasId::sstore_set_without_load_cost())
-            .saturating_mul(storage_slots);
-        let expected_state_storage = gas_params
-            .get(GasId::sstore_set_state_gas())
-            .saturating_mul(storage_slots);
-
-        assert_eq!(
-            multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
-            NATIVE_MULTISIG_VALIDATION_GAS + expected_regular_storage
-        );
-        assert_eq!(
-            multisig_gas.initial_state_gas - base_gas.initial_state_gas,
-            expected_state_storage
-        );
-        assert_eq!(
-            multisig_gas.initial_total_gas() - base_gas.initial_total_gas(),
-            NATIVE_MULTISIG_VALIDATION_GAS + expected_regular_storage + expected_state_storage
+            "native multisig bootstrap storage stays in regular intrinsic gas under non-Amsterdam params"
         );
     }
 
@@ -6818,12 +6800,12 @@ mod tests {
         }
 
         #[test]
-        fn test_t6_registered_multisig_can_use_keychain_signature() {
+        fn test_t8_registered_multisig_can_use_keychain_signature() {
             let config = native_multisig_config();
             let config_id = config.config_id().unwrap();
             let account = config.account().unwrap();
             let access_key = Address::repeat_byte(0x44);
-            let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T6, None, false);
+            let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T8, None, false);
 
             StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut multisig = NativeMultisig::new();

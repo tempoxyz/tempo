@@ -1687,8 +1687,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_native_multisig_accounts_can_authorize_and_use_access_keys() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+    fn test_t8_native_multisig_accounts_can_authorize_and_use_access_keys() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let config = native_multisig_config();
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();

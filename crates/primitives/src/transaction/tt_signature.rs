@@ -591,14 +591,14 @@ impl TempoSignature {
             return Err("Signature data is empty");
         }
 
-        // Multisig is length-variable, so a typed multisig payload can be exactly
-        // 65 bytes. Try that typed decode first, but fall back to the legacy raw
-        // secp256k1 interpretation if the 65-byte payload is not valid multisig RLP.
+        if data.len() == SECP256K1_SIGNATURE_LENGTH {
+            return PrimitiveSignature::from_bytes(data).map(Self::Primitive);
+        }
+
         if data.len() > 1 && data[0] == SIGNATURE_TYPE_MULTISIG {
             let mut sig_data = &data[1..];
             match MultisigSignature::decode(&mut sig_data) {
                 Ok(signature) if sig_data.is_empty() => return Ok(Self::Multisig(signature)),
-                _ if data.len() == SECP256K1_SIGNATURE_LENGTH => {}
                 _ => return Err("Invalid Multisig signature RLP"),
             }
         }
@@ -1473,6 +1473,30 @@ mod tests {
         } else {
             panic!("Expected Primitive(Secp256k1) variant");
         }
+    }
+
+    #[test]
+    fn test_tempo_signature_65_byte_multisig_shape_decodes_as_secp256k1() {
+        let account = Address::repeat_byte(0x11);
+        let config_id = B256::repeat_byte(0x22);
+        let signatures = vec![Bytes::from(vec![0x33, 0x33, 0x33, 0x33, 0x33, 0x01])];
+        let payload_length = account.length() + config_id.length() + signatures.length();
+
+        let mut sig_bytes = vec![SIGNATURE_TYPE_MULTISIG];
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut sig_bytes);
+        account.encode(&mut sig_bytes);
+        config_id.encode(&mut sig_bytes);
+        signatures.encode(&mut sig_bytes);
+
+        assert_eq!(sig_bytes.len(), SECP256K1_SIGNATURE_LENGTH);
+        assert!(matches!(
+            TempoSignature::from_bytes(&sig_bytes).unwrap(),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(_))
+        ));
     }
 
     #[test]
