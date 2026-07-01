@@ -16,8 +16,6 @@ use serde::Serialize;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
-type BlsPublicKey = <MinSig as Variant>::Public;
-
 /// Find identity transitions by walking epoch-boundary DKG outcomes.
 #[derive(Debug, clap::Args)]
 pub(crate) struct GetIdentityTransitions {
@@ -65,7 +63,7 @@ struct IdentityTransition {
 #[derive(Clone)]
 struct EpochOutcome {
     epoch: u64,
-    identity: BlsPublicKey,
+    identity: <MinSig as Variant>::Public,
 }
 
 impl GetIdentityTransitions {
