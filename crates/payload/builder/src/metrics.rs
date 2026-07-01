@@ -213,6 +213,21 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
             .record(start.elapsed());
         result
     }
+
+    fn hashed_post_state_for_accounts(
+        &self,
+        accounts: &[Address],
+    ) -> ProviderResult<HashedPostState> {
+        let start = Instant::now();
+        let _span =
+            debug_span!(target: "payload_builder", "hashed_post_state_for_accounts").entered();
+        let result = self.inner.hashed_post_state_for_accounts(accounts);
+        drop(_span);
+        self.metrics
+            .hashed_post_state_duration_seconds
+            .record(start.elapsed());
+        result
+    }
 }
 
 impl StateRootProvider for InstrumentedFinishProvider<'_> {
