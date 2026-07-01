@@ -146,7 +146,8 @@ pub struct StateAwareBestTransactions<I> {
 
 impl<I> StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactions,
+    I::Item: StateAwarePoolTransaction,
 {
     /// Wraps an existing [`BestTransactions`] iterator.
     pub fn new(inner: I) -> Self {
@@ -178,27 +179,29 @@ where
 
 impl<I> Iterator for StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactions,
+    I::Item: StateAwarePoolTransaction,
 {
-    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+    type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tx = self.inner.next()?;
+            let best_tx = tx.best_transaction();
 
-            let Some(key) = tx.transaction.fee_balance_slot() else {
+            let Some(key) = best_tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
             };
 
             if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
+                && balance < best_tx.transaction.fee_token_cost()
             {
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
+                            (balance, best_tx.transaction.fee_token_cost()).into(),
                         ),
                     ),
                 );
@@ -212,7 +215,8 @@ where
 
 impl<I> BestTransactions for StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+    I: BestTransactions + Send,
+    I::Item: StateAwarePoolTransaction,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         self.inner.mark_invalid(transaction, kind);
@@ -224,6 +228,17 @@ where
 
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.inner.set_skip_blobs(skip_blobs);
+    }
+}
+
+/// [`StateAwareBestTransactions`] iterator item.
+pub trait StateAwarePoolTransaction {
+    fn best_transaction(&self) -> &BestTransaction;
+}
+
+impl StateAwarePoolTransaction for BestTransaction {
+    fn best_transaction(&self) -> &BestTransaction {
+        self
     }
 }
 
