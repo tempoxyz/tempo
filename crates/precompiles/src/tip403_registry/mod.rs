@@ -11,7 +11,7 @@ pub mod dispatch;
 pub use slots as tip403_registry_slots;
 
 use crate::{
-    StorageCtx, is_precompile_address,
+    StorageCtx,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
@@ -422,9 +422,7 @@ impl TIP403Registry {
         let recovery_address = call.recoveryAuthority;
         let (recovery_mode, recovery_write) = RecoveryMode::encode(recovery_address, msg_sender);
 
-        if is_precompile_address(recovery_address, self.storage.spec())
-            || recovery_address.is_virtual()
-        {
+        if recovery_address.is_precompile(self.storage.spec()) || recovery_address.is_virtual() {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
         }
 
@@ -947,7 +945,6 @@ impl PolicyTypeExt for PolicyType {
 mod tests {
     use super::*;
     use crate::{
-        SYSTEM_PRECOMPILES,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
@@ -956,7 +953,9 @@ mod tests {
         sol_types::SolEvent,
     };
     use rand_08::Rng;
-    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
+    use tempo_contracts::precompiles::{
+        PATH_USD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
+    };
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]

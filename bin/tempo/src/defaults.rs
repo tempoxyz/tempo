@@ -4,17 +4,18 @@ use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
     DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
-    DefaultTraceValues, DefaultTxPoolValues,
+    DefaultPruningValues, DefaultTraceValues, DefaultTxPoolValues,
 };
+use reth_prune_types::{PruneMode, PruneModes};
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::spec::TEMPO_T7_BASE_FEE_FLOOR;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
-
-/// Default OTLP logs filter level for telemetry.
-const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
+const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
+const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
+const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 = MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
 
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, clap::Args)]
@@ -80,7 +81,6 @@ impl TelemetryArgs {
 
         Ok(Some(TelemetryConfig {
             logs_otlp_url,
-            logs_otlp_filter: DEFAULT_LOGS_OTLP_FILTER.to_string(),
             metrics_prometheus_url,
             metrics_prometheus_interval: self.telemetry_metrics_interval,
             metrics_auth_header: Some(auth_header),
@@ -137,8 +137,6 @@ impl From<UrlWithAuth> for Url {
 pub(crate) struct TelemetryConfig {
     /// OTLP logs endpoint (without credentials).
     pub(crate) logs_otlp_url: Url,
-    /// OTLP logs filter level.
-    pub(crate) logs_otlp_filter: String,
     /// Prometheus metrics push endpoint (without credentials).
     /// Used for both consensus and execution metrics.
     pub(crate) metrics_prometheus_url: Url,
@@ -217,10 +215,29 @@ fn init_engine_defaults() {
         .expect("failed to initialize engine defaults");
 }
 
+fn init_pruning_defaults() {
+    let minimal_history_retention = Some(PruneMode::Distance(MINIMAL_PEER_SYNC_RETENTION_BLOCKS));
+    // This defines Tempo's minimum history retention window: nodes should retain
+    // enough block and state history for peers and unwinds up to three mainnet
+    // epochs behind the finalized tip, plus Reth's normal 64-block safety margin.
+    let minimal_prune_modes = PruneModes {
+        account_history: minimal_history_retention,
+        storage_history: minimal_history_retention,
+        bodies_history: minimal_history_retention,
+        ..DefaultPruningValues::default().minimal_prune_modes
+    };
+
+    DefaultPruningValues::default()
+        .with_minimal_prune_modes(minimal_prune_modes)
+        .try_init()
+        .expect("failed to initialize pruning defaults");
+}
+
 fn init_trace_defaults() {
     DefaultTraceValues::default()
         .with_service_name("tempo")
         .with_service_version(env!("CARGO_PKG_VERSION"))
+        .with_logs_otlp_filter("debug")
         .try_init()
         .expect("failed to initialize trace defaults");
 }
@@ -263,6 +280,7 @@ pub(crate) fn init_defaults() {
     init_payload_builder_defaults();
     init_txpool_defaults();
     init_engine_defaults();
+    init_pruning_defaults();
     init_trace_defaults();
     init_otlp_defaults();
     init_network_defaults();

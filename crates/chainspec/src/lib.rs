@@ -16,7 +16,14 @@ pub mod spec;
 #[cfg(feature = "reth")]
 pub use network_identity::NetworkIdentity;
 #[cfg(feature = "reth")]
-pub use spec::TempoChainSpec;
+pub use spec::{TempoChainSpec, TempoHardforks};
 
-pub mod constants;
-pub mod hardfork;
+pub use tempo_hardfork::{TempoHardfork, constants};
+
+/// Backwards-compatible hardfork import path.
+pub mod hardfork {
+    pub use tempo_hardfork::TempoHardfork;
+
+    #[cfg(feature = "reth")]
+    pub use crate::spec::TempoHardforks;
+}

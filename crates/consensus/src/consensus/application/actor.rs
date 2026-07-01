@@ -457,7 +457,7 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
             proposer = %verify.proposer,
         ),
-        err,
+        err(level = Level::INFO),
     )]
     async fn handle_verify<TContext: Pacer>(
         self,
@@ -749,6 +749,17 @@ impl Inner<Init> {
         ))
     }
 
+    #[instrument(
+        skip_all,
+        fields(
+            %parent_view,
+            %parent_digest,
+            %round,
+            proposal = %payload,
+            %proposer,
+        ),
+        err(level = Level::WARN),
+    )]
     async fn verify<TContext: Pacer>(
         self,
         context: TContext,
