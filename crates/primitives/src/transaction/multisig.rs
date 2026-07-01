@@ -2,7 +2,6 @@ use super::{PrimitiveSignature, tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH
 use crate::TempoAddressExt;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
-use alloy_rlp::{Buf, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::hash::{Hash, Hasher};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, NATIVE_MULTISIG_ADDRESS,
@@ -78,7 +77,8 @@ impl InitMultisig {
 }
 
 /// Native multisig transaction signature.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -93,9 +93,11 @@ pub struct MultisigSignature {
     init: Option<InitMultisig>,
     /// Cached multisig digest for the transaction hash this signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
+    #[rlp(skip, default)]
     cached_digest: OnceLock<(B256, Address, B256, B256)>,
     /// Cached recovered owner addresses for the digest this multisig signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
+    #[rlp(skip, default)]
     cached_recovered_owners: OnceLock<(B256, Vec<Address>)>,
 }
 
@@ -235,77 +237,6 @@ impl MultisigSignature {
             + self.signatures.capacity() * size_of::<Bytes>()
             + self.signatures.iter().map(|sig| sig.len()).sum::<usize>()
             + self.init.as_ref().map_or(0, InitMultisig::size)
-    }
-}
-
-impl Encodable for MultisigSignature {
-    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let payload_length = self.account.length()
-            + self.config_id.length()
-            + self.signatures.length()
-            + self.init.as_ref().map_or(1, Encodable::length);
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
-        self.account.encode(out);
-        self.config_id.encode(out);
-        self.signatures.encode(out);
-        if let Some(init) = &self.init {
-            init.encode(out);
-        } else {
-            out.put_u8(EMPTY_STRING_CODE);
-        }
-    }
-
-    fn length(&self) -> usize {
-        let payload_length = self.account.length()
-            + self.config_id.length()
-            + self.signatures.length()
-            + self.init.as_ref().map_or(1, Encodable::length);
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length_with_payload()
-    }
-}
-
-impl Decodable for MultisigSignature {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let header = alloy_rlp::Header::decode(buf)?;
-        if !header.list {
-            return Err(alloy_rlp::Error::UnexpectedString);
-        }
-
-        if header.payload_length > buf.len() {
-            return Err(alloy_rlp::Error::InputTooShort);
-        }
-
-        let mut payload = &buf[..header.payload_length];
-        let this = Self {
-            account: Decodable::decode(&mut payload)?,
-            config_id: Decodable::decode(&mut payload)?,
-            signatures: Decodable::decode(&mut payload)?,
-            init: if payload.is_empty() {
-                return Err(alloy_rlp::Error::InputTooShort);
-            } else if payload[0] == EMPTY_STRING_CODE {
-                payload.advance(1);
-                None
-            } else {
-                Some(Decodable::decode(&mut payload)?)
-            },
-            cached_digest: OnceLock::new(),
-            cached_recovered_owners: OnceLock::new(),
-        };
-
-        if !payload.is_empty() {
-            return Err(alloy_rlp::Error::UnexpectedLength);
-        }
-        buf.advance(header.payload_length);
-
-        Ok(this)
     }
 }
 
@@ -628,6 +559,26 @@ mod tests {
         encoded
     }
 
+    fn encoded_multisig_with_empty_init_placeholder(
+        account: Address,
+        config_id: B256,
+        signatures: Vec<Vec<u8>>,
+    ) -> Vec<u8> {
+        let signatures = signatures.into_iter().map(Bytes::from).collect::<Vec<_>>();
+        let payload_length = account.length() + config_id.length() + signatures.length() + 1;
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        account.encode(&mut encoded);
+        config_id.encode(&mut encoded);
+        signatures.encode(&mut encoded);
+        encoded.push(alloy_rlp::EMPTY_STRING_CODE);
+        encoded
+    }
+
     #[test]
     fn config_derivation_is_stable_and_validates_owner_order() {
         let owner_a = Address::from([0x11; 20]);
@@ -702,6 +653,45 @@ mod tests {
 
         let one_signature = vec![signatures[0].clone()];
         assert!(verify_multisig_owner_signatures(digest, &one_signature, &config).is_err());
+    }
+
+    #[test]
+    fn multisig_signature_without_init_omits_trailing_slot() {
+        let account = Address::repeat_byte(0x11);
+        let config_id = B256::repeat_byte(0x22);
+        let signatures = vec![Bytes::from(vec![0x03, 0x04])];
+        let signature = MultisigSignature::new(account, config_id, signatures.clone(), None);
+
+        let mut encoded = Vec::new();
+        signature.encode(&mut encoded);
+        assert_eq!(
+            encoded,
+            encoded_multisig_without_init_slot(
+                account,
+                config_id,
+                signatures
+                    .iter()
+                    .map(|signature| signature.to_vec())
+                    .collect(),
+            )
+        );
+
+        let mut input = encoded.as_slice();
+        let decoded = MultisigSignature::decode(&mut input).unwrap();
+        assert!(input.is_empty());
+        assert_eq!(decoded, signature);
+    }
+
+    #[test]
+    fn multisig_signature_rejects_empty_init_placeholder() {
+        let encoded = encoded_multisig_with_empty_init_placeholder(
+            Address::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+            vec![vec![0x03, 0x04]],
+        );
+
+        let mut input = encoded.as_slice();
+        assert!(MultisigSignature::decode(&mut input).is_err());
     }
 
     #[test]
