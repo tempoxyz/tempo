@@ -13,11 +13,9 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
-use tempo_evm::{StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
-use tracing::trace;
-
-use crate::parallel;
+use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -112,12 +110,9 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
+                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
                     if parallel {
-                        let tx =
-                            parallel::plan_transaction_replay(prewarm, tx, expiring_nonce_offset);
                         let _ = transactions_tx.send(Some(tx));
-                    } else {
-                        Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
                     }
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
@@ -169,26 +164,28 @@ impl BestTransactionsPrewarming {
         pool.clear();
     }
 
+    /// Prewarms a transaction by executing it on top of the latest state.
+    ///
+    /// If [`PrewarmingExecutionContext::parallel`] is enabled and prewarming was successful,
+    /// a [`PrewarmedTransaction`] with populated replay data is returned.
+    #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
-    ) where
+    ) -> PrewarmedTransaction
+    where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        if prewarm.is_stopped() {
-            return;
-        }
+        let replay = WorkerPool::with_worker_mut(|worker| {
+            if prewarm.parallel && !is_parallel_candidate(&tx) {
+                return None;
+            }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
-
-            let tx_hash = *tx.hash();
+            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
 
             if prewarm.is_stopped() {
-                return;
+                return None;
             }
 
             let mut tx_env = tx.transaction.clone_tx_env();
@@ -196,22 +193,59 @@ impl BestTransactionsPrewarming {
                 tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
             }
 
-            if let Err(err) = evm.transact_raw(tx_env) {
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    ?tx_hash,
-                    "Failed to prewarm transaction by execution"
-                );
-                return;
+            let result = match evm.transact_raw(tx_env) {
+                Ok(result) => result.result,
+                Err(err) => {
+                    trace!(
+                        target: "payload_builder",
+                        %err,
+                        "Failed to prewarm transaction by execution"
+                    );
+
+                    return None;
+                }
+            };
+
+            trace!(target: "payload_builder", "Prewarmed transaction");
+
+            if !prewarm.parallel {
+                return None;
             }
+
+            let actions = evm.take_actions()?;
+            let expiring_nonce = tx
+                .transaction
+                .is_expiring_nonce()
+                .then(|| {
+                    let valid_before = tx
+                        .transaction
+                        .tx_env()
+                        .tempo_tx_env
+                        .as_ref()?
+                        .valid_before?;
+                    Some(ExpiringNonceReplay {
+                        hash: tx.transaction.expiring_nonce_hash()?,
+                        valid_before,
+                    })
+                })
+                .flatten();
 
             trace!(
                 target: "payload_builder",
-                ?tx_hash,
-                "Prewarmed transaction"
+                actions = actions.len(),
+                expiring_nonce = expiring_nonce.is_some(),
+                "Generated replay for transaction"
             );
+
+            Some(Box::new(StorageActionReplay {
+                result,
+                actions,
+                validator_fee: evm.validator_fee(),
+                expiring_nonce,
+            }))
         });
+
+        PrewarmedTransaction { tx, replay }
     }
 }
 
@@ -430,6 +464,17 @@ fn is_invalidated_buffered_transaction(
         !candidate.transaction.is_aa_2d()
             && candidate.transaction.sender() == invalid.transaction.sender()
     }
+}
+
+/// Returns true if the transaction is a candidate for parallel prewarming.
+fn is_parallel_candidate(tx: &BestTransaction) -> bool {
+    // Payment lane transactions
+    tx.transaction.is_payment()
+        // 2D or expiring nonces, no protocol nonces
+        && tx
+            .transaction
+            .nonce_key()
+            .is_some()
 }
 
 #[cfg(test)]

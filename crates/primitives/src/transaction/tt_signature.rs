@@ -93,6 +93,24 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+fn split_p256_signature_fields(
+    sig_data: &[u8],
+) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
+    let (r, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (s, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (pub_key_x, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (pub_key_y, pre_hash) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
+}
+
 /// Primitive signature types that can be used standalone or within a Keychain signature.
 /// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
 /// It does NOT support Keychain signatures to prevent recursion.
@@ -148,24 +166,13 @@ impl PrimitiveSignature {
                 if sig_data.len() != P256_SIGNATURE_LENGTH {
                     return Err("Invalid P256 signature length");
                 }
-                let (r, sig_data) = sig_data
-                    .split_first_chunk::<32>()
-                    .expect("P256 signature length checked");
-                let (s, sig_data) = sig_data
-                    .split_first_chunk::<32>()
-                    .expect("P256 signature length checked");
-                let (pub_key_x, sig_data) = sig_data
-                    .split_first_chunk::<32>()
-                    .expect("P256 signature length checked");
-                let (pub_key_y, pre_hash) = sig_data
-                    .split_first_chunk::<32>()
-                    .expect("P256 signature length checked");
+                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data);
                 Ok(Self::P256(P256SignatureWithPreHash {
                     r: B256::from_slice(r),
                     s: B256::from_slice(s),
                     pub_key_x: B256::from_slice(pub_key_x),
                     pub_key_y: B256::from_slice(pub_key_y),
-                    pre_hash: pre_hash[0] != 0,
+                    pre_hash,
                 }))
             }
             SIGNATURE_TYPE_WEBAUTHN => {

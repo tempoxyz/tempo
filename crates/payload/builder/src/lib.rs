@@ -6,7 +6,6 @@
 mod budget;
 mod encode;
 mod metrics;
-mod parallel;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
@@ -783,7 +782,6 @@ where
                 executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
-                    &mut action_replay_state,
                     result_closure,
                     bal_task_handle.is_some(),
                 )
