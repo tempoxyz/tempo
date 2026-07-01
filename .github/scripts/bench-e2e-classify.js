@@ -147,13 +147,23 @@ function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
     sig: 'neutral',
   };
 
-  if (base <= 0 || ciPct == null) {
+  if (base <= 0) {
     change.informational = true;
-    change.informational_reason = base <= 0 ? 'zero baseline' : 'insufficient runs';
+    change.informational_reason = 'zero baseline';
     return change;
   }
 
   const improvement = meta.lower ? -changePct : changePct;
+  if (ciPct == null) {
+    change.method = 'point-estimate';
+    if (improvement > meta.floor) {
+      change.sig = 'good';
+    } else if (improvement < -meta.floor) {
+      change.sig = 'bad';
+    }
+    return change;
+  }
+
   if (improvement - ciPct > meta.floor) {
     change.sig = 'good';
   } else if (improvement + ciPct < -meta.floor) {
