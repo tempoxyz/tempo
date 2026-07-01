@@ -211,6 +211,11 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
+    /// Builds system transactions to seal the block.
+    ///
+    /// Returns a vector of system transactions that must be executed at the end of each block:
+    /// - Subblocks signatures - validates subblock signatures
+    /// - Feature readiness confirmation - reports that validator is ready for the scheduled feature head
     fn build_seal_block_txs(
         &self,
         evm: &mut TempoEvm<impl Database>,
@@ -225,6 +230,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         }
 
         if subblocks.is_empty() && evm.cfg.spec.is_t4() {
+            // Post-T4, omit the subblocks metadata transaction if there are no subblocks
             return txs;
         }
 
