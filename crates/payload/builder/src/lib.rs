@@ -916,7 +916,11 @@ where
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
-        // merge all transitions into bundle state before deriving the hashed post-state
+        // Drop the state hook to signal that execution is complete and the sparse trie task can
+        // finalize the state root.
+        db.set_state_hook(None);
+
+        // Merge all transitions into bundle state before deriving the hashed post-state.
         db.merge_transitions(BundleRetention::Reverts);
 
         let proof_root = self.proof_root_for_payload_timestamp(
@@ -925,10 +929,6 @@ where
             &db.bundle_state,
             evm_env.block_env.inner.timestamp.to::<u64>(),
         )?;
-
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
-        db.set_state_hook(None);
 
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
