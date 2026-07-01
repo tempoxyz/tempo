@@ -233,12 +233,12 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .iter()
             .map(|s| s.metadata())
             .collect::<Vec<SubBlockMetadata>>();
-        let subblocks_input = alloy_rlp::encode(&subblocks_metadata)
-            .into_iter()
-            .chain(evm.block.number.to_be_bytes_vec())
-            .collect();
-
-        txs.push(Self::system_tx(chain_id, Address::ZERO, subblocks_input));
+        txs.push(Self::system_tx(
+            chain_id,
+            Address::ZERO,
+            alloy_rlp::encode(&subblocks_metadata),
+            evm.block.number,
+        ));
         txs
     }
 
@@ -292,13 +292,21 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             "reporting scheduled feature readiness"
         );
 
-        let input = IFeatureRegistry::reportFeatureReadinessCall { ready }
-            .abi_encode()
-            .into();
-        Some(Self::system_tx(chain_id, FEATURE_REGISTRY_ADDRESS, input))
+        Some(Self::system_tx(
+            chain_id,
+            FEATURE_REGISTRY_ADDRESS,
+            IFeatureRegistry::reportFeatureReadinessCall { ready }.abi_encode(),
+            evm.block.number,
+        ))
     }
 
-    fn system_tx(chain_id: Option<u64>, to: Address, input: Bytes) -> Recovered<TempoTxEnvelope> {
+    fn system_tx(
+        chain_id: Option<u64>,
+        to: Address,
+        mut input: Vec<u8>,
+        block_number: U256,
+    ) -> Recovered<TempoTxEnvelope> {
+        input.extend(block_number.to_be_bytes_vec());
         Recovered::new_unchecked(
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
@@ -308,7 +316,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
                     gas_limit: 0,
                     to: to.into(),
                     value: U256::ZERO,
-                    input,
+                    input: input.into(),
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),

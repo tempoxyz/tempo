@@ -343,15 +343,11 @@ where
                 return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
 
-            if tx.input().len() < U256::BYTES
-                || tx.input()[tx.input().len() - U256::BYTES..] != block_number
-            {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            }
-
-            let mut buf = &tx.input()[..tx.input().len() - U256::BYTES];
+            let mut buf = system_tx_input_without_block_number(
+                tx.input(),
+                &block_number,
+                "invalid subblocks metadata system transaction",
+            )?;
             let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
@@ -380,7 +376,7 @@ where
                 ));
             }
 
-            self.validate_feature_registry_system_tx(tx)?;
+            self.validate_feature_registry_system_tx(tx, &block_number)?;
 
             seen_feature_readiness_report = true;
         } else {
@@ -396,8 +392,14 @@ where
     fn validate_feature_registry_system_tx(
         &self,
         tx: &TempoTxEnvelope,
+        block_number: &[u8],
     ) -> Result<(), BlockValidationError> {
-        IFeatureRegistry::reportFeatureReadinessCall::abi_decode(tx.input()).map_err(|_| {
+        let input = system_tx_input_without_block_number(
+            tx.input(),
+            block_number,
+            "invalid feature head readiness system transaction",
+        )?;
+        IFeatureRegistry::reportFeatureReadinessCall::abi_decode_validate(input).map_err(|_| {
             BlockValidationError::msg("invalid feature head readiness system transaction")
         })?;
         if self.evm().block().proposer_public_key.is_none() {
@@ -805,6 +807,20 @@ where
     }
 }
 
+/// System transactions inputs contain the block number as a suffix to
+/// avoid hash collisions.
+fn system_tx_input_without_block_number<'a>(
+    input: &'a [u8],
+    block_number: &[u8],
+    err: &'static str,
+) -> Result<&'a [u8], BlockValidationError> {
+    if input.len() < U256::BYTES || &input[input.len() - U256::BYTES..] != block_number {
+        return Err(BlockValidationError::msg(err));
+    }
+
+    Ok(&input[..input.len() - U256::BYTES])
+}
+
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -998,6 +1014,12 @@ mod tests {
         input.freeze().into()
     }
 
+    fn create_feature_readiness_system_tx_input(ready: bool, block_number: u64) -> Bytes {
+        let mut input = IFeatureRegistry::reportFeatureReadinessCall { ready }.abi_encode();
+        input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
+        input.into()
+    }
+
     fn create_system_tx(chain_id: u64, input: Bytes) -> TempoTxEnvelope {
         create_system_tx_to(chain_id, Address::ZERO, input)
     }
@@ -1069,9 +1091,7 @@ mod tests {
         builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
         let executor = builder.build(&mut db, &chainspec);
 
-        let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
-            .abi_encode()
-            .into();
+        let input = create_feature_readiness_system_tx_input(true, 1);
         let system_tx =
             create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
 
@@ -1098,6 +1118,27 @@ mod tests {
             .with_runtime_spec(TempoHardfork::T9)
             .build(&mut db, &chainspec);
 
+        let input = create_feature_readiness_system_tx_input(true, 1);
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "invalid feature head readiness system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_feature_head_readiness_rejects_missing_block_number() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T9);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let executor = builder.build(&mut db, &chainspec);
+
         let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
             .abi_encode()
             .into();
@@ -1123,9 +1164,7 @@ mod tests {
                 seen_feature_readiness_report: true,
             })
             .build(&mut db, &chainspec);
-        let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
-            .abi_encode()
-            .into();
+        let input = create_feature_readiness_system_tx_input(true, 1);
         let system_tx =
             create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
 

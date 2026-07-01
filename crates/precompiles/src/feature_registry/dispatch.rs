@@ -486,6 +486,31 @@ mod tests {
     }
 
     #[test]
+    fn report_feature_readiness_dispatch_allows_block_number_suffix() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0xaa);
+        let validator = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_feature_head.write(FEATURE_HEAD)?;
+            registry.scheduled_activation_epoch.write(21)?;
+            set_proposer_public_key(&mut registry, public_key);
+
+            let mut input =
+                IFeatureRegistry::reportFeatureReadinessCall { ready: true }.abi_encode();
+            input.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
+
+            let result = registry.call(&input, Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn feature_head_support_counts_active_validator_readiness() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::repeat_byte(0xaa);
