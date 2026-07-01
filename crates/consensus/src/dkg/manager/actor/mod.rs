@@ -508,6 +508,13 @@ where
             .epoch_strategy
             .containing(next_expected_height)
             .expect("epoch strategy is covering all heights");
+        ensure!(
+            epoch_info.epoch() == round.epoch(),
+            "initial DKG state is for epoch `{}`, but the next expected \
+            finalized block `{next_expected_height}` is in epoch `{}`",
+            round.epoch(),
+            epoch_info.epoch(),
+        );
 
         let mut height = storage
             .get_latest_finalized_block_for_epoch(&round.epoch())
