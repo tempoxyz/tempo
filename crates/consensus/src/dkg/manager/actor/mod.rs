@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
 
-use alloy_consensus::{BlockHeader as _, Sealable};
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
@@ -33,12 +33,11 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     FutureExt as _, Stream, StreamExt as _,
     channel::mpsc,
-    future::{Either, Ready, ready},
-    stream::{self, FusedStream, FuturesOrdered},
+    future::{Ready, ready},
+    stream::{FusedStream, FuturesOrdered},
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_provider::HeaderProvider as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -130,8 +129,8 @@ where
     /// runtime.
     metrics: Metrics,
 
-    /// Finalized blocks received while the DKG loop is draining a supplied
-    /// backfill stream. These are drained once backfill finishes.
+    /// Queue of finalized blocks if marshal is configured to send out multiple
+    /// blocks at a time.
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 }
 
@@ -207,6 +206,19 @@ where
             return;
         };
 
+        if let Err(reason) = self
+            .prepopulate_to_last_finalized_height(&mut storage)
+            .await
+        {
+            tracing::warn_span!("dkg_actor").in_scope(|| {
+                warn!(
+                    %reason,
+                    "failed prepopulating DKG state",
+                );
+            });
+            return;
+        }
+
         let (mux, mut dkg_mux) = mux::Muxer::new(
             self.context.with_label("dkg_mux"),
             sender,
@@ -216,19 +228,7 @@ where
         mux.start();
 
         let reason = loop {
-            let backfill_headers = backfill_headers_for_state(
-                &storage,
-                &self.config.epoch_strategy,
-                &self.config.namespace,
-                self.config.execution_node.clone(),
-                self.config.marshal.clone(),
-                self.config.last_finalized_height,
-            );
-
-            if let Err(error) = self
-                .run_dkg_loop(&mut storage, &mut dkg_mux, backfill_headers)
-                .await
-            {
+            if let Err(error) = self.run_dkg_loop(&mut storage, &mut dkg_mux).await {
                 break error;
             }
         };
@@ -245,7 +245,6 @@ where
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        backfill: impl Stream<Item = TempoHeader>,
     ) -> eyre::Result<()>
     where
         TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
@@ -315,8 +314,6 @@ where
             )
         });
 
-        tokio::pin!(backfill);
-        let mut backfilling = true;
         loop {
             let mut shutdown = self.context.stopped().fuse();
             select!(
@@ -326,29 +323,7 @@ where
                     break Err(eyre!("shutdown triggered"));
                 }
 
-                header = backfill.next()
-                , if backfilling
-                => {
-                    if let Some(header) = header {
-                        self.do_backfill(
-                            header,
-                            &state,
-                            &round,
-                            &mut round_sender,
-                            storage,
-                            &mut dealer_state,
-                            &mut player_state,
-                        )
-                        .await;
-                    } else {
-                        backfilling = false;
-                    }
-                }
-
-
-                Some((cause, block, ack)) = self.pending_finalized_blocks.next()
-                , if !backfilling
-                => {
+                Some((cause, block, ack)) = self.pending_finalized_blocks.next() => {
                     let should_break = match self
                         .handle_finalized_header(
                             cause,
@@ -516,6 +491,102 @@ where
         }
     }
 
+    #[instrument(skip_all, err)]
+    async fn prepopulate_to_last_finalized_height<TStorageContext>(
+        &self,
+        storage: &mut state::Storage<TStorageContext>,
+    ) -> eyre::Result<()>
+    where
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    {
+        let state = storage.current();
+        let round = state::Round::from_state(&state, &self.config.namespace);
+        let target_height = self.config.last_finalized_height;
+        let next_expected_height = target_height.next();
+        let epoch_info = self
+            .config
+            .epoch_strategy
+            .containing(next_expected_height)
+            .expect("epoch strategy is covering all heights");
+
+        let mut height = storage
+            .get_latest_finalized_block_for_epoch(&round.epoch())
+            .map_or(epoch_info.first(), |(height, _)| height.next());
+        if height > target_height {
+            return Ok(());
+        }
+
+        info!(
+            epoch = %round.epoch(),
+            %height,
+            %target_height,
+            "prepopulating DKG state from finalized headers"
+        );
+
+        while height <= target_height {
+            let header = get_header(
+                &self.config.execution_node,
+                &self.config.marshal,
+                height,
+            ).await
+            .wrap_err_with(|| format!(
+                "neither consensus nor execution layer had a header for block at height `{height}`"
+            ))?;
+
+            self.record_finalized_header(storage, &round, header, None)
+                .await
+                .wrap_err("failed backfilling header to storage")?;
+            height = height.next();
+        }
+        Ok(())
+    }
+
+    async fn record_finalized_header<TStorageContext>(
+        &self,
+        storage: &mut state::Storage<TStorageContext>,
+        round: &state::Round,
+        header: TempoHeader,
+        dealer_state: Option<&mut state::Dealer>,
+    ) -> eyre::Result<()>
+    where
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    {
+        let height = Height::new(header.number());
+        if !header.extra_data().is_empty() {
+            'handle_log: {
+                let (dealer, log) = match read_dealer_log(header.extra_data().as_ref(), round) {
+                    Err(reason) => {
+                        warn!(
+                            %reason,
+                            %height,
+                            "failed to read dealer log from block extraData header field"
+                        );
+                        break 'handle_log;
+                    }
+                    Ok((dealer, log)) => (dealer, log),
+                };
+                storage
+                    .append_dealer_log(round.epoch(), dealer.clone(), log)
+                    .await
+                    .wrap_err("failed to append dealer log from finalized header")?;
+                if self.config.me.public_key() == dealer
+                    && let Some(dealer_state) = dealer_state
+                {
+                    info!(
+                        "found own dealing in finalized block; deleting it \
+                        from state to not write it again"
+                    );
+                    dealer_state.take_finalized();
+                }
+            }
+        }
+
+        storage
+            .append_finalized_header(round.epoch(), header)
+            .await
+            .wrap_err("failed to append finalized header")
+    }
+
     fn handle_verify_dealer_log(
         &self,
         state: &state::State,
@@ -551,55 +622,6 @@ where
             self.metrics.bad_dealings.inc();
         });
         let _ = response.send(res);
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "backfill applies finalized headers through the normal finalized path"
-    )]
-    #[instrument(
-        skip_all,
-        fields(
-            height = %header.number(),
-            digest = %header.hash_slow(),
-        )
-    )]
-    async fn do_backfill<TStorageContext, TSender>(
-        &mut self,
-        header: TempoHeader,
-        state: &state::State,
-        round: &state::Round,
-        round_sender: &mut TSender,
-        storage: &mut state::Storage<TStorageContext>,
-        dealer_state: &mut Option<state::Dealer>,
-        player_state: &mut Option<state::Player>,
-    ) where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
-        TSender: Sender<PublicKey = PublicKey>,
-    {
-        match self
-            .handle_finalized_header(
-                info_span!(
-                    "dkg_backfill",
-                    block.height = header.number(),
-                    epoch = %round.epoch(),
-                ),
-                state,
-                round,
-                round_sender,
-                storage,
-                dealer_state,
-                player_state,
-                header,
-            )
-            .await
-        {
-            Ok(Some(_)) => unreachable!(
-                "backfills must be constructed such that they never cross epoch boundaries"
-            ),
-            Ok(None) => {}
-            Err(error) => warn!(%error, "backfilling block failed; carrying on"),
-        }
     }
 
     /// Handles a finalized block.
@@ -708,38 +730,9 @@ where
         }
 
         if height != epoch_info.last() {
-            if !header.extra_data().is_empty() {
-                'handle_log: {
-                    let (dealer, log) = match read_dealer_log(header.extra_data().as_ref(), round) {
-                        Err(reason) => {
-                            warn!(
-                                %reason,
-                                "failed to read dealer log from block \
-                                extraData header field");
-                            break 'handle_log;
-                        }
-                        Ok((dealer, log)) => (dealer, log),
-                    };
-                    storage
-                        .append_dealer_log(round.epoch(), dealer.clone(), log)
-                        .await
-                        .wrap_err("failed to append log to journal")?;
-                    if self.config.me.public_key() == dealer
-                        && let Some(dealer_state) = dealer_state
-                    {
-                        info!(
-                            "found own dealing in finalized block; deleting it \
-                            from state to not write it again"
-                        );
-                        dealer_state.take_finalized();
-                    }
-                }
-            }
-
-            storage
-                .append_finalized_header(round.epoch(), header)
+            self.record_finalized_header(storage, round, header, dealer_state.as_mut())
                 .await
-                .wrap_err("failed to append finalized block to journal")?;
+                .wrap_err("failed to record finalized header")?;
 
             return Ok(None);
         }
@@ -1278,153 +1271,49 @@ async fn read_outcome_from_boundary(
     marshal: &crate::alias::marshal::Mailbox,
     boundary: Height,
 ) -> eyre::Result<OnchainDkgOutcome> {
-    let execution_finalized = node
-        .provider
-        .canonical_in_memory_state()
-        .get_finalized_num_hash()
-        .unwrap_or_else(|| BlockNumHash::new(0, node.chain_spec().genesis_hash()));
-    let execution_finalized_height = Height::new(execution_finalized.number);
+    let header = get_header(node, marshal, boundary)
+        .await
+        .wrap_err_with(|| {
+            format!("failed to read latest boundary header at height `{boundary}`")
+        })?;
 
-    if boundary <= execution_finalized_height {
-        let header = node
-            .provider
-            .header_by_number(boundary.get())
-            .map_or_else(
-                |e| Err(eyre::Report::new(e)),
-                |header| header.ok_or_eyre("execution layer reported it had no header"),
-            )
-            .wrap_err_with(|| {
-                format!("failed to read header for latest boundary block number `{boundary}`")
-            })?;
-
-        return OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-            .wrap_err("the execution boundary header did not contain the on-chain DKG outcome");
-    }
-
-    let Some(block) = marshal.get_block(boundary).await else {
-        bail!(
-            "latest boundary `{boundary}` is above execution finalized height \
-            `{execution_finalized_height}`, but marshal did not have that block"
-        );
-    };
-
-    OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
-        .wrap_err("the marshal boundary block did not contain the on-chain DKG outcome")
+    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+        .wrap_err("the boundary block did not contain the on-chain DKG outcome")
 }
 
-#[instrument(skip_all, fields(%height, %target_height))]
-async fn get_header_for_backfill(
-    node: std::sync::Arc<TempoFullNode>,
-    marshal: crate::alias::marshal::Mailbox,
-    mut height: Height,
-    target_height: Height,
-) -> Option<TempoHeader> {
+#[instrument(skip_all, fields(%height))]
+async fn get_header(
+    node: &TempoFullNode,
+    marshal: &crate::alias::marshal::Mailbox,
+    height: Height,
+) -> eyre::Result<TempoHeader> {
     let execution_finalized_watermark = node
         .provider
         .canonical_in_memory_state()
         .get_finalized_num_hash()
         .map_or_else(Height::zero, |num_hash| Height::new(num_hash.number));
 
-    loop {
-        if height > target_height {
-            break None;
-        }
-
-        if height <= execution_finalized_watermark {
-            match node.provider.header_by_number(height.get()) {
-                Ok(Some(header)) => break Some(header),
-                Ok(None) => {
-                    warn!(%height, "execution layer reported it had no header for DKG startup backfill");
-                }
-                Err(error) => {
-                    warn!(
-                        error = %eyre::Report::new(error),
-                        %height,
-                        "failed to read finalized header from execution layer for DKG startup backfill"
-                    );
-                }
+    if height <= execution_finalized_watermark {
+        match node.provider.header_by_number(height.get()) {
+            Ok(Some(header)) => return Ok(header),
+            Ok(None) => {
+                warn!(%height, "execution layer reported it had no header for DKG initial state");
             }
-        }
-        if let Some(block) = marshal.get_block(height).await {
-            break Some(block.header().clone());
-        }
-        height = height.next();
+            Err(error) => {
+                warn!(
+                    error = %eyre::Report::new(error),
+                    %height,
+                    "failed to read finalized header from execution layer for DKG initial state"
+                );
+            }
+        };
     }
-}
 
-fn backfill_headers_for_state<TStorageContext>(
-    storage: &state::Storage<TStorageContext>,
-    epoch_strategy: &FixedEpocher,
-    namespace: &[u8],
-    node: std::sync::Arc<TempoFullNode>,
-    marshal: crate::alias::marshal::Mailbox,
-    target_height: Height,
-) -> impl Stream<Item = TempoHeader> + use<TStorageContext>
-where
-    TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
-{
-    let state = storage.current();
-    let round = state::Round::from_state(&state, namespace);
-
-    let Some((first_height, target_height)) =
-        heights_to_backfill(storage, epoch_strategy, &round, target_height)
-    else {
-        return Either::Left(stream::empty());
-    };
-
-    info!(
-        epoch = %round.epoch(),
-        %first_height,
-        %target_height,
-        "starting DKG backfill"
-    );
-
-    Either::Right(stream::unfold(first_height, move |height| {
-        let node = node.clone();
-        let marshal = marshal.clone();
-        async move {
-            if height > target_height {
-                return None;
-            }
-
-            if let Some(header) =
-                get_header_for_backfill(node, marshal, height, target_height).await
-            {
-                let height = Height::new(header.number());
-                Some((header, height.next()))
-            } else {
-                None
-            }
-        }
-    }))
-}
-
-fn heights_to_backfill<TStorageContext>(
-    storage: &state::Storage<TStorageContext>,
-    epoch_strategy: &FixedEpocher,
-    round: &state::Round,
-    target_height: Height,
-) -> Option<(Height, Height)>
-where
-    TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
-{
-    let first_epoch_height = epoch_strategy
-        .first(round.epoch())
-        .expect("epoch strategy is covering all epochs");
-    if target_height < first_epoch_height {
-        return None;
+    if let Some(block) = marshal.get_block(height).await {
+        return Ok(block.header().clone());
     }
-    let target_height = target_height.min(
-        epoch_strategy
-            .last(round.epoch())
-            .expect("epoch strategy is covering all epochs"),
-    );
 
-    let next_height = storage
-        .get_latest_finalized_block_for_epoch(&round.epoch())
-        .map_or(first_epoch_height, |(height, _)| height.next());
-
-    (next_height <= target_height).then_some((next_height, target_height))
+    bail!("could not find header for finalized block at `{height}`");
 }
 
 #[cfg(test)]
