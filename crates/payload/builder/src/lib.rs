@@ -1704,6 +1704,12 @@ where
         let mut normal_transaction_fill_pool_at_start = PoolSizeSnapshot::default();
         let mut normal_transaction_fill_pool_at_first_idle = PoolSizeSnapshot::default();
         let mut normal_transaction_fill_pool_at_last_idle = PoolSizeSnapshot::default();
+        let mut normal_transaction_fill_best_txs_next_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_pool_tx_execution_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_ssmr_pack_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_roots_send_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_state_aware_balance_skips = 0u64;
+        let mut normal_transaction_fill_state_aware_tracked_invalid_skips = 0u64;
         let mut validation_wait_elapsed = Duration::ZERO;
         let mut ssmr_replay_wait_elapsed = Duration::ZERO;
         let ssmr_replay_pool_lookup_elapsed = Duration::ZERO;
@@ -2047,6 +2053,12 @@ where
                             ?normal_transaction_fill_pool_at_start,
                             ?normal_transaction_fill_pool_at_first_idle,
                             ?normal_transaction_fill_pool_at_last_idle,
+                            ?normal_transaction_fill_best_txs_next_elapsed,
+                            ?normal_transaction_fill_pool_tx_execution_elapsed,
+                            ?normal_transaction_fill_ssmr_pack_elapsed,
+                            ?normal_transaction_fill_roots_send_elapsed,
+                            state_aware_balance_skips = best_txs.balance_skips(),
+                            state_aware_tracked_invalid_skips = best_txs.tracked_invalid_skips(),
                             ?build_budget,
                             predicted_builder_work = ?budget_decision.predicted_builder_work,
                             predicted_validator_work = ?budget_decision.predicted_validator_work,
@@ -2065,7 +2077,10 @@ where
                     }
                 }
 
-                let Some(pool_tx) = best_txs.next() else {
+                let next_tx_start = Instant::now();
+                let next_pool_tx = best_txs.next();
+                normal_transaction_fill_best_txs_next_elapsed += next_tx_start.elapsed();
+                let Some(pool_tx) = next_pool_tx else {
                     if build_once_with_shared_trie
                         && payload_build_budget.is_some()
                         && cumulative_gas_used < non_shared_gas_limit
@@ -2177,6 +2192,7 @@ where
                     .then(|| format!("{:?}", pool_tx.transaction))
                     .unwrap_or_default();
 
+                let tx_execution_start = Instant::now();
                 let execution_result = executor.execute_transaction_with_result_closure(
                     pool_tx.transaction.executable(),
                     |result| {
@@ -2194,6 +2210,7 @@ where
                         best_txs.on_new_result(result);
                     },
                 );
+                normal_transaction_fill_pool_tx_execution_elapsed += tx_execution_start.elapsed();
                 if let Err(err) = execution_result {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         error,
@@ -2231,12 +2248,15 @@ where
                 if !receipt.success {
                     reverted_transactions += 1;
                 }
+                let ssmr_pack_start = Instant::now();
                 let encoded_2718 = maybe_push_ssmr_transaction(
                     &mut ssmr_packer,
                     bal_task_handle.as_ref(),
                     &pool_tx.transaction,
                     pool_tx.gas_limit(),
                 );
+                normal_transaction_fill_ssmr_pack_elapsed += ssmr_pack_start.elapsed();
+                let roots_send_start = Instant::now();
                 let _ = roots_tx.send((
                     BuilderTx::Pooled {
                         tx: pool_tx,
@@ -2244,8 +2264,12 @@ where
                     },
                     receipt,
                 ));
+                normal_transaction_fill_roots_send_elapsed += roots_send_start.elapsed();
             };
 
+            normal_transaction_fill_state_aware_balance_skips = best_txs.balance_skips();
+            normal_transaction_fill_state_aware_tracked_invalid_skips =
+                best_txs.tracked_invalid_skips();
             // cancel pre-warming, if any, by dropping the iter
             drop(best_txs);
             stop_reason
@@ -2266,6 +2290,18 @@ where
                 .total_normal_transaction_fill_duration_seconds
                 .record(normal_transaction_fill_elapsed);
             self.metrics
+                .normal_transaction_fill_best_txs_next_duration_seconds
+                .record(normal_transaction_fill_best_txs_next_elapsed);
+            self.metrics
+                .normal_transaction_fill_pool_tx_execution_duration_seconds
+                .record(normal_transaction_fill_pool_tx_execution_elapsed);
+            self.metrics
+                .normal_transaction_fill_ssmr_pack_duration_seconds
+                .record(normal_transaction_fill_ssmr_pack_elapsed);
+            self.metrics
+                .normal_transaction_fill_roots_send_duration_seconds
+                .record(normal_transaction_fill_roots_send_elapsed);
+            self.metrics
                 .normal_transaction_fill_idle_duration_seconds
                 .record(normal_transaction_fill_idle_elapsed);
             self.metrics
@@ -2274,6 +2310,18 @@ where
             self.metrics
                 .normal_transaction_fill_idle_polls_last
                 .set(normal_transaction_fill_idle_polls as f64);
+            self.metrics
+                .normal_transaction_fill_state_aware_balance_skips
+                .record(normal_transaction_fill_state_aware_balance_skips as f64);
+            self.metrics
+                .normal_transaction_fill_state_aware_balance_skips_last
+                .set(normal_transaction_fill_state_aware_balance_skips as f64);
+            self.metrics
+                .normal_transaction_fill_state_aware_tracked_invalid_skips
+                .record(normal_transaction_fill_state_aware_tracked_invalid_skips as f64);
+            self.metrics
+                .normal_transaction_fill_state_aware_tracked_invalid_skips_last
+                .set(normal_transaction_fill_state_aware_tracked_invalid_skips as f64);
             self.metrics
                 .normal_transaction_fill_pool_pending_at_start_last
                 .set(normal_transaction_fill_pool_at_start.pending as f64);
@@ -2722,6 +2770,12 @@ where
             ?normal_transaction_fill_pool_at_start,
             ?normal_transaction_fill_pool_at_first_idle,
             ?normal_transaction_fill_pool_at_last_idle,
+            ?normal_transaction_fill_best_txs_next_elapsed,
+            ?normal_transaction_fill_pool_tx_execution_elapsed,
+            ?normal_transaction_fill_ssmr_pack_elapsed,
+            ?normal_transaction_fill_roots_send_elapsed,
+            normal_transaction_fill_state_aware_balance_skips,
+            normal_transaction_fill_state_aware_tracked_invalid_skips,
             ?validation_wait_elapsed,
             ssmr_replay_enabled = is_ssmr_replay,
             ?ssmr_replay_wait_elapsed,

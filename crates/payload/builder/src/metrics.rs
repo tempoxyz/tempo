@@ -81,12 +81,28 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// Total wall-clock time spent filling the block with normal pool transactions.
     pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
+    /// Wall-clock time spent inside `BestTransactions::next` during normal pool fill.
+    pub(crate) normal_transaction_fill_best_txs_next_duration_seconds: Histogram,
+    /// Wall-clock time spent executing normal pool transactions.
+    pub(crate) normal_transaction_fill_pool_tx_execution_duration_seconds: Histogram,
+    /// Wall-clock time spent packing normal pool transactions into SSMR shards.
+    pub(crate) normal_transaction_fill_ssmr_pack_duration_seconds: Histogram,
+    /// Wall-clock time spent sending normal pool transaction outputs to the roots task.
+    pub(crate) normal_transaction_fill_roots_send_duration_seconds: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
     /// Number of times the budgeted builder saw no immediately available normal transaction.
     pub(crate) normal_transaction_fill_idle_polls: Histogram,
     /// Number of budgeted pool-empty polls in the last payload.
     pub(crate) normal_transaction_fill_idle_polls_last: Gauge,
+    /// Transactions skipped by state-aware balance checks during normal pool fill.
+    pub(crate) normal_transaction_fill_state_aware_balance_skips: Histogram,
+    /// Transactions skipped by state-aware balance checks in the last payload.
+    pub(crate) normal_transaction_fill_state_aware_balance_skips_last: Gauge,
+    /// Transactions skipped because this payload already invalidated them.
+    pub(crate) normal_transaction_fill_state_aware_tracked_invalid_skips: Histogram,
+    /// Transactions skipped because this payload already invalidated them in the last payload.
+    pub(crate) normal_transaction_fill_state_aware_tracked_invalid_skips_last: Gauge,
     /// Pending pool transactions when the last normal pool iterator was created.
     pub(crate) normal_transaction_fill_pool_pending_at_start_last: Gauge,
     /// Queued pool transactions when the last normal pool iterator was created.

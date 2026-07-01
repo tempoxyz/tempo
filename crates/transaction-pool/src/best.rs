@@ -152,6 +152,10 @@ pub struct StateAwareBestTransactions<I> {
     invalid_aa_sequences: HashSet<AASequenceId>,
     /// Protocol-pool senders invalidated during this payload build.
     invalid_senders: HashSet<Address>,
+    /// Transactions skipped because they were already invalidated by this wrapper.
+    tracked_invalid_skips: u64,
+    /// Transactions skipped because an already included transaction reduced the fee balance.
+    balance_skips: u64,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -166,6 +170,8 @@ where
             invalid_hashes: HashSet::default(),
             invalid_aa_sequences: HashSet::default(),
             invalid_senders: HashSet::default(),
+            tracked_invalid_skips: 0,
+            balance_skips: 0,
         }
     }
 
@@ -215,6 +221,16 @@ where
             }
         }
     }
+
+    /// Number of transactions skipped because they were already invalidated by this wrapper.
+    pub fn tracked_invalid_skips(&self) -> u64 {
+        self.tracked_invalid_skips
+    }
+
+    /// Number of transactions skipped because their tracked TIP20 balance was insufficient.
+    pub fn balance_skips(&self) -> u64 {
+        self.balance_skips
+    }
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>
@@ -228,6 +244,7 @@ where
             let tx = self.inner.next()?;
 
             if self.is_tracked_invalid(&tx) {
+                self.tracked_invalid_skips += 1;
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
@@ -245,6 +262,7 @@ where
             if let Some(&balance) = self.decreased_balances.get(&key)
                 && balance < tx.transaction.fee_token_cost()
             {
+                self.balance_skips += 1;
                 self.track_invalid(&tx);
                 self.inner.mark_invalid(
                     &tx,
