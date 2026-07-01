@@ -274,11 +274,15 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 e.insert(account);
             }
 
-            if !collection_chunk.entries.is_empty() && collection_chunk.address != address {
-                let chunk = std::mem::replace(&mut collection_chunk, CollectionChunk::new(address));
-                collection_pool.send(chunk)?;
+            if collection_chunk.address != address {
+                if !collection_chunk.entries.is_empty() {
+                    let chunk =
+                        std::mem::replace(&mut collection_chunk, CollectionChunk::new(address));
+                    collection_pool.send(chunk)?;
+                } else {
+                    collection_chunk = CollectionChunk::new(address);
+                }
             }
-            collection_chunk.address = address;
 
             // Read entries into collection-worker batches.
             let mut entry_buf = [0u8; 64];
@@ -349,27 +353,26 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Merge existing genesis hashed storage into the collector.
         {
-            let mut genesis_hashed_collector: StorageCollector =
-                Collector::new(ETL_FILE_SIZE, Some(etl_dir));
             let tx = provider_rw.tx_ref();
             let mut cursor = tx.cursor_read::<tables::HashedStorages>()?;
             let mut genesis_count = 0usize;
             let walker = cursor.walk(None)?;
             for row in walker {
                 let (hashed_address, entry) = row?;
+                let shard = hashed_storage_shard(hashed_address, hashed_collectors.len());
                 let mut key = Vec::with_capacity(64);
                 key.extend_from_slice(hashed_address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
-                genesis_hashed_collector
+                hashed_collectors[shard]
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis hashed storage failed")?;
                 genesis_count += 1;
             }
-            hashed_collectors.push(genesis_hashed_collector);
             info!(
                 target: "tempo::cli",
                 genesis_count,
-                "Genesis hashed storage entries merged into collector"
+                hashed_storage_shards = hashed_collectors.len(),
+                "Genesis hashed storage entries merged into sharded collectors"
             );
         }
 
@@ -402,7 +405,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut hashed_cursor = provider_rw
             .tx_ref()
             .cursor_dup_write::<tables::HashedStorages>()?;
-        load_etl_collectors_to_cursor(
+        load_ordered_etl_collectors_to_cursor(
             &mut hashed_collectors,
             total_hashes,
             "hashed storage",
@@ -759,6 +762,7 @@ fn full_trie_prefix_sets_from_hashed_accounts(
 
 struct CollectionChunk {
     address: alloy_primitives::Address,
+    hashed_address: B256,
     entries: Vec<DumpEntry>,
 }
 
@@ -766,6 +770,7 @@ impl CollectionChunk {
     fn new(address: alloy_primitives::Address) -> Self {
         Self {
             address,
+            hashed_address: keccak256(address),
             entries: Vec::with_capacity(COLLECTION_CHUNK_SIZE),
         }
     }
@@ -783,7 +788,6 @@ struct CollectionWorkerResult {
 struct CollectionWorkerPool {
     senders: Vec<mpsc::SyncSender<CollectionChunk>>,
     handles: Vec<thread::JoinHandle<eyre::Result<CollectionWorkerResult>>>,
-    next_worker: usize,
 }
 
 impl CollectionWorkerPool {
@@ -815,11 +819,7 @@ impl CollectionWorkerPool {
             handles.push(handle);
         }
 
-        Ok(Self {
-            senders,
-            handles,
-            next_worker: 0,
-        })
+        Ok(Self { senders, handles })
     }
 
     fn send(&mut self, chunk: CollectionChunk) -> eyre::Result<()> {
@@ -827,8 +827,7 @@ impl CollectionWorkerPool {
             return Ok(());
         }
 
-        let worker = self.next_worker;
-        self.next_worker = (self.next_worker + 1) % self.senders.len();
+        let worker = hashed_storage_shard(chunk.hashed_address, self.senders.len());
         self.senders[worker]
             .send(chunk)
             .map_err(|_| eyre::eyre!("collection worker disconnected"))?;
@@ -836,11 +835,7 @@ impl CollectionWorkerPool {
     }
 
     fn finish(self) -> eyre::Result<Vec<CollectionWorkerResult>> {
-        let Self {
-            senders,
-            handles,
-            next_worker: _,
-        } = self;
+        let Self { senders, handles } = self;
         drop(senders);
 
         let mut results = Vec::with_capacity(handles.len());
@@ -897,7 +892,6 @@ fn collect_dump_chunk(
     storage_changeset_collector: &mut StorageCollector,
     storage_history_collector: &mut StorageCollector,
 ) -> eyre::Result<usize> {
-    let hashed_addr = keccak256(chunk.address);
     let zero = CompactU256::from(U256::ZERO);
     let mut entries = 0usize;
 
@@ -921,7 +915,7 @@ fn collect_dump_chunk(
         }
 
         let mut hashed_key = Vec::with_capacity(64);
-        hashed_key.extend_from_slice(hashed_addr.as_slice());
+        hashed_key.extend_from_slice(chunk.hashed_address.as_slice());
         hashed_key.extend_from_slice(keccak256(slot).as_slice());
         hashed_collector
             .insert(hashed_key, compact_value)
@@ -1170,6 +1164,17 @@ fn decode_raw_storage_key(key: &[u8]) -> (alloy_primitives::Address, B256) {
     )
 }
 
+fn hashed_storage_shard(hashed_address: B256, shard_count: usize) -> usize {
+    if shard_count <= 1 {
+        return 0;
+    }
+
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&hashed_address.as_slice()[..8]);
+    let prefix = u64::from_be_bytes(prefix);
+    ((prefix as u128 * shard_count as u128) >> u64::BITS) as usize
+}
+
 /// Iterate raw storage ETL collectors, deduplicate consecutive entries with the
 /// same `(address, slot)` key, and call `write` for each unique entry.
 fn load_storage_etl_collectors(
@@ -1203,17 +1208,54 @@ fn load_storage_history_etl_collectors(
     Ok(entries)
 }
 
-/// Iterate sorted ETL collectors, deduplicate consecutive entries with the same key
-/// (keeping the last value), and call `append` for each unique entry.
-fn load_etl_collectors_to_cursor(
+/// Iterate ETL collectors that already partition the final keyspace in ascending order.
+fn load_ordered_etl_collectors_to_cursor(
     collectors: &mut [StorageCollector],
     total: usize,
     label: &str,
     mut append: impl FnMut(&[u8], U256) -> Result<(), reth_db_api::DatabaseError>,
 ) -> eyre::Result<()> {
-    load_etl_collectors(collectors, total, label, |key, value| {
+    load_ordered_etl_collectors(collectors, total, label, |key, value| {
         append(&key, CompactU256::decompress_owned(value)?.into()).wrap_err("cursor append failed")
     })
+}
+
+fn load_ordered_etl_collectors(
+    collectors: &mut [StorageCollector],
+    total: usize,
+    label: &str,
+    mut write: impl FnMut(Vec<u8>, Vec<u8>) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let total = total.max(1);
+    let interval = (total / 10).max(1);
+    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
+    let mut index = 0usize;
+
+    for collector in collectors {
+        for item in collector.iter()? {
+            if index > 0 && index % interval == 0 {
+                info!(
+                    target: "tempo::cli",
+                    progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
+                    "Inserting {label}"
+                );
+            }
+
+            let (key, value) = item.wrap_err("ETL iteration failed")?;
+            if let Some((prev_key, prev_val)) = pending.take()
+                && prev_key != key
+            {
+                write(prev_key, prev_val)?;
+            }
+            pending = Some((key, value));
+            index += 1;
+        }
+    }
+
+    if let Some((key, val)) = pending {
+        write(key, val)?;
+    }
+    Ok(())
 }
 
 fn load_etl_collectors(
@@ -1331,6 +1373,7 @@ mod tests {
 
         let chunk = CollectionChunk {
             address: account,
+            hashed_address: keccak256(account),
             entries: vec![
                 dump_entry(new_slot, U256::from(11)),
                 dump_entry(zero_slot, U256::ZERO),
@@ -1382,7 +1425,7 @@ mod tests {
 
         let hashed_total = hashed_collector.len();
         let mut hashed_output = Vec::new();
-        load_etl_collectors_to_cursor(
+        load_ordered_etl_collectors_to_cursor(
             std::slice::from_mut(&mut hashed_collector),
             hashed_total,
             "test hashed",
@@ -1405,6 +1448,29 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn hashed_storage_sharding_preserves_address_order() {
+        let shard_count = 17;
+        let mut addresses = vec![
+            B256::ZERO,
+            B256::with_last_byte(0x01),
+            B256::repeat_byte(0x40),
+            B256::repeat_byte(0x80),
+            B256::repeat_byte(0xc0),
+            B256::repeat_byte(0xff),
+        ];
+        addresses.sort_unstable();
+
+        let shards = addresses
+            .into_iter()
+            .map(|hashed_address| hashed_storage_shard(hashed_address, shard_count))
+            .collect::<Vec<_>>();
+
+        assert!(shards.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(shards[0], 0);
+        assert_eq!(*shards.last().unwrap(), shard_count - 1);
     }
 
     fn sample_storage_history_collector() -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
