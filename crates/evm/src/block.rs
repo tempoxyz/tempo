@@ -21,7 +21,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -106,6 +106,30 @@ pub struct TempoTxResult {
 }
 
 impl TempoTxResult {
+    /// Creates a new [`TempoTxResult`] from a precomputed result and state.
+    pub(crate) fn new_precomputed(
+        tx: &TempoTxEnvelope,
+        result: ExecutionResult<TempoHaltReason>,
+        state: EvmState,
+        next_section: BlockSection,
+        is_payment: bool,
+        block_gas_used: u64,
+        validator_fee: U256,
+    ) -> Self {
+        Self {
+            inner: EthTxResult {
+                result: ResultAndState::new(result, state),
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section,
+            is_payment,
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
+            block_gas_used,
+            validator_fee,
+        }
+    }
+
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
