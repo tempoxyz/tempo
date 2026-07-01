@@ -502,33 +502,48 @@ where
         let state = storage.current();
         let round = state::Round::from_state(&state, &self.config.namespace);
         let target_height = self.config.last_finalized_height;
-        let next_expected_height = target_height.next();
         let epoch_info = self
             .config
             .epoch_strategy
-            .containing(next_expected_height)
+            .containing(target_height.next())
             .expect("epoch strategy is covering all heights");
-        ensure!(
-            epoch_info.epoch() == round.epoch(),
-            "initial DKG state is for epoch `{}`, but the next expected \
-            finalized block `{next_expected_height}` is in epoch `{}`",
-            round.epoch(),
-            epoch_info.epoch(),
-        );
+
+        match round.epoch().cmp(&epoch_info.epoch()) {
+            std::cmp::Ordering::Less => {
+                bail!(
+                    "latest DKG state is for `{}`, but the next block will be \
+                    for epoch `{}`; this is a contract violation and the \
+                    state is invalid",
+                    round.epoch(),
+                    epoch_info.epoch(),
+                );
+            }
+            std::cmp::Ordering::Greater => {
+                warn!(
+                    "ignoring block for prior epoch; older blocks are replayed \
+                    against DKG when a node was shut down right after a \
+                    boundary block completed an epoch, but before it was fully \
+                    processed by other actors"
+                );
+                return Ok(());
+            }
+            std::cmp::Ordering::Equal => {
+                // Normal, expected behavior.
+            }
+        }
 
         let mut height = storage
             .get_latest_finalized_block_for_epoch(&round.epoch())
             .map_or(epoch_info.first(), |(height, _)| height.next());
-        if height > target_height {
-            return Ok(());
-        }
 
-        info!(
-            epoch = %round.epoch(),
-            %height,
-            %target_height,
-            "prepopulating DKG state from finalized headers"
-        );
+        if height <= target_height {
+            info!(
+                epoch = %round.epoch(),
+                %height,
+                %target_height,
+                "prepopulating DKG state from finalized headers"
+            );
+        }
 
         while height <= target_height {
             let header = get_header(
