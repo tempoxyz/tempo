@@ -467,9 +467,33 @@ impl StorageActionReplayState {
                 Ok(change.get().current)
             }
             Entry::Vacant(change) => {
+                // We can avoid querying the database at all here, and instead rely on
+                // the EVM cache and expected value to determine the current value
                 let current = db
-                    .storage(address, slot)
-                    .map_err(BlockExecutionError::other)?;
+                    .cache
+                    .accounts
+                    .get(&address)
+                    .and_then(|cached_account| {
+                        let Some(account) = cached_account.account.as_ref() else {
+                            // Account is in cache and known to not exist, so all its storage is zero
+                            return Some(U256::ZERO);
+                        };
+
+                        if let Some(slot) = account.storage.get(&slot).copied() {
+                            // Account and slot is in cache
+                            Some(slot)
+                        } else {
+                            // Account is in cache, but the slot is not. If the storage is reported to be fully known,
+                            // it means the slot doesn't exist, and its value is zero
+                            cached_account
+                                .status
+                                .is_storage_known()
+                                .then_some(U256::ZERO)
+                        }
+                    })
+                    // If the slot was not found in cache, it means it's the first access,
+                    // and we can just use the expected value
+                    .unwrap_or(expected);
                 if current != expected {
                     return Err(StorageActionReplayError::ActionConflict.into());
                 }
@@ -598,7 +622,10 @@ impl ExpiringNonceReplayState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::{database::EmptyDB, state::AccountInfo};
+    use revm::{
+        database::{CacheDB, EmptyDB},
+        state::AccountInfo,
+    };
 
     fn state_with_storage(address: Address, slot: U256, value: U256) -> State<EmptyDB> {
         let mut db = State::builder().with_database(EmptyDB::default()).build();
@@ -624,6 +651,40 @@ mod tests {
             StorageActionReplayError::from_block_execution_error(&err),
             Some(StorageActionReplayError::ActionConflict)
         );
+    }
+
+    #[test]
+    fn recorded_sload_uses_recorded_value_when_slot_is_not_cached() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut cache_db = CacheDB::new(EmptyDB::default());
+        cache_db.insert_account_info(
+            address,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+        cache_db
+            .insert_account_storage(address, slot, U256::from(11))
+            .expect("seed backing storage");
+        let mut db = State::builder().with_database(cache_db).build();
+        let mut replay_state = StorageActionReplayState::default();
+
+        assert_eq!(
+            replay_state
+                .sload_exact(&mut db, address, slot, U256::from(10))
+                .expect("recorded sload should avoid backing storage lookup"),
+            U256::from(10),
+        );
+        let change = replay_state
+            .tx_changes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
+            .expect("slot change recorded");
+        assert_eq!(change.original, U256::from(10));
+        assert_eq!(change.current, U256::from(10));
+        assert_eq!(change.write_kind, None);
     }
 
     #[test]

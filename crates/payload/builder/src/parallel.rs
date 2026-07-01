@@ -1,4 +1,5 @@
 use alloy_primitives::U256;
+use reth_evm::Evm;
 use reth_revm::ExecuteEvm;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::WorkerPool;
@@ -56,7 +57,7 @@ where
             tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
         }
 
-        let result = match evm.inner_mut().transact(tx_env) {
+        let result = match evm.transact_raw(tx_env) {
             Ok(result) => result,
             Err(err) => {
                 evm.clear_actions();
