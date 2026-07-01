@@ -336,11 +336,6 @@ where
             payload_id,
             ..
         } = config;
-        let build_once_with_shared_trie =
-            // When trie handle is provided, we build the payload once so the shared trie can be reused.
-            trie_handle.is_some()
-            // `--dev` mode does not use the shared-trie builder flow.
-            && !self.config.is_dev;
 
         macro_rules! check_cancel {
             () => {
@@ -627,10 +622,7 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
+                if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1209,14 +1201,7 @@ where
 
         drop(db);
         self.executor.spawn_drop(state_provider);
-        if build_once_with_shared_trie {
-            Ok(BuildOutcome::Freeze(payload))
-        } else {
-            Ok(BuildOutcome::Better {
-                payload,
-                cached_reads,
-            })
-        }
+        Ok(BuildOutcome::Freeze(payload))
     }
 
     fn spawn_roots_task(
