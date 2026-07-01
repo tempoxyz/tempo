@@ -196,12 +196,20 @@ mod tests {
 
     #[test]
     fn test_is_precompile_address() {
+        let latest = *TempoHardfork::VARIANTS
+            .last()
+            .expect("hardfork variants should not be empty");
+
         for &(address, activated) in SYSTEM_PRECOMPILES {
             assert!(address.is_precompile(activated));
-            assert!(address.is_precompile(TempoHardfork::T8));
+            assert!(address.is_precompile(latest));
 
-            if activated != TempoHardfork::Genesis {
-                assert!(!address.is_precompile(TempoHardfork::Genesis));
+            if let Some(index) = TempoHardfork::VARIANTS
+                .iter()
+                .position(|hardfork| *hardfork == activated)
+                && index > 0
+            {
+                assert!(!address.is_precompile(TempoHardfork::VARIANTS[index - 1]));
             }
         }
 
