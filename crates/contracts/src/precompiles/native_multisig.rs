@@ -9,24 +9,24 @@ crate::sol! {
     interface INativeMultisig {
         struct MultisigOwner {
             address owner;
-            uint32 weight;
+            uint8 weight;
         }
 
         struct MultisigConfig {
-            uint32 threshold;
+            uint8 threshold;
             MultisigOwner[] owners;
         }
 
         event MultisigInitialized(address indexed account);
         event MultisigConfigUpdated(
             address indexed account,
-            uint32 threshold,
+            uint8 threshold,
             MultisigOwner[] owners
         );
 
         function isMultisigAccount(address account) external view returns (bool);
         function getMultisigConfig(address account) external view returns (MultisigConfig memory);
-        function updateMultisigConfig(uint32 threshold, MultisigOwner[] calldata owners) external;
+        function updateMultisigConfig(uint8 threshold, MultisigOwner[] calldata owners) external;
 
         error NotMultisigAccount();
         error InvalidAccount();

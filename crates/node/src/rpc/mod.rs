@@ -416,11 +416,11 @@ fn native_multisig_signature_count_for_threshold(
 ) -> Result<Option<usize>, EthApiError> {
     let (threshold_slot, threshold_offset) =
         NativeMultisig::account_threshold_storage_slot(account);
-    let threshold = read_native_multisig_u32(db, threshold_slot, threshold_offset)?;
+    let threshold = read_native_multisig_u8(db, threshold_slot, threshold_offset)?;
 
     let (owners_len_slot, owners_len_offset) =
         NativeMultisig::account_owners_len_storage_slot(account);
-    let owner_count = read_native_multisig_u32(db, owners_len_slot, owners_len_offset)? as usize;
+    let owner_count = read_native_multisig_u8(db, owners_len_slot, owners_len_offset)? as usize;
     if threshold == 0 && owner_count == 0 {
         return Ok(None);
     }
@@ -444,7 +444,7 @@ fn native_multisig_signature_count_for_threshold(
     for index in 0..owner_count {
         let (weight_slot, weight_offset) =
             NativeMultisig::config_owner_weight_storage_slot(account, index);
-        let weight = read_native_multisig_u32(db, weight_slot, weight_offset)?;
+        let weight = read_native_multisig_u8(db, weight_slot, weight_offset)?;
         signed_weight = signed_weight
             .checked_add(u64::from(weight))
             .ok_or_else(|| {
@@ -460,15 +460,15 @@ fn native_multisig_signature_count_for_threshold(
     ))
 }
 
-fn read_native_multisig_u32(
+fn read_native_multisig_u8(
     db: &mut impl Database<Error: Into<EthApiError>>,
     slot: U256,
     offset: Option<usize>,
-) -> Result<u32, EthApiError> {
+) -> Result<u8, EthApiError> {
     let word = db
         .storage(NATIVE_MULTISIG_ADDRESS, slot)
         .map_err(Into::into)?;
-    extract_from_word::<u32>(word, offset.unwrap_or_default(), 4)
+    extract_from_word::<u8>(word, offset.unwrap_or_default(), 1)
         .map_err(|err| EthApiError::InvalidParams(err.to_string()))
 }
 
