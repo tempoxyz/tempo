@@ -252,7 +252,7 @@ impl FeatureRegistry {
         Ok((support, required))
     }
 
-    /// Activates the scheduled feature head if its target epoch has arrived and has quorum.
+    /// Activates the scheduled feature head if its target epoch is current and has quorum.
     ///
     /// Returns the activated feature head, or `None` if no feature activated.
     pub fn activate_scheduled_feature_head(&mut self) -> Result<Option<B256>> {
@@ -260,7 +260,7 @@ impl FeatureRegistry {
         let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
         let current_epoch = self.storage.epoch(self.storage.block_number());
 
-        if scheduled_activation_epoch == current_epoch {
+        if scheduled_activation_epoch != current_epoch {
             return Ok(None);
         }
 
