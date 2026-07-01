@@ -10,6 +10,7 @@ use crate::{
     validator_config_v2::ValidatorConfigV2,
 };
 use alloy::primitives::{Address, B256, U256};
+use tempo_chainspec::features::{FEATURE_REGISTRY, Feature};
 use tempo_contracts::precompiles::{FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry};
 use tempo_precompiles_macros::contract;
 
@@ -133,7 +134,7 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::invalid_feature_head().into());
         }
 
-        if call.featureHead == self.active_feature_head.read()? {
+        if feature_head_already_active(self.active_feature_head.read()?, call.featureHead) {
             return Err(FeatureRegistryError::feature_head_already_active().into());
         }
 
@@ -263,4 +264,19 @@ impl FeatureRegistry {
 fn required_activation_count(active_validator_count: usize) -> usize {
     (ACTIVATION_QUORUM_NUMERATOR as usize * active_validator_count)
         .div_ceil(ACTIVATION_QUORUM_DENOMINATOR as usize)
+}
+
+fn feature_head_already_active(active_feature_head: B256, feature_head: B256) -> bool {
+    if active_feature_head == feature_head {
+        return true;
+    }
+
+    let Some(active_feature) = Feature::from_digest(active_feature_head) else {
+        return false;
+    };
+
+    FEATURE_REGISTRY
+        .iter()
+        .take(active_feature.index())
+        .any(|feature| feature.digest() == feature_head)
 }

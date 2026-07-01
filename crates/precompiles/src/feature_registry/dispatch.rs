@@ -73,6 +73,7 @@ mod tests {
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use std::num::NonZeroU64;
+    use tempo_chainspec::features::Feature;
     use tempo_contracts::precompiles::{
         FeatureRegistryError, ICurrentCommittee, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
     };
@@ -276,6 +277,32 @@ mod tests {
             assert_eq!(
                 result,
                 Err(FeatureRegistryError::feature_head_already_scheduled().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn schedule_feature_head_rejects_known_downgrade() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        let feature_head = Feature::Tip1063FeatureRegistry.digest();
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+            registry.active_feature_head.write(feature_head)?;
+
+            let result = registry.schedule_feature_head(
+                owner,
+                IFeatureRegistry::scheduleFeatureHeadCall {
+                    featureHead: feature_head,
+                    activationEpoch: 21,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::feature_head_already_active().into())
             );
 
             Ok(())

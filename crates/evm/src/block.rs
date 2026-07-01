@@ -382,6 +382,13 @@ where
                 &block_number,
                 "invalid feature head readiness system transaction",
             )?;
+            if input.len()
+                != IFeatureRegistry::reportFeatureReadinessCall::SELECTOR.len() + U256::BYTES
+            {
+                return Err(BlockValidationError::msg(
+                    "invalid feature head readiness system transaction",
+                ));
+            }
 
             IFeatureRegistry::reportFeatureReadinessCall::abi_decode_validate(input).map_err(
                 |_| BlockValidationError::msg("invalid feature head readiness system transaction"),
@@ -1108,6 +1115,32 @@ mod tests {
             .into();
         let system_tx =
             create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "invalid feature head readiness system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_feature_head_readiness_rejects_extra_calldata() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T9);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let executor = builder.build(&mut db, &chainspec);
+
+        let mut input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }.abi_encode();
+        input.push(0xff);
+        input.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
+        let system_tx = create_system_tx_to(
+            chainspec.chain().id(),
+            FEATURE_REGISTRY_ADDRESS,
+            input.into(),
+        );
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
