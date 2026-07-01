@@ -38,7 +38,6 @@ crate::sol! {
         error DuplicateOwner();
         error InvalidOwnerOrder();
         error AccountAlreadyInitialized();
-        error ConfigNotFound();
         error UnauthorizedCaller();
         error SameTransactionUpdateNotAllowed();
     }

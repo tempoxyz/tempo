@@ -105,19 +105,12 @@ impl NativeMultisig {
 
     pub fn get_multisig_config(&self, account: Address) -> Result<INativeMultisig::MultisigConfig> {
         let header = self.accounts[account].read()?;
-        if is_empty_header(header) {
-            return Ok(INativeMultisig::MultisigConfig {
-                threshold: 0,
-                owners: Vec::new(),
-            });
-        }
-
         let stored = self.load_stored_config_with_header(account, header)?;
         Ok(stored_config_to_abi(stored))
     }
 
     pub fn load_registered_config(&self, account: Address) -> Result<InitMultisig> {
-        let stored = self.read_stored_config(account)?;
+        let stored = self.load_stored_config(account)?;
         stored_config_to_init(stored)
     }
 
@@ -196,18 +189,16 @@ impl NativeMultisig {
         Ok(stored)
     }
 
-    fn read_stored_config(&self, account: Address) -> Result<StoredMultisigConfig> {
-        let header = self.accounts[account].read()?;
-        self.read_stored_config_with_header(account, header)
-    }
-
     fn read_stored_config_with_header(
         &self,
         account: Address,
         header: StoredMultisigHeader,
     ) -> Result<StoredMultisigConfig> {
+        if is_empty_header(header) {
+            return Err(NativeMultisigError::not_multisig_account().into());
+        }
         if !has_complete_config_header(header) {
-            return Err(NativeMultisigError::config_not_found().into());
+            return Err(NativeMultisigError::invalid_config().into());
         }
         let owner_count = header.owner_count as usize;
         if owner_count > MAX_MULTISIG_OWNERS {
@@ -510,11 +501,16 @@ mod tests {
         let config = init_config();
         let account = config.account().unwrap();
         let empty_account = Address::repeat_byte(0x42);
+        let partial_account = Address::repeat_byte(0x43);
 
         StorageCtx::enter(&mut storage, || {
             let mut multisig = NativeMultisig::new();
             multisig.initialize()?;
             multisig.store_initial_config(account, &config)?;
+            multisig.accounts[partial_account].write(StoredMultisigHeader {
+                threshold: 1,
+                owner_count: 0,
+            })?;
             Ok::<_, TempoPrecompileError>(())
         })?;
 
@@ -535,15 +531,35 @@ mod tests {
         storage.reset_counters();
         StorageCtx::enter(&mut storage, || {
             let multisig = NativeMultisig::new();
-            let stored = multisig.get_multisig_config(empty_account)?;
-            assert_eq!(stored.threshold, 0);
-            assert!(stored.owners.is_empty());
+            assert!(matches!(
+                multisig.get_multisig_config(empty_account),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::NotMultisigAccount(_)
+                ))
+            ));
             Ok::<_, TempoPrecompileError>(())
         })?;
         assert_eq!(
             storage.counter_sload(),
             1,
-            "empty config lookup should read only the account header"
+            "non-multisig config lookup should read only the account header"
+        );
+
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            let multisig = NativeMultisig::new();
+            assert!(matches!(
+                multisig.get_multisig_config(partial_account),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::InvalidConfig(_)
+                ))
+            ));
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+        assert_eq!(
+            storage.counter_sload(),
+            1,
+            "partial config lookup should read only the account header"
         );
 
         Ok(())
