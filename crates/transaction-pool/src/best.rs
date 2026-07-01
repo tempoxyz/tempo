@@ -189,10 +189,10 @@ where
 
     fn is_tracked_invalid(&self, tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>) -> bool {
         self.invalid_hashes.contains(tx.hash())
-            || tx
-                .transaction
-                .aa_transaction_id()
-                .is_some_and(|id| self.invalid_aa_sequences.contains(id.seq_id()))
+            || tx.transaction.aa_transaction_id().is_some_and(|id| {
+                !tx.transaction.is_expiring_nonce()
+                    && self.invalid_aa_sequences.contains(id.seq_id())
+            })
             || (!tx.transaction.is_aa_2d()
                 && self.invalid_senders.contains(&tx.transaction.sender()))
     }
@@ -297,6 +297,7 @@ mod tests {
     };
     use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -326,6 +327,19 @@ mod tests {
 
     fn aa_2d_tx_for_sequence(sender: Address, nonce: u64, priority: u128) -> TestTx {
         tx_with_nonce_key(U256::from(1), sender, nonce, priority)
+    }
+
+    fn expiring_nonce_tx_for_sender(sender: Address, nonce: u64, priority: u128) -> TestTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                .nonce(nonce)
+                .valid_before(u64::MAX)
+                .max_priority_fee(priority)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE) + priority)
+                .build(),
+            TransactionOrigin::External,
+        ))
     }
 
     fn protocol_best_transactions(
@@ -665,6 +679,31 @@ mod tests {
         ));
 
         assert_eq!(best.next().map(|tx| *tx.hash()), Some(*protocol_tx.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn test_state_aware_replace_inner_keeps_expiring_nonce_independent() {
+        let sender = Address::random();
+        let first_tx = aa_2d_tx_for_sequence(sender, 0, 10);
+        let expiring_tx = expiring_nonce_tx_for_sender(sender, 0, 9);
+        let mut best = StateAwareBestTransactions::new(merged_best_transactions(
+            vec![],
+            vec![first_tx.clone(), expiring_tx.clone()],
+        ));
+
+        let first = best.next().unwrap();
+        assert_eq!(*first.hash(), *first_tx.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, kind);
+        best.replace_inner(merged_best_transactions(
+            vec![],
+            vec![first_tx, expiring_tx.clone()],
+        ));
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*expiring_tx.hash()));
         assert!(best.next().is_none());
     }
 }
