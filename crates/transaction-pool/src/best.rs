@@ -1,14 +1,18 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
-    tt_2d_pool::BestAA2dTransactions,
+    ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::{AASequenceId, BestAA2dTransactions},
 };
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{HashMap, HashSet},
+};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
+    BestTransactions, PoolTransaction, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
@@ -142,6 +146,12 @@ pub struct StateAwareBestTransactions<I> {
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
+    /// Transaction hashes invalidated during this payload build.
+    invalid_hashes: HashSet<B256>,
+    /// AA 2D nonce sequences invalidated during this payload build.
+    invalid_aa_sequences: HashSet<AASequenceId>,
+    /// Protocol-pool senders invalidated during this payload build.
+    invalid_senders: HashSet<Address>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -153,6 +163,9 @@ where
         Self {
             inner,
             decreased_balances: HashMap::default(),
+            invalid_hashes: HashSet::default(),
+            invalid_aa_sequences: HashSet::default(),
+            invalid_senders: HashSet::default(),
         }
     }
 
@@ -160,6 +173,28 @@ where
     /// changes observed from transactions already executed in this block.
     pub fn replace_inner(&mut self, inner: I) {
         self.inner = inner;
+    }
+
+    fn track_invalid(&mut self, tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>) {
+        self.invalid_hashes.insert(*tx.hash());
+
+        if let Some(id) = tx.transaction.aa_transaction_id() {
+            if !tx.transaction.is_expiring_nonce() {
+                self.invalid_aa_sequences.insert(*id.seq_id());
+            }
+        } else {
+            self.invalid_senders.insert(tx.transaction.sender());
+        }
+    }
+
+    fn is_tracked_invalid(&self, tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>) -> bool {
+        self.invalid_hashes.contains(tx.hash())
+            || tx
+                .transaction
+                .aa_transaction_id()
+                .is_some_and(|id| self.invalid_aa_sequences.contains(id.seq_id()))
+            || (!tx.transaction.is_aa_2d()
+                && self.invalid_senders.contains(&tx.transaction.sender()))
     }
 
     /// Processes a new transaction execution result and collects any relevant
@@ -192,6 +227,16 @@ where
         loop {
             let tx = self.inner.next()?;
 
+            if self.is_tracked_invalid(&tx) {
+                self.inner.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::TxTypeNotSupported,
+                    ),
+                );
+                continue;
+            }
+
             let Some(key) = tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
@@ -200,6 +245,7 @@ where
             if let Some(&balance) = self.decreased_balances.get(&key)
                 && balance < tx.transaction.fee_token_cost()
             {
+                self.track_invalid(&tx);
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
@@ -221,6 +267,7 @@ where
     I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.track_invalid(transaction);
         self.inner.mark_invalid(transaction, kind);
     }
 
@@ -567,5 +614,57 @@ mod tests {
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_state_aware_replace_inner_preserves_protocol_invalid_sender() {
+        let protocol_sender = Address::random();
+        let left_tx = protocol_tx_for_sender(protocol_sender, 0, 10);
+        let left_descendant = protocol_tx_for_sender(protocol_sender, 1, 9);
+        let right_tx = aa_2d_tx(0, 8);
+        let mut best = StateAwareBestTransactions::new(merged_best_transactions(
+            vec![left_tx.clone(), left_descendant.clone()],
+            vec![right_tx.clone()],
+        ));
+
+        let first = best.next().unwrap();
+        assert_eq!(*first.hash(), *left_tx.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, kind);
+        best.replace_inner(merged_best_transactions(
+            vec![left_tx, left_descendant],
+            vec![right_tx.clone()],
+        ));
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn test_state_aware_replace_inner_preserves_aa_sequence_invalid() {
+        let aa_2d_sender = Address::random();
+        let first_tx = aa_2d_tx_for_sequence(aa_2d_sender, 0, 10);
+        let descendant = aa_2d_tx_for_sequence(aa_2d_sender, 1, 9);
+        let protocol_tx = protocol_tx(0, 8);
+        let mut best = StateAwareBestTransactions::new(merged_best_transactions(
+            vec![protocol_tx.clone()],
+            vec![first_tx.clone(), descendant.clone()],
+        ));
+
+        let first = best.next().unwrap();
+        assert_eq!(*first.hash(), *first_tx.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, kind);
+        best.replace_inner(merged_best_transactions(
+            vec![protocol_tx.clone()],
+            vec![first_tx, descendant],
+        ));
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*protocol_tx.hash()));
+        assert!(best.next().is_none());
     }
 }
