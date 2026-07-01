@@ -714,6 +714,7 @@ mod tests {
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
         assert!(node_cmd.ext.node_args.builder_enable_prewarming);
+        assert!(!node_cmd.ext.node_args.builder_parallel);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -777,6 +778,20 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+
+        let cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.parallel"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.builder_parallel);
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_parallel
+        );
 
         let cli = TempoCli::try_parse_from([
             "tempo",
