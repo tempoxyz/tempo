@@ -26,7 +26,9 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::ProviderFactoryBuilder;
+use reth_provider::{
+    DatabaseProviderFactory, HashedPostStateProvider, providers::ProviderFactoryBuilder,
+};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
@@ -236,7 +238,11 @@ impl NodeTypes for TempoNode {
 }
 
 #[derive(Debug)]
-pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+pub struct TempoAddOns<N>
+where
+    N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
+{
     #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
@@ -252,6 +258,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
 impl<N> TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
     pub fn new(validator_key: Option<B256>) -> Self {
@@ -272,6 +279,7 @@ where
 impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
 {
     type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
 
@@ -319,6 +327,7 @@ where
 impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
 {
     type EthApi = TempoEthApi<NodeAdapter<N>>;
 
@@ -330,6 +339,7 @@ where
 impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
 {
     type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
 
@@ -341,6 +351,7 @@ where
 impl<N> Node<N> for TempoNode
 where
     N: FullNodeTypes<Types = Self>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
 {
     type ComponentsBuilder = ComponentsBuilder<
         N,
@@ -362,7 +373,11 @@ where
     }
 }
 
-impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
+impl<N> DebugNode<N> for TempoNode
+where
+    N: FullNodeComponents<Types = Self>,
+    <N::Provider as DatabaseProviderFactory>::Provider: HashedPostStateProvider,
+{
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 

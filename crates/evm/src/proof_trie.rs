@@ -6,8 +6,10 @@
 //! accounts present in the bundle state are streamed as proof-trie updates.
 
 use alloy_primitives::{Address, map::AddressMap};
+use reth_errors::ProviderResult;
 use reth_revm::db::states::{BundleAccount, BundleState};
-use reth_trie_common::{HashedPostState, KeccakKeyHasher, TrieInput};
+use reth_storage_api::HashedPostStateProvider;
+use reth_trie_common::{HashedPostState, HashedStorage, KeccakKeyHasher, KeyHasher, TrieInput};
 
 /// Returns the subset of `bundle_state` that should be streamed into the TIP-1082 proof trie.
 ///
@@ -20,10 +22,8 @@ pub fn filter_bundle_state_for_provable_accounts(
     provable_accounts
         .iter()
         .filter_map(|address| {
-            bundle_state
-                .account(address)
-                .cloned()
-                .map(|account| (*address, account))
+            let account = bundle_state.account(address)?;
+            has_provable_state_update(account).then(|| (*address, account.clone()))
         })
         .collect()
 }
@@ -33,8 +33,66 @@ pub fn proof_hashed_state_from_bundle_state(
     bundle_state: &BundleState,
     provable_accounts: &[Address],
 ) -> HashedPostState {
-    let filtered = filter_bundle_state_for_provable_accounts(bundle_state, provable_accounts);
-    HashedPostState::from_bundle_state::<KeccakKeyHasher>(&filtered)
+    let mut hashed_state = HashedPostState::with_capacity(provable_accounts.len());
+
+    for address in provable_accounts {
+        let Some(account) = bundle_state.account(address) else {
+            continue;
+        };
+
+        let hashed_address = KeccakKeyHasher::hash_key(address);
+
+        if account.is_info_changed() {
+            hashed_state
+                .accounts
+                .insert(hashed_address, account.info.as_ref().map(Into::into));
+        }
+
+        let mut changed_storage = account
+            .storage
+            .iter()
+            .filter(|(_, slot)| slot.is_changed())
+            .map(|(slot, value)| {
+                (
+                    KeccakKeyHasher::hash_key(&alloy_primitives::B256::from(*slot)),
+                    value.present_value,
+                )
+            })
+            .peekable();
+
+        if account.was_destroyed() {
+            hashed_state
+                .storages
+                .insert(hashed_address, HashedStorage::new(true));
+        } else if changed_storage.peek().is_some() {
+            hashed_state.storages.insert(
+                hashed_address,
+                HashedStorage::from_iter(false, changed_storage),
+            );
+        }
+    }
+
+    hashed_state
+}
+
+/// Loads full whitelisted proof-trie state and overlays whitelisted bundle-state updates.
+pub fn proof_hashed_state_from_provider_and_bundle(
+    provider: &impl HashedPostStateProvider,
+    bundle_state: &BundleState,
+    provable_accounts: &[Address],
+) -> ProviderResult<HashedPostState> {
+    let mut state = provider.hashed_post_state_for_accounts(provable_accounts)?;
+    state.extend(proof_hashed_state_from_bundle_state(
+        bundle_state,
+        provable_accounts,
+    ));
+    Ok(state)
+}
+
+fn has_provable_state_update(account: &BundleAccount) -> bool {
+    account.is_info_changed()
+        || account.was_destroyed()
+        || account.storage.values().any(|slot| slot.is_changed())
 }
 
 /// Builds sparse MPT input from whitelisted bundle-state updates.
@@ -129,6 +187,28 @@ mod tests {
     }
 
     #[test]
+    fn read_only_whitelisted_account_is_not_hashed() {
+        let address = Address::repeat_byte(0x11);
+        let account = BundleAccount::new(
+            Some(account(1)),
+            Some(account(1)),
+            [(U256::from(1), StorageSlot::new(U256::from(7)))]
+                .into_iter()
+                .collect(),
+            AccountStatus::Loaded,
+        );
+        let bundle_state = bundle_state([(address, account)]);
+
+        let filtered = filter_bundle_state_for_provable_accounts(&bundle_state, &[address]);
+        let hashed = proof_hashed_state_from_bundle_state(&bundle_state, &[address]);
+        let input = proof_trie_input_from_bundle_state(&bundle_state, &[address]);
+
+        assert!(filtered.is_empty());
+        assert!(hashed.is_empty());
+        assert!(input.state.is_empty());
+    }
+
+    #[test]
     fn whitelisted_storage_update_is_hashed() {
         let address = Address::repeat_byte(0x11);
         let slot = U256::from(1);
@@ -146,7 +226,47 @@ mod tests {
         let hashed = proof_hashed_state_from_bundle_state(&bundle_state, &[address]);
         let hashed_address = keccak256(address);
 
-        assert!(hashed.accounts.contains_key(&hashed_address));
+        assert!(!hashed.accounts.contains_key(&hashed_address));
+        assert!(hashed.storages.contains_key(&hashed_address));
+    }
+
+    #[test]
+    fn unchanged_whitelisted_storage_slot_is_not_hashed() {
+        let address = Address::repeat_byte(0x11);
+        let slot = U256::from(1);
+        let account = BundleAccount::new(
+            Some(account(1)),
+            Some(account(1)),
+            [(slot, StorageSlot::new(U256::from(7)))]
+                .into_iter()
+                .collect(),
+            AccountStatus::Changed,
+        );
+        let bundle_state = bundle_state([(address, account)]);
+
+        let hashed = proof_hashed_state_from_bundle_state(&bundle_state, &[address]);
+
+        assert!(hashed.is_empty());
+    }
+
+    #[test]
+    fn storage_update_without_account_info_change_does_not_hash_account_leaf() {
+        let address = Address::repeat_byte(0x11);
+        let slot = U256::from(1);
+        let account = BundleAccount::new(
+            Some(account(1)),
+            Some(account(1)),
+            [(slot, StorageSlot::new_changed(U256::ZERO, U256::from(7)))]
+                .into_iter()
+                .collect(),
+            AccountStatus::Changed,
+        );
+        let bundle_state = bundle_state([(address, account)]);
+        let hashed_address = keccak256(address);
+
+        let hashed = proof_hashed_state_from_bundle_state(&bundle_state, &[address]);
+
+        assert!(!hashed.accounts.contains_key(&hashed_address));
         assert!(hashed.storages.contains_key(&hashed_address));
     }
 
