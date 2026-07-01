@@ -260,20 +260,12 @@ impl FeatureRegistry {
         let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
         let current_epoch = self.storage.epoch(self.storage.block_number());
 
-        if scheduled_feature_head == B256::ZERO
-            || scheduled_activation_epoch == 0
-            || scheduled_activation_epoch > current_epoch
-        {
+        if scheduled_activation_epoch == current_epoch {
             return Ok(None);
         }
 
-        let active_feature_head = self.active_feature_head.read()?;
-        let committee_public_keys = self.current_committee_public_keys()?;
-        let (support, required) = self
-            .feature_head_support_for_public_keys(scheduled_feature_head, &committee_public_keys)?;
-        let activated =
-            scheduled_feature_head != active_feature_head && required != 0 && support >= required;
-        let activated_feature_head = if activated {
+        let activated_feature_head = if self.has_scheduled_feature_quorum()? {
+            let active_feature_head = self.active_feature_head.read()?;
             self.active_feature_head.write(scheduled_feature_head)?;
             self.emit_event(FeatureRegistryEvent::feature_head_activated(
                 active_feature_head,
