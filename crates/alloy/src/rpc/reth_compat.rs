@@ -274,12 +274,12 @@ fn create_mock_native_multisig_owner_signatures(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
 ) -> Result<Vec<Bytes>, &'static str> {
-    use tempo_primitives::transaction::MAX_MULTISIG_OWNERS;
+    use tempo_primitives::transaction::MAX_MULTISIG_SIGNATURES;
 
     if signature_count == 0 {
         return Err("multisig mock signature requires at least one owner");
     }
-    if signature_count > MAX_MULTISIG_OWNERS {
+    if signature_count > MAX_MULTISIG_SIGNATURES {
         return Err("too many multisig signatures");
     }
 
