@@ -1,9 +1,12 @@
 use super::{PrimitiveSignature, tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH};
 use crate::TempoAddressExt;
-use alloc::vec::Vec;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use core::hash::{Hash, Hasher};
-use tempo_contracts::TempoHardfork;
+use tempo_contracts::{TempoHardfork, precompiles::INativeMultisig};
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -28,6 +31,168 @@ pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE
 
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
+/// Native multisig config validation error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigConfigError {
+    /// The owner list is empty.
+    EmptyOwners,
+    /// The owner list exceeds [`MAX_MULTISIG_OWNERS`].
+    TooManyOwners,
+    /// The threshold is zero.
+    ZeroThreshold,
+    /// An owner address is zero.
+    ZeroOwner,
+    /// An owner weight is zero.
+    ZeroWeight,
+    /// The owner list contains a duplicate owner.
+    DuplicateOwner,
+    /// The owner list is not strictly ascending.
+    OwnersNotAscending,
+    /// Owner weight accumulation overflowed.
+    WeightOverflow,
+    /// Total owner weight exceeds `u8::MAX`.
+    TotalWeightExceedsMax,
+    /// The threshold exceeds total owner weight.
+    ThresholdExceedsWeight,
+    /// The derived multisig account address is zero.
+    DerivedAccountZero,
+}
+
+impl MultisigConfigError {
+    /// Returns the stable validation message for this error.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyOwners => "multisig owners cannot be empty",
+            Self::TooManyOwners => "too many multisig owners",
+            Self::ZeroThreshold => "multisig threshold cannot be zero",
+            Self::ZeroOwner => "multisig owner cannot be zero",
+            Self::ZeroWeight => "multisig owner weight cannot be zero",
+            Self::DuplicateOwner => "multisig owners cannot contain duplicates",
+            Self::OwnersNotAscending => "multisig owners must be strictly ascending",
+            Self::WeightOverflow => "multisig owner weight overflow",
+            Self::TotalWeightExceedsMax => "multisig total owner weight exceeds u8::MAX",
+            Self::ThresholdExceedsWeight => "multisig threshold exceeds total owner weight",
+            Self::DerivedAccountZero => "multisig account cannot be zero",
+        }
+    }
+}
+
+impl core::fmt::Display for MultisigConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Native multisig quorum validation error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigQuorumError {
+    /// The signature list is empty.
+    EmptySignatures,
+    /// The signature list exceeds [`MAX_MULTISIG_OWNERS`].
+    TooManySignatures,
+    /// A recovered signer is not a configured owner.
+    SignerNotOwner,
+    /// Recovered signers are not strictly ascending.
+    SignersNotAscending,
+    /// Recovered signer weight accumulation overflowed.
+    WeightOverflow,
+    /// Recovered signer weight does not meet the threshold.
+    WeightBelowThreshold,
+}
+
+impl MultisigQuorumError {
+    /// Returns the stable validation message for this error.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptySignatures => "multisig signatures cannot be empty",
+            Self::TooManySignatures => "too many multisig signatures",
+            Self::SignerNotOwner => "multisig signer is not an owner",
+            Self::SignersNotAscending => "multisig recovered owners must be strictly ascending",
+            Self::WeightOverflow => "multisig recovered owner weight overflow",
+            Self::WeightBelowThreshold => "multisig signature weight below threshold",
+        }
+    }
+}
+
+impl core::fmt::Display for MultisigQuorumError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<MultisigQuorumError> for &'static str {
+    fn from(err: MultisigQuorumError) -> Self {
+        err.as_str()
+    }
+}
+
+impl From<MultisigQuorumError> for String {
+    fn from(err: MultisigQuorumError) -> Self {
+        err.as_str().to_string()
+    }
+}
+
+/// Accumulates recovered native multisig owner weights while enforcing owner ordering.
+pub struct MultisigWeightAccumulator<'a> {
+    config: &'a InitMultisig,
+    prev_owner: Option<Address>,
+    recovered_weight: u16,
+    signer_count: usize,
+}
+
+impl<'a> MultisigWeightAccumulator<'a> {
+    /// Creates a new accumulator for a validated native multisig config.
+    pub const fn new(config: &'a InitMultisig) -> Self {
+        Self {
+            config,
+            prev_owner: None,
+            recovered_weight: 0,
+            signer_count: 0,
+        }
+    }
+
+    /// Records one recovered owner address and returns its configured weight.
+    pub fn record_owner(&mut self, owner: Address) -> Result<u8, MultisigQuorumError> {
+        self.signer_count = self
+            .signer_count
+            .checked_add(1)
+            .ok_or(MultisigQuorumError::TooManySignatures)?;
+        if self.signer_count > MAX_MULTISIG_OWNERS {
+            return Err(MultisigQuorumError::TooManySignatures);
+        }
+
+        if self.prev_owner.is_some_and(|prev| prev >= owner) {
+            return Err(MultisigQuorumError::SignersNotAscending);
+        }
+        self.prev_owner = Some(owner);
+
+        let weight = self
+            .config
+            .owners
+            .binary_search_by_key(&owner, |entry| entry.owner)
+            .map(|idx| self.config.owners[idx].weight)
+            .map_err(|_| MultisigQuorumError::SignerNotOwner)?;
+
+        self.recovered_weight = self
+            .recovered_weight
+            .checked_add(u16::from(weight))
+            .ok_or(MultisigQuorumError::WeightOverflow)?;
+        Ok(weight)
+    }
+
+    /// Returns the accumulated weight after enforcing the configured threshold.
+    pub fn finish(self) -> Result<u8, MultisigQuorumError> {
+        if self.signer_count == 0 {
+            return Err(MultisigQuorumError::EmptySignatures);
+        }
+        if self.recovered_weight < u16::from(self.config.threshold) {
+            return Err(MultisigQuorumError::WeightBelowThreshold);
+        }
+
+        u8::try_from(self.recovered_weight).map_err(|_| MultisigQuorumError::WeightOverflow)
+    }
+}
+
 /// Native multisig owner entry.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -39,6 +204,24 @@ pub struct MultisigOwner {
     pub owner: Address,
     /// Nonzero owner weight.
     pub weight: u8,
+}
+
+impl From<INativeMultisig::MultisigOwner> for MultisigOwner {
+    fn from(value: INativeMultisig::MultisigOwner) -> Self {
+        Self {
+            owner: value.owner,
+            weight: value.weight,
+        }
+    }
+}
+
+impl From<MultisigOwner> for INativeMultisig::MultisigOwner {
+    fn from(value: MultisigOwner) -> Self {
+        Self {
+            owner: value.owner,
+            weight: value.weight,
+        }
+    }
 }
 
 /// Initial native multisig config carried by the first transaction.
@@ -58,50 +241,57 @@ pub struct InitMultisig {
 
 impl InitMultisig {
     /// Validates this native multisig config and returns its total owner weight.
-    pub fn validate(&self) -> Result<u8, &'static str> {
+    pub fn validate(&self) -> Result<u8, MultisigConfigError> {
         if self.owners.is_empty() {
-            return Err("multisig owners cannot be empty");
+            return Err(MultisigConfigError::EmptyOwners);
         }
         if self.owners.len() > MAX_MULTISIG_OWNERS {
-            return Err("too many multisig owners");
+            return Err(MultisigConfigError::TooManyOwners);
         }
         if self.threshold == 0 {
-            return Err("multisig threshold cannot be zero");
+            return Err(MultisigConfigError::ZeroThreshold);
         }
 
         let mut total_weight = 0u16;
         let mut prev_owner = None;
         for owner in &self.owners {
             if owner.owner.is_zero() {
-                return Err("multisig owner cannot be zero");
+                return Err(MultisigConfigError::ZeroOwner);
             }
             if owner.weight == 0 {
-                return Err("multisig owner weight cannot be zero");
+                return Err(MultisigConfigError::ZeroWeight);
             }
-            if prev_owner.is_some_and(|prev| prev >= owner.owner) {
-                return Err("multisig owners must be strictly ascending");
+            if let Some(prev) = prev_owner {
+                if prev == owner.owner {
+                    return Err(MultisigConfigError::DuplicateOwner);
+                }
+                if prev > owner.owner {
+                    return Err(MultisigConfigError::OwnersNotAscending);
+                }
             }
+
             prev_owner = Some(owner.owner);
             total_weight = total_weight
                 .checked_add(u16::from(owner.weight))
-                .ok_or("multisig owner weight overflow")?;
+                .ok_or(MultisigConfigError::WeightOverflow)?;
         }
 
         if total_weight > u16::from(u8::MAX) {
-            return Err("multisig total owner weight exceeds u8::MAX");
+            return Err(MultisigConfigError::TotalWeightExceedsMax);
         }
         if u16::from(self.threshold) > total_weight {
-            return Err("multisig threshold exceeds total owner weight");
+            return Err(MultisigConfigError::ThresholdExceedsWeight);
         }
 
         Ok(total_weight as u8)
     }
 
     /// Derives the native multisig account address for this initial config.
-    pub fn account(&self) -> Result<Address, &'static str> {
+    pub fn account(&self) -> Result<Address, MultisigConfigError> {
         self.validate()?;
 
-        let owner_count = encode_multisig_owner_count(self.owners.len())?;
+        let owner_count =
+            u8::try_from(self.owners.len()).expect("validated multisig owner count fits in u8");
         let mut input = Vec::with_capacity(
             MULTISIG_ACCOUNT_DOMAIN.len() + 32 + 2 + self.owners.len() * (20 + 1),
         );
@@ -116,7 +306,7 @@ impl InitMultisig {
 
         let account = Address::from_slice(&keccak256(input)[12..]);
         if account.is_zero() {
-            return Err("multisig account cannot be zero");
+            return Err(MultisigConfigError::DerivedAccountZero);
         }
         Ok(account)
     }
@@ -124,7 +314,7 @@ impl InitMultisig {
     /// Validates RPC simulation mock multisig signatures by treating the first
     /// `signature_count` configured owners as signers.
     pub fn validate_rpc_mock_signatures(&self, signature_count: usize) -> Result<(), &'static str> {
-        self.validate()?;
+        self.validate().map_err(MultisigConfigError::as_str)?;
         if signature_count == 0 {
             return Err("multisig signatures cannot be empty");
         }
@@ -132,17 +322,15 @@ impl InitMultisig {
             return Err("too many multisig signatures");
         }
 
-        let mut signed_weight = 0u64;
-        for owner in self.owners.iter().take(signature_count) {
-            signed_weight = signed_weight
-                .checked_add(u64::from(owner.weight))
-                .ok_or("multisig recovered owner weight overflow")?;
-        }
-        if signed_weight < u64::from(self.threshold) {
-            return Err("multisig signature weight below threshold");
-        }
-
-        Ok(())
+        multisig_signature_count_for_threshold(
+            self.owners
+                .iter()
+                .take(signature_count)
+                .map(|owner| owner.weight),
+            self.threshold,
+        )
+        .map(|_| ())
+        .map_err(MultisigQuorumError::as_str)
     }
 
     /// Decodes, verifies, and weight-accounts primitive owner approvals.
@@ -154,7 +342,7 @@ impl InitMultisig {
         digest: B256,
         signatures: &[Bytes],
     ) -> Result<u8, &'static str> {
-        self.validate()?;
+        self.validate().map_err(MultisigConfigError::as_str)?;
         let owners = recover_multisig_owner_addresses(digest, signatures)?;
         verify_recovered_multisig_owners(&owners, self)
     }
@@ -166,8 +354,7 @@ impl InitMultisig {
 }
 
 /// Native multisig transaction signature.
-#[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing(canonical))]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -182,11 +369,9 @@ pub struct MultisigSignature {
     init: Option<InitMultisig>,
     /// Cached multisig digest for the transaction hash this signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
-    #[rlp(skip, default)]
     cached_digest: OnceLock<(B256, Address, B256)>,
     /// Cached primitive recovered owner addresses for the digest this multisig signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
-    #[rlp(skip, default)]
     cached_recovered_owners: OnceLock<(B256, Vec<Address>)>,
 }
 
@@ -224,10 +409,11 @@ impl MultisigSignature {
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
     pub fn recover_account(&self) -> Result<Address, &'static str> {
         self.validate_shape()?;
-        if let Some(init) = &self.init
-            && init.account()? != self.account
-        {
-            return Err("multisig init does not derive account");
+        if let Some(init) = &self.init {
+            let init_account = init.account().map_err(MultisigConfigError::as_str)?;
+            if init_account != self.account {
+                return Err("multisig init does not derive account");
+            }
         }
         Ok(self.account)
     }
@@ -245,6 +431,13 @@ impl MultisigSignature {
         }
         if self.signatures.iter().any(|sig| sig.is_empty()) {
             return Err("multisig owner signature cannot be empty");
+        }
+        if self
+            .signatures
+            .iter()
+            .any(|sig| sig.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
+        {
+            return Err("multisig owner signature too large");
         }
         Ok(())
     }
@@ -360,12 +553,55 @@ impl Hash for MultisigSignature {
     }
 }
 
-/// Returns whether an address is eligible to be a derived native multisig account.
+#[derive(alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing(canonical))]
+struct MultisigSignatureWire {
+    account: Address,
+    signatures: Vec<Bytes>,
+    init: Option<InitMultisig>,
+}
+
+impl From<&MultisigSignature> for MultisigSignatureWire {
+    fn from(value: &MultisigSignature) -> Self {
+        Self {
+            account: value.account,
+            signatures: value.signatures.clone(),
+            init: value.init.clone(),
+        }
+    }
+}
+
+impl TryFrom<MultisigSignatureWire> for MultisigSignature {
+    type Error = alloy_rlp::Error;
+
+    fn try_from(value: MultisigSignatureWire) -> alloy_rlp::Result<Self> {
+        let signature = Self::new(value.account, value.signatures, value.init);
+        signature
+            .validate_shape()
+            .map_err(alloy_rlp::Error::Custom)?;
+        Ok(signature)
+    }
+}
+
+impl alloy_rlp::Decodable for MultisigSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        MultisigSignatureWire::decode(buf).and_then(TryInto::try_into)
+    }
+}
+
+impl alloy_rlp::Encodable for MultisigSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        MultisigSignatureWire::from(self).encode(out);
+    }
+
+    fn length(&self) -> usize {
+        MultisigSignatureWire::from(self).length()
+    }
+}
+
+/// Returns whether an address is eligible to be a native multisig account.
 pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
-    !account.is_zero()
-        && !account.is_tip20()
-        && !account.is_virtual()
-        && !account.is_precompile(spec)
+    !account.is_zero() && !account.is_virtual() && !account.is_precompile(spec)
 }
 
 /// Computes the digest that native multisig owners approve.
@@ -379,6 +615,47 @@ pub fn multisig_digest(inner_digest: B256, account: Address) -> B256 {
     offset += 32;
     input[offset..].copy_from_slice(account.as_slice());
     keccak256(input)
+}
+
+/// Returns the number of leading signatures needed for their weights to meet `threshold`.
+pub fn multisig_signature_count_for_threshold(
+    weights: impl IntoIterator<Item = u8>,
+    threshold: u8,
+) -> Result<usize, MultisigQuorumError> {
+    let mut signed_weight = 0u16;
+    let mut count = 0usize;
+
+    for weight in weights {
+        count = count
+            .checked_add(1)
+            .ok_or(MultisigQuorumError::TooManySignatures)?;
+        if count > MAX_MULTISIG_OWNERS {
+            return Err(MultisigQuorumError::TooManySignatures);
+        }
+        signed_weight = signed_weight
+            .checked_add(u16::from(weight))
+            .ok_or(MultisigQuorumError::WeightOverflow)?;
+        if signed_weight >= u16::from(threshold) {
+            return Ok(count);
+        }
+    }
+
+    if count == 0 {
+        return Err(MultisigQuorumError::EmptySignatures);
+    }
+    Err(MultisigQuorumError::WeightBelowThreshold)
+}
+
+/// Verifies recovered owner order, membership, and accumulated weight for a validated config.
+pub fn verify_ordered_owner_weights(
+    owners: &[Address],
+    config: &InitMultisig,
+) -> Result<u8, MultisigQuorumError> {
+    let mut accumulator = MultisigWeightAccumulator::new(config);
+    for &owner in owners {
+        accumulator.record_owner(owner)?;
+    }
+    accumulator.finish()
 }
 
 fn recover_multisig_owner_addresses(
@@ -412,59 +689,7 @@ fn verify_recovered_multisig_owners(
     owners: &[Address],
     config: &InitMultisig,
 ) -> Result<u8, &'static str> {
-    if owners.is_empty() {
-        return Err("multisig signatures cannot be empty");
-    }
-    if owners.len() > MAX_MULTISIG_OWNERS {
-        return Err("too many multisig signatures");
-    }
-
-    if let ([owner], [configured_owner]) = (owners, config.owners.as_slice()) {
-        if *owner != configured_owner.owner {
-            return Err("multisig signer is not an owner");
-        }
-        let recovered_weight = u16::from(configured_owner.weight);
-        if recovered_weight < u16::from(config.threshold) {
-            return Err("multisig signature weight below threshold");
-        }
-
-        return Ok(configured_owner.weight);
-    }
-
-    let mut recovered_weight = 0u16;
-    let mut prev_owner = None;
-    for &owner in owners {
-        if prev_owner.is_some_and(|prev| prev >= owner) {
-            return Err("multisig recovered owners must be strictly ascending");
-        }
-        prev_owner = Some(owner);
-
-        let configured_owner = config
-            .owners
-            .binary_search_by_key(&owner, |entry| entry.owner)
-            .map(|idx| &config.owners[idx])
-            .map_err(|_| "multisig signer is not an owner")?;
-
-        recovered_weight = recovered_weight
-            .checked_add(u16::from(configured_owner.weight))
-            .ok_or("multisig recovered owner weight overflow")?;
-    }
-
-    if recovered_weight < u16::from(config.threshold) {
-        return Err("multisig signature weight below threshold");
-    }
-
-    u8::try_from(recovered_weight).map_err(|_| "multisig recovered owner weight overflow")
-}
-
-fn encode_multisig_owner_count(owner_count: usize) -> Result<u8, &'static str> {
-    if owner_count == 0 {
-        return Err("multisig owners cannot be empty");
-    }
-    if owner_count > MAX_MULTISIG_OWNERS {
-        return Err("too many multisig owners");
-    }
-    Ok(owner_count as u8)
+    verify_ordered_owner_weights(owners, config).map_err(MultisigQuorumError::as_str)
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -473,9 +698,20 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
         let len = u.int_in_range(1..=MAX_MULTISIG_OWNERS)?;
         let mut signatures = Vec::new();
         for _ in 0..len {
-            signatures.push(Bytes::from(Vec::<u8>::arbitrary(u)?));
+            let mut signature = Vec::<u8>::arbitrary(u)?;
+            if signature.is_empty() {
+                signature.push(0);
+            }
+            signature.truncate(MAX_MULTISIG_OWNER_SIGNATURE_BYTES);
+            signatures.push(Bytes::from(signature));
         }
-        Ok(Self::new(u.arbitrary()?, signatures, u.arbitrary()?))
+
+        let mut account = Address::arbitrary(u)?;
+        if account.is_zero() {
+            account = Address::repeat_byte(1);
+        }
+
+        Ok(Self::new(account, signatures, u.arbitrary()?))
     }
 }
 
@@ -494,6 +730,9 @@ mod tests {
     };
     use proptest::prelude::*;
     use sha2::{Digest, Sha256};
+    use tempo_contracts::precompiles::{
+        NATIVE_MULTISIG_ADDRESS, PATH_USD_ADDRESS, SYSTEM_PRECOMPILES,
+    };
 
     fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> InitMultisig {
         let mut owners = owners
@@ -637,7 +876,7 @@ mod tests {
             .collect::<Vec<_>>();
         let config = sorted_secp_config(&owners, u8::MAX);
 
-        assert_eq!(config.validate(), Err("too many multisig owners"));
+        assert_eq!(config.validate(), Err(MultisigConfigError::TooManyOwners));
     }
 
     #[test]
@@ -648,8 +887,74 @@ mod tests {
 
         assert_eq!(
             config.validate(),
-            Err("multisig total owner weight exceeds u8::MAX")
+            Err(MultisigConfigError::TotalWeightExceedsMax)
         );
+    }
+
+    #[test]
+    fn shared_quorum_helpers_verify_order_and_threshold() {
+        let owner_a = indexed_owner(1);
+        let owner_b = indexed_owner(2);
+        let owner_c = indexed_owner(3);
+        let config = sorted_secp_config(&[(owner_a, 1), (owner_b, 3), (owner_c, 2)], 4);
+
+        assert_eq!(
+            verify_ordered_owner_weights(&[owner_a, owner_b], &config),
+            Ok(4)
+        );
+        assert_eq!(
+            verify_ordered_owner_weights(&[owner_b], &config),
+            Err(MultisigQuorumError::WeightBelowThreshold)
+        );
+        assert_eq!(
+            verify_ordered_owner_weights(&[owner_b, owner_a], &config),
+            Err(MultisigQuorumError::SignersNotAscending)
+        );
+        assert_eq!(
+            verify_ordered_owner_weights(&[indexed_owner(4)], &config),
+            Err(MultisigQuorumError::SignerNotOwner)
+        );
+
+        assert_eq!(
+            multisig_signature_count_for_threshold(
+                config.owners.iter().map(|owner| owner.weight),
+                4
+            ),
+            Ok(2)
+        );
+        assert_eq!(
+            multisig_signature_count_for_threshold([1, 2], 4),
+            Err(MultisigQuorumError::WeightBelowThreshold)
+        );
+        assert_eq!(
+            multisig_signature_count_for_threshold([], 1),
+            Err(MultisigQuorumError::EmptySignatures)
+        );
+    }
+
+    #[test]
+    fn multisig_account_eligibility_uses_current_hardfork_precompile_set() {
+        assert!(is_valid_multisig_account(
+            NATIVE_MULTISIG_ADDRESS,
+            TempoHardfork::T7
+        ));
+        assert!(!is_valid_multisig_account(
+            NATIVE_MULTISIG_ADDRESS,
+            TempoHardfork::T8
+        ));
+        assert!(!is_valid_multisig_account(
+            PATH_USD_ADDRESS,
+            TempoHardfork::Genesis
+        ));
+
+        for &(precompile, activated) in SYSTEM_PRECOMPILES {
+            if activated <= TempoHardfork::T8 {
+                assert!(
+                    !is_valid_multisig_account(precompile, TempoHardfork::T8),
+                    "{precompile} should not be eligible as a native multisig account"
+                );
+            }
+        }
     }
 
     #[test]
@@ -670,7 +975,7 @@ mod tests {
 
         assert!(
             config_a
-                .verify_owner_signatures(digest_a, std::slice::from_ref(&signature))
+                .verify_owner_signatures(digest_a, core::slice::from_ref(&signature))
                 .is_ok()
         );
         assert!(
@@ -727,7 +1032,7 @@ mod tests {
         );
         assert!(
             config
-                .verify_owner_signatures(digest, std::slice::from_ref(&canonical_signature))
+                .verify_owner_signatures(digest, core::slice::from_ref(&canonical_signature))
                 .is_ok()
         );
 
@@ -774,6 +1079,60 @@ mod tests {
 
         let mut input = encoded.as_slice();
         assert!(MultisigSignature::decode(&mut input).is_err());
+    }
+
+    #[test]
+    fn multisig_signature_shape_rejects_oversized_owner_signature() {
+        let signature = MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        );
+
+        assert_eq!(
+            signature.validate_shape(),
+            Err("multisig owner signature too large")
+        );
+    }
+
+    #[test]
+    fn multisig_signature_decode_rejects_oversized_owner_signature() {
+        let signature = MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        );
+        let mut encoded = Vec::new();
+        signature.encode(&mut encoded);
+        let mut input = encoded.as_slice();
+
+        assert!(
+            MultisigSignature::decode(&mut input).is_err(),
+            "RLP decode should reject oversized owner approval bytes"
+        );
+    }
+
+    #[test]
+    fn tempo_signature_decode_rejects_oversized_multisig_owner_signature() {
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        ));
+
+        assert!(
+            TempoSignature::from_bytes(&signature.to_bytes()).is_err(),
+            "TempoSignature decode should reject multisig payloads with oversized owner approvals"
+        );
     }
 
     #[test]

@@ -1140,17 +1140,17 @@ where
                 cfg,
                 tx,
                 actions.clone(),
-                |multisig: NativeMultisig| -> Result<
+                |multisig_precompile: NativeMultisig| -> Result<
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
                     let caller_is_multisig = multisig_cache
-                        .is_multisig_account(&multisig, tx.caller())
+                        .is_multisig_account(&multisig_precompile, tx.caller())
                         .map_err(map_native_multisig_error::<DB>)?;
 
                     if tx.has_fee_payer_signature()
                         && multisig_cache
-                            .is_multisig_account(&multisig, fee_payer)
+                            .is_multisig_account(&multisig_precompile, fee_payer)
                             .map_err(map_native_multisig_error::<DB>)?
                     {
                         return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
@@ -1173,7 +1173,7 @@ where
                         }
 
                         if multisig_cache
-                            .is_multisig_account(&multisig, authority)
+                            .is_multisig_account(&multisig_precompile, authority)
                             .map_err(map_native_multisig_error::<DB>)? {
                             return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                                 reason: format!(
@@ -1269,7 +1269,7 @@ where
 
                     if caller_is_multisig {
                         let config = multisig_cache
-                            .load_registered_config(&multisig, multisig_signature.account())
+                            .load_registered_config(&multisig_precompile, multisig_signature.account())
                             .map_err(map_native_multisig_error::<DB>)?;
                         if is_rpc_simulation {
                             config
@@ -1280,12 +1280,12 @@ where
                                 }
                             })?;
                         } else {
-                            multisig
+                            multisig_precompile
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
                                     &config,
-                                    |acc| { multisig_cache.load_registered_config(&multisig, acc) },
+                                    |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -1315,11 +1315,7 @@ where
                         }
                         if init_config
                             .account()
-                            .map_err(|reason| {
-                                TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                                    reason: reason.to_string(),
-                                }
-                            })?
+                            .map_err(native_multisig_transaction_error::<DB>)?
                             != tx.caller()
                         {
                             return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
@@ -1337,12 +1333,12 @@ where
                                 }
                             })?;
                         } else {
-                            multisig
+                            multisig_precompile
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
                                     init_config,
-                                    |acc| { multisig_cache.load_registered_config(&multisig, acc) },
+                                    |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -2942,10 +2938,19 @@ fn map_native_multisig_error<DB: Database>(
         NativeMultisigAuthError::Fatal(err) => {
             EVMError::<DB::Error, TempoInvalidTransaction>::Custom(err)
         }
+        NativeMultisigAuthError::InvalidTransaction(reason) => {
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }.into()
+        }
         NativeMultisigAuthError::ValidationFailed(reason) => {
             TempoInvalidTransaction::NativeMultisigValidationFailed { reason }.into()
         }
     }
+}
+
+fn native_multisig_transaction_error<DB: Database>(
+    err: impl Into<TempoInvalidTransaction>,
+) -> EVMError<DB::Error, TempoInvalidTransaction> {
+    err.into().into()
 }
 
 #[cfg(test)]
@@ -2976,8 +2981,8 @@ mod tests {
         tip_fee_manager::TipFeeManager,
     };
     use tempo_primitives::transaction::{
-        Call, InitMultisig, MultisigOwner, MultisigSignature, RecoveredTempoAuthorization,
-        TempoSignature, TempoSignedAuthorization,
+        Call, InitMultisig, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MultisigOwner, MultisigSignature,
+        RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     };
 
@@ -3593,7 +3598,7 @@ mod tests {
             matches!(
                 result,
                 Err(EVMError::Transaction(
-                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                    TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
                 )) if reason.contains("nesting depth")
             ),
             "native multisig authorization paths deeper than the max depth should be rejected"
@@ -3645,10 +3650,176 @@ mod tests {
             matches!(
                 result,
                 Err(EVMError::Transaction(
-                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                    TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
                 )) if reason.contains("invalid nested multisig owner signature")
             ),
             "nested native multisig owner signatures must not carry bootstrap init"
+        );
+    }
+
+    #[test]
+    fn test_t8_registered_native_multisig_rejects_malformed_owner_approval_as_bad_transaction() {
+        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
+        let account = config.account().unwrap();
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![Bytes::from_static(&[0xff, 0x00])],
+                None,
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+        });
+        store_native_multisig_account(&mut test, &config);
+
+        let result = test.validate_against_state_and_deduct_caller();
+        let Err(EVMError::Transaction(err)) = result else {
+            panic!("malformed owner approval should fail validation");
+        };
+        assert!(
+            matches!(
+                &err,
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+                    if reason.contains("invalid multisig owner signature")
+            ),
+            "malformed owner approval should be classified as invalid transaction, got {err:?}"
+        );
+        assert!(err.is_bad_transaction());
+    }
+
+    #[test]
+    fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x42),
+            threshold: 2,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.account().unwrap();
+        let signature_hash = B256::repeat_byte(0x43);
+        let digest = multisig_digest(signature_hash, account);
+        let mut signed = signers
+            .iter()
+            .map(|signer| {
+                let signature = PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes();
+                (signer.address(), signature)
+            })
+            .collect::<Vec<_>>();
+        signed.sort_by_key(|(owner, _)| *owner);
+        signed.reverse();
+
+        let signature = MultisigSignature::new(
+            account,
+            signed.into_iter().map(|(_, signature)| signature).collect(),
+            None,
+        );
+        let result =
+            NativeMultisig::new().verify_authorization(signature_hash, &signature, &config, |_| {
+                unreachable!("primitive owner approvals should not load nested configs")
+            });
+
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigAuthError::InvalidTransaction(reason))
+                    if reason.contains("ascending")
+            ),
+            "recovered owner order is fixed by the transaction and should be bad"
+        );
+    }
+
+    #[test]
+    fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+        let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
+        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x22));
+        let account = config.account().unwrap();
+        let signature_hash = B256::repeat_byte(0x43);
+        let digest = multisig_digest(signature_hash, account);
+        let signature = MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes(),
+            ],
+            None,
+        );
+
+        let result =
+            NativeMultisig::new().verify_authorization(signature_hash, &signature, &config, |_| {
+                unreachable!("primitive owner approvals should not load nested configs")
+            });
+
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigAuthError::ValidationFailed(reason))
+                    if reason.contains("not an owner")
+            ),
+            "owner membership depends on current stored config and should remain revalidatable"
+        );
+    }
+
+    #[test]
+    fn native_multisig_authorization_rejects_oversized_owner_approval_before_decode() {
+        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
+        let account = config.account().unwrap();
+        let signature = MultisigSignature::new(
+            account,
+            vec![Bytes::from(vec![
+                0xaa;
+                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+            ])],
+            None,
+        );
+        let multisig = NativeMultisig::new();
+
+        let result =
+            multisig.verify_authorization(B256::repeat_byte(0x42), &signature, &config, |_| {
+                unreachable!("oversized owner approval should fail before nested config lookup")
+            });
+
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigAuthError::InvalidTransaction(reason)) if reason.contains("too large")
+            ),
+            "oversized owner approval should be rejected before owner approval decode"
         );
     }
 

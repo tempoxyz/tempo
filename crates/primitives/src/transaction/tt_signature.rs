@@ -1599,7 +1599,9 @@ mod tests {
 
         // Test P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
-        sig2_bytes.extend_from_slice(&[2u8; P256_SIGNATURE_LENGTH]);
+        let mut p256_payload = [2u8; P256_SIGNATURE_LENGTH];
+        p256_payload[128] = 1;
+        sig2_bytes.extend_from_slice(&p256_payload);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
         let encoded2 = sig2.to_bytes();
         assert_eq!(encoded2.len(), 1 + P256_SIGNATURE_LENGTH);

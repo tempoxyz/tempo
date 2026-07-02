@@ -30,7 +30,9 @@ use tempo_precompiles::{
     nonce::NonceManager,
     storage::{StorageActions, packing::extract_from_word},
 };
-use tempo_primitives::transaction::{MAX_MULTISIG_OWNERS, TEMPO_EXPIRING_NONCE_KEY};
+use tempo_primitives::transaction::{
+    TEMPO_EXPIRING_NONCE_KEY, multisig_signature_count_for_threshold,
+};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::rpc::error::TempoEthApiError;
@@ -429,35 +431,18 @@ fn native_multisig_signature_count_for_threshold(
             "native multisig config has zero threshold".to_string(),
         ));
     }
-    if owner_count == 0 {
-        return Err(EthApiError::InvalidParams(
-            "native multisig config has no owners".to_string(),
-        ));
-    }
-    if owner_count > MAX_MULTISIG_OWNERS {
-        return Err(EthApiError::InvalidParams(
-            "native multisig config has too many owners".to_string(),
-        ));
-    }
 
-    let mut signed_weight = 0u64;
+    let mut weights = Vec::with_capacity(owner_count);
     for index in 0..owner_count {
         let (weight_slot, weight_offset) =
             NativeMultisig::config_owner_weight_storage_slot(account, index);
         let weight = read_native_multisig_u8(db, weight_slot, weight_offset)?;
-        signed_weight = signed_weight
-            .checked_add(u64::from(weight))
-            .ok_or_else(|| {
-                EthApiError::InvalidParams("native multisig owner weight overflow".to_string())
-            })?;
-        if signed_weight >= u64::from(threshold) {
-            return Ok(Some(index + 1));
-        }
+        weights.push(weight);
     }
 
-    Err(EthApiError::InvalidParams(
-        "native multisig signature weight below threshold".to_string(),
-    ))
+    multisig_signature_count_for_threshold(weights, threshold)
+        .map(Some)
+        .map_err(|err| EthApiError::InvalidParams(String::from(err)))
 }
 
 fn read_native_multisig_u8(

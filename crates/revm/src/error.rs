@@ -3,7 +3,9 @@
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
-use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
+use tempo_primitives::transaction::{
+    KeyAuthorizationChainIdError, KeychainVersionError, MultisigConfigError, MultisigQuorumError,
+};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -241,13 +243,18 @@ pub enum TempoInvalidTransaction {
     NativeMultisigNotActive,
 
     /// Native multisig transaction shape or stateless policy is invalid.
+    ///
+    /// This is deterministic for the transaction payload and is treated as a bad transaction.
     #[error("native multisig invalid transaction: {reason}")]
     NativeMultisigInvalidTransaction {
         /// Validation error details.
         reason: String,
     },
 
-    /// Native multisig validation failed.
+    /// Native multisig state, config, quorum, or authorization validation failed.
+    ///
+    /// This can depend on the account's current native multisig storage and is not treated as a
+    /// bad transaction.
     #[error("native multisig validation failed: {reason}")]
     NativeMultisigValidationFailed {
         /// Validation error details.
@@ -394,6 +401,22 @@ impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTr
 impl From<&'static str> for TempoInvalidTransaction {
     fn from(err: &'static str) -> Self {
         Self::CallsValidation(err)
+    }
+}
+
+impl From<MultisigConfigError> for TempoInvalidTransaction {
+    fn from(err: MultisigConfigError) -> Self {
+        Self::NativeMultisigValidationFailed {
+            reason: err.as_str().to_string(),
+        }
+    }
+}
+
+impl From<MultisigQuorumError> for TempoInvalidTransaction {
+    fn from(err: MultisigQuorumError) -> Self {
+        Self::NativeMultisigValidationFailed {
+            reason: String::from(err),
+        }
     }
 }
 
@@ -548,6 +571,14 @@ mod tests {
             !validation_failed.is_bad_transaction(),
             "config/quorum validation can depend on native multisig account state"
         );
+
+        let config_error = TempoInvalidTransaction::from(MultisigConfigError::ZeroThreshold);
+        assert!(!config_error.is_bad_transaction());
+        assert!(config_error.to_string().contains("threshold"));
+
+        let quorum_error = TempoInvalidTransaction::from(MultisigQuorumError::WeightBelowThreshold);
+        assert!(!quorum_error.is_bad_transaction());
+        assert!(quorum_error.to_string().contains("below threshold"));
     }
 
     #[test]
