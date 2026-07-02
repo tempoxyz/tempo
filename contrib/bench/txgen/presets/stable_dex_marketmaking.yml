@@ -1,0 +1,59 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  StablecoinDEX: ../stablecoin-dex.abi.json
+
+templates:
+  marketmaker_place_flip:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0xdec0000000000000000000000000000000000000"
+      abi: StablecoinDEX
+      function: placeFlip
+      args:
+        vars:
+          base_token:
+            choice:
+              - "0x20c0000000000000000000000000000000000001"
+              - "0x20c0000000000000000000000000000000000002"
+              - "0x20c0000000000000000000000000000000000003"
+          is_bid:
+            choice: [true, false]
+          tick:
+            if:
+              cond: { var: is_bid }
+              then: { uniform: { min: -100, max: -10, step: 10 } }
+              else: { uniform: { min: 10, max: 100, step: 10 } }
+        values:
+          - { var: base_token }
+          - { uniform: [100000000, 500000000] }
+          - { var: is_bid }
+          - { var: tick }
+          - if:
+              cond: { var: is_bid }
+              then: { uniform: { min: 10, max: 100, step: 10 } }
+              else: { uniform: { min: -100, max: -10, step: 10 } }
+
+mix:
+  - template: marketmaker_place_flip
+    weight: 100

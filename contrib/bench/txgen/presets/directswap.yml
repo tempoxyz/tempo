@@ -1,0 +1,62 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  ERC20: ../erc20.abi.json
+  DirectSwap: ../directswap.abi.json
+
+templates:
+  approve_directswap:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000006fd9a167923ba194"
+      abi: ERC20
+      function: approve
+      args:
+        - "0x73b5d86dEae56497f852FD79dd6fe68C7270FB6B"
+        - 1000000000000
+
+  dlusd_to_pathusd:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x73b5d86dEae56497f852FD79dd6fe68C7270FB6B"
+      abi: DirectSwap
+      function: swapExactIn
+      args:
+        - "0x20c0000000000000000000006fD9A167923ba194"
+        - "0x20c0000000000000000000000000000000000000"
+        - uniform: [1000000, 100000000]
+
+mix:
+  - template: approve_directswap
+    weight: 10
+  - template: dlusd_to_pathusd
+    weight: 90

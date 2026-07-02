@@ -1,0 +1,89 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  ERC20: ../erc20.abi.json
+  ERC4626Vault: ../erc4626-vault.abi.json
+
+templates:
+  approve_privy_vault:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: approve
+      args:
+        - "0x83a1491f3e7f8daab8f787a631334b9ca7a87023"
+        - 1000000000000
+
+  privy_vault_deposit:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x83a1491f3e7f8daab8f787a631334b9ca7a87023"
+      abi: ERC4626Vault
+      function: deposit
+      args:
+        - uniform: [1000000, 100000000]
+        - pool:
+            pool: users
+            select: random
+
+  privy_vault_withdraw:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x83a1491f3e7f8daab8f787a631334b9ca7a87023"
+      abi: ERC4626Vault
+      function: withdraw
+      args:
+        - uniform: [1000000, 25000000]
+        - pool:
+            pool: users
+            select: random
+        - pool:
+            pool: users
+            select: random
+
+mix:
+  - template: approve_privy_vault
+    weight: 10
+  - template: privy_vault_deposit
+    weight: 70
+  - template: privy_vault_withdraw
+    weight: 20
