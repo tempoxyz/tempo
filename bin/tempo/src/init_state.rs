@@ -188,7 +188,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             .wrap_err_with(|| format!("failed to open {}", self.state.display()))?;
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, file);
 
-        let total_entries: u64;
         let mut total_blocks = 0u64;
 
         // Track addresses and their account data for hashing
@@ -208,7 +207,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let genesis_storage_keys = Arc::new(genesis_storage_keys);
         let mut collection_pool =
-            CollectionWorkerPool::new(workers, etl_dir.clone(), genesis_storage_keys)?;
+            CollectionWorkerPool::new(workers, etl_dir, genesis_storage_keys)?;
         let mut collection_chunk = CollectionChunk::new(alloy_primitives::Address::ZERO);
 
         // Process blocks from binary file
@@ -321,7 +320,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             collection_results.iter().map(|result| result.pairs).sum();
         let collection_worker_entries: usize =
             collection_results.iter().map(|result| result.entries).sum();
-        total_entries = collection_worker_entries as u64;
+        let total_entries = collection_worker_entries as u64;
 
         let mut hashed_collectors = Vec::with_capacity(collection_results.len() + 1);
         let mut storage_changeset_collectors = Vec::with_capacity(collection_results.len() + 1);
@@ -1172,7 +1171,7 @@ fn hashed_storage_shard(hashed_address: B256, shard_count: usize) -> usize {
     let mut prefix = [0u8; 8];
     prefix.copy_from_slice(&hashed_address.as_slice()[..8]);
     let prefix = u64::from_be_bytes(prefix);
-    ((prefix as u128 * shard_count as u128) >> u64::BITS) as usize
+    ((u128::from(prefix) * shard_count as u128) >> u64::BITS) as usize
 }
 
 /// Iterate raw storage ETL collectors, deduplicate consecutive entries with the
@@ -1233,7 +1232,7 @@ fn load_ordered_etl_collectors(
 
     for collector in collectors {
         for item in collector.iter()? {
-            if index > 0 && index % interval == 0 {
+            if index > 0 && index.is_multiple_of(interval) {
                 info!(
                     target: "tempo::cli",
                     progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
@@ -1282,7 +1281,7 @@ fn load_etl_collectors(
     let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
     let mut index = 0usize;
     while let Some((Reverse((key, value)), collector_id)) = heap.pop() {
-        if index > 0 && index % interval == 0 {
+        if index > 0 && index.is_multiple_of(interval) {
             info!(
                 target: "tempo::cli",
                 progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
