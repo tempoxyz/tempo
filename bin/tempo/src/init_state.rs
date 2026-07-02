@@ -36,9 +36,9 @@ use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{
     BlockNumReader, ChainSpecProvider, ChangeSetReader, DBProvider, DatabaseProviderFactory,
-    DatabaseProviderROFactory, HashingWriter, PruneCheckpointReader, RocksDBProviderFactory,
-    StageCheckpointReader, StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader,
-    StorageSettingsCache, TrieWriter,
+    DatabaseProviderROFactory, HashingWriter, ProviderResult, PruneCheckpointReader,
+    RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderFactory, StaticFileSegment,
+    StorageChangeSetReader, StorageSettingsCache, TrieWriter,
     providers::{OverlayBuilder, OverlayStateProviderFactory},
 };
 use reth_tasks::{RuntimeBuilder, RuntimeConfig, TokioConfig};
@@ -530,38 +530,87 @@ where
     RW::ChainSpec: EthChainSpec,
     RW::Tx: DbTxMut,
 {
-    if use_parallel_trie(trie_workers) {
+    let trie_start = Instant::now();
+    let result = if use_parallel_trie(trie_workers) {
         compute_and_write_parallel_trie_root(provider_factory, provider_rw, trie_workers)
     } else {
         compute_and_write_serial_trie_root(provider_rw)
-    }
-    .or_else(|err| {
-        if use_parallel_trie(trie_workers) {
-            debug!(
+    };
+
+    result
+        .or_else(|err| {
+            if use_parallel_trie(trie_workers) {
+                warn!(
+                    target: "tempo::cli",
+                    ?err,
+                    workers = trie_workers,
+                    elapsed = ?trie_start.elapsed(),
+                    "Parallel trie root failed; retrying with serial trie root"
+                );
+                compute_and_write_serial_trie_root(provider_rw)
+            } else {
+                Err(err)
+            }
+        })
+        .map(|(state_root, trie_writes, elapsed, mode)| {
+            info!(
                 target: "tempo::cli",
-                ?err,
-                "Parallel trie root failed; retrying with serial trie root"
+                %state_root,
+                trie_writes,
+                elapsed = ?elapsed,
+                %mode,
+                "State root computed"
             );
-            compute_and_write_serial_trie_root(provider_rw)
-        } else {
-            Err(err)
-        }
-    })
-    .map(|(state_root, trie_writes, elapsed, mode)| {
-        info!(
-            target: "tempo::cli",
-            %state_root,
-            trie_writes,
-            elapsed = ?elapsed,
-            %mode,
-            "State root computed"
-        );
-        state_root
-    })
+            state_root
+        })
 }
 
 fn use_parallel_trie(trie_workers: usize) -> bool {
     trie_workers > 1
+}
+
+#[derive(Debug, Clone)]
+struct UnboundedReadTransactionFactory<P> {
+    inner: P,
+}
+
+impl<P> UnboundedReadTransactionFactory<P> {
+    const fn new(inner: P) -> Self {
+        Self { inner }
+    }
+}
+
+impl<P> ChainSpecProvider for UnboundedReadTransactionFactory<P>
+where
+    P: ChainSpecProvider,
+{
+    type ChainSpec = P::ChainSpec;
+
+    fn chain_spec(&self) -> Arc<Self::ChainSpec> {
+        self.inner.chain_spec()
+    }
+}
+
+impl<P> DatabaseProviderFactory for UnboundedReadTransactionFactory<P>
+where
+    P: DatabaseProviderFactory,
+{
+    type DB = P::DB;
+    type Provider = P::Provider;
+    type ProviderRW = P::ProviderRW;
+
+    fn database_provider_ro(&self) -> ProviderResult<Self::Provider> {
+        // This command runs offline after the loaded state is committed; large trie builds can
+        // exceed MDBX's default read transaction timeout before any writes are possible.
+        Ok(self
+            .inner
+            .database_provider_ro()?
+            .disable_long_read_transaction_safety())
+    }
+
+    fn database_provider_rw(&self) -> ProviderResult<Self::ProviderRW> {
+        self.inner.database_provider_rw()
+    }
 }
 
 fn compute_and_write_serial_trie_root<RW>(
@@ -628,6 +677,7 @@ where
     let trie_start = Instant::now();
     let prefix_sets = collect_full_trie_prefix_sets(provider_rw)?;
     let genesis_hash = provider_rw.chain_spec().genesis_hash();
+    let provider_factory = UnboundedReadTransactionFactory::new(provider_factory);
     let (state_root, updates) = thread::Builder::new()
         .name("tempo-parallel-trie-root".to_string())
         .spawn(move || -> eyre::Result<_> {
