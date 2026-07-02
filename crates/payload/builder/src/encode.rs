@@ -22,10 +22,12 @@ use tracing::warn;
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedBlockTransactionList {
     transaction_count: usize,
-    /// Complete RLP list for the block body transactions field.
+    /// RLP header for the block body transactions list.
+    header: Bytes,
+    /// Concatenated transaction-list payload.
     ///
     /// Legacy transactions are list elements and typed EIP-2718 transactions are string elements.
-    rlp: Bytes,
+    payload: Bytes,
 }
 
 impl EncodedBlockTransactionList {
@@ -52,8 +54,9 @@ impl EncodedBlockTransactionList {
             return false;
         }
 
+        let transactions_rlp_length = self.header.len() + self.payload.len();
         let payload_length = block.header().length()
-            + self.rlp.len()
+            + transactions_rlp_length
             + body.ommers.length()
             + body.withdrawals.as_ref().map_or(0, Encodable::length);
 
@@ -64,7 +67,8 @@ impl EncodedBlockTransactionList {
         .encode(out);
         block.header().encode(out);
         // The remaining fields are the block body encoding: transactions, ommers, withdrawals.
-        out.extend_from_slice(&self.rlp);
+        out.extend_from_slice(&self.header);
+        out.extend_from_slice(&self.payload);
         body.ommers.encode(out);
         if let Some(withdrawals) = &body.withdrawals {
             withdrawals.encode(out);
@@ -103,12 +107,12 @@ impl EncodedBlockTransactionsBuilder {
             list: true,
             payload_length: self.payload.len(),
         };
-        let mut rlp = Vec::with_capacity(header.length_with_payload());
-        header.encode(&mut rlp);
-        rlp.extend_from_slice(&self.payload);
+        let mut encoded_header = Vec::with_capacity(header.length());
+        header.encode(&mut encoded_header);
         EncodedBlockTransactionList {
             transaction_count: self.transaction_count,
-            rlp: rlp.into(),
+            header: encoded_header.into(),
+            payload: self.payload.into(),
         }
     }
 }
@@ -402,6 +406,13 @@ mod tests {
         builder.finish()
     }
 
+    fn encoded_transaction_list_rlp(encoded: &EncodedBlockTransactionList) -> Vec<u8> {
+        let mut rlp = Vec::with_capacity(encoded.header.len() + encoded.payload.len());
+        rlp.extend_from_slice(&encoded.header);
+        rlp.extend_from_slice(&encoded.payload);
+        rlp
+    }
+
     fn full_block_encoding(block: &SealedBlock<Block>) -> Vec<u8> {
         let mut expected = Vec::new();
         block.encode(&mut expected);
@@ -419,7 +430,10 @@ mod tests {
         let expected = alloy_rlp::encode(&transactions);
 
         assert_eq!(encoded_transactions.transaction_count, transactions.len());
-        assert_eq!(encoded_transactions.rlp.as_ref(), expected.as_slice());
+        assert_eq!(
+            encoded_transaction_list_rlp(&encoded_transactions),
+            expected
+        );
     }
 
     #[test]
@@ -491,7 +505,7 @@ mod tests {
             let expected = alloy_rlp::encode(&transactions);
 
             prop_assert_eq!(encoded_transactions.transaction_count, transactions.len());
-            prop_assert_eq!(encoded_transactions.rlp.as_ref(), expected.as_slice());
+            prop_assert_eq!(encoded_transaction_list_rlp(&encoded_transactions), expected);
         }
 
         #[test]
