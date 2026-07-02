@@ -310,18 +310,13 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
 
 /// Ensures that no more finalizations happen.
 async fn ensure_no_progress(context: &Context, tries: u32) {
-    let Some(baseline) = max_consensus_height(&context.to_metrics()) else {
-        return;
-    };
+    let baseline = max_consensus_height(&context.to_metrics());
 
     for _ in 0..=tries {
         context.sleep(Duration::from_secs(1)).await;
 
-        let Some(height) = max_consensus_height(&context.to_metrics()) else {
-            continue;
-        };
-
-        if height > baseline {
+        let height = max_consensus_height(&context.to_metrics());
+        if height != baseline {
             panic!(
                 "height has changed, progress was made while the network was \
                 stopped: baseline = `{baseline}`, progressed_to = `{height}`"
@@ -330,8 +325,11 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
     }
 }
 
-fn max_consensus_height(metrics: &Metrics) -> Option<u64> {
-    metrics.values::<u64>("_marshal_processed_height").max()
+fn max_consensus_height(metrics: &Metrics) -> u64 {
+    metrics
+        .values::<u64>("_marshal_processed_height")
+        .max()
+        .expect("processed height is a metric")
 }
 
 enum ShutdownAfterFinalizing {
