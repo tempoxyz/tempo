@@ -183,9 +183,9 @@ where
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
-                StorageAction::FeeAmmQuoteTokenCheck(user_token, mid_token) => {
-                    let quote_token_slot = TIP20Token::from_address(user_token)
-                        .map_err(|_| StorageActionReplayError::ActionConflict)?
+                StorageAction::FeeAmmQuoteTokenCheck(user_token, expected_quote_token) => {
+                    // SAFETY: `FeeAmmQuoteTokenCheck` actions are emitted only for TIP-20 tokens
+                    let quote_token_slot = TIP20Token::from_address_unchecked(user_token)
                         .quote_token
                         .slot();
                     let quote_token = self
@@ -194,11 +194,11 @@ where
                             db,
                             user_token,
                             quote_token_slot,
-                            mid_token.into_u256(),
+                            expected_quote_token.into_u256(),
                         )?
                         .into_address();
 
-                    if quote_token != mid_token {
+                    if quote_token != expected_quote_token {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
