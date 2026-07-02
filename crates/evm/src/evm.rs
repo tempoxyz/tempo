@@ -575,8 +575,8 @@ mod tests {
                     });
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, sload_value, amount_in) => {
-                    let key = (address, slot);
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
+                    let key = (action.address(), slot);
                     let current =
                         storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
                     let mut pool = Pool::decode_from_slot(current);
@@ -585,20 +585,22 @@ mod tests {
                         compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
                     )
                     .unwrap_or_else(|err| {
-                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
+                        panic!(
+                            "FeeAmmSwap invalid for {:?}:{slot:?} on {hardfork:?}: {err}",
+                            action.address()
+                        )
                     });
                     storage_state
                         .reconstructed
                         .insert(key, pool.encode_to_slot().unwrap());
                 }
                 StorageAction::FeeAmmLiquidityCheck(
-                    address,
                     slot,
                     sload_value,
                     amount_out,
                     has_enough_liquidity,
                 ) => {
-                    let key = (address, slot);
+                    let key = (action.address(), slot);
                     let current = storage_state.apply_sload_value(
                         key,
                         sload_value,
@@ -609,7 +611,8 @@ mod tests {
                     assert_eq!(
                         pool.has_enough_reserve_validator_token(amount_out),
                         has_enough_liquidity,
-                        "FeeAmmLiquidityCheck mismatch for {address:?}:{slot:?} on {hardfork:?}",
+                        "FeeAmmLiquidityCheck mismatch for {:?}:{slot:?} on {hardfork:?}",
+                        action.address(),
                     );
                 }
                 StorageAction::FeeAmmQuoteTokenCheck(user_token, quote_token) => {
@@ -705,15 +708,14 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap(address, slot, sload_value, amount_in) => {
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
                     format!(
                         "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
-                        labels.address(address),
-                        labels.slot(address, slot),
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
                     )
                 }
                 StorageAction::FeeAmmLiquidityCheck(
-                    address,
                     slot,
                     slot_value,
                     amount_out,
@@ -721,8 +723,8 @@ mod tests {
                 ) => {
                     format!(
                         "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
-                        labels.address(address),
-                        labels.slot(address, slot),
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
                     )
                 }
                 StorageAction::FeeAmmQuoteTokenCheck(user_token, quote_token) => {

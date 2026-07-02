@@ -573,17 +573,16 @@ impl TipFeeManager {
         actions.unrecorded(|| {
             let amount_out = compute_amount_out(max_amount)?;
 
-            let direct_pool_id = self.pool_id(user_token, validator_token);
             // Direct (single-hop) path — always checked.
-            let direct = self.pools[direct_pool_id].read()?;
+            let direct_slot = &self.pools[self.pool_id(user_token, validator_token)];
+            let direct = direct_slot.read()?;
             data.push((
                 (user_token, validator_token),
                 direct.reserve_validator_token,
             ));
             let has_enough_liquidity = direct.has_enough_reserve_validator_token(amount_out);
             actions.record_always(StorageAction::FeeAmmLiquidityCheck(
-                self.address,
-                direct_pool_id.mapping_slot(self.pools.slot()),
+                direct_slot.as_slot().slot(),
                 direct.encode_to_slot()?,
                 amount_out,
                 has_enough_liquidity,
@@ -605,13 +604,12 @@ impl TipFeeManager {
             }
 
             // First leg: user_token -> intermediate.
-            let leg1_pool_id = self.pool_id(user_token, mid_token);
-            let leg1 = self.pools[leg1_pool_id].read()?;
+            let leg1_slot = &self.pools[self.pool_id(user_token, mid_token)];
+            let leg1 = leg1_slot.read()?;
             data.push(((user_token, mid_token), leg1.reserve_validator_token));
             let has_enough_liquidity = leg1.has_enough_reserve_validator_token(amount_out);
             actions.record_always(StorageAction::FeeAmmLiquidityCheck(
-                self.address,
-                leg1_pool_id.mapping_slot(self.pools.slot()),
+                leg1_slot.as_slot().slot(),
                 leg1.encode_to_slot()?,
                 amount_out,
                 has_enough_liquidity,
@@ -622,13 +620,12 @@ impl TipFeeManager {
 
             // Second leg: intermediate -> validator_token.
             let amount_out2 = compute_amount_out(amount_out)?;
-            let leg2_pool_id = self.pool_id(mid_token, validator_token);
-            let leg2 = self.pools[leg2_pool_id].read()?;
+            let leg2_slot = &self.pools[self.pool_id(mid_token, validator_token)];
+            let leg2 = leg2_slot.read()?;
             data.push(((mid_token, validator_token), leg2.reserve_validator_token));
             let has_enough_liquidity = leg2.has_enough_reserve_validator_token(amount_out2);
             actions.record_always(StorageAction::FeeAmmLiquidityCheck(
-                self.address,
-                leg2_pool_id.mapping_slot(self.pools.slot()),
+                leg2_slot.as_slot().slot(),
                 leg2.encode_to_slot()?,
                 amount_out2,
                 has_enough_liquidity,
@@ -666,7 +663,6 @@ impl TipFeeManager {
             self.pools[pool_id].write(pool)?;
 
             actions.record_always(StorageAction::FeeAmmSwap(
-                self.address,
                 pool_id.mapping_slot(self.pools.slot()),
                 pool_slot,
                 amount_in,

@@ -146,10 +146,10 @@ where
                         .ok_or(StorageActionReplayError::Underflow)?;
                     self.replay_state.sstore(address, key, value)?;
                 }
-                StorageAction::FeeAmmSwap(address, key, sload_value, amount_in) => {
+                StorageAction::FeeAmmSwap(key, sload_value, amount_in) => {
                     let pool_slot = self.replay_state.sload_current_or_expected(
                         db,
-                        address,
+                        action.address(),
                         key,
                         sload_value,
                     )?;
@@ -163,10 +163,9 @@ where
                     let value = pool
                         .encode_to_slot()
                         .map_err(|_| StorageActionReplayError::ActionConflict)?;
-                    self.replay_state.sstore(address, key, value)?;
+                    self.replay_state.sstore(action.address(), key, value)?;
                 }
                 StorageAction::FeeAmmLiquidityCheck(
-                    address,
                     key,
                     sload_value,
                     amount_out,
@@ -174,7 +173,7 @@ where
                 ) => {
                     let pool_slot = self.replay_state.sload_current_or_expected(
                         db,
-                        address,
+                        action.address(),
                         key,
                         sload_value,
                     )?;

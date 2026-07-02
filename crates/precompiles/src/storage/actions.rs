@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, U256};
+use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StorageAction {
@@ -35,21 +36,19 @@ pub enum StorageAction {
     Sdec(Address, U256, U256, U256),
     /// Records a FeeAMM pool fee swap over a packed pool slot.
     ///
-    /// `address` - FeeAMM contract address.
     /// `key` - Storage slot key.
     /// `sload_value` - Packed pool slot value before the swap.
     /// `amount_in` - Amount of tokens to swap in.
     ///
     /// `amount_out` can be calculated using [`compute_amount_out`](crate::tip_fee_manager::amm::compute_amount_out).
-    FeeAmmSwap(Address, U256, U256, U256),
+    FeeAmmSwap(U256, U256, U256),
     /// Records a liquidity check for a FeeAMM pool.
     ///
-    /// `address` - FeeAMM contract address.
     /// `key` - Storage slot key.
     /// `sload_value` - Packed pool slot value before the liquidity check.
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
-    FeeAmmLiquidityCheck(Address, U256, U256, U256, bool),
+    FeeAmmLiquidityCheck(U256, U256, U256, bool),
     /// Records the quote token check.
     ///
     /// `user_token` - The user's token address.
@@ -65,9 +64,8 @@ impl StorageAction {
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..)
-            | Self::FeeAmmSwap(address, ..)
-            | Self::FeeAmmLiquidityCheck(address, ..)
             | Self::FeeAmmQuoteTokenCheck(address, ..) => *address,
+            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
         }
     }
 }
@@ -219,12 +217,7 @@ mod tests {
                     U256::from(2),
                     U256::from(3),
                 ));
-                actions.record_always(StorageAction::FeeAmmSwap(
-                    address,
-                    key,
-                    U256::from(3),
-                    U256::from(4),
-                ));
+                actions.record_always(StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)));
             });
 
             actions.record(StorageAction::Sdec(
@@ -246,7 +239,7 @@ mod tests {
             actions.take(),
             Some(vec![
                 StorageAction::Sload(address, key, U256::from(1)),
-                StorageAction::FeeAmmSwap(address, key, U256::from(3), U256::from(4)),
+                StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)),
                 StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
             ])
         );
