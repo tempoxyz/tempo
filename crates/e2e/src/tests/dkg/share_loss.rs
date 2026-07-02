@@ -117,6 +117,10 @@ fn validator_loses_consensus_state_becomes_observer() {
         specimen.uid = format!("{}_new", specimen.uid);
         // Remove the share from config since post-setup we may still be in Epoch 0
         specimen.consensus_config.share.take();
+        // TODO: Remove this test when strict startup is the default; losing
+        // consensus state while retaining execution state is only supported by
+        // the legacy non-strict startup path.
+        specimen.consensus_config.strict_startup = false;
 
         specimen.start(&context).await;
 
