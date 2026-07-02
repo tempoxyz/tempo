@@ -11130,7 +11130,7 @@ dependencies = [
 [[package]]
 name = "reth-tracing-otlp"
 version = "2.3.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=0d303f7#0d303f75409c3b8a1b760bf275680b7c2deaa2a5"
+source = "git+https://github.com/kuyziss/reth?branch=enable-otlp-log-span-attributes#3fcfba407a310c37cfcfd5b4a91794bca46c285f"
 dependencies = [
  "base64 0.22.1",
  "clap",

@@ -403,6 +403,9 @@ vergen-git2 = "10.0.1"
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
+[patch."https://github.com/paradigmxyz/reth"]
+reth-tracing-otlp = { git = "https://github.com/kuyziss/reth", branch = "enable-otlp-log-span-attributes" }
+
 [patch.crates-io]
 
 # Commonware at HEAD after PR #3588 was merged
