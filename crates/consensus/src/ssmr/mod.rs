@@ -19,8 +19,8 @@ const SSMR_END_TAG: u8 = 2;
 pub(crate) const DEFAULT_SHARD_TARGET_BYTES: usize = 10 * 1024;
 /// Lower flush target for low-traffic periods.
 pub(crate) const LOW_TRAFFIC_SHARD_TARGET_BYTES: usize = 5 * 1024;
-/// Upper bound accepted by the first PoC configuration.
-pub(crate) const MAX_SHARD_TARGET_BYTES: usize = 15 * 1024;
+/// Upper bound accepted by the PoC configuration.
+pub(crate) const MAX_SHARD_TARGET_BYTES: usize = 64 * 1024;
 
 /// Deterministic identity for an in-flight SSMR stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
