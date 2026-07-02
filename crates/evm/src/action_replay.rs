@@ -42,7 +42,7 @@ where
 
         let StorageActionReplay {
             result,
-            mut actions,
+            actions,
             expiring_nonce,
             validator_fee,
         } = replay;
@@ -54,12 +54,7 @@ where
         }
 
         let state = self
-            .replay_actions(
-                tx_env.caller(),
-                actions.drain(..),
-                commit_reads,
-                expiring_nonce,
-            )
+            .replay_actions(tx_env.caller(), actions, commit_reads, expiring_nonce)
             .inspect_err(|_| {
                 self.replay_state.reset_tx_changes();
             })?;
