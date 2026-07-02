@@ -1072,11 +1072,6 @@ impl StablecoinDEX {
                     return Err(res.unwrap_err());
                 }
 
-                // Execution continues after rollback, so discard the reverted layout version cache.
-                if self.storage.spec().is_t8() {
-                    self.orders[order.order_id()].clear_version_cache();
-                }
-
                 if self.storage.spec().is_t5() {
                     self.emit_event(StablecoinDEXEvents::flip_failed(
                         order.order_id(),
