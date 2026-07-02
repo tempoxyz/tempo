@@ -203,11 +203,13 @@ fn joins_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
+            // Since the snapshot does not include secret material, there's an epoch's
+            // worth of downtime before the replacement enters/participates.
             metrics
                 .for_scope(&replacement)
                 .latest_consensus_epoch()
                 .is_some_and(|epoch| epoch > 0)
-                && metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+                && metrics.consensus_at_epoch(last_epoch_before_stop + 2) == 4
         })
         .await;
     });
@@ -389,11 +391,13 @@ fn can_restart_after_joining_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
+            // Since the snapshot does not include secret material, there's an epoch's
+            // worth of downtime before the replacement enters/participates.
             metrics
                 .for_scope(&replacement)
                 .latest_consensus_epoch()
                 .is_some_and(|epoch| epoch > 0)
-                && metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+                && metrics.consensus_at_epoch(last_epoch_before_stop + 2) == 4
         })
         .await;
 
