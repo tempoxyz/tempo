@@ -118,12 +118,18 @@ where
                     // as `sload_exact` is already checking it
                     let _ = self.replay_state.sload_exact(db, address, key, value)?;
                 }
-                StorageAction::Sstore(address, key, _, value) => {
+                StorageAction::Sstore(address, key, sload_value, value) => {
                     if self.replay_state.has_write(address, key) {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
-                    self.replay_state
-                        .sstore(address, key, value, WriteKind::Store)?;
+                    self.replay_state.sstore_exact(
+                        db,
+                        address,
+                        key,
+                        sload_value,
+                        value,
+                        WriteKind::Store,
+                    )?;
                 }
                 StorageAction::Sinc(address, key, sload_value, delta) => {
                     if self.replay_state.has_store(address, key) {
@@ -418,8 +424,9 @@ impl StorageActionReplayState {
         value: U256,
         kind: WriteKind,
     ) -> Result<(), BlockExecutionError> {
-        // The transaction-start value must already be established by a load,
-        // otherwise replay would invent `original` from current state and reuse
+        // This helper only updates an already loaded tx-local slot value. First-touch
+        // absolute stores must go through `sstore_exact` with the action's recorded
+        // pre-store value; otherwise replay would invent `original` and reuse
         // gas/refund data from a different storage transition.
         let change = self
             .tx_changes
@@ -435,6 +442,22 @@ impl StorageActionReplayState {
         }
 
         Ok(())
+    }
+
+    /// Stores the value of a slot after validating the recorded pre-store value.
+    fn sstore_exact<DB: Database>(
+        &mut self,
+        db: &mut State<DB>,
+        address: Address,
+        slot: U256,
+        expected: U256,
+        value: U256,
+        kind: WriteKind,
+    ) -> Result<(), BlockExecutionError> {
+        // TODO: we can save on `self.tx_changes` lookup here
+        // by returning an entry from `self.sload_exact`
+        self.sload_exact(db, address, slot, expected)?;
+        self.sstore(address, slot, value, kind)
     }
 
     /// Records a storage slot write with a known transaction-start value.
@@ -778,6 +801,34 @@ mod tests {
             StorageActionReplayError::from_block_execution_error(&err),
             Some(StorageActionReplayError::ActionConflict)
         );
+    }
+
+    #[test]
+    fn first_touch_sstore_uses_recorded_prewrite_value() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(10));
+        let mut replay_state = StorageActionReplayState::default();
+
+        replay_state
+            .sstore_exact(
+                &mut db,
+                address,
+                slot,
+                U256::from(10),
+                U256::from(11),
+                WriteKind::Store,
+            )
+            .expect("first-touch store should establish the slot view");
+
+        let change = replay_state
+            .tx_changes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
+            .expect("slot change recorded");
+        assert_eq!(change.original, U256::from(10));
+        assert_eq!(change.current, U256::from(11));
+        assert_eq!(change.write_kind, Some(WriteKind::Store));
     }
 
     #[test]
