@@ -6,6 +6,7 @@
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashSet},
+    fmt,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
@@ -66,6 +67,12 @@ const VERSION: u16 = 1;
 
 /// ETL collector file size (200 MiB per temp file before spilling a new one).
 const ETL_FILE_SIZE: usize = 200 * 1024 * 1024;
+
+/// Binary dump block header size.
+const BLOCK_HEADER_SIZE: u64 = 40;
+
+/// Binary dump storage entry size.
+const DUMP_ENTRY_SIZE: u64 = 64;
 
 /// Maximum number of binary dump storage entries to send per worker batch.
 const COLLECTION_CHUNK_SIZE: usize = 8192;
@@ -186,9 +193,16 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let file = File::open(&self.state)
             .wrap_err_with(|| format!("failed to open {}", self.state.display()))?;
+        let total_dump_bytes = file
+            .metadata()
+            .wrap_err_with(|| format!("failed to stat {}", self.state.display()))?
+            .len();
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, file);
 
         let mut total_blocks = 0u64;
+        let mut dump_progress = DumpProgress::new(total_dump_bytes);
+        let dump_start = Instant::now();
+        let mut last_collection_log = dump_start;
 
         // Track addresses and their account data for hashing
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
@@ -212,13 +226,20 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Process blocks from binary file
         loop {
-            // Read next block header; EOF means no more blocks.
-            let mut header_buf = [0u8; 40];
+            if !dump_progress.has_next_block()? {
+                break;
+            }
+
+            // Read next block header after validating that the file has enough bytes left.
+            let mut header_buf = [0u8; BLOCK_HEADER_SIZE as usize];
             match reader.read_exact(&mut header_buf) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Err(e).wrap_err("failed to read complete block header");
+                }
                 Err(e) => return Err(e).wrap_err("failed to read block header"),
             }
+            dump_progress.record_header();
 
             // Validate magic
             ensure!(
@@ -242,11 +263,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             // Read pair count (8 bytes at offset 32)
             let pair_count = u64::from_be_bytes(header_buf[32..40].try_into().unwrap());
+            dump_progress.ensure_block_payload_available(address, pair_count)?;
 
             info!(
                 target: "tempo::cli",
+                block = dump_progress.blocks(),
                 %address,
                 pair_count,
+                dump_progress = %dump_progress,
                 "Processing token storage block"
             );
 
@@ -285,13 +309,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
             // Read entries into collection-worker batches.
             let mut entry_buf = [0u8; 64];
-            let start = Instant::now();
-            let mut last_log = start;
+            let block_start = Instant::now();
 
             for i in 0..pair_count {
                 reader
                     .read_exact(&mut entry_buf)
                     .wrap_err("failed to read storage entry")?;
+                dump_progress.record_entry();
 
                 collection_chunk.entries.push(entry_buf);
                 if collection_chunk.entries.len() >= COLLECTION_CHUNK_SIZE {
@@ -300,7 +324,15 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     collection_pool.send(chunk)?;
                 }
 
-                log_collection_progress(&address, i, pair_count, start, &mut last_log);
+                log_collection_progress(
+                    &address,
+                    i,
+                    pair_count,
+                    &dump_progress,
+                    block_start,
+                    dump_start,
+                    &mut last_collection_log,
+                );
             }
 
             total_blocks += 1;
@@ -763,6 +795,115 @@ fn full_trie_prefix_sets_from_hashed_accounts(
             .insert(hashed_address, PrefixSetMut::all());
     }
     prefix_sets.freeze()
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DumpProgress {
+    total_bytes: u64,
+    bytes_read: u64,
+    blocks: u64,
+    entries: u64,
+}
+
+impl DumpProgress {
+    fn new(total_bytes: u64) -> Self {
+        Self {
+            total_bytes,
+            bytes_read: 0,
+            blocks: 0,
+            entries: 0,
+        }
+    }
+
+    fn has_next_block(&self) -> eyre::Result<bool> {
+        let remaining = self.remaining_bytes();
+        if remaining == 0 {
+            return Ok(false);
+        }
+
+        ensure!(
+            remaining >= BLOCK_HEADER_SIZE,
+            "truncated binary dump: {remaining} trailing bytes remain, fewer than block header size \
+             {BLOCK_HEADER_SIZE}"
+        );
+        Ok(true)
+    }
+
+    fn ensure_block_payload_available(
+        &self,
+        address: alloy_primitives::Address,
+        pair_count: u64,
+    ) -> eyre::Result<()> {
+        let payload_bytes = pair_count.checked_mul(DUMP_ENTRY_SIZE).ok_or_else(|| {
+            eyre::eyre!(
+                "binary dump block for {address} is too large: pair_count {pair_count} overflows \
+                 payload byte count"
+            )
+        })?;
+        let remaining = self.remaining_bytes();
+
+        ensure!(
+            payload_bytes <= remaining,
+            "truncated binary dump block for {address}: header declares {pair_count} storage pairs \
+             ({payload_bytes} bytes), but only {remaining} bytes remain"
+        );
+
+        Ok(())
+    }
+
+    fn record_header(&mut self) {
+        self.bytes_read += BLOCK_HEADER_SIZE;
+        self.blocks += 1;
+    }
+
+    fn record_entry(&mut self) {
+        self.bytes_read += DUMP_ENTRY_SIZE;
+        self.entries += 1;
+    }
+
+    fn blocks(&self) -> u64 {
+        self.blocks
+    }
+
+    fn entries(&self) -> u64 {
+        self.entries
+    }
+
+    fn bytes_read(&self) -> u64 {
+        self.bytes_read
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+
+    fn remaining_bytes(&self) -> u64 {
+        self.total_bytes.saturating_sub(self.bytes_read)
+    }
+
+    fn is_complete(&self) -> bool {
+        self.bytes_read == self.total_bytes
+    }
+
+    fn percent(&self) -> f64 {
+        if self.total_bytes == 0 {
+            100.0
+        } else {
+            (self.bytes_read as f64 / self.total_bytes as f64) * 100.0
+        }
+    }
+}
+
+impl fmt::Display for DumpProgress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}/{} ({:.2}%)",
+            self.bytes_read,
+            self.total_bytes,
+            self.percent()
+        )
+    }
 }
 
 struct CollectionChunk {
@@ -1288,23 +1429,33 @@ fn load_etl_collectors(
     Ok(())
 }
 
-/// Log collection progress every 5 seconds and on the final entry.
+/// Log collection progress every 5 seconds and when the full dump is collected.
 fn log_collection_progress(
     address: &alloy_primitives::Address,
     index: u64,
     total: u64,
-    start: Instant,
+    dump_progress: &DumpProgress,
+    block_start: Instant,
+    dump_start: Instant,
     last_log: &mut Instant,
 ) {
-    if last_log.elapsed() >= Duration::from_secs(5) || index + 1 == total {
+    if last_log.elapsed() >= Duration::from_secs(5) || dump_progress.is_complete() {
         let pct = ((index + 1) as f64 / total as f64) * 100.0;
-        let elapsed = start.elapsed();
-        let pairs_per_sec = (index + 1) as f64 / elapsed.as_secs_f64();
+        let block_elapsed = block_start.elapsed();
+        let elapsed = dump_start.elapsed();
+        let pairs_per_sec =
+            dump_progress.entries() as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
         info!(
             target: "tempo::cli",
             %address,
-            progress = format_args!("{}/{} ({pct:.0}%)", index + 1, total),
+            block_progress = format_args!("{}/{} ({pct:.0}%)", index + 1, total),
+            dump_progress = %dump_progress,
+            bytes_read = dump_progress.bytes_read(),
+            total_bytes = dump_progress.total_bytes(),
+            blocks = dump_progress.blocks(),
+            total_entries = dump_progress.entries(),
             elapsed = ?elapsed,
+            block_elapsed = ?block_elapsed,
             pairs_per_sec = pairs_per_sec as u64,
             "Collecting storage"
         );
@@ -1336,6 +1487,70 @@ mod tests {
         entry[..32].copy_from_slice(slot.as_slice());
         entry[32..].copy_from_slice(&value.to_be_bytes::<32>());
         entry
+    }
+
+    #[test]
+    fn dump_progress_is_global_across_chunked_token_blocks() -> eyre::Result<()> {
+        let pair_count = 262_144;
+        let block_count = 4;
+        let block_bytes = BLOCK_HEADER_SIZE + pair_count * DUMP_ENTRY_SIZE;
+        let total_bytes = block_count * block_bytes;
+        let mut progress = DumpProgress::new(total_bytes);
+
+        for block in 0..block_count {
+            assert!(progress.has_next_block()?);
+            progress.record_header();
+            progress.ensure_block_payload_available(address(block), pair_count)?;
+            for _ in 0..pair_count {
+                progress.record_entry();
+            }
+
+            assert_eq!(progress.blocks(), block + 1);
+            assert_eq!(progress.bytes_read(), (block + 1) * block_bytes);
+            assert_eq!(progress.entries(), (block + 1) * pair_count);
+
+            if block + 1 < block_count {
+                assert!(
+                    !progress.is_complete(),
+                    "a completed per-token block must not be reported as completed dump progress"
+                );
+                assert!(
+                    progress.percent() < 100.0,
+                    "global progress should remain below 100% until the final dump block"
+                );
+            }
+        }
+
+        assert!(progress.is_complete());
+        assert_eq!(progress.percent(), 100.0);
+        assert!(!progress.has_next_block()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn dump_progress_rejects_trailing_partial_header() {
+        let progress = DumpProgress::new(BLOCK_HEADER_SIZE - 1);
+        let err = progress.has_next_block().unwrap_err();
+
+        assert!(
+            err.to_string().contains("truncated binary dump"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn dump_progress_rejects_truncated_block_payload() {
+        let mut progress = DumpProgress::new(BLOCK_HEADER_SIZE + DUMP_ENTRY_SIZE - 1);
+        progress.record_header();
+        let err = progress
+            .ensure_block_payload_available(address(1), 1)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("truncated binary dump block"),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
