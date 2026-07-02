@@ -47,7 +47,7 @@ use reth_trie::{
     hashed_cursor::HashedCursorFactory,
     metrics::TrieRootMetrics,
     node_iter::{TrieElement, TrieNodeIter},
-    prefix_set::{TriePrefixSets, TriePrefixSetsMut},
+    prefix_set::{PrefixSetMut, TriePrefixSets, TriePrefixSetsMut},
     trie_cursor::TrieCursorFactory,
     updates::TrieUpdates,
     walker::TrieWalker,
@@ -755,6 +755,11 @@ fn full_trie_prefix_sets_from_hashed_accounts(
         prefix_sets
             .account_prefix_set
             .insert(Nibbles::unpack(hashed_address));
+        // The trie cache was cleared, so each storage root must be rebuilt from
+        // the complete hashed storage for that account instead of reusing nodes.
+        prefix_sets
+            .storage_prefix_sets
+            .insert(hashed_address, PrefixSetMut::all());
     }
     prefix_sets.freeze()
 }
@@ -1617,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn full_trie_prefix_sets_select_every_hashed_account_for_storage_precompute() {
+    fn full_trie_prefix_sets_select_every_hashed_account_for_full_storage_rebuild() {
         let account_a = B256::with_last_byte(0x11);
         let account_b = B256::with_last_byte(0x22);
         let account_c = B256::with_last_byte(0x33);
@@ -1633,13 +1638,38 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(collected, vec![account_a, account_b, account_c]);
-        assert!(prefix_sets.storage_prefix_sets.is_empty());
+        assert_eq!(prefix_sets.storage_prefix_sets.len(), 3);
+        for account in [account_a, account_b, account_c] {
+            let storage_prefix_set = prefix_sets
+                .storage_prefix_sets
+                .get(&account)
+                .expect("storage target should be present for every account");
+            assert!(
+                storage_prefix_set.all(),
+                "storage roots must be rebuilt from all hashed storage entries"
+            );
+        }
         assert_eq!(
             StorageRootTargets::count(
                 &prefix_sets.account_prefix_set,
                 &prefix_sets.storage_prefix_sets,
             ),
             3
+        );
+
+        let targets = StorageRootTargets::new(
+            prefix_sets
+                .account_prefix_set
+                .iter()
+                .map(|nibbles| B256::from_slice(&nibbles.pack())),
+            prefix_sets.storage_prefix_sets,
+        );
+        assert_eq!(targets.len(), 3);
+        assert!(
+            targets
+                .into_iter()
+                .all(|(_, storage_prefix_set)| storage_prefix_set.all()),
+            "StorageRootTargets must not fall back to empty storage prefix sets"
         );
     }
 }
