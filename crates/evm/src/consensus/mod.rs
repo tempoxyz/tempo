@@ -2,7 +2,9 @@
 
 mod error;
 
-use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
+use alloy_consensus::{
+    BlockHeader, Transaction, constants::EMPTY_ROOT_HASH, transaction::TxHashRef,
+};
 use alloy_evm::block::BlockExecutionResult;
 pub use error::TempoConsensusError;
 use reth_chainspec::EthChainSpec;
@@ -103,6 +105,28 @@ impl TempoConsensus {
                 actual: header.general_gas_limit,
             }
             .into());
+        }
+
+        let chain_spec = self.inner.chain_spec();
+        if chain_spec.is_proof_root_active_at_timestamp(header.timestamp()) {
+            match header.proof_root {
+                Some(actual)
+                    if chain_spec
+                        .provable_accounts_at_timestamp(header.timestamp())
+                        .is_empty()
+                        && actual != EMPTY_ROOT_HASH =>
+                {
+                    return Err(TempoConsensusError::ProofRootMismatch {
+                        expected: EMPTY_ROOT_HASH,
+                        actual,
+                    }
+                    .into());
+                }
+                Some(_) => {}
+                None => return Err(TempoConsensusError::MissingProofRoot.into()),
+            }
+        } else if header.proof_root.is_some() {
+            return Err(TempoConsensusError::ProofRootBeforeActivation.into());
         }
 
         Ok(())
@@ -279,6 +303,7 @@ mod tests {
         general_gas_limit: Option<u64>,
         base_fee: Option<u64>,
         gas_used: u64,
+        proof_root: Option<Option<B256>>,
     }
 
     impl TestHeaderBuilder {
@@ -333,6 +358,11 @@ mod tests {
             self
         }
 
+        fn proof_root(mut self, proof_root: Option<B256>) -> Self {
+            self.proof_root = Some(proof_root);
+            self
+        }
+
         fn build(self) -> TempoHeader {
             let shared_gas_limit = self.shared_gas_limit.unwrap_or(0);
             // Default to T1 fixed general gas limit
@@ -361,6 +391,7 @@ mod tests {
                 shared_gas_limit,
                 general_gas_limit,
                 timestamp_millis_part: self.timestamp_millis_part,
+                proof_root: self.proof_root.unwrap_or(None),
                 ..Default::default()
             }
         }
@@ -395,6 +426,39 @@ mod tests {
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
     }
 
+    fn chainspec_with_t8_at(t8_time: u64) -> Arc<TempoChainSpec> {
+        let genesis = serde_json::json!({
+            "config": {
+                "chainId": 99999,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "t0Time": 0,
+                "t1Time": 0,
+                "t4Time": 0,
+                "t8Time": t8_time
+            },
+            "alloc": {}
+        });
+        let genesis: Genesis = serde_json::from_value(genesis).unwrap();
+        Arc::new(TempoChainSpec::from_genesis(genesis))
+    }
+
     fn create_tx(chain_id: u64) -> TempoTxEnvelope {
         let tx = TxLegacy {
             chain_id: Some(chain_id),
@@ -406,6 +470,62 @@ mod tests {
             input: Default::default(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    #[test]
+    fn test_validate_header_proof_root_activation() {
+        let chainspec = chainspec_with_t8_at(10);
+        let consensus = TempoConsensus::new(chainspec.clone());
+        let gas_limit = 30_000_000;
+
+        let pre_activation = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(9)
+            .shared_gas_limit(chainspec.shared_gas_limit_at(9, gas_limit))
+            .build();
+        let pre_activation = SealedHeader::seal_slow(pre_activation);
+        consensus
+            .validate_header_with_timestamp_millis(&pre_activation, 20_000)
+            .expect("pre-activation proof_root omission is valid");
+
+        let early_root = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(9)
+            .shared_gas_limit(chainspec.shared_gas_limit_at(9, gas_limit))
+            .proof_root(Some(EMPTY_ROOT_HASH))
+            .build();
+        let early_root = SealedHeader::seal_slow(early_root);
+        assert!(
+            consensus
+                .validate_header_with_timestamp_millis(&early_root, 20_000)
+                .is_err(),
+            "pre-activation proof_root must be rejected"
+        );
+
+        let activation = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(10)
+            .shared_gas_limit(chainspec.shared_gas_limit_at(10, gas_limit))
+            .proof_root(Some(EMPTY_ROOT_HASH))
+            .build();
+        let activation = SealedHeader::seal_slow(activation);
+        consensus
+            .validate_header_with_timestamp_millis(&activation, 20_000)
+            .expect("activation proof_root must match the empty trie root");
+
+        let missing = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(10)
+            .shared_gas_limit(chainspec.shared_gas_limit_at(10, gas_limit))
+            .proof_root(None)
+            .build();
+        let missing = SealedHeader::seal_slow(missing);
+        assert!(
+            consensus
+                .validate_header_with_timestamp_millis(&missing, 20_000)
+                .is_err(),
+            "post-activation proof_root must be required"
+        );
     }
 
     #[test]

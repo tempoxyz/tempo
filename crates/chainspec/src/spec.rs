@@ -21,11 +21,20 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
+use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS};
 use tempo_primitives::TempoHeader;
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
+
+/// Initial accounts committed to by the Provable Contract Trie.
+///
+/// TIP-1082 initial account state imports require the migration build, which is out of scope here.
+/// The whitelist is active at the proof-root fork; account leaves are inserted only when migration
+/// data or post-execution updates provide account state.
+pub const INITIAL_PROVABLE_ACCOUNTS: &[Address] =
+    &[ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS];
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -197,6 +206,20 @@ impl TempoChainSpec {
         self.default_follow_url
     }
 
+    /// Returns true if TIP-1082 proof roots are active at `timestamp`.
+    pub fn is_proof_root_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_hardfork_at(timestamp).is_proof_root_active()
+    }
+
+    /// Returns the active TIP-1082 provable-account whitelist at the timestamp.
+    pub fn provable_accounts_at_timestamp(&self, timestamp: u64) -> &[Address] {
+        if self.is_proof_root_active_at_timestamp(timestamp) {
+            INITIAL_PROVABLE_ACCOUNTS
+        } else {
+            &[]
+        }
+    }
+
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
@@ -218,6 +241,7 @@ impl TempoChainSpec {
             shared_gas_limit: 0,
             consensus_context: None,
             inner,
+            proof_root: None,
         });
 
         // TODO(hamdi): Dev networks are allowed to have a non-dkg outcome in extra data. Update such
@@ -266,6 +290,7 @@ impl From<ChainSpec> for TempoChainSpec {
             shared_gas_limit: 0,
             consensus_context: None,
             inner,
+            proof_root: None,
         });
 
         let network_identity =
@@ -404,6 +429,7 @@ mod tests {
         hardfork::{TempoHardfork, TempoHardforks},
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR},
     };
+    use alloy_genesis::Genesis;
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
     use reth_chainspec::EthChainSpec;
@@ -411,6 +437,7 @@ mod tests {
     use reth_chainspec::{ForkCondition, Hardforks};
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
+    use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS};
     use tempo_primitives::Header;
 
     #[test]
@@ -563,6 +590,52 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(0), latest);
         assert_eq!(chainspec.tempo_hardfork_at(1000), latest);
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
+    }
+
+    #[test]
+    fn provable_accounts_activate_at_t8() {
+        let genesis = serde_json::json!({
+            "config": {
+                "chainId": 99999,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "t0Time": 0,
+                "t8Time": 10
+            },
+            "alloc": {}
+        });
+        let genesis: Genesis = serde_json::from_value(genesis).unwrap();
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert_eq!(
+            super::INITIAL_PROVABLE_ACCOUNTS,
+            &[ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,]
+        );
+
+        assert!(!chainspec.is_proof_root_active_at_timestamp(9));
+        assert!(chainspec.provable_accounts_at_timestamp(9).is_empty());
+
+        assert!(chainspec.is_proof_root_active_at_timestamp(10));
+        assert_eq!(
+            chainspec.provable_accounts_at_timestamp(10),
+            super::INITIAL_PROVABLE_ACCOUNTS
+        );
     }
 
     fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> super::TempoHeader {

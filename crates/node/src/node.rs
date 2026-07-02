@@ -470,10 +470,13 @@ impl<Node> PayloadValidatorBuilder<Node> for TempoEngineValidatorBuilder
 where
     Node: FullNodeComponents<Types = TempoNode>,
 {
-    type Validator = TempoEngineValidator;
+    type Validator = TempoEngineValidator<<Node as FullNodeTypes>::Provider>;
 
-    async fn build(self, _ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
-        Ok(TempoEngineValidator::new())
+    async fn build(self, ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
+        Ok(TempoEngineValidator::new(
+            ctx.config.chain.clone(),
+            ctx.node.provider().clone(),
+        ))
     }
 }
 

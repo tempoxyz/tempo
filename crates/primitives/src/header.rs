@@ -24,7 +24,8 @@ pub struct TempoConsensusContext {
 /// Tempo block header.
 ///
 /// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
-/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+/// consensus_context?, proof_root?]`. The optional fields are trailing and omitted for pre-fork
+/// blocks.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -56,6 +57,13 @@ pub struct TempoHeader {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub consensus_context: Option<TempoConsensusContext>,
+
+    /// Root of the Provable Contract Trie. `None` before TIP-1082 activation.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub proof_root: Option<B256>,
 }
 
 impl TempoHeader {
@@ -272,6 +280,11 @@ mod tests {
                 parent_view: 1,
                 proposer: PublicKey::from_seed([0x01; 32]),
             }),
+            proof_root: None,
+        };
+        let header = TempoHeader {
+            proof_root: Some(B256::repeat_byte(0x42)),
+            ..header
         };
 
         let encoded = alloy_rlp::encode(&header);
@@ -285,10 +298,75 @@ mod tests {
             timestamp_millis_part: 0,
             inner: Header::default(),
             consensus_context: None,
+            proof_root: None,
         };
         let encoded = alloy_rlp::encode(&header_no_ctx);
         let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(header_no_ctx, decoded);
+    }
+
+    #[test]
+    fn header_rlp_roundtrip_with_proof_root_without_consensus_context() {
+        let header = TempoHeader {
+            general_gas_limit: 15_000_000,
+            shared_gas_limit: 5_000_000,
+            timestamp_millis_part: 123,
+            inner: Header {
+                number: 1,
+                timestamp: 100,
+                ..Default::default()
+            },
+            consensus_context: None,
+            proof_root: Some(B256::repeat_byte(0x42)),
+        };
+
+        let encoded = alloy_rlp::encode(&header);
+        let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(header, decoded);
+    }
+
+    #[test]
+    fn header_without_proof_root_keeps_legacy_rlp_and_hash() {
+        #[derive(alloy_rlp::RlpEncodable)]
+        #[rlp(trailing)]
+        struct LegacyTempoHeader {
+            general_gas_limit: u64,
+            shared_gas_limit: u64,
+            timestamp_millis_part: u64,
+            inner: Header,
+            consensus_context: Option<TempoConsensusContext>,
+        }
+
+        let consensus_context = Some(TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0x01; 32]),
+        });
+        let inner = Header {
+            number: 1,
+            timestamp: 100,
+            ..Default::default()
+        };
+        let header = TempoHeader {
+            general_gas_limit: 15_000_000,
+            shared_gas_limit: 5_000_000,
+            timestamp_millis_part: 123,
+            inner: inner.clone(),
+            consensus_context,
+            proof_root: None,
+        };
+        let legacy_header = LegacyTempoHeader {
+            general_gas_limit: header.general_gas_limit,
+            shared_gas_limit: header.shared_gas_limit,
+            timestamp_millis_part: header.timestamp_millis_part,
+            inner,
+            consensus_context,
+        };
+
+        let legacy_encoded = alloy_rlp::encode(&legacy_header);
+        assert_eq!(alloy_rlp::encode(&header), legacy_encoded);
+        assert_eq!(header.hash_slow(), keccak256(legacy_encoded));
     }
 
     #[test]

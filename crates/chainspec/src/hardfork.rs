@@ -274,6 +274,11 @@ impl TempoHardfork {
         Some(MAX_TX_GAS_LIMIT_OSAKA)
     }
 
+    /// Returns true if TIP-1082 proof roots are active for this hardfork.
+    pub const fn is_proof_root_active(&self) -> bool {
+        self.is_t8()
+    }
+
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
         if self.is_t2() {

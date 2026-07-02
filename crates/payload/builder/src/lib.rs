@@ -19,7 +19,9 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
-use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
+use alloy_consensus::{
+    BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt, constants::EMPTY_ROOT_HASH,
+};
 use alloy_eip7928::bal::Bal;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
@@ -50,7 +52,9 @@ use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention, state::EvmState,
 };
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_storage_api::{
+    HashedPostStateProvider, StateProvider, StateProviderFactory, StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -65,7 +69,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
+use tempo_evm::{
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm,
+    proof_trie::proof_root_from_state_provider,
+};
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
@@ -968,6 +975,13 @@ where
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
 
+        let proof_root = self.proof_root_for_payload_timestamp(
+            &finish_provider,
+            &parent_header,
+            &db.bundle_state,
+            evm_env.block_env.inner.timestamp.to::<u64>(),
+        )?;
+
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
                 evm_env,
@@ -983,6 +997,7 @@ where
             Some(transactions_root),
             Some(receipts_root),
             Some(receipts_bloom),
+            proof_root,
         )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
@@ -1159,6 +1174,27 @@ where
                 cached_reads,
             })
         }
+    }
+
+    fn proof_root_for_payload_timestamp(
+        &self,
+        state_provider: &impl StateProvider,
+        _parent_header: &TempoHeader,
+        bundle_state: &reth_revm::db::states::bundle_state::BundleState,
+        timestamp: u64,
+    ) -> Result<Option<B256>, BlockExecutionError> {
+        let chain_spec = self.evm_config.chain_spec();
+        if !chain_spec.is_proof_root_active_at_timestamp(timestamp) {
+            return Ok(None);
+        }
+
+        let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
+        if provable_accounts.is_empty() {
+            return Ok(Some(EMPTY_ROOT_HASH));
+        }
+        proof_root_from_state_provider(state_provider, bundle_state, provable_accounts)
+            .map(Some)
+            .map_err(BlockExecutionError::other)
     }
 
     #[expect(clippy::type_complexity)]
