@@ -12,7 +12,11 @@ use revm::{
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
+use tempo_precompiles::{
+    native_multisig::{NativeMultisig, NativeMultisigAuthError},
+    storage::StorageActions,
+    storage_credits::NonCreditableSlots,
+};
 use tempo_primitives::transaction::InitMultisig;
 
 /// The Tempo EVM context type.
@@ -60,18 +64,13 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Internal protocol fee hooks.
     pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
-    /// Block-scoped cache for native multisig account markers.
+    /// Block-scoped cache for native multisig account markers and validated configs.
     ///
-    /// The marker is stateful account metadata, not transaction signature metadata. It is cached on
-    /// the EVM so repeated transactions from the same accounts do not repeatedly read the native
-    /// multisig marker storage slot. The cache is cleared when the EVM moves to a new block.
-    pub(crate) native_multisig_account_cache: HashMap<Address, bool>,
-    /// Block-scoped cache for validated native multisig configs.
-    ///
-    /// Values are inserted only after the native multisig storage path has loaded and validated the
-    /// config. The cache is cleared when the EVM moves to a new block or when a transaction directly
-    /// touches the native multisig precompile, because config updates mutate account-scoped config.
-    pub(crate) native_multisig_config_cache: HashMap<Address, InitMultisig>,
+    /// Markers are cached so repeated transactions from the same accounts do not repeatedly read
+    /// the native multisig marker storage slot. Config values are inserted only after the native
+    /// multisig storage path has loaded and validated them. Configs are cleared when a transaction
+    /// directly touches the native multisig precompile because updates mutate account-scoped config.
+    pub(crate) native_multisig_cache: NativeMultisigCache,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -121,8 +120,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check,
             actions,
             non_creditable_slots,
-            native_multisig_account_cache,
-            native_multisig_config_cache,
+            native_multisig_cache,
             ..
         } = self;
 
@@ -137,8 +135,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
-            native_multisig_account_cache,
-            native_multisig_config_cache,
+            native_multisig_cache,
         }
     }
 
@@ -168,8 +165,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
-            native_multisig_account_cache: HashMap::new(),
-            native_multisig_config_cache: HashMap::new(),
+            native_multisig_cache: NativeMultisigCache::default(),
         }
     }
 
@@ -244,8 +240,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears block-scoped execution caches.
     pub fn clear_block_caches(&mut self) {
-        self.native_multisig_account_cache.clear();
-        self.native_multisig_config_cache.clear();
+        self.native_multisig_cache.clear();
     }
 }
 
@@ -335,6 +330,81 @@ where
         &mut Self::Inspector,
     ) {
         self.inner.all_mut_inspector()
+    }
+}
+
+/// Block-scoped native multisig lookup cache.
+///
+/// Account markers and validated configs are cached separately so config invalidation can clear
+/// only configs while retaining marker hits. This avoids repeatedly reading marker storage after a
+/// transaction touches the native multisig precompile, while also avoiding a full marker-cache scan
+/// when configs must be invalidated.
+///
+/// The whole cache is cleared when the EVM moves to a new block. Configs are cleared, while marker
+/// bits are retained, after transactions that call the native multisig precompile because config
+/// updates can mutate account-scoped configs but do not clear the multisig account marker.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NativeMultisigCache {
+    markers: HashMap<Address, bool>,
+    configs: HashMap<Address, InitMultisig>,
+}
+
+impl NativeMultisigCache {
+    /// Clears all cached markers and configs.
+    pub(crate) fn clear(&mut self) {
+        self.markers.clear();
+        self.configs.clear();
+    }
+
+    /// Clears cached configs while preserving cached account markers.
+    pub(crate) fn clear_configs(&mut self) {
+        self.configs.clear();
+    }
+
+    /// Inserts a validated native multisig config and marks the account as multisig.
+    pub(crate) fn insert_config(&mut self, account: Address, config: InitMultisig) {
+        self.markers.insert(account, true);
+        self.configs.insert(account, config);
+    }
+
+    /// Returns whether `account` is marked as a native multisig account, loading on cache miss.
+    pub(crate) fn is_multisig_account(
+        &mut self,
+        multisig: &NativeMultisig,
+        account: Address,
+    ) -> Result<bool, NativeMultisigAuthError> {
+        if let Some(is_multisig) = self.markers.get(&account) {
+            return Ok(*is_multisig);
+        }
+
+        let is_multisig = multisig.is_multisig_account(account)?;
+        self.markers.insert(account, is_multisig);
+        Ok(is_multisig)
+    }
+
+    /// Loads and caches the validated registered native multisig config for `account`.
+    pub(crate) fn load_registered_config(
+        &mut self,
+        multisig: &NativeMultisig,
+        account: Address,
+    ) -> Result<InitMultisig, NativeMultisigAuthError> {
+        if let Some(config) = self.configs.get(&account) {
+            return Ok(config.clone());
+        }
+
+        let config = multisig.load_registered_config(account)?;
+        self.insert_config(account, config.clone());
+        Ok(config)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_config(&self, account: &Address) -> Option<&InitMultisig> {
+        self.configs.get(account)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.markers.is_empty() && self.configs.is_empty()
     }
 }
 

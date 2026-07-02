@@ -23,9 +23,7 @@ pub use key_authorization::{
 pub use multisig::{
     InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
     MAX_MULTISIG_OWNERS, MULTISIG_SIGNATURE_DOMAIN, MultisigOwner, MultisigSignature,
-    SIGNATURE_TYPE_MULTISIG, derive_multisig_account, is_valid_multisig_account, multisig_digest,
-    validate_multisig_config, validate_multisig_signature_shape, verify_multisig_owner_signatures,
-    verify_trusted_multisig_owner_signatures,
+    SIGNATURE_TYPE_MULTISIG, is_valid_multisig_account, multisig_digest,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,

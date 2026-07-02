@@ -1,7 +1,9 @@
 //! Native multisig account precompile.
 
+pub mod auth;
 pub mod dispatch;
 
+pub use auth::NativeMultisigAuthError;
 pub use tempo_contracts::precompiles::INativeMultisig;
 use tempo_contracts::precompiles::{
     NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
@@ -92,6 +94,14 @@ impl NativeMultisig {
         Ok(header.threshold != 0 || header.owner_count != 0)
     }
 
+    pub fn get_multisig_config_id(&self, account: Address) -> Result<B256> {
+        if self.is_multisig_account(account)? {
+            Ok(account.into_word())
+        } else {
+            Ok(B256::ZERO)
+        }
+    }
+
     pub fn get_multisig_config(&self, account: Address) -> Result<INativeMultisig::MultisigConfig> {
         if !self.is_multisig_account(account)? {
             return Ok(INativeMultisig::MultisigConfig {
@@ -109,8 +119,19 @@ impl NativeMultisig {
         stored_config_to_init(stored)
     }
 
+    pub fn validate_config_id(&self, account: Address, config_id: B256) -> Result<()> {
+        if config_id == B256::ZERO
+            || config_id[..12].iter().any(|byte| *byte != 0)
+            || Address::from_word(config_id) != account
+            || self.get_multisig_config_id(account)? != config_id
+        {
+            return Err(NativeMultisigError::invalid_config().into());
+        }
+        Ok(())
+    }
+
     pub fn store_initial_config(&mut self, account: Address, config: &InitMultisig) -> Result<()> {
-        if !is_valid_multisig_account(account) {
+        if !is_valid_multisig_account(account, self.storage.spec()) {
             return Err(NativeMultisigError::invalid_account().into());
         }
         if self.is_multisig_account(account)? {

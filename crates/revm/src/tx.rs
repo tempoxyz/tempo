@@ -167,6 +167,12 @@ impl TempoTxEnv {
             )))
         }
     }
+
+    /// Returns true if any top-level call targets `address`.
+    pub fn targets_address(&self, address: Address) -> bool {
+        self.calls()
+            .any(|(kind, _)| matches!(kind, TxKind::Call(target) if *target == address))
+    }
 }
 
 impl From<TxEnv> for TempoTxEnv {
