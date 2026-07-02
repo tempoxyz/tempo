@@ -628,7 +628,6 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
-        let mut action_replay_state = StorageActionReplayState::default();
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -786,7 +785,7 @@ where
                     bal_task_handle.is_some(),
                 )
             } else {
-                action_replay_state.invalidate_expiring_nonce_cache();
+                executor.invalidate_expiring_nonce_cache();
                 executor
                     .execute_transaction_with_result_closure(
                         tx.transaction.executable(),
