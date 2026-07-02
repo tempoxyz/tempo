@@ -8,6 +8,10 @@ pub mod receive_policy;
 #[doc(inline)]
 pub use ext::{SponsoredProviderBuilder, TempoProviderBuilderExt, TempoProviderExt};
 #[doc(inline)]
-pub use keychain::{CallScopeBuilder, KeyRestrictions, KeychainBuildError};
+pub use keychain::{
+    AccessKeyPolicyBuilder, AccessKeyPolicyTier, CallScopeBuilder, KeyRestrictions,
+    KeychainBuildError, periodic_tip20_transfer_policy, tip20_transfer_policy,
+    tip20_transfer_policy_tiers,
+};
 #[doc(inline)]
 pub use receive_policy::BlockedTransfer;

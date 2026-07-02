@@ -36,6 +36,7 @@
 //! - Keychain revocation TOCTOU DoS.
 //! - Expiring nonce replay protection.
 //! - Keychain spending limit TOCTOU DoS.
+//! - Multisig access-key treasury policies.
 
 use crate::utils::{ForkSchedule, run_schedule_cases};
 use test_case::test_case;
@@ -47,6 +48,7 @@ pub(crate) mod types;
 use types::TestEnv;
 
 mod local;
+mod multisig_access_keys;
 mod rpc;
 
 /// Run all matrix tests and scenario runners against a single environment.

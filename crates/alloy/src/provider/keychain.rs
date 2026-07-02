@@ -125,6 +125,208 @@ impl KeyRestrictions {
     }
 }
 
+/// Builder for access-key policy recipes.
+///
+/// This wraps [`KeyRestrictions`] with higher-level helpers for the common pattern of
+/// combining per-token spending limits with scoped TIP-20 calls.
+#[derive(Clone, Debug, Default)]
+pub struct AccessKeyPolicyBuilder {
+    restrictions: KeyRestrictions,
+    limits: Vec<TokenLimit>,
+    scopes: Vec<CallScope>,
+    enforce_limits: bool,
+    scoped_calls: bool,
+}
+
+/// A policy tier for authorizing an access key with its own spending cap.
+///
+/// `key_id` can be the address of a derived native multisig account. For example,
+/// one root account can authorize:
+/// - a 2-of-N multisig key with a 1,000 USD token limit
+/// - a 5-of-N multisig key with a 10,000 USD token limit
+///
+/// The root account remains the account that owns funds and grants access keys. The multisig
+/// accounts are the authorized key IDs, each with its own policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessKeyPolicyTier {
+    /// Access-key identifier to authorize, such as a derived multisig account address.
+    pub key_id: Address,
+    /// Restrictions to apply to this access key.
+    pub restrictions: KeyRestrictions,
+}
+
+impl AccessKeyPolicyBuilder {
+    /// Create an unrestricted policy builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the access-key expiry timestamp.
+    pub fn expires_at(mut self, expiry: u64) -> Self {
+        self.restrictions = self.restrictions.with_expiry(expiry);
+        self
+    }
+
+    /// Add a one-time token spending limit.
+    pub fn token_limit(mut self, token: Address, limit: U256) -> Self {
+        self.enforce_limits = true;
+        self.limits.push(TokenLimit {
+            token,
+            limit,
+            period: 0,
+        });
+        self
+    }
+
+    /// Add a periodic token spending limit that resets every `period` seconds.
+    pub fn periodic_token_limit(mut self, token: Address, limit: U256, period: u64) -> Self {
+        self.enforce_limits = true;
+        self.limits.push(TokenLimit {
+            token,
+            limit,
+            period,
+        });
+        self
+    }
+
+    /// Deny all token spending.
+    pub fn deny_spending(mut self) -> Self {
+        self.enforce_limits = true;
+        self.limits.clear();
+        self
+    }
+
+    /// Allow TIP-20 transfers on `token`, optionally restricted to `recipients`.
+    pub fn allow_tip20_transfers(mut self, token: Address, recipients: Vec<Address>) -> Self {
+        self.scoped_calls = true;
+        self.scopes
+            .push(CallScopeBuilder::new(token).transfer(recipients).build());
+        self
+    }
+
+    /// Allow TIP-20 transfers-with-memo on `token`, optionally restricted to `recipients`.
+    pub fn allow_tip20_transfers_with_memo(
+        mut self,
+        token: Address,
+        recipients: Vec<Address>,
+    ) -> Self {
+        self.scoped_calls = true;
+        self.scopes.push(
+            CallScopeBuilder::new(token)
+                .transfer_with_memo(recipients)
+                .build(),
+        );
+        self
+    }
+
+    /// Allow TIP-20 approvals on `token`, optionally restricted to `spenders`.
+    pub fn allow_tip20_approvals(mut self, token: Address, spenders: Vec<Address>) -> Self {
+        self.scoped_calls = true;
+        self.scopes
+            .push(CallScopeBuilder::new(token).approve(spenders).build());
+        self
+    }
+
+    /// Allow any call to `target`.
+    pub fn allow_contract(mut self, target: Address) -> Self {
+        self.scoped_calls = true;
+        self.scopes.push(CallScopeBuilder::new(target).build());
+        self
+    }
+
+    /// Deny all calls.
+    pub fn deny_calls(mut self) -> Self {
+        self.scoped_calls = true;
+        self.scopes.clear();
+        self
+    }
+
+    /// Consume the builder and produce [`KeyRestrictions`].
+    pub fn build(mut self) -> KeyRestrictions {
+        if self.enforce_limits {
+            self.restrictions = self.restrictions.with_limits(self.limits);
+        }
+        if self.scoped_calls {
+            self.restrictions = self.restrictions.with_allowed_calls(self.scopes);
+        }
+        self.restrictions
+    }
+}
+
+/// Build a one-time TIP-20 transfer policy for an access key.
+///
+/// This is the Alloy recipe for treasury-style access keys: authorize a key with a
+/// per-token spending cap, and scope it to TIP-20 transfers on that same token. The
+/// key itself can be any account address, including a multisig-derived key ID.
+pub fn tip20_transfer_policy(
+    token: Address,
+    spending_limit: U256,
+    recipients: Vec<Address>,
+) -> KeyRestrictions {
+    AccessKeyPolicyBuilder::new()
+        .token_limit(token, spending_limit)
+        .allow_tip20_transfers(token, recipients)
+        .build()
+}
+
+/// Build a periodic TIP-20 transfer policy for an access key.
+pub fn periodic_tip20_transfer_policy(
+    token: Address,
+    spending_limit: U256,
+    period: u64,
+    recipients: Vec<Address>,
+) -> KeyRestrictions {
+    AccessKeyPolicyBuilder::new()
+        .periodic_token_limit(token, spending_limit, period)
+        .allow_tip20_transfers(token, recipients)
+        .build()
+}
+
+/// Build tiered TIP-20 transfer policies keyed by access-key ID.
+///
+/// This captures the treasury recipe where each spending band is a separate access key,
+/// and each access key can be controlled by a different multisig quorum:
+///
+/// ```ignore
+/// use alloy_primitives::{address, uint};
+/// use tempo_alloy::provider::keychain::{
+///     authorize_key, tip20_transfer_policy_tiers,
+/// };
+/// use tempo_alloy::primitives::SignatureType;
+///
+/// let path_usd = address!("0x20c0000000000000000000000000000000000001");
+/// let two_of_three_multisig = derive_multisig_account(/* threshold: 2, owners: ... */);
+/// let five_of_seven_multisig = derive_multisig_account(/* threshold: 5, owners: ... */);
+///
+/// let tiers = tip20_transfer_policy_tiers(
+///     path_usd,
+///     vec![
+///         (two_of_three_multisig, uint!(1_000_U256), vec![]),
+///         (five_of_seven_multisig, uint!(10_000_U256), vec![]),
+///     ],
+/// );
+///
+/// // The root account authorizes each multisig account as an access key with its
+/// // corresponding policy. Native multisig key authorization requires the protocol/API
+/// // to expose a multisig key type; do not use a primitive key type for these key IDs.
+/// let calls = tiers
+///     .into_iter()
+///     .map(|tier| authorize_key(tier.key_id, SignatureType::Multisig, tier.restrictions))
+///     .collect::<Vec<_>>();
+/// ```
+pub fn tip20_transfer_policy_tiers(
+    token: Address,
+    tiers: Vec<(Address, U256, Vec<Address>)>,
+) -> Vec<AccessKeyPolicyTier> {
+    tiers
+        .into_iter()
+        .map(|(key_id, spending_limit, recipients)| AccessKeyPolicyTier {
+            key_id,
+            restrictions: tip20_transfer_policy(token, spending_limit, recipients),
+        })
+        .collect()
+}
+
 impl From<KeyRestrictions> for AbiKeyRestrictions {
     fn from(restrictions: KeyRestrictions) -> Self {
         let KeyRestrictions {
@@ -532,6 +734,114 @@ mod tests {
             ITIP20::approveCall::SELECTOR
         );
         assert!(scope.selector_rules[1].recipients.is_empty());
+    }
+
+    #[test]
+    fn test_access_key_policy_builder_combines_limits_and_tip20_scopes() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let recipient = address!("0x3333333333333333333333333333333333333333");
+
+        let restrictions = AccessKeyPolicyBuilder::new()
+            .expires_at(456)
+            .periodic_token_limit(token, uint!(1000_U256), 86_400)
+            .allow_tip20_transfers(token, vec![recipient])
+            .allow_tip20_approvals(token, vec![])
+            .build();
+
+        assert_eq!(restrictions.expiry(), Some(456));
+        assert_eq!(
+            restrictions.limits(),
+            Some(
+                &[TokenLimit {
+                    token,
+                    limit: uint!(1000_U256),
+                    period: 86_400,
+                }][..]
+            )
+        );
+
+        let scopes = restrictions.allowed_calls().expect("scoped calls");
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].target, token);
+        assert_eq!(
+            scopes[0].selector_rules[0].selector,
+            ITIP20::transferCall::SELECTOR
+        );
+        assert_eq!(scopes[0].selector_rules[0].recipients, vec![recipient]);
+        assert_eq!(
+            scopes[1].selector_rules[0].selector,
+            ITIP20::approveCall::SELECTOR
+        );
+        assert!(scopes[1].selector_rules[0].recipients.is_empty());
+    }
+
+    #[test]
+    fn test_tip20_transfer_policy_encodes_authorize_key_recipe() {
+        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let recipient = address!("0x3333333333333333333333333333333333333333");
+
+        let call = authorize_key(
+            key_id,
+            SignatureType::Secp256k1,
+            tip20_transfer_policy(token, uint!(1000_U256), vec![recipient]),
+        );
+
+        let decoded = authorizeKeyCall::abi_decode(&call.input).expect("decode authorizeKey");
+        assert_eq!(decoded.keyId, key_id);
+        assert!(decoded.config.enforceLimits);
+        assert_eq!(decoded.config.limits.len(), 1);
+        assert_eq!(decoded.config.limits[0].token, token);
+        assert_eq!(decoded.config.limits[0].amount, uint!(1000_U256));
+        assert_eq!(decoded.config.limits[0].period, 0);
+        assert!(!decoded.config.allowAnyCalls);
+        assert_eq!(decoded.config.allowedCalls.len(), 1);
+        assert_eq!(decoded.config.allowedCalls[0].target, token);
+        assert_eq!(
+            decoded.config.allowedCalls[0].selectorRules[0].selector,
+            ITIP20::transferCall::SELECTOR
+        );
+        assert_eq!(
+            decoded.config.allowedCalls[0].selectorRules[0].recipients,
+            vec![recipient]
+        );
+    }
+
+    #[test]
+    fn test_tip20_transfer_policy_tiers_map_multisig_key_ids_to_spending_caps() {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let two_of_three_multisig = address!("0x2222222222222222222222222222222222222222");
+        let five_of_seven_multisig = address!("0x5555555555555555555555555555555555555555");
+
+        let tiers = tip20_transfer_policy_tiers(
+            token,
+            vec![
+                (two_of_three_multisig, uint!(1_000_U256), vec![]),
+                (five_of_seven_multisig, uint!(10_000_U256), vec![]),
+            ],
+        );
+
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].key_id, two_of_three_multisig);
+        assert_eq!(tiers[1].key_id, five_of_seven_multisig);
+
+        let lower_limits = tiers[0].restrictions.limits().expect("lower limit");
+        assert_eq!(lower_limits[0].token, token);
+        assert_eq!(lower_limits[0].limit, uint!(1_000_U256));
+
+        let higher_limits = tiers[1].restrictions.limits().expect("higher limit");
+        assert_eq!(higher_limits[0].token, token);
+        assert_eq!(higher_limits[0].limit, uint!(10_000_U256));
+
+        for tier in tiers {
+            let scopes = tier.restrictions.allowed_calls().expect("transfer scope");
+            assert_eq!(scopes.len(), 1);
+            assert_eq!(scopes[0].target, token);
+            assert_eq!(
+                scopes[0].selector_rules[0].selector,
+                ITIP20::transferCall::SELECTOR
+            );
+        }
     }
 
     #[test]
