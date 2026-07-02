@@ -140,16 +140,14 @@ pub struct AccessKeyPolicyBuilder {
 
 /// A policy tier for authorizing an access key with its own spending cap.
 ///
-/// `key_id` can be the address of a derived native multisig account. For example,
-/// one root account can authorize:
-/// - a 2-of-N multisig key with a 1,000 USD token limit
-/// - a 5-of-N multisig key with a 10,000 USD token limit
+/// For example, one shared treasury account can authorize:
+/// - an operations key with a 1,000 USD token limit
+/// - a finance key with a 10,000 USD token limit
 ///
-/// The root account remains the account that owns funds and grants access keys. The multisig
-/// accounts are the authorized key IDs, each with its own policy.
+/// The root account remains the account that owns funds and grants access keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessKeyPolicyTier {
-    /// Access-key identifier to authorize, such as a derived multisig account address.
+    /// Access-key identifier to authorize.
     pub key_id: Address,
     /// Restrictions to apply to this access key.
     pub restrictions: KeyRestrictions,
@@ -257,7 +255,7 @@ impl AccessKeyPolicyBuilder {
 ///
 /// This is the Alloy recipe for treasury-style access keys: authorize a key with a
 /// per-token spending cap, and scope it to TIP-20 transfers on that same token. The
-/// key itself can be any account address, including a multisig-derived key ID.
+/// key signs keychain transactions that spend from the account that authorized it.
 pub fn tip20_transfer_policy(
     token: Address,
     spending_limit: U256,
@@ -284,8 +282,10 @@ pub fn periodic_tip20_transfer_policy(
 
 /// Build tiered TIP-20 transfer policies keyed by access-key ID.
 ///
-/// This captures the treasury recipe where each spending band is a separate access key,
-/// and each access key can be controlled by a different multisig quorum:
+/// This captures the treasury recipe where each spending band is a separate access key
+/// spending from the same account. For native multisig accounts, the shared multisig signs
+/// the AccountKeychain authorization transaction, and the authorized access keys later
+/// spend from that shared multisig through `TempoSignature::Keychain`.
 ///
 /// ```ignore
 /// use alloy_primitives::{address, uint};
@@ -295,23 +295,21 @@ pub fn periodic_tip20_transfer_policy(
 /// use tempo_alloy::primitives::SignatureType;
 ///
 /// let path_usd = address!("0x20c0000000000000000000000000000000000001");
-/// let two_of_three_multisig = derive_multisig_account(/* threshold: 2, owners: ... */);
-/// let five_of_seven_multisig = derive_multisig_account(/* threshold: 5, owners: ... */);
+/// let ops_key = address!("0x1111111111111111111111111111111111111111");
+/// let finance_key = address!("0x2222222222222222222222222222222222222222");
 ///
 /// let tiers = tip20_transfer_policy_tiers(
 ///     path_usd,
 ///     vec![
-///         (two_of_three_multisig, uint!(1_000_U256), vec![]),
-///         (five_of_seven_multisig, uint!(10_000_U256), vec![]),
+///         (ops_key, uint!(1_000_U256), vec![]),
+///         (finance_key, uint!(10_000_U256), vec![]),
 ///     ],
 /// );
 ///
-/// // The root account authorizes each multisig account as an access key with its
-/// // corresponding policy. Native multisig key authorization requires the protocol/API
-/// // to expose a multisig key type; do not use a primitive key type for these key IDs.
+/// // The shared account authorizes each key with its corresponding policy.
 /// let calls = tiers
 ///     .into_iter()
-///     .map(|tier| authorize_key(tier.key_id, SignatureType::Multisig, tier.restrictions))
+///     .map(|tier| authorize_key(tier.key_id, SignatureType::Secp256k1, tier.restrictions))
 ///     .collect::<Vec<_>>();
 /// ```
 pub fn tip20_transfer_policy_tiers(
@@ -808,22 +806,22 @@ mod tests {
     }
 
     #[test]
-    fn test_tip20_transfer_policy_tiers_map_multisig_key_ids_to_spending_caps() {
+    fn test_tip20_transfer_policy_tiers_map_key_ids_to_spending_caps() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let two_of_three_multisig = address!("0x2222222222222222222222222222222222222222");
-        let five_of_seven_multisig = address!("0x5555555555555555555555555555555555555555");
+        let ops_key = address!("0x2222222222222222222222222222222222222222");
+        let finance_key = address!("0x5555555555555555555555555555555555555555");
 
         let tiers = tip20_transfer_policy_tiers(
             token,
             vec![
-                (two_of_three_multisig, uint!(1_000_U256), vec![]),
-                (five_of_seven_multisig, uint!(10_000_U256), vec![]),
+                (ops_key, uint!(1_000_U256), vec![]),
+                (finance_key, uint!(10_000_U256), vec![]),
             ],
         );
 
         assert_eq!(tiers.len(), 2);
-        assert_eq!(tiers[0].key_id, two_of_three_multisig);
-        assert_eq!(tiers[1].key_id, five_of_seven_multisig);
+        assert_eq!(tiers[0].key_id, ops_key);
+        assert_eq!(tiers[1].key_id, finance_key);
 
         let lower_limits = tiers[0].restrictions.limits().expect("lower limit");
         assert_eq!(lower_limits[0].token, token);
