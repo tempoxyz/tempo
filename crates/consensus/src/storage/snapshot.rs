@@ -65,6 +65,26 @@ where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync,
 {
+    prepare_with_partition_prefix(
+        context,
+        crate::PARTITION_PREFIX,
+        execution_provider,
+        archive_entries,
+    )
+    .await
+}
+
+/// Prepares consensus storage state for snapshot packaging using an explicit partition prefix.
+pub async fn prepare_with_partition_prefix<TContext, P>(
+    context: &TContext,
+    storage_partition_prefix: &str,
+    execution_provider: P,
+    archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
+) -> eyre::Result<State>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync,
+{
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let execution_finalized = execution_provider
         .finalized_block_num_hash()
@@ -74,11 +94,11 @@ where
     let execution_finalized_digest = Digest(execution_finalized.hash);
 
     let finalizations =
-        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache.clone())
+        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to open finalizations-by-height archive")?;
     let prunable =
-        init_prunable_finalized_blocks_archive(context, crate::PARTITION_PREFIX, page_cache)
+        init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
             .wrap_err("failed to open prunable finalized blocks archive")?;
 
@@ -126,6 +146,18 @@ fn partition_prefix(archive_name: &str) -> String {
 /// Materialize consensus archive entries into fresh storage archives.
 pub async fn write_archive<TContext>(
     context: &TContext,
+    entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
+) -> eyre::Result<()>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+{
+    write_archive_with_partition_prefix(context, crate::PARTITION_PREFIX, entries).await
+}
+
+/// Materialize consensus archive entries into fresh storage archives using an explicit partition prefix.
+pub async fn write_archive_with_partition_prefix<TContext>(
+    context: &TContext,
+    storage_partition_prefix: &str,
     mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
@@ -133,11 +165,11 @@ where
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let mut finalizations =
-        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache.clone())
+        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to open snapshot finalizations-by-height archive")?;
     let mut blocks =
-        init_prunable_finalized_blocks_archive(context, crate::PARTITION_PREFIX, page_cache)
+        init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
             .wrap_err("failed to open snapshot prunable finalized blocks archive")?;
 
