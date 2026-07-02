@@ -16,7 +16,7 @@ const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
 const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 = MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
-const DEFAULT_MAX_PENDING_POOL_IMPORTS: usize = 50_000;
+const DEFAULT_MAX_PENDING_POOL_IMPORTS: usize = 100_000;
 
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, clap::Args)]
@@ -299,6 +299,6 @@ mod tests {
 
     #[test]
     fn network_defaults_raise_pending_import_limit() {
-        assert_eq!(network_defaults().max_pending_pool_imports, 50_000);
+        assert_eq!(network_defaults().max_pending_pool_imports, 100_000);
     }
 }
