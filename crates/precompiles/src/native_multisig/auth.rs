@@ -10,6 +10,8 @@ use crate::error::TempoPrecompileError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NativeMultisigAuthError {
     #[error("{0}")]
+    InvalidTransaction(String),
+    #[error("{0}")]
     ValidationFailed(String),
     #[error("Fatal precompile error: {0:?}")]
     Fatal(String),
@@ -25,6 +27,10 @@ impl From<TempoPrecompileError> for NativeMultisigAuthError {
 }
 
 impl NativeMultisigAuthError {
+    fn invalid_transaction(reason: impl Into<String>) -> Self {
+        Self::InvalidTransaction(reason.into())
+    }
+
     fn validation_failed(reason: impl Into<String>) -> Self {
         Self::ValidationFailed(reason.into())
     }
@@ -60,7 +66,7 @@ impl NativeMultisig {
     ) -> Result<u8, NativeMultisigAuthError> {
         signature
             .validate_shape()
-            .map_err(NativeMultisigAuthError::validation_failed)?;
+            .map_err(NativeMultisigAuthError::invalid_transaction)?;
         config
             .validate()
             .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))?;
@@ -70,7 +76,7 @@ impl NativeMultisig {
 
         for signature_bytes in signature.signatures() {
             let owner_approval = TempoSignature::from_bytes(signature_bytes).map_err(|reason| {
-                NativeMultisigAuthError::validation_failed(format!(
+                NativeMultisigAuthError::invalid_transaction(format!(
                     "invalid multisig owner signature: {reason}"
                 ))
             })?;
@@ -78,14 +84,14 @@ impl NativeMultisig {
             let (owner, nested_signature) = match owner_approval {
                 TempoSignature::Primitive(primitive) => {
                     let owner = primitive.recover_signer(&digest).map_err(|_| {
-                        NativeMultisigAuthError::validation_failed(
+                        NativeMultisigAuthError::invalid_transaction(
                             "invalid multisig owner signature",
                         )
                     })?;
                     (owner, None)
                 }
                 TempoSignature::Keychain(_) => {
-                    return Err(NativeMultisigAuthError::validation_failed(
+                    return Err(NativeMultisigAuthError::invalid_transaction(
                         "keychain signatures cannot authorize native multisig owners",
                     ));
                 }
@@ -93,7 +99,7 @@ impl NativeMultisig {
                     nested_signature
                         .validate_registered_shape()
                         .map_err(|reason| {
-                            NativeMultisigAuthError::validation_failed(format!(
+                            NativeMultisigAuthError::invalid_transaction(format!(
                                 "invalid nested multisig owner signature: {reason}"
                             ))
                         })?;
@@ -107,12 +113,12 @@ impl NativeMultisig {
 
             if let Some(nested_signature) = nested_signature {
                 if account_path.len() >= MAX_MULTISIG_NESTING_DEPTH {
-                    return Err(NativeMultisigAuthError::validation_failed(
+                    return Err(NativeMultisigAuthError::invalid_transaction(
                         "native multisig nesting depth exceeded",
                     ));
                 }
                 if account_path.contains(&owner) {
-                    return Err(NativeMultisigAuthError::validation_failed(
+                    return Err(NativeMultisigAuthError::invalid_transaction(
                         "native multisig owner cycle detected",
                     ));
                 }

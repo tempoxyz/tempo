@@ -2938,6 +2938,9 @@ fn map_native_multisig_error<DB: Database>(
         NativeMultisigAuthError::Fatal(err) => {
             EVMError::<DB::Error, TempoInvalidTransaction>::Custom(err)
         }
+        NativeMultisigAuthError::InvalidTransaction(reason) => {
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }.into()
+        }
         NativeMultisigAuthError::ValidationFailed(reason) => {
             TempoInvalidTransaction::NativeMultisigValidationFailed { reason }.into()
         }
@@ -3595,7 +3598,7 @@ mod tests {
             matches!(
                 result,
                 Err(EVMError::Transaction(
-                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                    TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
                 )) if reason.contains("nesting depth")
             ),
             "native multisig authorization paths deeper than the max depth should be rejected"
@@ -3647,11 +3650,49 @@ mod tests {
             matches!(
                 result,
                 Err(EVMError::Transaction(
-                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                    TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
                 )) if reason.contains("invalid nested multisig owner signature")
             ),
             "nested native multisig owner signatures must not carry bootstrap init"
         );
+    }
+
+    #[test]
+    fn test_t8_registered_native_multisig_rejects_malformed_owner_approval_as_bad_transaction() {
+        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
+        let account = config.account().unwrap();
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![Bytes::from_static(&[0xff, 0x00])],
+                None,
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+        });
+        store_native_multisig_account(&mut test, &config);
+
+        let result = test.validate_against_state_and_deduct_caller();
+        let Err(EVMError::Transaction(err)) = result else {
+            panic!("malformed owner approval should fail validation");
+        };
+        assert!(
+            matches!(
+                &err,
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+                    if reason.contains("invalid multisig owner signature")
+            ),
+            "malformed owner approval should be classified as invalid transaction, got {err:?}"
+        );
+        assert!(err.is_bad_transaction());
     }
 
     #[test]
@@ -3676,7 +3717,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(NativeMultisigAuthError::ValidationFailed(reason)) if reason.contains("too large")
+                Err(NativeMultisigAuthError::InvalidTransaction(reason)) if reason.contains("too large")
             ),
             "oversized owner approval should be rejected before owner approval decode"
         );
