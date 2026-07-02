@@ -22,10 +22,7 @@ use crate::{
     },
 };
 use alloy::primitives::{Address, B256, FixedBytes, U256};
-use std::{
-    cell::Cell,
-    ops::{Index, IndexMut},
-};
+use std::ops::{Index, IndexMut};
 use tempo_precompiles_macros::Storable;
 
 /// Physical storage layout version for an order record.
@@ -154,9 +151,6 @@ pub(crate) struct OrderHandler {
     order_id: u128,
     /// Contract address whose storage contains the order mapping.
     address: Address,
-    /// Cached physical layout version for this record.
-    /// NOTE: Storage checkpoint rollbacks do not reset it. Clear manually if execution continues.
-    pub(crate) version: Cell<Option<OrderVersion>>,
 }
 
 impl OrderHandler {
@@ -166,7 +160,6 @@ impl OrderHandler {
             base_slot,
             order_id,
             address,
-            version: Cell::new(None),
         }
     }
 
@@ -218,24 +211,12 @@ impl OrderHandler {
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
     }
 
-    /// Clears the cached physical storage version so the next access re-detects it from storage.
-    pub(crate) fn clear_version_cache(&self) {
-        self.version.set(None);
-    }
-
-    /// Returns the cached physical storage version, detecting and caching it if needed.
+    /// Returns the physical storage version.
     pub(crate) fn version(&self) -> StorageResult<OrderVersion> {
         if !StorageCtx.spec().is_t8() {
             return Ok(OrderVersion::Legacy);
         }
-
-        if let Some(version) = self.version.get() {
-            return Ok(version);
-        }
-
-        let version = OrderVersion::try_from(self.load(self.base_slot)?)?;
-        self.version.set(Some(version));
-        Ok(version)
+        OrderVersion::try_from(self.load(self.base_slot)?)
     }
 }
 
@@ -264,36 +245,19 @@ impl Handler<Order> for OrderHandler {
         debug_assert_eq!(value.order_id, self.order_id);
 
         if !StorageCtx.spec().is_t8() {
-            value.store(self, self.base_slot, LayoutCtx::FULL)?;
-            self.version.set(Some(OrderVersion::Legacy));
-            return Ok(());
+            return value.store(self, self.base_slot, LayoutCtx::FULL);
         }
 
-        match self.version.get() {
-            Some(OrderVersion::Legacy) => {
+        match self.version()? {
+            OrderVersion::Legacy => {
                 V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
                 for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
                     self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
                 }
+                Ok(())
             }
-            Some(OrderVersion::V1) => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-            }
-            None => {
-                let current_slot0 = self.load(self.base_slot)?;
-                let current_version = OrderVersion::try_from(current_slot0)?;
-
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-                if matches!(current_version, OrderVersion::Legacy) && !current_slot0.is_zero() {
-                    for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
-                        self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-                    }
-                }
-            }
+            OrderVersion::V1 => V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL),
         }
-
-        self.version.set(Some(OrderVersion::V1));
-        Ok(())
     }
 
     /// Deletes the physical slots for the cached or detected order layout.
@@ -307,7 +271,6 @@ impl Handler<Order> for OrderHandler {
             self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
         }
 
-        self.version.set(None);
         Ok(())
     }
 
@@ -542,32 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_version_field_write_skips_version_sload() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-
-            let id = 42;
-            let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
-            exchange.orders[id].write(order)?;
-
-            let uncached_exchange = StablecoinDEX::new();
-            StorageCtx.reset_counters();
-            uncached_exchange.orders[id].remaining()?.write(900)?;
-            assert_eq!(StorageCtx.counter_sload(), 2);
-
-            StorageCtx.reset_counters();
-            exchange.orders[id].remaining()?.write(800)?;
-            assert_eq!(StorageCtx.counter_sload(), 1);
-
-            let loaded = exchange.orders[id].read()?;
-            assert_eq!(loaded.remaining(), 800);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_t6_store_order_uses_legacy_layout() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
@@ -732,39 +669,7 @@ mod tests {
 
     fn store_legacy_order(handler: &OrderHandler, order: Order) -> StorageResult<()> {
         let mut storage = handler.clone();
-        LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)?;
-        handler.version.set(Some(OrderVersion::Legacy));
-        Ok(())
-    }
-
-    #[test]
-    fn test_clear_version_cache_redetects_after_checkpoint_revert() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-
-            let id = 42;
-            let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
-            store_legacy_order(&exchange.orders[id], order)?;
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
-
-            {
-                let _checkpoint = StorageCtx.checkpoint();
-                exchange.orders[id].write(order)?;
-                assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
-            }
-
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
-            exchange.orders[id].clear_version_cache();
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
-
-            exchange.orders[id].next()?.write(99)?;
-            let updated = exchange.orders[id].read()?;
-            assert_eq!(updated.next(), 99);
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
-
-            Ok(())
-        })
+        LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)
     }
 
     fn legacy_order_slot(order: Order, loc: packing::FieldLocation) -> StorageResult<U256> {
