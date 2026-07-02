@@ -899,16 +899,12 @@ struct SsmrBalReplayScheduler {
     next_commit_index: usize,
     worker_execute_elapsed: Duration,
     ordered_commit_elapsed: Duration,
-    projected_gas_used: u64,
-    projected_non_payment_gas_used: u64,
 }
 
 impl SsmrBalReplayScheduler {
     fn new(
         job_tx: Sender<SsmrBalReplayJob>,
         result_rx: Receiver<Result<SsmrBalReplayOutput, String>>,
-        projected_gas_used: u64,
-        projected_non_payment_gas_used: u64,
     ) -> Self {
         Self {
             job_tx: Some(job_tx),
@@ -918,8 +914,6 @@ impl SsmrBalReplayScheduler {
             next_commit_index: 0,
             worker_execute_elapsed: Duration::ZERO,
             ordered_commit_elapsed: Duration::ZERO,
-            projected_gas_used,
-            projected_non_payment_gas_used,
         }
     }
 
@@ -962,6 +956,9 @@ impl SsmrBalReplayScheduler {
         pool_transactions_yielded: &mut u64,
         pool_transactions_included: &mut u64,
         replay_transactions: &mut u64,
+        tx_gas_limit_cap: u64,
+        non_shared_gas_limit: u64,
+        general_gas_limit: u64,
     ) -> Result<usize, PayloadBuilderError>
     where
         E: BlockExecutor<
@@ -984,6 +981,9 @@ impl SsmrBalReplayScheduler {
                 pool_transactions_yielded,
                 pool_transactions_included,
                 replay_transactions,
+                tx_gas_limit_cap,
+                non_shared_gas_limit,
+                general_gas_limit,
             )?;
 
             if wait_for_all && self.has_pending_outputs() {
@@ -1053,6 +1053,9 @@ impl SsmrBalReplayScheduler {
         pool_transactions_yielded: &mut u64,
         pool_transactions_included: &mut u64,
         replay_transactions: &mut u64,
+        tx_gas_limit_cap: u64,
+        non_shared_gas_limit: u64,
+        general_gas_limit: u64,
     ) -> Result<usize, PayloadBuilderError>
     where
         E: BlockExecutor<
@@ -1065,6 +1068,24 @@ impl SsmrBalReplayScheduler {
         while let Some(output) = self.outputs.remove(&self.next_commit_index) {
             debug_assert_eq!(output.global_index, self.next_commit_index);
             let ordered_commit_start = Instant::now();
+            let max_regular_gas_used =
+                core::cmp::min(output.tx.transaction.inner().gas_limit(), tx_gas_limit_cap);
+            if *cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
+                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                        transaction_gas_limit: output.tx.transaction.inner().gas_limit(),
+                        block_available_gas: non_shared_gas_limit - *cumulative_gas_used,
+                    },
+                )));
+            }
+            if !output.is_payment
+                && *non_payment_gas_used + max_regular_gas_used > general_gas_limit
+            {
+                return Err(PayloadBuilderError::other(
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                ));
+            }
+
             *cumulative_gas_used += output.result.block_gas_used();
             *cumulative_state_gas_used += output.result.state_gas_used();
             if output.is_payment {
@@ -1189,14 +1210,8 @@ fn prepare_ssmr_bal_replay_batches(
     bal_history: &mut SsmrReplayBalHistory,
     starting_output_index: usize,
     worker_limit: usize,
-    is_t5: bool,
-    tx_gas_limit_cap: u64,
-    non_shared_gas_limit: u64,
-    general_gas_limit: u64,
     is_osaka: bool,
     estimated_rlp_block_size: &mut usize,
-    projected_gas_used: &mut u64,
-    projected_non_payment_gas_used: &mut u64,
 ) -> Result<SsmrPreparedBalReplay, PayloadBuilderError> {
     let bal_decode_start = Instant::now();
     let mut shard_jobs = Vec::new();
@@ -1221,34 +1236,6 @@ fn prepare_ssmr_bal_replay_batches(
         let output_index = starting_output_index + tx_count;
         let mut transactions = Vec::with_capacity(batch.transactions.len());
         for tx in batch.transactions {
-            let max_regular_gas_used =
-                core::cmp::min(tx.transaction.inner().gas_limit(), tx_gas_limit_cap);
-            if *projected_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
-                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                        transaction_gas_limit: tx.transaction.inner().gas_limit(),
-                        block_available_gas: non_shared_gas_limit - *projected_gas_used,
-                    },
-                )));
-            }
-
-            let is_payment = if is_t5 {
-                tx.transaction.inner().is_payment_v2()
-            } else {
-                tx.transaction.inner().is_payment_v1()
-            };
-            if !is_payment
-                && *projected_non_payment_gas_used + max_regular_gas_used > general_gas_limit
-            {
-                return Err(PayloadBuilderError::other(
-                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                ));
-            }
-            if !is_payment {
-                *projected_non_payment_gas_used += max_regular_gas_used;
-            }
-            *projected_gas_used += max_regular_gas_used;
-
             let estimated_block_size_with_tx = *estimated_rlp_block_size + tx.tx_rlp_length;
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -2055,12 +2042,7 @@ where
                         });
                     }
                     drop(result_tx);
-                    let mut bal_replay = SsmrBalReplayScheduler::new(
-                        job_tx,
-                        result_rx,
-                        cumulative_gas_used,
-                        non_payment_gas_used,
-                    );
+                    let mut bal_replay = SsmrBalReplayScheduler::new(job_tx, result_rx);
 
                     let stop_reason = loop {
                         if cancel.is_cancelled() {
@@ -2082,6 +2064,9 @@ where
                             &mut pool_transactions_yielded,
                             &mut pool_transactions_included,
                             &mut replay_progress.transactions,
+                            replay_tx_gas_limit_cap,
+                            non_shared_gas_limit,
+                            general_gas_limit,
                         )?;
 
                         replay_progress
@@ -2121,14 +2106,8 @@ where
                                     &mut replay_bal_history,
                                     bal_replay.next_output_index,
                                     worker_limit,
-                                    hardfork.is_t5(),
-                                    replay_tx_gas_limit_cap,
-                                    non_shared_gas_limit,
-                                    general_gas_limit,
                                     is_osaka,
                                     &mut estimated_rlp_block_size,
-                                    &mut bal_replay.projected_gas_used,
-                                    &mut bal_replay.projected_non_payment_gas_used,
                                 )?;
                                 let tx_count = prepared.tx_count;
                                 ssmr_replay_bal_decode_elapsed += prepared.bal_decode_elapsed;
@@ -2151,6 +2130,9 @@ where
                                     &mut pool_transactions_yielded,
                                     &mut pool_transactions_included,
                                     &mut replay_progress.transactions,
+                                    replay_tx_gas_limit_cap,
+                                    non_shared_gas_limit,
+                                    general_gas_limit,
                                 )?;
 
                                 ssmr_replay_decode_elapsed += batch.decode_elapsed;
@@ -2249,10 +2231,6 @@ where
                                         )
                                         .map_err(PayloadBuilderError::evm)?;
                                     ssmr_replay_execute_elapsed += execute_start.elapsed();
-                                    bal_replay.projected_gas_used = cumulative_gas_used;
-                                    bal_replay.projected_non_payment_gas_used =
-                                        non_payment_gas_used;
-
                                     pool_transactions_yielded += 1;
                                     pool_transactions_included += 1;
                                     replay_progress.transactions += 1;
@@ -2289,6 +2267,9 @@ where
                                 &mut pool_transactions_yielded,
                                 &mut pool_transactions_included,
                                 &mut replay_progress.transactions,
+                                replay_tx_gas_limit_cap,
+                                non_shared_gas_limit,
+                                general_gas_limit,
                             )?;
                             ssmr_replay_bal_worker_execute_elapsed =
                                 bal_replay.worker_execute_elapsed;
