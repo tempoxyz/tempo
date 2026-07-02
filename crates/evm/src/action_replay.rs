@@ -444,7 +444,10 @@ impl StorageActionReplayState {
         Ok(())
     }
 
-    /// Stores the value of a slot after validating the recorded pre-store value.
+    /// Stores the value of a slot after establishing its exact replay view.
+    ///
+    /// Uses [`Self::sload_exact`] to validate the recorded pre-store value against
+    /// the tx-local/cache view when available, then records the store.
     fn sstore_exact<DB: Database>(
         &mut self,
         db: &mut State<DB>,
@@ -511,7 +514,11 @@ impl StorageActionReplayState {
         })
     }
 
-    /// Returns the current value for a slot and validates that it matches the expected value.
+    /// Returns the current slot value for exact replay.
+    ///
+    /// If the tx has already touched the slot, validates that the current value matches `expected`.
+    /// On first touch, uses the EVM state cache when available and requires it to match `expected`.
+    /// When the slot is not cached, records `expected` as the current value.
     fn sload_exact<DB: Database>(
         &mut self,
         db: &mut State<DB>,
@@ -547,7 +554,11 @@ impl StorageActionReplayState {
         }
     }
 
-    /// Returns the current slot value when it is known, otherwise falls back to the recorded value.
+    /// Returns the current slot value for semantic replay.
+    ///
+    /// Like [`Self::sload_exact`], but returns the current value even when it does not match
+    /// `expected`, allowing semantic actions to rebase onto compatible prior writes.
+    /// Falls back to `expected` when the current value is not already known.
     fn sload_current_or_expected<DB: Database>(
         &mut self,
         db: &mut State<DB>,
