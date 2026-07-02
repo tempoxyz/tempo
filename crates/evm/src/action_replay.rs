@@ -13,6 +13,7 @@ use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
+    interpreter::instructions::utility::IntoU256,
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
@@ -20,8 +21,9 @@ use tempo_precompiles::{
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
+    tip20::TIP20Token,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{IntoAddress, TempoHaltReason, evm::TempoContext};
 
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
@@ -162,6 +164,43 @@ where
                         .encode_to_slot()
                         .map_err(|_| StorageActionReplayError::ActionConflict)?;
                     self.replay_state.sstore(address, key, value)?;
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    address,
+                    key,
+                    sload_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    let pool_slot = self.replay_state.sload_current_or_expected(
+                        db,
+                        address,
+                        key,
+                        sload_value,
+                    )?;
+                    let pool = Pool::decode_from_slot(pool_slot);
+                    if pool.has_enough_reserve_validator_token(amount_out) != has_enough_liquidity {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                }
+                StorageAction::FeeAmmQuoteTokenCheck(user_token, mid_token) => {
+                    let quote_token_slot = TIP20Token::from_address(user_token)
+                        .map_err(|_| StorageActionReplayError::ActionConflict)?
+                        .quote_token
+                        .slot();
+                    let quote_token = self
+                        .replay_state
+                        .sload_current_or_expected(
+                            db,
+                            user_token,
+                            quote_token_slot,
+                            mid_token.into_u256(),
+                        )?
+                        .into_address();
+
+                    if quote_token != mid_token {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
                 }
             }
         }

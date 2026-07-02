@@ -116,6 +116,11 @@ impl Pool {
 
         Ok(())
     }
+
+    /// Returns whether the pool has enough reserve validator token to cover the given amount.
+    pub fn has_enough_reserve_validator_token(&self, amount: U256) -> bool {
+        U256::from(self.reserve_validator_token) >= amount
+    }
 }
 
 impl PoolKey {
@@ -563,44 +568,77 @@ impl TipFeeManager {
             return Ok((Some(FeeRoute::SameToken), None, data));
         }
 
-        // Direct (single-hop) path — always checked.
-        let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
-        data.push((
-            (user_token, validator_token),
-            direct.reserve_validator_token,
-        ));
-        let amount_out = compute_amount_out(max_amount)?;
-        if amount_out <= U256::from(direct.reserve_validator_token) {
-            return Ok((Some(FeeRoute::Direct), None, data));
-        }
+        let actions = self.storage.actions();
 
-        // T5+: two-hop fallback through `userToken.quoteToken()`.
-        if !self.storage.spec().is_t5() {
-            return Ok((None, None, data));
-        }
+        actions.unrecorded(|| {
+            let amount_out = compute_amount_out(max_amount)?;
 
-        // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
-        let mid_token = TIP20Token::from_address(user_token)?.quote_token()?;
-        if mid_token.is_zero() || mid_token == validator_token {
-            return Ok((None, Some(mid_token), data));
-        }
+            let direct_pool_id = self.pool_id(user_token, validator_token);
+            // Direct (single-hop) path — always checked.
+            let direct = self.pools[direct_pool_id].read()?;
+            data.push((
+                (user_token, validator_token),
+                direct.reserve_validator_token,
+            ));
+            let has_enough_liquidity = direct.has_enough_reserve_validator_token(amount_out);
+            actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                self.address,
+                direct_pool_id.mapping_slot(self.pools.slot()),
+                direct.encode_to_slot()?,
+                amount_out,
+                has_enough_liquidity,
+            ));
+            if has_enough_liquidity {
+                return Ok((Some(FeeRoute::Direct), None, data));
+            }
 
-        // First leg: user_token -> intermediate.
-        let leg1 = self.pools[self.pool_id(user_token, mid_token)].read()?;
-        data.push(((user_token, mid_token), leg1.reserve_validator_token));
-        if amount_out > U256::from(leg1.reserve_validator_token) {
-            return Ok((None, Some(mid_token), data));
-        }
+            // T5+: two-hop fallback through `userToken.quoteToken()`.
+            if !self.storage.spec().is_t5() {
+                return Ok((None, None, data));
+            }
 
-        // Second leg: intermediate -> validator_token.
-        let amount_out2 = compute_amount_out(amount_out)?;
-        let leg2 = self.pools[self.pool_id(mid_token, validator_token)].read()?;
-        data.push(((mid_token, validator_token), leg2.reserve_validator_token));
-        if amount_out2 > U256::from(leg2.reserve_validator_token) {
-            return Ok((None, Some(mid_token), data));
-        }
+            // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
+            let mid_token = TIP20Token::from_address(user_token)?.quote_token()?;
+            actions.record_always(StorageAction::FeeAmmQuoteTokenCheck(user_token, mid_token));
+            if mid_token.is_zero() || mid_token == validator_token {
+                return Ok((None, Some(mid_token), data));
+            }
 
-        Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
+            // First leg: user_token -> intermediate.
+            let leg1_pool_id = self.pool_id(user_token, mid_token);
+            let leg1 = self.pools[leg1_pool_id].read()?;
+            data.push(((user_token, mid_token), leg1.reserve_validator_token));
+            let has_enough_liquidity = leg1.has_enough_reserve_validator_token(amount_out);
+            actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                self.address,
+                leg1_pool_id.mapping_slot(self.pools.slot()),
+                leg1.encode_to_slot()?,
+                amount_out,
+                has_enough_liquidity,
+            ));
+            if !has_enough_liquidity {
+                return Ok((None, Some(mid_token), data));
+            }
+
+            // Second leg: intermediate -> validator_token.
+            let amount_out2 = compute_amount_out(amount_out)?;
+            let leg2_pool_id = self.pool_id(mid_token, validator_token);
+            let leg2 = self.pools[leg2_pool_id].read()?;
+            data.push(((mid_token, validator_token), leg2.reserve_validator_token));
+            let has_enough_liquidity = leg2.has_enough_reserve_validator_token(amount_out2);
+            actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                self.address,
+                leg2_pool_id.mapping_slot(self.pools.slot()),
+                leg2.encode_to_slot()?,
+                amount_out2,
+                has_enough_liquidity,
+            ));
+            if !has_enough_liquidity {
+                return Ok((None, Some(mid_token), data));
+            }
+
+            Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
+        })
     }
 
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997

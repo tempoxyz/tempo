@@ -42,6 +42,19 @@ pub enum StorageAction {
     ///
     /// `amount_out` can be calculated using [`compute_amount_out`](crate::tip_fee_manager::amm::compute_amount_out).
     FeeAmmSwap(Address, U256, U256, U256),
+    /// Records a liquidity check for a FeeAMM pool.
+    ///
+    /// `address` - FeeAMM contract address.
+    /// `key` - Storage slot key.
+    /// `sload_value` - Packed pool slot value before the liquidity check.
+    /// `amount_out` - Amount of tokens to swap out.
+    /// `has_enough_liquidity` - Whether the pool has enough liquidity.
+    FeeAmmLiquidityCheck(Address, U256, U256, U256, bool),
+    /// Records the quote token check.
+    ///
+    /// `user_token` - The user's token address.
+    /// `quote_token` - The expected quote token address.
+    FeeAmmQuoteTokenCheck(Address, Address),
 }
 
 impl StorageAction {
@@ -52,7 +65,9 @@ impl StorageAction {
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..)
-            | Self::FeeAmmSwap(address, ..) => *address,
+            | Self::FeeAmmSwap(address, ..)
+            | Self::FeeAmmLiquidityCheck(address, ..)
+            | Self::FeeAmmQuoteTokenCheck(address, ..) => *address,
         }
     }
 }
