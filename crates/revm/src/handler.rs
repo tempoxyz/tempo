@@ -190,6 +190,19 @@ fn native_multisig_signature_verification_gas(
     }
 }
 
+fn keychain_inner_signature_verification_gas(
+    signature: &tempo_primitives::transaction::KeychainInnerSignature,
+) -> u64 {
+    match signature {
+        tempo_primitives::transaction::KeychainInnerSignature::Primitive(primitive) => {
+            primitive_signature_verification_gas(primitive)
+        }
+        tempo_primitives::transaction::KeychainInnerSignature::Multisig(multisig) => {
+            native_multisig_signature_verification_gas(multisig, true, 1)
+        }
+    }
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For Keychain signatures, adds key validation overhead to the inner signature cost
@@ -200,7 +213,8 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
             // Keychain = inner signature + key validation overhead (SLOAD + processing)
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+            keychain_inner_signature_verification_gas(&keychain_sig.signature)
+                + KEYCHAIN_VALIDATION_GAS
         }
         TempoSignature::Multisig(multisig_sig) => {
             native_multisig_signature_verification_gas(multisig_sig, true, 1)
@@ -1658,6 +1672,29 @@ where
                                 reason: format!("{e:?}"),
                             })?;
 
+                        if let tempo_primitives::transaction::KeychainInnerSignature::Multisig(
+                            multisig_signature,
+                        ) = &keychain_sig.signature
+                        {
+                            let multisig = NativeMultisig::new();
+                            let config = multisig_cache
+                                .load_registered_config(&multisig, access_key_addr)
+                                .map_err(map_native_multisig_error::<DB>)?;
+                            let signing_hash =
+                                tempo_primitives::transaction::KeychainSignature::signing_hash(
+                                    tempo_tx_env.signature_hash,
+                                    *user_address,
+                                );
+                            multisig
+                                .verify_authorization(
+                                    signing_hash,
+                                    multisig_signature,
+                                    &config,
+                                    |acc| multisig_cache.load_registered_config(&multisig, acc),
+                                )
+                                .map_err(map_native_multisig_error::<DB>)?;
+                        }
+
                         // T6 adds admin delegation: a keychain signer may authorize a different
                         // child key only if the acting transaction key is itself an active admin key.
                         if key_auth.is_some() && !key.is_admin {
@@ -1888,6 +1925,7 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Multisig => PrecompileSignatureType::Multisig,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)

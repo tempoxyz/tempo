@@ -16,8 +16,8 @@ use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, tip20::ITIP20::ITIP20Instance}
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        InitMultisig, MultisigOwner, MultisigSignature, PrimitiveSignature, TempoSignature,
-        multisig_digest,
+        InitMultisig, KeychainSignature, MultisigOwner, MultisigSignature, PrimitiveSignature,
+        TempoSignature, multisig_digest,
     },
 };
 
@@ -28,16 +28,21 @@ const ONE_TOKEN: u64 = 1_000_000;
 const LOW_LIMIT: u64 = 1_000 * ONE_TOKEN;
 const HIGH_LIMIT: u64 = 10_000 * ONE_TOKEN;
 const SHARED_MULTISIG_FUNDING: u64 = 100_000 * ONE_TOKEN;
+const ACCESS_KEY_MULTISIG_FUNDING: u64 = 10_000 * ONE_TOKEN;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Result<()> {
     let mut env = Localnet::new().await?;
 
-    let owner_signers = multisig_owner_signers();
-    let shared_config = multisig_config(B256::repeat_byte(0x51), 2, &owner_signers);
+    let shared_signers = multisig_owner_signers(0x10);
+    let low_signers = multisig_owner_signers(0x20);
+    let high_signers = multisig_owner_signers(0x30);
+    let shared_config = multisig_config(B256::repeat_byte(0x51), 2, &shared_signers);
+    let low_key_config = multisig_config(B256::repeat_byte(0x52), 2, &low_signers);
+    let high_key_config = multisig_config(B256::repeat_byte(0x53), 3, &high_signers);
     let shared_multisig = multisig_account(&shared_config)?;
-    let low_key = PrivateKeySigner::random();
-    let high_key = PrivateKeySigner::random();
+    let low_key = multisig_account(&low_key_config)?;
+    let high_key = multisig_account(&high_key_config)?;
     let allowed_recipient = Address::random();
     let blocked_recipient = Address::random();
 
@@ -52,21 +57,24 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
         env.chain_id,
     )
     .await?;
+    fund_multisig_account(&mut env, low_key).await?;
+    fund_multisig_account(&mut env, high_key).await?;
 
-    bootstrap_multisig(&mut env, &shared_config, &owner_signers).await?;
+    bootstrap_multisig(&mut env, &shared_config, &shared_signers).await?;
+    bootstrap_multisig(&mut env, &low_key_config, &low_signers).await?;
+    bootstrap_multisig(&mut env, &high_key_config, &high_signers).await?;
     authorize_tiered_access_keys(
         &mut env,
         shared_multisig,
         &shared_config,
-        &owner_signers,
-        low_key.address(),
-        high_key.address(),
+        &shared_signers,
+        low_key,
+        high_key,
         allowed_recipient,
     )
     .await?;
 
-    let low_remaining_before =
-        remaining_limit(&env.provider, shared_multisig, low_key.address()).await?;
+    let low_remaining_before = remaining_limit(&env.provider, shared_multisig, low_key).await?;
     assert_eq!(low_remaining_before, U256::from(LOW_LIMIT));
 
     let low_amount = U256::from(LOW_LIMIT / 4);
@@ -74,7 +82,8 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
     submit_access_key_transfer(
         &mut env,
         shared_multisig,
-        &low_key,
+        &low_key_config,
+        &low_signers,
         allowed_recipient,
         low_amount,
     )
@@ -85,8 +94,7 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
         "low-tier access key should spend from the shared multisig within its policy"
     );
 
-    let low_remaining_after =
-        remaining_limit(&env.provider, shared_multisig, low_key.address()).await?;
+    let low_remaining_after = remaining_limit(&env.provider, shared_multisig, low_key).await?;
     assert!(
         low_remaining_after < low_remaining_before,
         "successful spend should consume the low-tier key's limit"
@@ -100,8 +108,12 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
         U256::from(LOW_LIMIT + ONE_TOKEN),
     )
     .await?;
-    let over_limit_sig =
-        sign_aa_tx_with_secp256k1_access_key(&over_limit_tx, &low_key, shared_multisig)?;
+    let over_limit_sig = sign_aa_tx_with_multisig_access_key(
+        &over_limit_tx,
+        shared_multisig,
+        &low_key_config,
+        &low_signers,
+    )?;
     assert_rejected(
         &mut env,
         over_limit_tx,
@@ -118,8 +130,12 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
         U256::from(ONE_TOKEN),
     )
     .await?;
-    let wrong_recipient_sig =
-        sign_aa_tx_with_secp256k1_access_key(&wrong_recipient_tx, &low_key, shared_multisig)?;
+    let wrong_recipient_sig = sign_aa_tx_with_multisig_access_key(
+        &wrong_recipient_tx,
+        shared_multisig,
+        &low_key_config,
+        &low_signers,
+    )?;
     assert_rejected(
         &mut env,
         wrong_recipient_tx,
@@ -128,12 +144,35 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
     )
     .await?;
 
+    let under_threshold_tx = transfer_tx(
+        &env.provider,
+        env.chain_id,
+        shared_multisig,
+        allowed_recipient,
+        U256::from(ONE_TOKEN),
+    )
+    .await?;
+    let under_threshold_sig = sign_aa_tx_with_multisig_access_key(
+        &under_threshold_tx,
+        shared_multisig,
+        &low_key_config,
+        &low_signers[..1],
+    )?;
+    assert_rejected(
+        &mut env,
+        under_threshold_tx,
+        under_threshold_sig,
+        "below low-tier key threshold",
+    )
+    .await?;
+
     let high_amount = U256::from(LOW_LIMIT + 500 * ONE_TOKEN);
     let high_balance_before = token_balance(&env.provider, allowed_recipient).await?;
     submit_access_key_transfer(
         &mut env,
         shared_multisig,
-        &high_key,
+        &high_key_config,
+        &high_signers,
         allowed_recipient,
         high_amount,
     )
@@ -147,11 +186,11 @@ async fn shared_multisig_spends_through_tiered_scoped_access_keys() -> eyre::Res
     Ok(())
 }
 
-fn multisig_owner_signers() -> [PrivateKeySigner; 3] {
+fn multisig_owner_signers(base: u8) -> [PrivateKeySigner; 3] {
     [
-        PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap(),
-        PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap(),
-        PrivateKeySigner::from_bytes(&B256::repeat_byte(0x33)).unwrap(),
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(base + 1)).unwrap(),
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(base + 2)).unwrap(),
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(base + 3)).unwrap(),
     ]
 }
 
@@ -189,6 +228,20 @@ async fn bootstrap_multisig(
     Ok(())
 }
 
+async fn fund_multisig_account(env: &mut Localnet, account: Address) -> eyre::Result<()> {
+    fund_address_with(
+        &mut env.setup,
+        &env.provider,
+        &env.funder_signer,
+        env.funder_addr,
+        account,
+        U256::from(ACCESS_KEY_MULTISIG_FUNDING),
+        TOKEN,
+        env.chain_id,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn authorize_tiered_access_keys(
     env: &mut Localnet,
@@ -203,12 +256,12 @@ async fn authorize_tiered_access_keys(
     let calls = vec![
         authorize_key(
             low_key,
-            SignatureType::Secp256k1,
+            SignatureType::Multisig,
             tip20_transfer_policy(TOKEN, U256::from(LOW_LIMIT), vec![allowed_recipient]),
         ),
         authorize_key(
             high_key,
-            SignatureType::Secp256k1,
+            SignatureType::Multisig,
             tip20_transfer_policy(TOKEN, U256::from(HIGH_LIMIT), vec![allowed_recipient]),
         ),
     ];
@@ -225,7 +278,23 @@ fn sign_multisig_tx(
     include_init: bool,
 ) -> eyre::Result<TempoSignature> {
     let account = multisig_account(config)?;
-    let digest = multisig_digest(tx.signature_hash(), account);
+    Ok(TempoSignature::Multisig(sign_multisig_digest(
+        tx.signature_hash(),
+        account,
+        config,
+        owner_signers,
+        include_init,
+    )?))
+}
+
+fn sign_multisig_digest(
+    signature_hash: B256,
+    account: Address,
+    config: &InitMultisig,
+    owner_signers: &[PrivateKeySigner],
+    include_init: bool,
+) -> eyre::Result<MultisigSignature> {
+    let digest = multisig_digest(signature_hash, account);
     let mut approvals = owner_signers
         .iter()
         .map(|signer| {
@@ -244,11 +313,11 @@ fn sign_multisig_tx(
         .map(|(_, signature)| Bytes::from(signature))
         .collect();
 
-    Ok(TempoSignature::Multisig(MultisigSignature::new(
+    Ok(MultisigSignature::new(
         account,
         signatures,
         include_init.then(|| config.clone()),
-    )))
+    ))
 }
 
 fn multisig_account(config: &InitMultisig) -> eyre::Result<Address> {
@@ -260,7 +329,8 @@ fn multisig_account(config: &InitMultisig) -> eyre::Result<Address> {
 async fn submit_access_key_transfer(
     env: &mut Localnet,
     shared_multisig: Address,
-    access_key: &PrivateKeySigner,
+    access_key_config: &InitMultisig,
+    access_key_signers: &[PrivateKeySigner],
     recipient: Address,
     amount: U256,
 ) -> eyre::Result<()> {
@@ -272,9 +342,35 @@ async fn submit_access_key_transfer(
         amount,
     )
     .await?;
-    let signature = sign_aa_tx_with_secp256k1_access_key(&tx, access_key, shared_multisig)?;
+    let signature = sign_aa_tx_with_multisig_access_key(
+        &tx,
+        shared_multisig,
+        access_key_config,
+        access_key_signers,
+    )?;
     submit_and_mine_success(env, tx, signature, "access key transfer").await?;
     Ok(())
+}
+
+fn sign_aa_tx_with_multisig_access_key(
+    tx: &TempoTransaction,
+    shared_multisig: Address,
+    access_key_config: &InitMultisig,
+    access_key_signers: &[PrivateKeySigner],
+) -> eyre::Result<TempoSignature> {
+    let access_key_account = multisig_account(access_key_config)?;
+    let signing_hash = KeychainSignature::signing_hash(tx.signature_hash(), shared_multisig);
+    let inner = sign_multisig_digest(
+        signing_hash,
+        access_key_account,
+        access_key_config,
+        access_key_signers,
+        false,
+    )?;
+    Ok(TempoSignature::Keychain(KeychainSignature::new(
+        shared_multisig,
+        inner,
+    )))
 }
 
 async fn transfer_tx(

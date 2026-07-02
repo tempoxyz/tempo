@@ -80,6 +80,7 @@ pub enum StoredSignatureType {
     Secp256k1,
     P256,
     WebAuthn,
+    Multisig,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -90,6 +91,7 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
+            SignatureType::Multisig => Ok(Self::Multisig),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -101,6 +103,7 @@ impl From<StoredSignatureType> for SignatureType {
             StoredSignatureType::Secp256k1 => Self::Secp256k1,
             StoredSignatureType::P256 => Self::P256,
             StoredSignatureType::WebAuthn => Self::WebAuthn,
+            StoredSignatureType::Multisig => Self::Multisig,
         }
     }
 }

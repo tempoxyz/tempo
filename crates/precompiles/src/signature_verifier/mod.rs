@@ -6,7 +6,7 @@ use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
     SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+    tt_signature::{PrimitiveSignature, TempoSignature},
 };
 
 /// Gas cost for secp256k1 signature verification.
@@ -36,6 +36,7 @@ impl SignatureVerifier {
             SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
             SignatureType::P256 => P256_VERIFY_GAS,
             SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+            SignatureType::Multisig => return Err(SignatureVerifierError::invalid_format().into()),
         };
         self.storage.deduct_gas(verify_gas)?;
 
@@ -83,8 +84,9 @@ impl SignatureVerifier {
             return Err(SignatureVerifierError::invalid_format().into());
         }
 
-        let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let key_id = self.recover(signing_hash, keychain_sig.signature.to_bytes())?;
+        let key_id = keychain_sig
+            .key_id(&hash)
+            .map_err(|_| SignatureVerifierError::invalid_signature())?;
         Ok((keychain_sig.user_address, key_id))
     }
 }
