@@ -167,6 +167,9 @@ impl FeatureRegistry {
         &self,
         public_key: B256,
     ) -> Result<bool> {
+        if self.scheduled_feature_head.read()? == B256::ZERO {
+            return Ok(false);
+        }
         let schedule_nonce = self.schedule_nonce.read()?;
         if schedule_nonce == 0 {
             return Ok(false);
