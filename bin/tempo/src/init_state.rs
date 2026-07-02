@@ -359,9 +359,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             for row in walker {
                 let (hashed_address, entry) = row?;
                 let shard = hashed_storage_shard(hashed_address, hashed_collectors.len());
-                let mut key = Vec::with_capacity(64);
-                key.extend_from_slice(hashed_address.as_slice());
-                key.extend_from_slice(entry.key.as_slice());
+                let key = hashed_storage_key(hashed_address, entry.key);
                 hashed_collectors[shard]
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis hashed storage failed")?;
@@ -404,7 +402,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut hashed_cursor = provider_rw
             .tx_ref()
             .cursor_dup_write::<tables::HashedStorages>()?;
-        load_ordered_etl_collectors_to_cursor(
+        load_hashed_storage_etl_collectors_to_cursor(
             &mut hashed_collectors,
             total_hashes,
             "hashed storage",
@@ -750,11 +748,14 @@ where
 fn full_trie_prefix_sets_from_hashed_accounts(
     hashed_addresses: impl IntoIterator<Item = B256>,
 ) -> TriePrefixSets {
-    let mut prefix_sets = TriePrefixSetsMut::default();
+    let mut prefix_sets = TriePrefixSetsMut {
+        // The account trie table was cleared, so walk every hashed account as a
+        // full rebuild instead of treating the set as an incremental exact-key
+        // update.
+        account_prefix_set: PrefixSetMut::all(),
+        ..Default::default()
+    };
     for hashed_address in hashed_addresses {
-        prefix_sets
-            .account_prefix_set
-            .insert(Nibbles::unpack(hashed_address));
         // The trie cache was cleared, so each storage root must be rebuilt from
         // the complete hashed storage for that account instead of reusing nodes.
         prefix_sets
@@ -909,21 +910,23 @@ fn collect_dump_chunk(
         let compact_value = CompactU256::from(value);
 
         let raw_key = raw_storage_key(chunk.address, slot);
-        if !genesis_storage_keys.contains(raw_key.as_slice()) {
+        let is_genesis_storage_key = genesis_storage_keys.contains(raw_key.as_slice());
+        if !is_genesis_storage_key {
             storage_changeset_collector
                 .insert(raw_key.clone(), zero.clone())
                 .wrap_err("storage changeset ETL insert failed")?;
             storage_history_collector
                 .insert(raw_key, zero.clone())
                 .wrap_err("storage history ETL insert failed")?;
-        }
 
-        let mut hashed_key = Vec::with_capacity(64);
-        hashed_key.extend_from_slice(chunk.hashed_address.as_slice());
-        hashed_key.extend_from_slice(keccak256(slot).as_slice());
-        hashed_collector
-            .insert(hashed_key, compact_value)
-            .wrap_err("hashed ETL insert failed")?;
+            // Genesis storage is merged from the canonical hashed table below.
+            // Skipping dump-side hashed rows here avoids worker-dependent ETL
+            // duplicate winners for genesis slots.
+            let hashed_key = hashed_storage_key(chunk.hashed_address, keccak256(slot));
+            hashed_collector
+                .insert(hashed_key, compact_value)
+                .wrap_err("hashed ETL insert failed")?;
+        }
 
         entries += 1;
     }
@@ -1161,6 +1164,14 @@ fn raw_storage_key(address: alloy_primitives::Address, slot: B256) -> Vec<u8> {
     key
 }
 
+/// Composite ETL key for hashed storage, sorted by hashed address then hashed slot.
+fn hashed_storage_key(hashed_address: B256, hashed_slot: B256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(64);
+    key.extend_from_slice(hashed_address.as_slice());
+    key.extend_from_slice(hashed_slot.as_slice());
+    key
+}
+
 fn decode_raw_storage_key(key: &[u8]) -> (alloy_primitives::Address, B256) {
     (
         alloy_primitives::Address::from_slice(&key[..20]),
@@ -1212,54 +1223,17 @@ fn load_storage_history_etl_collectors(
     Ok(entries)
 }
 
-/// Iterate ETL collectors that already partition the final keyspace in ascending order.
-fn load_ordered_etl_collectors_to_cursor(
+/// Iterate hashed storage ETL collectors, globally merge by `(hashed_address, hashed_slot)`,
+/// deduplicate consecutive entries with the same composite key, and append each unique entry.
+fn load_hashed_storage_etl_collectors_to_cursor(
     collectors: &mut [StorageCollector],
     total: usize,
     label: &str,
     mut append: impl FnMut(&[u8], U256) -> Result<(), reth_db_api::DatabaseError>,
 ) -> eyre::Result<()> {
-    load_ordered_etl_collectors(collectors, total, label, |key, value| {
+    load_etl_collectors(collectors, total, label, |key, value| {
         append(&key, CompactU256::decompress_owned(value)?.into()).wrap_err("cursor append failed")
     })
-}
-
-fn load_ordered_etl_collectors(
-    collectors: &mut [StorageCollector],
-    total: usize,
-    label: &str,
-    mut write: impl FnMut(Vec<u8>, Vec<u8>) -> eyre::Result<()>,
-) -> eyre::Result<()> {
-    let total = total.max(1);
-    let interval = (total / 10).max(1);
-    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
-    let mut index = 0usize;
-
-    for collector in collectors {
-        for item in collector.iter()? {
-            if index > 0 && index.is_multiple_of(interval) {
-                info!(
-                    target: "tempo::cli",
-                    progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
-                    "Inserting {label}"
-                );
-            }
-
-            let (key, value) = item.wrap_err("ETL iteration failed")?;
-            if let Some((prev_key, prev_val)) = pending.take()
-                && prev_key != key
-            {
-                write(prev_key, prev_val)?;
-            }
-            pending = Some((key, value));
-            index += 1;
-        }
-    }
-
-    if let Some((key, val)) = pending {
-        write(key, val)?;
-    }
-    Ok(())
 }
 
 fn load_etl_collectors(
@@ -1429,7 +1403,7 @@ mod tests {
 
         let hashed_total = hashed_collector.len();
         let mut hashed_output = Vec::new();
-        load_ordered_etl_collectors_to_cursor(
+        load_hashed_storage_etl_collectors_to_cursor(
             std::slice::from_mut(&mut hashed_collector),
             hashed_total,
             "test hashed",
@@ -1439,16 +1413,63 @@ mod tests {
             },
         )?;
 
-        assert_eq!(hashed_output.len(), 2);
-        assert!(
-            hashed_output
-                .iter()
-                .any(|(_, value)| *value == U256::from(11))
-        );
-        assert!(
-            hashed_output
-                .iter()
-                .any(|(_, value)| *value == U256::from(33))
+        assert_eq!(hashed_output.len(), 1);
+        assert_eq!(hashed_output[0].1, U256::from(11));
+
+        Ok(())
+    }
+
+    #[test]
+    fn hashed_storage_collectors_are_globally_merged_before_append() -> eyre::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let mut collectors = vec![
+            Collector::new(128, Some(tempdir.path().to_path_buf())),
+            Collector::new(128, Some(tempdir.path().to_path_buf())),
+        ];
+
+        let address_a = B256::with_last_byte(0x10);
+        let address_b = B256::with_last_byte(0x20);
+        let slot_a = slot(1);
+        let slot_b = slot(2);
+
+        // Collector 0 starts with a larger key than collector 1. Appending
+        // collector-by-collector would violate MDBX append ordering here.
+        collectors[0].insert(
+            hashed_storage_key(address_b, slot_a),
+            CompactU256::from(U256::from(21)),
+        )?;
+        collectors[0].insert(
+            hashed_storage_key(address_b, slot_b),
+            CompactU256::from(U256::from(22)),
+        )?;
+        collectors[1].insert(
+            hashed_storage_key(address_a, slot_a),
+            CompactU256::from(U256::from(11)),
+        )?;
+        collectors[1].insert(
+            hashed_storage_key(address_b, slot_b),
+            CompactU256::from(U256::from(22)),
+        )?;
+
+        let total = collectors.iter().map(|collector| collector.len()).sum();
+        let mut output = Vec::new();
+        load_hashed_storage_etl_collectors_to_cursor(
+            &mut collectors,
+            total,
+            "test hashed",
+            |key, value| {
+                output.push((key.to_vec(), value));
+                Ok::<_, reth_db_api::DatabaseError>(())
+            },
+        )?;
+
+        assert_eq!(
+            output,
+            vec![
+                (hashed_storage_key(address_a, slot_a), U256::from(11)),
+                (hashed_storage_key(address_b, slot_a), U256::from(21)),
+                (hashed_storage_key(address_b, slot_b), U256::from(22)),
+            ]
         );
 
         Ok(())
@@ -1622,7 +1643,7 @@ mod tests {
     }
 
     #[test]
-    fn full_trie_prefix_sets_select_every_hashed_account_for_full_storage_rebuild() {
+    fn full_trie_prefix_sets_select_full_account_and_storage_rebuild() {
         let account_a = B256::with_last_byte(0x11);
         let account_b = B256::with_last_byte(0x22);
         let account_c = B256::with_last_byte(0x33);
@@ -1631,13 +1652,14 @@ mod tests {
             account_b, account_a, account_b, account_c,
         ]);
 
-        let collected = prefix_sets
-            .account_prefix_set
-            .iter()
-            .map(|nibbles| B256::from_slice(&nibbles.pack()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(collected, vec![account_a, account_b, account_c]);
+        assert!(
+            prefix_sets.account_prefix_set.all(),
+            "account trie was cleared, so account traversal must be a full rebuild"
+        );
+        assert!(
+            prefix_sets.account_prefix_set.iter().next().is_none(),
+            "full rebuild prefix set should not also carry exact account keys"
+        );
         assert_eq!(prefix_sets.storage_prefix_sets.len(), 3);
         for account in [account_a, account_b, account_c] {
             let storage_prefix_set = prefix_sets
