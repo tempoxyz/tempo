@@ -75,6 +75,8 @@ crate::sol! {
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
         function nextOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
+        function bookIndexForKey(bytes32 bookKey) external returns (uint32 index);
+        function bookKeyForIndex(uint32 index) external view returns (bytes32 bookKey);
         function storageCredits(address user) external view returns (uint64 credits);
 
         // Constants (exposed as view functions)

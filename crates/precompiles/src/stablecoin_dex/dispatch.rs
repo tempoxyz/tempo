@@ -79,7 +79,16 @@ impl Precompile for StablecoinDEX {
                     priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
 
                     #[schedule(since = T7)]
-                    storageCredits(call) => view(call, |c| self.storage_credits(c.user))
+                    storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
+
+                    #[schedule(since = T8)]
+                    bookIndexForKey(call) => mutate(call, msg_sender, |_, c| {
+                            preserve_storage_credits(self.address)?;
+                            self.book_index_for_key(c.bookKey)
+                        }),
+                    #[schedule(since = T8)]
+                    bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
+
                 }
             }
         )

@@ -511,6 +511,52 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
+    /// Returns the T8+ append-only `book_keys` index for `book_key`.
+    ///
+    /// Mutable because pre-T8 books have no stored id, so the first T8+ lookup derives the index
+    /// from `book_keys`, stores it on the orderbook, and returns it.
+    pub fn book_index_for_key(&mut self, book_key: B256) -> Result<u32> {
+        let book = self.books[book_key].read()?;
+        if !book.is_initialized() {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "stablecoin DEX order references unknown book key {book_key}"
+            )));
+        }
+        if let Some(id) = book.id() {
+            return Ok(id);
+        }
+
+        let len = self.book_keys.len()?;
+        for index in 0..len {
+            let Some(handler) = self.book_keys.at(index)? else {
+                break;
+            };
+            if handler.read()? == book_key {
+                let index = u32::try_from(index).map_err(|_| {
+                    TempoPrecompileError::Fatal("stablecoin DEX book index overflow".to_string())
+                })?;
+                let mut book = book;
+                book.activate_id(index);
+                self.books[book_key].write(book)?;
+                return Ok(index);
+            }
+        }
+
+        Err(TempoPrecompileError::Fatal(format!(
+            "stablecoin DEX order references book key without T8 id {book_key}"
+        )))
+    }
+
+    /// Returns the T8+ orderbook key at append-only `book_keys` vector `index`.
+    pub fn book_key_for_index(&self, index: u32) -> Result<B256> {
+        let Some(handler) = self.book_keys.at(index as usize)? else {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "stablecoin DEX order references unknown book index {index}"
+            )));
+        };
+        handler.read()
+    }
+
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
     ///
     /// # Errors
@@ -562,7 +608,12 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::pair_already_exists().into());
         }
 
-        let book = Orderbook::new(base, quote);
+        let book = if self.storage.spec().is_t8() {
+            let book_index = self.book_keys.len()? as u32;
+            Orderbook::new_with_id(base, quote, book_index)
+        } else {
+            Orderbook::new(base, quote)
+        };
         self.books[book_key].write(book)?;
         self.book_keys.push(book_key)?;
 
@@ -3515,6 +3566,73 @@ mod tests {
                 base_token,
                 quote_token,
             )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_book_index_lazy_migrates_pre_t8_pair() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let (base_0, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT)?;
+            let mut keys = Vec::new();
+            keys.push(exchange.create_pair(base_0)?);
+            assert_eq!(keys[0], compute_book_key(base_0, quote_token));
+
+            for index in 1..10 {
+                let name = Box::leak(format!("BASE{index}").into_boxed_str());
+                let base = TIP20Setup::create(name, name, admin).apply()?.address();
+                let key = exchange.create_pair(base)?;
+                assert_eq!(key, compute_book_key(base, quote_token));
+                keys.push(key);
+            }
+
+            for key in &keys {
+                assert_eq!(exchange.books[*key].read()?.id(), None);
+            }
+
+            StorageCtx.set_spec(TempoHardfork::T8);
+            for (index, key) in keys.iter().copied().enumerate() {
+                let index = index as u32;
+                assert_eq!(exchange.book_index_for_key(key)?, index);
+                assert_eq!(exchange.books[key].read()?.id(), Some(index));
+                assert_eq!(exchange.book_key_for_index(index)?, key);
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_create_pair_stores_book_index() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let (base_a, _) = setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT)?;
+            let base_b = TIP20Setup::create("BASE2", "BASE2", admin)
+                .apply()?
+                .address();
+
+            let key_a = exchange.create_pair(base_a)?;
+            let key_b = exchange.create_pair(base_b)?;
+
+            assert_eq!(exchange.books[key_a].read()?.id(), Some(0));
+            assert_eq!(exchange.books[key_b].read()?.id(), Some(1));
+            assert_eq!(exchange.book_index_for_key(key_a)?, 0);
+            assert_eq!(exchange.book_index_for_key(key_b)?, 1);
+            assert_eq!(exchange.book_key_for_index(0)?, key_a);
+            assert_eq!(exchange.book_key_for_index(1)?, key_b);
 
             Ok(())
         })

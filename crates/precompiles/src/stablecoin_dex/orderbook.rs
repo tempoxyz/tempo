@@ -150,6 +150,10 @@ pub struct Orderbook {
     pub base: Address,
     /// Quote token address
     pub quote: Address,
+    /// (T8+) StablecoinDEX `book_keys` vector index for this orderbook.
+    pub id: u32,
+    /// (T8+) Flag that indicates whether the `id` is active or not (to distinguish from id = 0)
+    id_flag: bool,
     /// Bid orders by tick
     #[allow(dead_code)]
     bids: Mapping<i16, TickLevel>,
@@ -169,7 +173,7 @@ pub struct Orderbook {
 }
 
 impl Orderbook {
-    /// Creates a new orderbook for a token pair
+    /// Creates a new orderbook for a token pair.
     pub fn new(base: Address, quote: Address) -> Self {
         Self {
             base,
@@ -178,6 +182,30 @@ impl Orderbook {
             best_ask_tick: i16::MAX,
             ..Default::default()
         }
+    }
+
+    /// (T8+) Creates a new orderbook with its append-only book index.
+    pub fn new_with_id(base: Address, quote: Address, id: u32) -> Self {
+        Self {
+            base,
+            quote,
+            id,
+            id_flag: true,
+            best_bid_tick: i16::MIN,
+            best_ask_tick: i16::MAX,
+            ..Default::default()
+        }
+    }
+
+    /// Returns the T8+ append-only book index, if present.
+    pub fn id(&self) -> Option<u32> {
+        self.id_flag.then_some(self.id)
+    }
+
+    /// Marks this orderbook with its T8+ append-only book index.
+    pub fn activate_id(&mut self, id: u32) {
+        self.id = id;
+        self.id_flag = true;
     }
 
     /// Returns true if this orderbook is initialized

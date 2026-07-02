@@ -16,12 +16,13 @@
 use super::{__packing_legacy_order, LegacyOrder, ORDER_VERSION_V1, Order};
 use crate::{
     error::{Result as StorageResult, TempoPrecompileError},
+    stablecoin_dex::StablecoinDEX,
     storage::{
         Handler, HandlerCache, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx,
         StorageKey, StorageOps, packing,
     },
 };
-use alloy::primitives::{Address, B256, FixedBytes, U256};
+use alloy::primitives::{Address, FixedBytes, U256};
 use std::{
     cell::Cell,
     ops::{Index, IndexMut},
@@ -72,12 +73,12 @@ struct V1Order {
     tick: i16,
     /// Destination tick for a fully filled flip order.
     flip_tick: i16,
+    /// StablecoinDEX `book_keys` vector index identifying the trading pair.
+    book_index: u32,
     /// Reserved bytes in packed slot 0. Kept zeroed for deterministic encoding and future use.
-    _unused: FixedBytes<6>,
+    _unused: FixedBytes<2>,
     /// Physical layout marker stored in packed slot 0.
     version: OrderVersion,
-    /// Orderbook key identifying the trading pair.
-    book_key: B256,
     /// Original order amount.
     amount: u128,
     /// Remaining unfilled amount.
@@ -111,28 +112,28 @@ impl V1Order {
     }
 
     /// Converts the logical order into the compact V1 physical layout.
-    fn new(order: Order) -> Self {
-        Self {
+    fn new(order: Order) -> StorageResult<Self> {
+        Ok(Self {
             maker: order.maker,
             tick: order.tick,
             metadata: Self::metadata(order.is_bid, order.is_flip),
             flip_tick: order.flip_tick,
-            _unused: FixedBytes::<6>::ZERO,
+            book_index: StablecoinDEX::new().book_index_for_key(order.book_key)?,
+            _unused: FixedBytes::<2>::ZERO,
             version: OrderVersion::V1,
-            book_key: order.book_key,
             amount: order.amount,
             remaining: order.remaining,
             prev: order.prev,
             next: order.next,
-        }
+        })
     }
 
     /// Converts V1 storage back into the logical order, restoring `order_id` from the mapping key.
-    fn into_order(self, order_id: u128) -> Order {
-        Order {
+    fn into_order(self, order_id: u128) -> StorageResult<Order> {
+        Ok(Order {
             order_id,
             maker: self.maker,
-            book_key: self.book_key,
+            book_key: StablecoinDEX::new().book_key_for_index(self.book_index)?,
             is_bid: self.is_bid(),
             tick: self.tick,
             amount: self.amount,
@@ -141,7 +142,7 @@ impl V1Order {
             next: self.next,
             is_flip: self.is_flip(),
             flip_tick: self.flip_tick,
-        }
+        })
     }
 }
 
@@ -255,7 +256,7 @@ impl Handler<Order> for OrderHandler {
         match self.version()? {
             OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
             OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
-                .map(|res| res.into_order(self.order_id)),
+                .and_then(|res| res.into_order(self.order_id)),
         }
     }
 
@@ -271,19 +272,19 @@ impl Handler<Order> for OrderHandler {
 
         match self.version.get() {
             Some(OrderVersion::Legacy) => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+                V1Order::new(value)?.store(self, self.base_slot, LayoutCtx::FULL)?;
                 for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
                     self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
                 }
             }
             Some(OrderVersion::V1) => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+                V1Order::new(value)?.store(self, self.base_slot, LayoutCtx::FULL)?;
             }
             None => {
                 let current_slot0 = self.load(self.base_slot)?;
                 let current_version = OrderVersion::try_from(current_slot0)?;
 
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+                V1Order::new(value)?.store(self, self.base_slot, LayoutCtx::FULL)?;
                 if matches!(current_version, OrderVersion::Legacy) && !current_slot0.is_zero() {
                     for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
                         self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
@@ -419,20 +420,34 @@ impl StorableType for OrderMapping {
 mod tests {
     use super::*;
     use crate::{
-        stablecoin_dex::{IStablecoinDEX, StablecoinDEX},
+        stablecoin_dex::{IStablecoinDEX, Orderbook, StablecoinDEX},
         storage::{ContractStorage, Handler, StorageCtx, hashmap::HashMapStorageProvider},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::{B256, address, b256};
     use proptest::prelude::*;
     use tempo_chainspec::hardfork::TempoHardfork;
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
     const TEST_BOOK_KEY: B256 =
         b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+
+    fn seed_book_key(exchange: &mut StablecoinDEX, book_key: B256) -> eyre::Result<()> {
+        if !exchange.books[book_key].read()?.is_initialized() {
+            let index = exchange.book_keys.len()?;
+            exchange.book_keys.push(book_key)?;
+            exchange.books[book_key].write(Orderbook::new_with_id(
+                TEST_MAKER,
+                TEST_MAKER,
+                index as u32,
+            ))?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_v1_order_layout_matches_tip_1062() {
         assert_eq!(__packing_v1_order::MAKER_LOC.offset_slots, 0);
@@ -441,8 +456,8 @@ mod tests {
         assert_eq!(__packing_v1_order::TICK_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::FLIP_TICK_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::VERSION_LOC.offset_slots, 0);
-        assert_eq!(__packing_v1_order::BOOK_KEY_LOC.offset_bytes, 0);
-        assert_eq!(__packing_v1_order::BOOK_KEY_LOC.size, 32);
+        assert_eq!(__packing_v1_order::BOOK_INDEX_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::BOOK_INDEX_LOC.size, 4);
         assert_eq!(
             __packing_v1_order::AMOUNT_LOC.offset_slots,
             __packing_v1_order::REMAINING_LOC.offset_slots
@@ -451,7 +466,7 @@ mod tests {
             __packing_v1_order::PREV_LOC.offset_slots,
             __packing_v1_order::NEXT_LOC.offset_slots
         );
-        assert_eq!(V1Order::SLOTS, 4);
+        assert_eq!(V1Order::SLOTS, 3);
         assert_eq!(LegacyOrder::SLOTS, 6);
     }
 
@@ -460,6 +475,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let order = Order::new_flip(
@@ -497,6 +513,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let mut order = Order::new_flip(
@@ -546,6 +563,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
@@ -572,6 +590,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let mut order = Order::new_flip(
@@ -660,6 +679,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let mut order = Order::new_flip(
@@ -742,6 +762,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
@@ -1465,6 +1486,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let base_slot = exchange.orders[id].base_slot;
@@ -1493,6 +1515,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
+            seed_book_key(&mut exchange, TEST_BOOK_KEY)?;
 
             let id = 42;
             let order = Order::new_flip(
@@ -1821,6 +1844,7 @@ mod tests {
                 .write(order_specs.len() as u128 + 1)?;
 
             for (index, order_spec) in order_specs.iter().enumerate() {
+                seed_book_key(&mut exchange, order_spec.book_key)?;
                 let id = index as u128 + 1;
                 let order = test_linked_order(id, order_spec, order_specs.len());
                 store_order_for_layout(&mut exchange, layout, mixed_offset, index, order)?;
