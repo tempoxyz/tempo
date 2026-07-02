@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, B256};
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, MultisigWeightAccumulator,
-    TempoSignature,
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigQuorumError, MultisigSignature,
+    MultisigWeightAccumulator, TempoSignature,
 };
 
 use super::NativeMultisig;
@@ -33,6 +33,18 @@ impl NativeMultisigAuthError {
 
     fn validation_failed(reason: impl Into<String>) -> Self {
         Self::ValidationFailed(reason.into())
+    }
+
+    fn quorum_error(err: MultisigQuorumError) -> Self {
+        match err {
+            MultisigQuorumError::SignerNotOwner | MultisigQuorumError::WeightBelowThreshold => {
+                Self::validation_failed(err.as_str())
+            }
+            MultisigQuorumError::EmptySignatures
+            | MultisigQuorumError::TooManySignatures
+            | MultisigQuorumError::SignersNotAscending
+            | MultisigQuorumError::WeightOverflow => Self::invalid_transaction(err.as_str()),
+        }
     }
 }
 
@@ -109,7 +121,7 @@ impl NativeMultisig {
 
             weight_accumulator
                 .record_owner(owner)
-                .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))?;
+                .map_err(NativeMultisigAuthError::quorum_error)?;
 
             if let Some(nested_signature) = nested_signature {
                 if account_path.len() >= MAX_MULTISIG_NESTING_DEPTH {
@@ -138,6 +150,6 @@ impl NativeMultisig {
 
         weight_accumulator
             .finish()
-            .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str()))
+            .map_err(NativeMultisigAuthError::quorum_error)
     }
 }

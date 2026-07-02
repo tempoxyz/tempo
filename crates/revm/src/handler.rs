@@ -3696,6 +3696,106 @@ mod tests {
     }
 
     #[test]
+    fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x42),
+            threshold: 2,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.account().unwrap();
+        let signature_hash = B256::repeat_byte(0x43);
+        let digest = multisig_digest(signature_hash, account);
+        let mut signed = signers
+            .iter()
+            .map(|signer| {
+                let signature = PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes();
+                (signer.address(), signature)
+            })
+            .collect::<Vec<_>>();
+        signed.sort_by_key(|(owner, _)| *owner);
+        signed.reverse();
+
+        let signature = MultisigSignature::new(
+            account,
+            signed.into_iter().map(|(_, signature)| signature).collect(),
+            None,
+        );
+        let result =
+            NativeMultisig::new().verify_authorization(signature_hash, &signature, &config, |_| {
+                unreachable!("primitive owner approvals should not load nested configs")
+            });
+
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigAuthError::InvalidTransaction(reason))
+                    if reason.contains("ascending")
+            ),
+            "recovered owner order is fixed by the transaction and should be bad"
+        );
+    }
+
+    #[test]
+    fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+        let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
+        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x22));
+        let account = config.account().unwrap();
+        let signature_hash = B256::repeat_byte(0x43);
+        let digest = multisig_digest(signature_hash, account);
+        let signature = MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes(),
+            ],
+            None,
+        );
+
+        let result =
+            NativeMultisig::new().verify_authorization(signature_hash, &signature, &config, |_| {
+                unreachable!("primitive owner approvals should not load nested configs")
+            });
+
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigAuthError::ValidationFailed(reason))
+                    if reason.contains("not an owner")
+            ),
+            "owner membership depends on current stored config and should remain revalidatable"
+        );
+    }
+
+    #[test]
     fn native_multisig_authorization_rejects_oversized_owner_approval_before_decode() {
         let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
         let account = config.account().unwrap();
