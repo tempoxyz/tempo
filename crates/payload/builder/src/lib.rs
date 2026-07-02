@@ -68,8 +68,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, StorageActionReplayState, TempoEvmConfig,
-    TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
+    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
