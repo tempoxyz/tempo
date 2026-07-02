@@ -311,7 +311,6 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
 /// Ensures that no more finalizations happen.
 async fn ensure_no_progress(context: &Context, tries: u32) {
     let baseline = max_consensus_height(&context.to_metrics());
-
     for _ in 0..=tries {
         context.sleep(Duration::from_secs(1)).await;
 

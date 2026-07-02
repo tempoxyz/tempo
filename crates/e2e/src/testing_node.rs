@@ -79,6 +79,7 @@ where
     /// The chain address of the node. Used for executing validator-config smart
     /// contract calls.
     pub chain_address: Address,
+
     n_starts: u32,
 }
 
@@ -126,6 +127,7 @@ where
             last_db_block_on_stop: None,
             network_address,
             chain_address,
+
             n_starts: 0,
         }
     }
