@@ -166,7 +166,10 @@ fn native_multisig_owner_approval_verification_gas(signature: &[u8], depth: usiz
         Ok(TempoSignature::Multisig(multisig_signature)) if depth < MAX_MULTISIG_NESTING_DEPTH => {
             native_multisig_signature_verification_gas(&multisig_signature, false, depth + 1)
         }
-        Ok(TempoSignature::Keychain(_)) | Err(_) => ECRECOVER_GAS + P256_VERIFY_GAS,
+        Ok(TempoSignature::Keychain(keychain)) => {
+            keychain_inner_signature_verification_gas(&keychain.signature) + KEYCHAIN_VALIDATION_GAS
+        }
+        Err(_) => ECRECOVER_GAS + P256_VERIFY_GAS,
         Ok(TempoSignature::Multisig(_)) => ECRECOVER_GAS + P256_VERIFY_GAS,
     }
 }
@@ -201,6 +204,30 @@ fn keychain_inner_signature_verification_gas(
             native_multisig_signature_verification_gas(multisig, true, 1)
         }
     }
+}
+
+fn validate_native_multisig_keychain_owner(
+    digest: alloy_primitives::B256,
+    keychain_sig: &tempo_primitives::transaction::KeychainSignature,
+    timestamp: u64,
+) -> Result<Address, NativeMultisigAuthError> {
+    if keychain_sig.is_legacy() {
+        return Err(NativeMultisigAuthError::invalid_transaction(
+            "legacy keychain signatures cannot authorize native multisig owners",
+        ));
+    }
+
+    let owner = keychain_sig.user_address;
+    let key_id = keychain_sig.key_id(&digest).map_err(|_| {
+        NativeMultisigAuthError::invalid_transaction("invalid keychain multisig owner signature")
+    })?;
+    let signature_type = Some(u8::from(keychain_sig.signature.signature_type()));
+
+    AccountKeychain::new()
+        .validate_keychain_authorization(owner, key_id, timestamp, signature_type)
+        .map_err(|err| NativeMultisigAuthError::validation_failed(format!("{err:?}")))?;
+
+    Ok(owner)
 }
 
 /// Calculates the gas cost for verifying an AA signature.
@@ -1295,11 +1322,18 @@ where
                             })?;
                         } else {
                             multisig_precompile
-                                .verify_authorization(
+                                .verify_authorization_with_keychains(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
                                     &config,
                                     |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
+                                    |digest, keychain_sig| {
+                                        validate_native_multisig_keychain_owner(
+                                            digest,
+                                            keychain_sig,
+                                            block.timestamp().to::<u64>(),
+                                        )
+                                    },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -1348,11 +1382,18 @@ where
                             })?;
                         } else {
                             multisig_precompile
-                                .verify_authorization(
+                                .verify_authorization_with_keychains(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
                                     init_config,
                                     |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
+                                    |digest, keychain_sig| {
+                                        validate_native_multisig_keychain_owner(
+                                            digest,
+                                            keychain_sig,
+                                            block.timestamp().to::<u64>(),
+                                        )
+                                    },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -1686,11 +1727,18 @@ where
                                     *user_address,
                                 );
                             multisig
-                                .verify_authorization(
+                                .verify_authorization_with_keychains(
                                     signing_hash,
                                     multisig_signature,
                                     &config,
                                     |acc| multisig_cache.load_registered_config(&multisig, acc),
+                                    |digest, keychain_sig| {
+                                        validate_native_multisig_keychain_owner(
+                                            digest,
+                                            keychain_sig,
+                                            block.timestamp().to::<u64>(),
+                                        )
+                                    },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }

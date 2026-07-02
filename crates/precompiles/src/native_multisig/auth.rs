@@ -27,11 +27,11 @@ impl From<TempoPrecompileError> for NativeMultisigAuthError {
 }
 
 impl NativeMultisigAuthError {
-    fn invalid_transaction(reason: impl Into<String>) -> Self {
+    pub fn invalid_transaction(reason: impl Into<String>) -> Self {
         Self::InvalidTransaction(reason.into())
     }
 
-    fn validation_failed(reason: impl Into<String>) -> Self {
+    pub fn validation_failed(reason: impl Into<String>) -> Self {
         Self::ValidationFailed(reason.into())
     }
 
@@ -55,7 +55,33 @@ impl NativeMultisig {
         inner_digest: B256,
         signature: &MultisigSignature,
         config: &InitMultisig,
+        load_config: impl FnMut(Address) -> Result<InitMultisig, NativeMultisigAuthError>,
+    ) -> Result<(), NativeMultisigAuthError> {
+        self.verify_authorization_with_keychains(
+            inner_digest,
+            signature,
+            config,
+            load_config,
+            |_, _| {
+                Err(NativeMultisigAuthError::invalid_transaction(
+                    "keychain signatures cannot authorize native multisig owners",
+                ))
+            },
+        )
+    }
+
+    /// Verifies a native multisig transaction authorization against current stored configs,
+    /// optionally allowing owner approvals to be keychain signatures.
+    pub fn verify_authorization_with_keychains(
+        &self,
+        inner_digest: B256,
+        signature: &MultisigSignature,
+        config: &InitMultisig,
         mut load_config: impl FnMut(Address) -> Result<InitMultisig, NativeMultisigAuthError>,
+        mut validate_keychain: impl FnMut(
+            B256,
+            &tempo_primitives::transaction::KeychainSignature,
+        ) -> Result<Address, NativeMultisigAuthError>,
     ) -> Result<(), NativeMultisigAuthError> {
         let mut account_path = vec![signature.account()];
         self.verify_authorization_inner(
@@ -64,6 +90,7 @@ impl NativeMultisig {
             config,
             &mut account_path,
             &mut load_config,
+            &mut validate_keychain,
         )
         .map(|_| ())
     }
@@ -75,6 +102,10 @@ impl NativeMultisig {
         config: &InitMultisig,
         account_path: &mut Vec<Address>,
         load_config: &mut impl FnMut(Address) -> Result<InitMultisig, NativeMultisigAuthError>,
+        validate_keychain: &mut impl FnMut(
+            B256,
+            &tempo_primitives::transaction::KeychainSignature,
+        ) -> Result<Address, NativeMultisigAuthError>,
     ) -> Result<u8, NativeMultisigAuthError> {
         signature
             .validate_shape()
@@ -102,11 +133,7 @@ impl NativeMultisig {
                     })?;
                     (owner, None)
                 }
-                TempoSignature::Keychain(_) => {
-                    return Err(NativeMultisigAuthError::invalid_transaction(
-                        "keychain signatures cannot authorize native multisig owners",
-                    ));
-                }
+                TempoSignature::Keychain(keychain) => (validate_keychain(digest, &keychain)?, None),
                 TempoSignature::Multisig(nested_signature) => {
                     nested_signature
                         .validate_registered_shape()
@@ -143,6 +170,7 @@ impl NativeMultisig {
                     &nested_config,
                     account_path,
                     load_config,
+                    validate_keychain,
                 )?;
                 account_path.pop();
             }
