@@ -691,17 +691,12 @@ impl TempoSignature {
     }
 
     /// Get the primitive signature type, if the outer signature has one.
-    pub fn primitive_signature_type(&self) -> Option<SignatureType> {
+    pub fn signature_type(&self) -> Option<SignatureType> {
         match self {
             Self::Primitive(primitive_sig) => Some(primitive_sig.signature_type()),
             Self::Keychain(keychain_sig) => Some(keychain_sig.signature.signature_type()),
             Self::Multisig(_) => None,
         }
-    }
-
-    /// Get the primitive signature type, if the outer signature has one.
-    pub fn signature_type(&self) -> Option<SignatureType> {
-        self.primitive_signature_type()
     }
 
     /// Get the in-memory size of the signature
@@ -1982,7 +1977,6 @@ mod tests {
         ));
 
         assert_eq!(signature.signature_type(), None);
-        assert_eq!(signature.primitive_signature_type(), None);
     }
 
     #[test]

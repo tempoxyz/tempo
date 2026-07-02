@@ -143,9 +143,7 @@ mod tests {
             .with_cfg(Default::default())
             .with_tx(TempoTxEnv::default());
         let mut evm = TempoEvm::new(ctx, ());
-        evm.native_multisig_account_cache
-            .insert(Address::repeat_byte(0x42), true);
-        evm.native_multisig_config_cache.insert(
+        evm.native_multisig_cache.insert_config(
             Address::repeat_byte(0x42),
             tempo_primitives::transaction::InitMultisig {
                 salt: B256::ZERO,
@@ -156,8 +154,7 @@ mod tests {
 
         // Set block with default fields
         evm.set_block(TempoBlockEnv::default());
-        assert!(evm.native_multisig_account_cache.is_empty());
-        assert!(evm.native_multisig_config_cache.is_empty());
+        assert!(evm.native_multisig_cache.is_empty());
 
         // Replay executes the current transaction and returns result with state.
         // With default tx (no calls, system tx), it should succeed.

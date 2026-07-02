@@ -3,13 +3,7 @@ use crate::TempoAddressExt;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use core::hash::{Hash, Hasher};
-use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, NATIVE_MULTISIG_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
-};
+use tempo_contracts::TempoHardfork;
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -104,7 +98,7 @@ impl InitMultisig {
     }
 
     /// Derives the native multisig account address for this initial config.
-    pub fn derive_account(&self) -> Result<Address, &'static str> {
+    pub fn account(&self) -> Result<Address, &'static str> {
         self.validate()?;
 
         let owner_count = encode_multisig_owner_count(self.owners.len())?;
@@ -127,9 +121,28 @@ impl InitMultisig {
         Ok(account)
     }
 
-    /// Returns the native multisig account address derived from this initial config.
-    pub fn account(&self) -> Result<Address, &'static str> {
-        self.derive_account()
+    /// Validates RPC simulation mock multisig signatures by treating the first
+    /// `signature_count` configured owners as signers.
+    pub fn validate_rpc_mock_signatures(&self, signature_count: usize) -> Result<(), &'static str> {
+        self.validate()?;
+        if signature_count == 0 {
+            return Err("multisig signatures cannot be empty");
+        }
+        if signature_count > self.owners.len() {
+            return Err("too many multisig signatures");
+        }
+
+        let mut signed_weight = 0u64;
+        for owner in self.owners.iter().take(signature_count) {
+            signed_weight = signed_weight
+                .checked_add(u64::from(owner.weight))
+                .ok_or("multisig recovered owner weight overflow")?;
+        }
+        if signed_weight < u64::from(self.threshold) {
+            return Err("multisig signature weight below threshold");
+        }
+
+        Ok(())
     }
 
     /// Decodes, verifies, and weight-accounts primitive owner approvals.
@@ -211,10 +224,10 @@ impl MultisigSignature {
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
     pub fn recover_account(&self) -> Result<Address, &'static str> {
         self.validate_shape()?;
-        if let Some(init) = &self.init {
-            if init.account()? != self.account {
-                return Err("multisig init does not derive account");
-            }
+        if let Some(init) = &self.init
+            && init.account()? != self.account
+        {
+            return Err("multisig init does not derive account");
         }
         Ok(self.account)
     }
@@ -347,29 +360,12 @@ impl Hash for MultisigSignature {
     }
 }
 
-/// Validates a native multisig config and returns its total owner weight.
-pub fn validate_multisig_config(config: &InitMultisig) -> Result<u8, &'static str> {
-    config.validate()
-}
-
-/// Validates only the stateless signature payload shape.
-pub fn validate_multisig_signature_shape(
-    signature: &MultisigSignature,
-) -> Result<(), &'static str> {
-    signature.validate_shape()
-}
-
-/// Derives the native multisig account address for an initial config.
-pub fn derive_multisig_account(config: &InitMultisig) -> Result<Address, &'static str> {
-    config.derive_account()
-}
-
 /// Returns whether an address is eligible to be a derived native multisig account.
-pub fn is_valid_multisig_account(account: Address) -> bool {
+pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
     !account.is_zero()
         && !account.is_tip20()
         && !account.is_virtual()
-        && !is_native_precompile_address(account)
+        && !account.is_precompile(spec)
 }
 
 /// Computes the digest that native multisig owners approve.
@@ -410,30 +406,6 @@ fn recover_multisig_owner_addresses(
         owners.push(owner);
     }
     Ok(owners)
-}
-
-/// Decodes, verifies, and weight-accounts primitive owner approvals.
-///
-/// This helper does not validate nested multisig owner approvals because that requires state access
-/// to load each nested account config.
-pub fn verify_multisig_owner_signatures(
-    digest: B256,
-    signatures: &[Bytes],
-    config: &InitMultisig,
-) -> Result<u8, &'static str> {
-    config.verify_owner_signatures(digest, signatures)
-}
-
-/// Verifies primitive owner approvals against a config already validated by trusted storage.
-///
-/// This helper does not validate nested multisig owner approvals because that requires state access
-/// to load each nested account config.
-pub fn verify_trusted_multisig_owner_signatures(
-    digest: B256,
-    signature: &MultisigSignature,
-    config: &InitMultisig,
-) -> Result<u8, &'static str> {
-    signature.verify_with_trusted_config(digest, config)
 }
 
 fn verify_recovered_multisig_owners(
@@ -493,29 +465,6 @@ fn encode_multisig_owner_count(owner_count: usize) -> Result<u8, &'static str> {
         return Err("too many multisig owners");
     }
     Ok(owner_count as u8)
-}
-
-fn is_native_precompile_address(account: Address) -> bool {
-    if account.as_slice()[..19] == [0u8; 19] && (1..=0x11).contains(&account.as_slice()[19]) {
-        return true;
-    }
-
-    [
-        TIP_FEE_MANAGER_ADDRESS,
-        TIP20_FACTORY_ADDRESS,
-        TIP403_REGISTRY_ADDRESS,
-        STABLECOIN_DEX_ADDRESS,
-        NONCE_PRECOMPILE_ADDRESS,
-        VALIDATOR_CONFIG_ADDRESS,
-        ACCOUNT_KEYCHAIN_ADDRESS,
-        VALIDATOR_CONFIG_V2_ADDRESS,
-        ADDRESS_REGISTRY_ADDRESS,
-        SIGNATURE_VERIFIER_ADDRESS,
-        TIP20_CHANNEL_RESERVE_ADDRESS,
-        RECEIVE_POLICY_GUARD_ADDRESS,
-        NATIVE_MULTISIG_ADDRESS,
-    ]
-    .contains(&account)
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -721,7 +670,7 @@ mod tests {
 
         assert!(
             config_a
-                .verify_owner_signatures(digest_a, &[signature.clone()])
+                .verify_owner_signatures(digest_a, std::slice::from_ref(&signature))
                 .is_ok()
         );
         assert!(
@@ -778,7 +727,7 @@ mod tests {
         );
         assert!(
             config
-                .verify_owner_signatures(digest, &[canonical_signature.clone()])
+                .verify_owner_signatures(digest, std::slice::from_ref(&canonical_signature))
                 .is_ok()
         );
 

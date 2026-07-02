@@ -100,6 +100,11 @@ impl TempoAddressExt for Address {
     }
 
     fn is_precompile(&self, spec: TempoHardfork) -> bool {
+        // Reserved low EVM precompile addresses 0x01 through 0x11.
+        if self.as_slice()[..19] == [0u8; 19] && (1..=0x11).contains(&self.as_slice()[19]) {
+            return true;
+        }
+
         self.is_tip20()
             || SYSTEM_PRECOMPILES
                 .iter()
