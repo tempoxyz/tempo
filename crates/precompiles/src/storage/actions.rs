@@ -49,11 +49,6 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
-    /// Records the quote token check.
-    ///
-    /// `user_token` - The user's token address.
-    /// `quote_token` - The expected quote token address.
-    FeeAmmQuoteTokenCheck(Address, Address),
 }
 
 impl StorageAction {
@@ -63,8 +58,7 @@ impl StorageAction {
             Self::Sload(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
-            | Self::Sdec(address, ..)
-            | Self::FeeAmmQuoteTokenCheck(address, ..) => *address,
+            | Self::Sdec(address, ..) => *address,
             Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
         }
     }
@@ -86,8 +80,8 @@ pub struct StorageActionsState {
     /// Incremented on each [`StorageActions::unrecorded`] call,
     /// and decremented on exit from it.
     ///
-    /// Allows for nesting multiple unrecorded scopes, making sure that
-    /// only when all scopes are exited, [`StorageActions::record`] records actions again.
+    /// Allows for nesting multiple unrecorded scopes, while [`StorageActions::recorded`]
+    /// can temporarily reset the depth to resume normal recording inside such a scope.
     unrecorded_depth: usize,
 }
 
@@ -146,11 +140,32 @@ impl StorageActions {
         f()
     }
 
+    /// Runs a closure where [`Self::record`] calls are recorded even inside an unrecorded scope.
+    pub fn recorded<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.recorded_guard();
+        f()
+    }
+
     /// Enters a scope where [`Self::record`] calls are suppressed.
     fn unrecorded_guard(&self) -> Option<UnrecordedStorageActionsGuard> {
         if let Self::Enabled(state) = self {
             state.borrow_mut().unrecorded_depth += 1;
             Some(UnrecordedStorageActionsGuard(self.clone()))
+        } else {
+            None
+        }
+    }
+
+    /// Enters a scope where [`Self::record`] calls are recorded.
+    fn recorded_guard(&self) -> Option<RecordedStorageActionsGuard> {
+        if let Self::Enabled(state) = self {
+            let mut state = state.borrow_mut();
+            let previous_unrecorded_depth = state.unrecorded_depth;
+            state.unrecorded_depth = 0;
+            Some(RecordedStorageActionsGuard {
+                actions: self.clone(),
+                previous_unrecorded_depth,
+            })
         } else {
             None
         }
@@ -186,6 +201,21 @@ impl Drop for UnrecordedStorageActionsGuard {
                 .unrecorded_depth
                 .checked_sub(1)
                 .expect("unrecorded storage action scope underflow");
+        }
+    }
+}
+
+/// Recorded storage-actions scope guard.
+#[derive(Debug)]
+struct RecordedStorageActionsGuard {
+    actions: StorageActions,
+    previous_unrecorded_depth: usize,
+}
+
+impl Drop for RecordedStorageActionsGuard {
+    fn drop(&mut self) {
+        if let StorageActions::Enabled(state) = &self.actions {
+            state.borrow_mut().unrecorded_depth = self.previous_unrecorded_depth;
         }
     }
 }
@@ -240,6 +270,60 @@ mod tests {
             Some(vec![
                 StorageAction::Sload(address, key, U256::from(1)),
                 StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)),
+                StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_recorded_scope_resumes_recording() {
+        let actions = StorageActions::enabled();
+        let address = Address::repeat_byte(0x42);
+        let key = U256::from(7);
+
+        actions.unrecorded(|| {
+            actions.record(StorageAction::Sload(address, key, U256::from(1)));
+
+            actions.recorded(|| {
+                actions.record(StorageAction::Sstore(
+                    address,
+                    key,
+                    U256::from(1),
+                    U256::from(2),
+                ));
+
+                actions.unrecorded(|| {
+                    actions.record(StorageAction::Sinc(
+                        address,
+                        key,
+                        U256::from(2),
+                        U256::from(3),
+                    ));
+                });
+
+                actions.record(StorageAction::Sdec(
+                    address,
+                    key,
+                    U256::from(5),
+                    U256::from(6),
+                ));
+            });
+
+            actions.record(StorageAction::Sload(address, key, U256::from(7)));
+        });
+
+        actions.record(StorageAction::Sstore(
+            address,
+            key,
+            U256::from(1),
+            U256::from(8),
+        ));
+
+        assert_eq!(
+            actions.take(),
+            Some(vec![
+                StorageAction::Sstore(address, key, U256::from(1), U256::from(2)),
+                StorageAction::Sdec(address, key, U256::from(5), U256::from(6)),
                 StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
             ])
         );

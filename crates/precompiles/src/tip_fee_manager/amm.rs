@@ -597,8 +597,8 @@ impl TipFeeManager {
             }
 
             // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
-            let mid_token = TIP20Token::from_address(user_token)?.quote_token()?;
-            actions.record_always(StorageAction::FeeAmmQuoteTokenCheck(user_token, mid_token));
+            let mid_token =
+                actions.recorded(|| TIP20Token::from_address(user_token)?.quote_token())?;
             if mid_token.is_zero() || mid_token == validator_token {
                 return Ok((None, Some(mid_token), data));
             }

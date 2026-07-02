@@ -13,7 +13,6 @@ use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
-    interpreter::instructions::utility::IntoU256,
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
@@ -21,9 +20,8 @@ use tempo_precompiles::{
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
-    tip20::TIP20Token,
 };
-use tempo_revm::{IntoAddress, TempoHaltReason, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, evm::TempoContext};
 
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
@@ -179,25 +177,6 @@ where
                     )?;
                     let pool = Pool::decode_from_slot(pool_slot);
                     if pool.has_enough_reserve_validator_token(amount_out) != has_enough_liquidity {
-                        return Err(StorageActionReplayError::ActionConflict.into());
-                    }
-                }
-                StorageAction::FeeAmmQuoteTokenCheck(user_token, expected_quote_token) => {
-                    // SAFETY: `FeeAmmQuoteTokenCheck` actions are emitted only for TIP-20 tokens
-                    let quote_token_slot = TIP20Token::from_address_unchecked(user_token)
-                        .quote_token
-                        .slot();
-                    let quote_token = self
-                        .replay_state
-                        .sload_current_or_expected(
-                            db,
-                            user_token,
-                            quote_token_slot,
-                            expected_quote_token.into_u256(),
-                        )?
-                        .into_address();
-
-                    if quote_token != expected_quote_token {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }

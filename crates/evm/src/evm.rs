@@ -327,7 +327,6 @@ mod tests {
         DatabaseCommit, DatabaseRef,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
-        interpreter::instructions::utility::IntoU256,
         state::EvmState,
     };
     use std::{assert_matches, collections::BTreeMap};
@@ -344,13 +343,13 @@ mod tests {
             slots as fee_manager_slots,
         },
         tip20::{
-            ITIP20, TIP20Token, rewards::__packing_user_reward_info as user_reward_info_slots,
+            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
-    use tempo_revm::{IntoAddress, TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
 
@@ -615,27 +614,6 @@ mod tests {
                         action.address(),
                     );
                 }
-                StorageAction::FeeAmmQuoteTokenCheck(user_token, quote_token) => {
-                    let quote_token_slot = TIP20Token::from_address(user_token)
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "FeeAmmQuoteTokenCheck invalid token {user_token:?} on {hardfork:?}: {err}",
-                            )
-                        })
-                        .quote_token
-                        .slot();
-                    let current = storage_state.apply_sload_value(
-                        (user_token, quote_token_slot),
-                        quote_token.into_u256(),
-                        "FeeAmmQuoteTokenCheck",
-                        hardfork,
-                    );
-                    assert_eq!(
-                        current.into_address(),
-                        quote_token,
-                        "FeeAmmQuoteTokenCheck mismatch for {user_token:?}:{quote_token_slot:?} on {hardfork:?}",
-                    );
-                }
             }
         }
 
@@ -725,13 +703,6 @@ mod tests {
                         "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
                         labels.address(action.address()),
                         labels.slot(action.address(), slot),
-                    )
-                }
-                StorageAction::FeeAmmQuoteTokenCheck(user_token, quote_token) => {
-                    format!(
-                        "FeeAmmCheckMidToken({}, {})",
-                        labels.address(user_token),
-                        labels.address(quote_token),
                     )
                 }
             })
@@ -915,6 +886,7 @@ mod tests {
                 ]),
                 tip20_slots: BTreeMap::from([
                     (tip20_slots::CURRENCY, "currency"),
+                    (tip20_slots::QUOTE_TOKEN, "quoteToken"),
                     (tip20_slots::TRANSFER_POLICY_ID, "transferPolicyId"),
                     (tip20_slots::PAUSED, "paused"),
                     (tip20_slots::GLOBAL_REWARD_PER_TOKEN, "globalRewardPerToken"),
