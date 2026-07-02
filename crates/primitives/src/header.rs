@@ -68,6 +68,14 @@ impl TempoHeader {
     }
 }
 
+impl TryFrom<&[u8]> for TempoHeader {
+    type Error = alloy_rlp::Error;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        alloy_rlp::decode_exact(bytes)
+    }
+}
+
 impl AsRef<Self> for TempoHeader {
     fn as_ref(&self) -> &Self {
         self
@@ -289,6 +297,49 @@ mod tests {
         let encoded = alloy_rlp::encode(&header_no_ctx);
         let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(header_no_ctx, decoded);
+    }
+
+    #[test]
+    fn header_try_from_bytes_roundtrip() {
+        let header = TempoHeader {
+            general_gas_limit: 15_000_000,
+            shared_gas_limit: 5_000_000,
+            timestamp_millis_part: 123,
+            inner: Header {
+                number: 1,
+                timestamp: 100,
+                ..Default::default()
+            },
+            consensus_context: Some(TempoConsensusContext {
+                epoch: 1,
+                view: 2,
+                parent_view: 1,
+                proposer: PublicKey::from_seed([0x01; 32]),
+            }),
+        };
+
+        let encoded = alloy_rlp::encode(&header);
+        let decoded = TempoHeader::try_from(encoded.as_slice()).unwrap();
+        assert_eq!(header, decoded);
+    }
+
+    #[test]
+    fn header_try_from_bytes_rejects_truncated_input() {
+        let mut encoded = alloy_rlp::encode(&TempoHeader::default());
+        encoded.truncate(encoded.len() - 1);
+
+        assert!(TempoHeader::try_from(encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn header_try_from_bytes_rejects_trailing_bytes() {
+        let mut encoded = alloy_rlp::encode(&TempoHeader::default());
+        encoded.push(0);
+
+        assert_eq!(
+            TempoHeader::try_from(encoded.as_slice()),
+            Err(alloy_rlp::Error::UnexpectedLength)
+        );
     }
 
     #[test]
