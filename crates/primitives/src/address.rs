@@ -1,9 +1,12 @@
-use alloy_primitives::{Address, FixedBytes, hex};
+use alloy_primitives::{Address, FixedBytes, address, hex};
 use tempo_contracts::{TempoHardfork, precompiles::SYSTEM_PRECOMPILES};
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 pub const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+
+/// Osaka P256VERIFY precompile address.
+const P256VERIFY_ADDRESS: Address = address!("0x0000000000000000000000000000000000000100");
 
 /// Returns `true` if `addr` has the TIP-20 token prefix.
 ///
@@ -42,6 +45,7 @@ pub trait TempoAddressExt {
     /// Returns `true` if the address is a precompile. This is the case if it is either:
     /// - A TIP-20 token address.
     /// - A system precompile active at the specified `spec` hardfork.
+    /// - A built-in EVM precompile active at the specified `spec` hardfork.
     fn is_precompile(&self, spec: TempoHardfork) -> bool;
 
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
@@ -102,6 +106,10 @@ impl TempoAddressExt for Address {
     fn is_precompile(&self, spec: TempoHardfork) -> bool {
         // Reserved low EVM precompile addresses 0x01 through 0x11.
         if self.as_slice()[..19] == [0u8; 19] && (1..=0x11).contains(&self.as_slice()[19]) {
+            return true;
+        }
+
+        if spec.is_t1c() && *self == P256VERIFY_ADDRESS {
             return true;
         }
 
@@ -200,5 +208,9 @@ mod tests {
         // Assert TIP20 prefixed addresses are classified as precompiles
         assert!(PATH_USD_ADDRESS.is_tip20());
         assert!(PATH_USD_ADDRESS.is_precompile(TempoHardfork::Genesis));
+
+        assert!(!P256VERIFY_ADDRESS.is_precompile(TempoHardfork::T1B));
+        assert!(P256VERIFY_ADDRESS.is_precompile(TempoHardfork::T1C));
+        assert!(P256VERIFY_ADDRESS.is_precompile(TempoHardfork::T8));
     }
 }
