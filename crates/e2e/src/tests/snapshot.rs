@@ -20,9 +20,8 @@ use tracing::info;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers,
-    metrics::{
-        MetricsExt, wait_for_height_with_interval, wait_for_metrics, wait_for_metrics_with_interval,
-    },
+    consensus_snapshot::write_consensus_snapshot,
+    metrics::{wait_for_height_with_interval, wait_for_metrics, wait_for_metrics_with_interval},
     setup_validators,
     tests::dkg::common::wait_for_outcome,
 };
@@ -163,33 +162,28 @@ fn joins_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
+        let last_epoch_before_stop = target_epoch.next().get();
+        let execution_provider = donor.execution_provider();
+
         donor.stop().await;
-        let stopped_donor_metrics = context.to_metrics().for_scope(&donor);
-        let last_epoch_before_stop = stopped_donor_metrics
-            .latest_consensus_epoch()
-            .expect("validator had no entry for latest epoch");
-        let last_height_before_stop = stopped_donor_metrics
-            .latest_consensus_height()
-            .expect("validator had no entry for latest height");
-        info!(
-            last_epoch_before_stop,
-            last_height_before_stop, "stopped the original validator",
-        );
+        info!(last_epoch_before_stop, "stopped the original validator");
 
         // Now the old validator donates its database to the new validator.
         //
         // This works by assigning the replacement validator's fields to the
         // old validator's. This way, the old validator "donates" its database
         // to the replacement. This is to simulate a snapshot.
-        donor.uid = replacement.uid;
-        donor.private_key = replacement.private_key;
-        {
-            let peer_manager = replacement.consensus_config.peer_manager.clone();
-            donor.consensus_config = replacement.consensus_config;
-            donor.consensus_config.peer_manager = peer_manager;
-        }
-        donor.network_address = replacement.network_address;
-        donor.chain_address = replacement.chain_address;
+        let target_partition_prefix = replacement.consensus_config.partition_prefix.clone();
+        write_consensus_snapshot(
+            &context,
+            &donor,
+            execution_provider,
+            &target_partition_prefix,
+        )
+        .await;
+
+        replacement.consensus_config.strict_startup = true;
+        donor.adopt_identity_from(replacement);
 
         donor.start(&context).await;
         connect_execution_to_peers(&donor, &validators).await;
@@ -209,15 +203,11 @@ fn joins_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&replacement).latest_consensus_epoch() {
-                assert!(
-                    epoch > 0,
-                    "when starting from snapshot a sufficiently advanced \
-                    snapshot, the node should never boot into the genesis epoch"
-                );
-            }
-
-            metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+            metrics
+                .for_scope(&replacement)
+                .latest_consensus_epoch()
+                .is_some_and(|epoch| epoch > 0)
+                && metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
         })
         .await;
     });
@@ -358,12 +348,10 @@ fn can_restart_after_joining_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
+        let last_epoch_before_stop = target_epoch.next().get();
+        let execution_provider = donor.execution_provider();
+
         donor.stop().await;
-        let last_epoch_before_stop = context
-            .to_metrics()
-            .for_scope(&donor)
-            .latest_consensus_epoch()
-            .expect("validator had no entry for latest epoch");
         info!(%last_epoch_before_stop, "stopped the original validator");
 
         // Now the old validator donates its database to the new validator.
@@ -371,15 +359,17 @@ fn can_restart_after_joining_from_snapshot() {
         // This works by assigning the replacement validator's fields to the
         // old validator's. This way, the old validator "donates" its database
         // to the replacement. This is to simulate a snapshot.
-        donor.uid = replacement.uid;
-        donor.private_key = replacement.private_key;
-        {
-            let peer_manager = replacement.consensus_config.peer_manager.clone();
-            donor.consensus_config = replacement.consensus_config;
-            donor.consensus_config.peer_manager = peer_manager;
-        }
-        donor.network_address = replacement.network_address;
-        donor.chain_address = replacement.chain_address;
+        let target_partition_prefix = replacement.consensus_config.partition_prefix.clone();
+        write_consensus_snapshot(
+            &context,
+            &donor,
+            execution_provider,
+            &target_partition_prefix,
+        )
+        .await;
+
+        replacement.consensus_config.strict_startup = true;
+        donor.adopt_identity_from(replacement);
 
         donor.start(&context).await;
         connect_execution_to_peers(&donor, &validators).await;
@@ -399,15 +389,11 @@ fn can_restart_after_joining_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&replacement).latest_consensus_epoch() {
-                assert!(
-                    epoch > 0,
-                    "when starting from snapshot a sufficiently advanced \
-                    snapshot, the node should never boot into the genesis epoch"
-                );
-            }
-
-            metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+            metrics
+                .for_scope(&replacement)
+                .latest_consensus_epoch()
+                .is_some_and(|epoch| epoch > 0)
+                && metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
         })
         .await;
 
