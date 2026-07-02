@@ -558,6 +558,7 @@ impl StorageActionReplayState {
     ///
     /// Like [`Self::sload_exact`], but returns the current value even when it does not match
     /// `expected`, allowing semantic actions to rebase onto compatible prior writes.
+    /// Falls back to `expected` when the current value is not already known.
     fn sload_current_or_expected<DB: Database>(
         &mut self,
         db: &mut State<DB>,
