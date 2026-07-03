@@ -287,8 +287,6 @@ pub async fn setup_validators(
         execution_config.validator_key = Some(public_key.encode().as_ref().try_into().unwrap());
         execution_config.feed_state = Some(feed_state.clone());
 
-        let execution_runtime_handle = execution_runtime.handle();
-
         let engine_config = consensus::Builder {
             execution_node: None,
             blocker: oracle.control(private_key.public_key()),
@@ -321,7 +319,7 @@ pub async fn setup_validators(
             private_key,
             oracle.clone(),
             engine_config,
-            execution_runtime_handle,
+            execution_runtime.handle(),
             execution_config,
             ingress,
             address,
