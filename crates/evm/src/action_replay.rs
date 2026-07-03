@@ -184,6 +184,7 @@ where
         }
 
         let mut state = EvmState::default();
+        state.reserve(self.replay_state.tx_changes.len() + usize::from(commit_reads));
 
         if commit_reads {
             let account = db
@@ -210,6 +211,7 @@ where
                                 .unwrap_or_default(),
                         );
                         account.mark_touch();
+                        account.storage.reserve(slots.len());
                         e.insert(account)
                     }
                 };
