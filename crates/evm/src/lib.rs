@@ -3,7 +3,12 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod action_replay;
 mod assemble;
+pub use action_replay::{
+    ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
+    StorageActionReplayState,
+};
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
@@ -171,6 +176,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
+                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
             },
         })
     }
@@ -225,6 +231,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
+                proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
             },
         })
     }
@@ -314,8 +321,8 @@ mod tests {
     use std::collections::HashMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
-        BlockBody, SubBlockMetadata, subblock::SubBlockVersion,
-        transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+        BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
+        subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
 
     #[test]
@@ -362,6 +369,21 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
+        assert_eq!(evm_env.block_env.proposer_public_key, None);
+
+        let proposer = PublicKey::from_seed([0xab; 32]);
+        let evm_env = evm_config
+            .evm_env(&TempoHeader {
+                consensus_context: Some(TempoConsensusContext {
+                    epoch: 1,
+                    view: 2,
+                    parent_view: 1,
+                    proposer,
+                }),
+                ..header
+            })
+            .unwrap();
+        assert_eq!(evm_env.block_env.proposer_public_key, Some(proposer));
     }
 
     /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
@@ -455,6 +477,24 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
+        assert_eq!(evm_env.block_env.proposer_public_key, None);
+
+        let proposer = PublicKey::from_seed([0xcd; 32]);
+        let evm_env = evm_config
+            .next_evm_env(
+                &parent,
+                &TempoNextBlockEnvAttributes {
+                    consensus_context: Some(TempoConsensusContext {
+                        epoch: 1,
+                        view: 2,
+                        parent_view: 1,
+                        proposer,
+                    }),
+                    ..attributes
+                },
+            )
+            .unwrap();
+        assert_eq!(evm_env.block_env.proposer_public_key, Some(proposer));
     }
 
     #[test]

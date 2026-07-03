@@ -10,6 +10,7 @@ coverage/
 # Benchmarking artifacts
 contrib/bench/logs/
 report.json
+report.samples.ndjson.gz
 profile.json.gz
 
 .DS_Store

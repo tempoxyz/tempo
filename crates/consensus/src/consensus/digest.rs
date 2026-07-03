@@ -11,6 +11,12 @@ use commonware_utils::{Array, Span};
 #[repr(transparent)]
 pub struct Digest(pub B256);
 
+impl Digest {
+    pub fn get(self) -> B256 {
+        self.0
+    }
+}
+
 impl Array for Digest {}
 
 impl AsRef<[u8]> for Digest {

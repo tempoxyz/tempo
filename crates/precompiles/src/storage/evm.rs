@@ -194,7 +194,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         address: Address,
         key: U256,
         value: U256,
-        action: StorageAction,
+        action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
@@ -205,7 +205,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         };
 
         let result = self.sstore_journal(address, key, value, skip_cold_load)?;
-        self.actions.record(action);
+        self.actions.record(action(&result.data));
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -268,8 +268,12 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
-        self.actions
-            .record_always(StorageAction::Sstore(address, key, value));
+        self.actions.record_always(StorageAction::Sstore(
+            address,
+            key,
+            val.data.present_value,
+            value,
+        ));
         Ok(val)
     }
 
@@ -377,8 +381,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let action = StorageAction::Sstore(address, key, value);
-        self.sstore_inner(address, key, value, action)
+        self.sstore_inner(address, key, value, |result| {
+            StorageAction::Sstore(address, key, result.present_value, value)
+        })
     }
 
     #[inline]
@@ -398,12 +403,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let sstore_action = if current == U256::ZERO && value != U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, delta)
+            StorageAction::Sstore(address, key, current, value)
         } else {
-            StorageAction::Sinc(address, key, delta)
+            StorageAction::Sinc(address, key, current, delta)
         };
 
-        self.sstore_inner(address, key, value, sstore_action)
+        self.sstore_inner(address, key, value, |_| sstore_action)
     }
 
     #[inline]
@@ -423,12 +428,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let sstore_action = if current != U256::ZERO && value == U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, value)
+            StorageAction::Sstore(address, key, current, value)
         } else {
-            StorageAction::Sdec(address, key, delta)
+            StorageAction::Sdec(address, key, current, delta)
         };
 
-        self.sstore_inner(address, key, value, sstore_action)
+        self.sstore_inner(address, key, value, |_| sstore_action)
     }
 
     #[inline]
@@ -725,13 +730,13 @@ mod tests {
         assert_eq!(
             provider.take_actions(),
             Some(vec![
-                StorageAction::Sstore(addr, k1, v1),
-                StorageAction::Sstore(addr, k2, v2),
+                StorageAction::Sstore(addr, k1, U256::ZERO, v1),
+                StorageAction::Sstore(addr, k2, U256::ZERO, v2),
                 StorageAction::Sload(addr, k1, v1),
-                StorageAction::Sstore(addr, k1, v1_new),
+                StorageAction::Sstore(addr, k1, v1, v1_new),
                 StorageAction::Sload(addr, k2, v2),
-                StorageAction::Sinc(addr, k1, U256::from(4)),
-                StorageAction::Sdec(addr, k2, U256::from(5)),
+                StorageAction::Sinc(addr, k1, v1_new, U256::from(4)),
+                StorageAction::Sdec(addr, k2, v2, U256::from(5)),
             ])
         );
 
