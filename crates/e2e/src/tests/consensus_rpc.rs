@@ -73,7 +73,8 @@ async fn consensus_subscribe_and_query_finalization() {
 
     let mut saw_notarized = false;
     let mut saw_finalized = false;
-    let mut current_height = initial_height;
+    let mut notarized_height = initial_height;
+    let mut finalized_height = initial_height;
 
     while !saw_notarized || !saw_finalized {
         let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
@@ -84,16 +85,15 @@ async fn consensus_subscribe_and_query_finalization() {
 
         match event {
             Event::Notarized { block, .. } => {
-                if block.block.inner.number > current_height {
-                    saw_notarized = true;
-                }
+                let height = block.block.inner.number;
+                assert!(height > notarized_height);
+
+                notarized_height = height;
+                saw_notarized = true;
             }
             Event::Finalized { block, .. } => {
                 let height = block.block.inner.number;
-                assert!(
-                    height > current_height,
-                    "finalized height should be > {current_height}"
-                );
+                assert!(height > finalized_height);
 
                 let queried_block = http_client
                     .get_finalization(Query::Height(height))
@@ -102,7 +102,7 @@ async fn consensus_subscribe_and_query_finalization() {
 
                 assert_eq!(queried_block, block);
 
-                current_height = height;
+                finalized_height = height;
                 saw_finalized = true;
             }
             Event::Nullified { .. } => {}
