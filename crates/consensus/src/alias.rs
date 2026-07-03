@@ -364,9 +364,10 @@ pub(crate) mod marshal {
         let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("failed to read dkg outcome from boundary header")?;
 
-        let scheme = Scheme::certificate_verifier(
+        let scheme = Scheme::verifier(
             crate::config::NAMESPACE,
-            *onchain_outcome.network_identity(),
+            onchain_outcome.players().clone(),
+            onchain_outcome.sharing().clone(),
         );
 
         scheme_provider.register(epoch, scheme);
