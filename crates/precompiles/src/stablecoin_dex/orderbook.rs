@@ -150,6 +150,8 @@ pub struct Orderbook {
     pub base: Address,
     /// Quote token address
     pub quote: Address,
+    /// (+T8) Persisted book identifier for compact order storage
+    pub(crate) id: OrderbookId,
     /// Bid orders by tick
     #[allow(dead_code)]
     bids: Mapping<i16, TickLevel>,
@@ -168,6 +170,15 @@ pub struct Orderbook {
     ask_bitmap: Mapping<i16, U256>,
 }
 
+/// (+T8) orderbook identifier backed by the append-only `book_keys` vector
+#[derive(Storable, Default)]
+pub(crate) struct OrderbookId {
+    /// Distinguishes indexed books, including index zero, from unmigrated books
+    pub is_set: bool,
+    /// Index into `book_keys`
+    pub index: u32,
+}
+
 impl Orderbook {
     /// Creates a new orderbook for a token pair
     pub fn new(base: Address, quote: Address) -> Self {
@@ -177,6 +188,17 @@ impl Orderbook {
             best_bid_tick: i16::MIN,
             best_ask_tick: i16::MAX,
             ..Default::default()
+        }
+    }
+
+    /// Creates a new orderbook with its persisted `book_keys` index
+    pub fn new_with_id(base: Address, quote: Address, id: u32) -> Self {
+        Self {
+            id: OrderbookId {
+                is_set: true,
+                index: id,
+            },
+            ..Self::new(base, quote)
         }
     }
 

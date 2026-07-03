@@ -13,9 +13,11 @@
 //! [`OrderHandler`] detects the record version on read, exposes field-level handlers for mutable
 //! linked-list fields, and lazily migrates legacy records to V1 when they are rewritten.
 
-use super::{__packing_legacy_order, LegacyOrder, ORDER_VERSION_V1, Order};
+use super::{__packing_legacy_order, LegacyOrder, ORDER_VERSION_V1, ORDER_VERSION_V2, Order};
 use crate::{
+    STABLECOIN_DEX_ADDRESS,
     error::{Result as StorageResult, TempoPrecompileError},
+    stablecoin_dex::{self, StablecoinDEX},
     storage::{
         Handler, HandlerCache, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx,
         StorageKey, StorageOps, packing,
@@ -33,6 +35,8 @@ pub(crate) enum OrderVersion {
     Legacy,
     /// T8+ (TIP-1062): Optimized physical layout represented by [`V1Order`].
     V1,
+    /// T8+ (TIP-1087): V1 prefix plus compact book index represented by [`V2Order`].
+    V2,
 }
 
 impl TryFrom<U256> for OrderVersion {
@@ -49,6 +53,7 @@ impl TryFrom<U256> for OrderVersion {
         match version {
             0 => Ok(Self::Legacy),
             ORDER_VERSION_V1 => Ok(Self::V1),
+            ORDER_VERSION_V2 => Ok(Self::V2),
             version => Err(TempoPrecompileError::Fatal(format!(
                 "unknown stablecoin DEX order storage version {version}"
             ))),
@@ -58,7 +63,7 @@ impl TryFrom<U256> for OrderVersion {
 
 /// Compact TIP-1062 physical order layout.
 ///
-/// V1 omits `order_id`; reads synthesize it from the `orders` mapping key.
+/// V1 omits `order_id` by synthesizing it from the `orders` mapping key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 struct V1Order {
     /// Address of the user who placed the order.
@@ -86,33 +91,12 @@ struct V1Order {
 }
 
 impl V1Order {
-    const IS_BID_FLAG: u8 = 1 << 0;
-    const IS_FLIP_FLAG: u8 = 1 << 1;
-
-    /// Packs logical order flags into the V1 metadata byte.
-    #[inline]
-    fn metadata(is_bid: bool, is_flip: bool) -> u8 {
-        (u8::from(is_bid) * Self::IS_BID_FLAG) | (u8::from(is_flip) * Self::IS_FLIP_FLAG)
-    }
-
-    /// Returns whether this order is a bid (`true`) or ask (`false`).
-    #[inline]
-    fn is_bid(&self) -> bool {
-        self.metadata & Self::IS_BID_FLAG != 0
-    }
-
-    /// Returns whether this order should create an opposite-side order when fully filled.
-    #[inline]
-    fn is_flip(&self) -> bool {
-        self.metadata & Self::IS_FLIP_FLAG != 0
-    }
-
     /// Converts the logical order into the compact V1 physical layout.
     fn new(order: Order) -> Self {
         Self {
             maker: order.maker,
             tick: order.tick,
-            metadata: Self::metadata(order.is_bid, order.is_flip),
+            metadata: OrderFlags::pack(order.is_bid, order.is_flip),
             flip_tick: order.flip_tick,
             _unused: FixedBytes::<6>::ZERO,
             version: OrderVersion::V1,
@@ -130,15 +114,105 @@ impl V1Order {
             order_id,
             maker: self.maker,
             book_key: self.book_key,
-            is_bid: self.is_bid(),
+            is_bid: OrderFlags::is_bid(self.metadata),
             tick: self.tick,
             amount: self.amount,
             remaining: self.remaining,
             prev: self.prev,
             next: self.next,
-            is_flip: self.is_flip(),
+            is_flip: OrderFlags::is_flip(self.metadata),
             flip_tick: self.flip_tick,
         }
+    }
+}
+
+/// Compact TIP-1087 physical order layout.
+///
+/// V2 replaces V1's repeated `book_key` slot with a compact index into the DEX `book_keys` vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
+struct V2Order {
+    /// Address of the user who placed the order.
+    maker: Address,
+    /// Packed order metadata. Bit 0 stores `is_bid`; bit 1 stores `is_flip`.
+    metadata: u8,
+    /// Price tick for the order's current side.
+    tick: i16,
+    /// Destination tick for a fully filled flip order.
+    flip_tick: i16,
+    /// Index into the DEX `book_keys` vector.
+    book_index: u32,
+    /// Reserved bytes in packed slot 0.
+    _unused: FixedBytes<2>,
+    /// Physical layout marker stored in packed slot 0.
+    version: OrderVersion,
+    /// Original order amount.
+    amount: u128,
+    /// Remaining unfilled amount.
+    remaining: u128,
+    /// Previous order ID in the tick-level FIFO linked list.
+    prev: u128,
+    /// Next order ID in the tick-level FIFO linked list.
+    next: u128,
+}
+
+impl V2Order {
+    /// Converts the logical order into the compact V2 physical layout.
+    fn new(order: Order, book_index: u32) -> Self {
+        Self {
+            maker: order.maker,
+            metadata: OrderFlags::pack(order.is_bid, order.is_flip),
+            tick: order.tick,
+            flip_tick: order.flip_tick,
+            book_index,
+            _unused: FixedBytes::<2>::ZERO,
+            version: OrderVersion::V2,
+            amount: order.amount,
+            remaining: order.remaining,
+            prev: order.prev,
+            next: order.next,
+        }
+    }
+
+    /// Converts V2 storage back into the logical order, restoring `order_id` and `book_key`.
+    fn into_order(self, order_id: u128, book_key: B256) -> Order {
+        Order {
+            order_id,
+            maker: self.maker,
+            book_key,
+            is_bid: OrderFlags::is_bid(self.metadata),
+            tick: self.tick,
+            amount: self.amount,
+            remaining: self.remaining,
+            prev: self.prev,
+            next: self.next,
+            is_flip: OrderFlags::is_flip(self.metadata),
+            flip_tick: self.flip_tick,
+        }
+    }
+}
+
+struct OrderFlags;
+
+impl OrderFlags {
+    const IS_BID: u8 = 1 << 0;
+    const IS_FLIP: u8 = 1 << 1;
+
+    /// Packs logical order flags into a metadata byte.
+    #[inline]
+    fn pack(is_bid: bool, is_flip: bool) -> u8 {
+        (u8::from(is_bid) * Self::IS_BID) | (u8::from(is_flip) * Self::IS_FLIP)
+    }
+
+    /// Returns whether the metadata marks the order as a bid (`true`) or ask (`false`).
+    #[inline]
+    fn is_bid(metadata: u8) -> bool {
+        metadata & Self::IS_BID != 0
+    }
+
+    /// Returns whether the metadata marks the order as a flip order.
+    #[inline]
+    fn is_flip(metadata: u8) -> bool {
+        metadata & Self::IS_FLIP != 0
     }
 }
 
@@ -167,7 +241,7 @@ impl OrderHandler {
     pub(crate) fn maker(&self) -> StorageResult<Slot<Address>> {
         let loc = match self.version()? {
             OrderVersion::Legacy => __packing_legacy_order::MAKER_LOC,
-            OrderVersion::V1 => __packing_v1_order::MAKER_LOC,
+            OrderVersion::V1 | OrderVersion::V2 => __packing_v1_order::MAKER_LOC,
         };
 
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
@@ -201,11 +275,11 @@ impl OrderHandler {
     fn u128_field(
         &self,
         legacy: packing::FieldLocation,
-        v1: packing::FieldLocation,
+        compact: packing::FieldLocation,
     ) -> StorageResult<Slot<u128>> {
         let loc = match self.version()? {
             OrderVersion::Legacy => legacy,
-            OrderVersion::V1 => v1,
+            OrderVersion::V1 | OrderVersion::V2 => compact,
         };
 
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
@@ -237,6 +311,11 @@ impl Handler<Order> for OrderHandler {
             OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
             OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
                 .map(|res| res.into_order(self.order_id)),
+            OrderVersion::V2 => {
+                let order = V2Order::load(self, self.base_slot, LayoutCtx::FULL)?;
+                let book_key = StablecoinDEX::new().book_key_for_index(order.book_index)?;
+                Ok(order.into_order(self.order_id, book_key))
+            }
         }
     }
 
@@ -248,16 +327,24 @@ impl Handler<Order> for OrderHandler {
             return value.store(self, self.base_slot, LayoutCtx::FULL);
         }
 
-        match self.version()? {
-            OrderVersion::Legacy => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-                for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
-                    self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-                }
-                Ok(())
-            }
-            OrderVersion::V1 => V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL),
+        let old_slots = match self.version()? {
+            OrderVersion::Legacy => LegacyOrder::SLOTS,
+            OrderVersion::V1 => V1Order::SLOTS,
+            OrderVersion::V2 => V2Order::SLOTS,
+        };
+
+        let new_slots = if let (true, id) = StablecoinDEX::new().book_id(value.book_key)? {
+            V2Order::new(value, id).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V2Order::SLOTS
+        } else {
+            V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V1Order::SLOTS
+        };
+
+        for offset in new_slots..old_slots {
+            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
         }
+        Ok(())
     }
 
     /// Deletes the physical slots for the cached or detected order layout.
@@ -265,6 +352,7 @@ impl Handler<Order> for OrderHandler {
         let slot_count = match self.version()? {
             OrderVersion::Legacy => LegacyOrder::SLOTS,
             OrderVersion::V1 => V1Order::SLOTS,
+            OrderVersion::V2 => V2Order::SLOTS,
         };
 
         for offset in 0..slot_count {
@@ -314,7 +402,7 @@ impl OrderMapping {
 
     #[inline]
     fn base_slot() -> U256 {
-        crate::stablecoin_dex::slots::ORDERS
+        stablecoin_dex::slots::ORDERS
     }
 
     /// Returns a cached handler for `order_id`.
@@ -323,7 +411,7 @@ impl OrderMapping {
             OrderHandler::new(
                 order_id.mapping_slot(Self::base_slot()),
                 order_id,
-                crate::STABLECOIN_DEX_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
             )
         })
     }
@@ -334,7 +422,7 @@ impl OrderMapping {
             OrderHandler::new(
                 order_id.mapping_slot(Self::base_slot()),
                 order_id,
-                crate::STABLECOIN_DEX_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
             )
         })
     }

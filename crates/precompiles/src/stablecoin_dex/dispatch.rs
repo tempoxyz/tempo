@@ -79,7 +79,17 @@ impl Precompile for StablecoinDEX {
                     priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
 
                     #[schedule(since = T7)]
-                    storageCredits(call) => view(call, |c| self.storage_credits(c.user))
+                    storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
+
+                    #[schedule(since = T8)]
+                    bookIndexForKey(call) => view(call, |c| self.book_id(c.bookKey).map(Into::into)),
+                    #[schedule(since = T8)]
+                    bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
+                    #[schedule(since = T8)]
+                    setIndexForKey(call) => mutate_void(call, msg_sender, |_, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.set_index_for_key(c.bookKey, c.index)
+                    }),
                 }
             }
         )
@@ -450,7 +460,7 @@ mod tests {
 
     #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 

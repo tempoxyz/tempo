@@ -22,7 +22,7 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     error::{Result, TempoPrecompileError},
-    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
+    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, OrderbookId, compute_book_key},
     storage::{Handler, Mapping},
     storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
@@ -511,6 +511,39 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
+    /// Returns the persisted book index for `book_key`, if one has been set.
+    pub fn book_id(&self, book_key: B256) -> Result<(bool, u32)> {
+        if !self.storage.spec().is_t8() {
+            return Ok((false, 0));
+        }
+
+        let id = self.books[book_key].id.read()?;
+        Ok((id.is_set, id.index))
+    }
+
+    /// Resolves a book key by index from the append-only `book_keys` vector.
+    pub fn book_key_for_index(&self, index: u32) -> Result<B256> {
+        self.book_keys
+            .at(index as usize)?
+            .ok_or_else(StablecoinDEXError::pair_does_not_exist)?
+            .read()
+    }
+
+    /// Persists the `book_keys` vector index for an existing orderbook.
+    pub fn set_index_for_key(&mut self, book_key: B256, index: u32) -> Result<()> {
+        if book_key != self.book_key_for_index(index)? {
+            return Err(StablecoinDEXError::invalid_book_index().into());
+        }
+        if let (true, _) = self.book_id(book_key)? {
+            return Err(StablecoinDEXError::index_already_set().into());
+        }
+
+        self.books[book_key].id.write(OrderbookId {
+            is_set: true,
+            index,
+        })
+    }
+
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
     ///
     /// # Errors
@@ -562,7 +595,11 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::pair_already_exists().into());
         }
 
-        let book = Orderbook::new(base, quote);
+        let book = if self.storage.spec().is_t8() {
+            Orderbook::new_with_id(base, quote, self.book_keys.len()? as u32)
+        } else {
+            Orderbook::new(base, quote)
+        };
         self.books[book_key].write(book)?;
         self.book_keys.push(book_key)?;
 
