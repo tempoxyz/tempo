@@ -425,10 +425,30 @@ impl StorageActionReplayState {
         expected: U256,
         value: U256,
     ) -> Result<(), BlockExecutionError> {
-        // TODO: we can save on `self.tx_changes` lookup here
-        // by returning an entry from `self.sload_exact`
-        self.sload_exact(db, address, slot, expected)?;
-        self.sstore(address, slot, value)
+        match self.tx_changes.entry(address).or_default().entry(slot) {
+            Entry::Occupied(mut change) => {
+                let change = change.get_mut();
+                if change.current != expected {
+                    return Err(StorageActionReplayError::ActionConflict.into());
+                }
+                change.current = value;
+                change.written = true;
+                Ok(())
+            }
+            Entry::Vacant(change) => {
+                let current = Self::cached_storage_value(db, address, slot).unwrap_or(expected);
+                if current != expected {
+                    return Err(StorageActionReplayError::ActionConflict.into());
+                }
+
+                change.insert(SlotChange {
+                    original: current,
+                    current: value,
+                    written: true,
+                });
+                Ok(())
+            }
+        }
     }
 
     /// Records a storage slot write with a known transaction-start value.
@@ -767,6 +787,33 @@ mod tests {
         assert_eq!(change.original, U256::from(10));
         assert_eq!(change.current, U256::from(11));
         assert!(change.written);
+    }
+
+    #[test]
+    fn sstore_exact_rejects_changed_transaction_view() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(10));
+        let mut replay_state = StorageActionReplayState::default();
+
+        replay_state
+            .sstore_exact(&mut db, address, slot, U256::from(10), U256::from(11))
+            .expect("first store should establish the slot view");
+
+        let err = replay_state
+            .sstore_exact(&mut db, address, slot, U256::from(10), U256::from(12))
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
+        );
+
+        let change = replay_state
+            .tx_changes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
+            .expect("slot change recorded");
+        assert_eq!(change.current, U256::from(11));
     }
 
     #[test]
