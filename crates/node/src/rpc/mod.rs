@@ -386,21 +386,27 @@ fn populate_native_multisig_simulation_hints(
     request: &mut TempoTransactionRequest,
     db: &mut impl Database<Error: Into<EthApiError>>,
 ) -> Result<(), EthApiError> {
-    if request.multisig_init.is_some() || request.multisig_signature_count.is_some() {
-        return Ok(());
-    }
-
     let Some(from) = request.from else {
         return Ok(());
     };
 
-    let Some(signature_count) = load_native_multisig_simulation_hints(from, db)? else {
+    if request.multisig_init.is_none() && request.multisig_signature_count.is_none() {
+        if let Some(signature_count) = load_native_multisig_simulation_hints(from, db)? {
+            request.multisig_signature_count = Some(signature_count);
+        }
         return Ok(());
-    };
+    }
 
-    request
-        .multisig_signature_count
-        .get_or_insert(signature_count);
+    // `multisig_init` is advisory: a registered sender cannot re-init, so the
+    // stored config wins and the bootstrap hint is dropped.
+    if request.multisig_init.is_some()
+        && let Some(signature_count) = load_native_multisig_simulation_hints(from, db)?
+    {
+        request.multisig_init = None;
+        request
+            .multisig_signature_count
+            .get_or_insert(signature_count);
+    }
 
     Ok(())
 }
@@ -735,5 +741,98 @@ where
             .build();
 
         Ok(TempoEthApi::new(eth_api, self.validator_key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, B256};
+    use reth_evm::revm::{bytecode::Bytecode, state::AccountInfo};
+    use std::collections::HashMap;
+    use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
+
+    /// Storage-only test DB for `NATIVE_MULTISIG_ADDRESS` slots.
+    #[derive(Default)]
+    struct SlotDb(HashMap<U256, U256>);
+
+    impl SlotDb {
+        /// Packs `value` into `slot` at `offset`, mirroring `extract_from_word`.
+        fn insert_u8(&mut self, (slot, offset): (U256, Option<usize>), value: u8) {
+            *self.0.entry(slot).or_default() |=
+                U256::from(value) << (offset.unwrap_or_default() * 8);
+        }
+
+        fn registered_one_of_one(account: Address) -> Self {
+            let mut db = Self::default();
+            db.insert_u8(NativeMultisig::account_threshold_storage_slot(account), 1);
+            db.insert_u8(NativeMultisig::account_owners_len_storage_slot(account), 1);
+            db.insert_u8(
+                NativeMultisig::config_owner_weight_storage_slot(account, 0),
+                1,
+            );
+            db
+        }
+    }
+
+    impl Database for SlotDb {
+        type Error = ProviderError;
+
+        fn basic(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(None)
+        }
+
+        fn code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+            debug_assert_eq!(address, NATIVE_MULTISIG_ADDRESS);
+            Ok(self.0.get(&index).copied().unwrap_or_default())
+        }
+
+        fn block_hash(&mut self, _number: u64) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
+        }
+    }
+
+    fn init_request(from: Address) -> TempoTransactionRequest {
+        let mut request = TempoTransactionRequest::default();
+        request.from = Some(from);
+        request.multisig_init = Some(InitMultisig {
+            salt: B256::ZERO,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: Address::from([0x11; 20]),
+                weight: 1,
+            }],
+        });
+        request
+    }
+
+    #[test]
+    fn populate_drops_multisig_init_for_registered_senders() {
+        let account = Address::from([0xaa; 20]);
+        let mut db = SlotDb::registered_one_of_one(account);
+        assert_eq!(
+            load_native_multisig_simulation_hints(account, &mut db).unwrap(),
+            Some(1),
+        );
+
+        let mut request = init_request(account);
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+        assert!(request.multisig_init.is_none());
+        assert_eq!(request.multisig_signature_count, Some(1));
+    }
+
+    #[test]
+    fn populate_keeps_multisig_init_for_unregistered_senders() {
+        let account = Address::from([0xbb; 20]);
+        let mut db = SlotDb::default();
+
+        let mut request = init_request(account);
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+        assert!(request.multisig_init.is_some());
+        assert_eq!(request.multisig_signature_count, None);
     }
 }

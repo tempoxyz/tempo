@@ -98,6 +98,7 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+#[expect(clippy::type_complexity)]
 fn split_p256_signature_fields(
     sig_data: &[u8; P256_SIGNATURE_LENGTH],
 ) -> Result<(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool), &'static str> {

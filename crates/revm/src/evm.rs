@@ -1023,6 +1023,72 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_t8_rpc_simulation_bootstrap_transacts_repeatedly_on_one_evm() -> eyre::Result<()> {
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x55),
+            threshold: 1,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.account().map_err(eyre::Report::msg)?;
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .gas_limit(2_000_000)
+            .build();
+        let digest = multisig_digest(tx.signature_hash(), account);
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![owner_signature],
+            Some(config),
+        )));
+
+        let mut evm = create_funded_evm_t8(account);
+        StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+            NativeMultisig::new().initialize()
+        })?;
+
+        let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, account);
+        tx_env.unique_tx_identifier = Some(crate::RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+
+        // Gas estimation transacts repeatedly on one EVM, discarding each
+        // result. The discarded bootstrap must not poison later iterations.
+        let first = evm.transact(tx_env.clone())?;
+        assert!(first.result.is_success(), "first simulation should succeed");
+
+        let second = evm.transact(tx_env)?;
+        assert!(
+            second.result.is_success(),
+            "repeat simulation should succeed: {:?}",
+            second.result
+        );
+
+        // Discarded simulations leave no registered account behind.
+        StorageCtx::enter_ctx(
+            &mut evm.ctx,
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                assert!(!NativeMultisig::new().is_multisig_account(account)?);
+                Ok(())
+            },
+        )?;
+
+        Ok(())
+    }
+
     #[test_case::test_case(TempoHardfork::T1)]
     #[test_case::test_case(TempoHardfork::T1C)]
     fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
