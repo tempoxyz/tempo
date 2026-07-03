@@ -1120,6 +1120,12 @@ where
             let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
             let is_rpc_simulation =
                 tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+            // RPC simulations (e.g. `eth_estimateGas` retries) reuse one EVM and discard
+            // journal state between transacts, so markers/configs seeded by a discarded
+            // execution must not leak into this validation. Re-read from state instead.
+            if is_rpc_simulation {
+                multisig_cache.clear();
+            }
             let caller_account_info = if multisig_signature.is_some() {
                 // Native multisig validation needs code/delegation and nonce facts, but K1 and
                 // keychain transactions only need the account marker check below.
@@ -3457,6 +3463,78 @@ mod tests {
             test.evm.native_multisig_cache.get_config(&account),
             Some(&config),
             "registered multisig validation should cache the validated config"
+        );
+    }
+
+    #[test]
+    fn test_t8_rpc_simulation_bootstrap_ignores_stale_marker_cache() {
+        let config = native_multisig_config();
+        let account = config.account().unwrap();
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![Bytes::from_static(&[0xaa; 65])],
+                Some(config.clone()),
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+            tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        });
+        // A discarded estimate iteration executed this bootstrap and seeded the
+        // cache via `insert_config`; canonical state has no registered account.
+        test.evm
+            .native_multisig_cache
+            .insert_config(account, config.clone());
+
+        test.validate_against_state_and_deduct_caller()
+            .expect("bootstrap simulation must not trust markers from discarded executions");
+        // The stale entry is cleared on entry; this pass then re-seeds the
+        // transient bootstrapped-account guard for its own user calls.
+        assert_eq!(
+            test.evm.native_multisig_cache.get_config(&account),
+            Some(&config),
+            "bootstrap pre-execution should re-seed the guard"
+        );
+    }
+
+    #[test]
+    fn test_t8_registered_account_rejects_multisig_init_outside_simulation() {
+        let config = native_multisig_config();
+        let account = config.account().unwrap();
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![Bytes::from_static(&[0xaa; 65])],
+                Some(config.clone()),
+            )),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+        });
+        store_native_multisig_account(&mut test, &config);
+
+        let err = test
+            .validate_against_state_and_deduct_caller()
+            .expect_err("registered accounts must reject multisig_init");
+        assert!(
+            err.to_string()
+                .contains("multisig_init is only allowed when bootstrapping an account"),
+            "unexpected error: {err}"
         );
     }
 
