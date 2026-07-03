@@ -927,17 +927,30 @@ mod tests {
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)
     }
 
-    fn store_v1_order(handler: &OrderHandler, order: Order) -> StorageResult<()> {
-        let mut storage = handler.clone();
-        V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
-    }
-
-    fn store_v2_order(exchange: &mut StablecoinDEX, order: Order) -> StorageResult<()> {
-        ensure_book_index(exchange, order.book_key)?;
-        let (_, book_index) = exchange.book_id(order.book_key)?;
-        let handler = &exchange.orders[order.order_id()];
-        let mut storage = handler.clone();
-        V2Order::new(order, book_index).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
+    fn store_physical_order(
+        exchange: &mut StablecoinDEX,
+        version: OrderVersion,
+        order: Order,
+    ) -> StorageResult<()> {
+        match version {
+            OrderVersion::Legacy => store_legacy_order(&exchange.orders[order.order_id()], order),
+            OrderVersion::V1 => {
+                let handler = &exchange.orders[order.order_id()];
+                let mut storage = handler.clone();
+                V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
+            }
+            OrderVersion::V2 => {
+                ensure_book_index(exchange, order.book_key)?;
+                let (_, book_index) = exchange.book_id(order.book_key)?;
+                let handler = &exchange.orders[order.order_id()];
+                let mut storage = handler.clone();
+                V2Order::new(order, book_index).store(
+                    &mut storage,
+                    handler.base_slot,
+                    LayoutCtx::FULL,
+                )
+            }
+        }
     }
 
     fn legacy_order_slot(order: Order, loc: packing::FieldLocation) -> StorageResult<U256> {
@@ -1539,6 +1552,21 @@ mod tests {
         Mixed,
     }
 
+    impl OrderLayoutCase {
+        fn version_at(self, index: usize, mixed_offset: bool) -> OrderVersion {
+            match self {
+                Self::Legacy => OrderVersion::Legacy,
+                Self::V1 => OrderVersion::V1,
+                Self::V2 => OrderVersion::V2,
+                Self::Mixed => match (index + usize::from(mixed_offset)) % 3 {
+                    0 => OrderVersion::Legacy,
+                    1 => OrderVersion::V1,
+                    _ => OrderVersion::V2,
+                },
+            }
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct DexMigrationSnapshot {
         next_order_id: u128,
@@ -1566,10 +1594,14 @@ mod tests {
         let v1 = run_dex_migration_sequence_case(OrderVersion::V1, 0)?;
         let v2 = run_dex_migration_sequence_case(OrderVersion::V2, 0)?;
 
-        assert_eq!(
-            snapshot_without_order_book_keys(&v1),
-            snapshot_without_order_book_keys(&v2)
-        );
+        let without_order_book_keys = |snapshot: &DexMigrationSnapshot| {
+            let mut normalized = snapshot.clone();
+            for order in normalized.active_orders.iter_mut().flatten() {
+                order.book_key = B256::ZERO;
+            }
+            normalized
+        };
+        assert_eq!(without_order_book_keys(&v1), without_order_book_keys(&v2));
 
         for legacy_mask in 1..(1u8 << 3) {
             assert_eq!(
@@ -1708,14 +1740,6 @@ mod tests {
         Ok(())
     }
 
-    fn snapshot_without_order_book_keys(snapshot: &DexMigrationSnapshot) -> DexMigrationSnapshot {
-        let mut normalized = snapshot.clone();
-        for order in normalized.active_orders.iter_mut().flatten() {
-            order.book_key = B256::ZERO;
-        }
-        normalized
-    }
-
     fn assert_initial_versions_for_mask(
         exchange: &StablecoinDEX,
         expected_compact: OrderVersion,
@@ -1727,15 +1751,16 @@ mod tests {
             OrderVersion::V1 | OrderVersion::V2
         ));
 
-        for index in 0..len {
-            let id = index as u128 + 1;
-            let expected = if legacy_mask & (1 << index) != 0 {
-                OrderVersion::Legacy
-            } else {
-                expected_compact
-            };
-            assert_eq!(exchange.orders[id].version()?, expected);
-        }
+        assert_order_versions(
+            exchange,
+            (0..len).map(|index| {
+                if legacy_mask & (1 << index) != 0 {
+                    OrderVersion::Legacy
+                } else {
+                    expected_compact
+                }
+            }),
+        )?;
         Ok(())
     }
 
@@ -1881,11 +1906,7 @@ mod tests {
         index: usize,
         order: Order,
     ) -> StorageResult<()> {
-        match order_version_for_layout(layout, mixed_offset, index) {
-            OrderVersion::Legacy => store_legacy_order(&exchange.orders[order.order_id()], order),
-            OrderVersion::V1 => store_v1_order(&exchange.orders[order.order_id()], order),
-            OrderVersion::V2 => store_v2_order(exchange, order),
-        }
+        store_physical_order(exchange, layout.version_at(index, mixed_offset), order)
     }
 
     fn ensure_book_index(exchange: &mut StablecoinDEX, book_key: B256) -> StorageResult<()> {
@@ -1898,21 +1919,16 @@ mod tests {
         exchange.set_index_for_key(book_key, index)
     }
 
-    fn order_version_for_layout(
-        layout: OrderLayoutCase,
-        mixed_offset: bool,
-        index: usize,
-    ) -> OrderVersion {
-        match layout {
-            OrderLayoutCase::Legacy => OrderVersion::Legacy,
-            OrderLayoutCase::V1 => OrderVersion::V1,
-            OrderLayoutCase::V2 => OrderVersion::V2,
-            OrderLayoutCase::Mixed => match (index + usize::from(mixed_offset)) % 3 {
-                0 => OrderVersion::Legacy,
-                1 => OrderVersion::V1,
-                _ => OrderVersion::V2,
-            },
-        }
+    fn assert_order_versions(
+        exchange: &StablecoinDEX,
+        expected: impl IntoIterator<Item = OrderVersion>,
+    ) -> eyre::Result<Vec<OrderVersion>> {
+        let expected = expected.into_iter().collect::<Vec<_>>();
+        let actual = (0..expected.len())
+            .map(|index| exchange.orders[index as u128 + 1].version())
+            .collect::<StorageResult<Vec<_>>>()?;
+        assert_eq!(actual, expected);
+        Ok(actual)
     }
 
     fn assert_initial_versions(
@@ -1921,46 +1937,18 @@ mod tests {
         mixed_offset: bool,
         len: usize,
     ) -> eyre::Result<()> {
-        let mut saw_legacy = false;
-        let mut saw_v1 = false;
-        let mut saw_v2 = false;
+        let actual = assert_order_versions(
+            exchange,
+            (0..len).map(|index| layout.version_at(index, mixed_offset)),
+        )?;
 
-        for index in 0..len {
-            let id = index as u128 + 1;
-            let version = exchange.orders[id].version()?;
-            let expected = order_version_for_layout(layout, mixed_offset, index);
-            assert_eq!(version, expected);
-            saw_legacy |= version == OrderVersion::Legacy;
-            saw_v1 |= version == OrderVersion::V1;
-            saw_v2 |= version == OrderVersion::V2;
-        }
-
-        match layout {
-            OrderLayoutCase::Legacy => {
-                assert!(saw_legacy);
-                assert!(!saw_v1);
-                assert!(!saw_v2);
-            }
-            OrderLayoutCase::V1 => {
-                assert!(!saw_legacy);
-                assert!(saw_v1);
-                assert!(!saw_v2);
-            }
-            OrderLayoutCase::V2 => {
-                assert!(!saw_legacy);
-                assert!(!saw_v1);
-                assert!(saw_v2);
-            }
-            OrderLayoutCase::Mixed if len >= 3 => {
-                assert!(saw_legacy);
-                assert!(saw_v1);
-                assert!(saw_v2);
-            }
-            OrderLayoutCase::Mixed => {
-                let distinct_versions =
-                    usize::from(saw_legacy) + usize::from(saw_v1) + usize::from(saw_v2);
-                assert_eq!(distinct_versions, len);
-            }
+        if matches!(layout, OrderLayoutCase::Mixed) && len >= 3 {
+            assert!(actual.contains(&OrderVersion::Legacy));
+            assert!(actual.contains(&OrderVersion::V1));
+            assert!(actual.contains(&OrderVersion::V2));
+        } else if matches!(layout, OrderLayoutCase::V1 | OrderLayoutCase::V2) {
+            let is_compact = |v: OrderVersion| !matches!(v, OrderVersion::Legacy);
+            assert!(actual.iter().copied().all(is_compact));
         }
 
         Ok(())
