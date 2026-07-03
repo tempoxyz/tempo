@@ -7,7 +7,25 @@ permissions:
 on:
   push:
     branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "crates/primitives/**"
+      - "crates/alloy/**"
+      - "crates/precompiles/**"
+      - "crates/revm/**"
+      - "crates/evm/**"
   pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "crates/primitives/**"
+      - "crates/alloy/**"
+      - "crates/precompiles/**"
+      - "crates/revm/**"
+      - "crates/evm/**"
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
   workflow_dispatch:
@@ -20,7 +38,7 @@ on:
       benchmarks:
         description: "Cargo bench target(s), separated by spaces; leave empty for every bench in the package(s)"
         required: false
-        default: "tip20_execution"
+        default: "tip20_execution dex_execution"
         type: string
       filters:
         description: "Optional benchmark name filter passed to cargo codspeed run"
@@ -53,7 +71,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - name: Install cargo-codspeed
         run: |
           cargo install cargo-codspeed \
@@ -64,8 +82,8 @@ jobs:
         id: args
         env:
           INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
-          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
-          INPUT_FILTERS: ${{ inputs.filters || '' }}
+          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution dex_execution' }}
+          INPUT_FILTERS: ${{ inputs.filters }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |
           set -euo pipefail

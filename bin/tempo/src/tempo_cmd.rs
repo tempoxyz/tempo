@@ -26,7 +26,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::{NZU64, ordered};
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
@@ -34,7 +34,7 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node_config::SigningKey;
+use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
     IValidatorConfigV2::{self, Validator},
     VALIDATOR_CONFIG_V2_ADDRESS,
@@ -55,14 +55,14 @@ fn get_env(key: &str) -> eyre::Result<String> {
 /// the actual implementation lives in `tempo_ext::run()`. We capture all
 /// trailing arguments and re-dispatch.
 #[derive(Debug, clap::Args)]
-pub(crate) struct ExtArgs {
+pub struct ExtArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     args: Vec<String>,
 }
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
-pub(crate) enum TempoSubcommand {
+pub enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
@@ -139,19 +139,23 @@ impl ExtendedCommand for TempoSubcommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum ConsensusSubcommand {
+pub enum ConsensusSubcommand {
     /// Add a new validator to the validator config contract.
     AddValidator(AddValidator),
-    /// Calculates the public key from an ed25519 signing key.
-    CalculatePublicKey(CalculatePublicKey),
+    /// Shows the verification key for an ed25519 signing key.
+    #[command(alias = "calculate-public-key")]
+    ShowVerificationKey(ShowVerificationKey),
     /// Create an ed25519 signature for `addValidator`.
     CreateAddValidatorSignature(CreateAddValidatorSignatureArgs),
     /// Create an ed25519 signature for `rotateValidator`.
     CreateRotateValidatorSignature(CreateRotateValidatorSignatureArgs),
     /// Deactivate a validator
     DeactivateValidator(DeactivateValidator),
+    /// Encrypt an existing ed25519 signing key using a passphrase.
+    EncryptSigningKey(EncryptSigningKey),
     /// Generates an ed25519 signing key pair to be used in consensus.
-    GeneratePrivateKey(GeneratePrivateKey),
+    #[command(alias = "generate-private-key")]
+    GenerateSigningKey(GenerateSigningKey),
     /// Rotate a validator to a new identity.
     RotateValidator(RotateValidator),
     /// Set the validator Ip Address
@@ -178,8 +182,9 @@ impl ConsensusSubcommand {
             Self::CreateRotateValidatorSignature(args) => args.run().await,
             Self::SetValidatorIpAddress(args) => args.run().await,
             Self::SetValidatorFeeRecipient(args) => args.run().await,
-            Self::GeneratePrivateKey(args) => args.run(),
-            Self::CalculatePublicKey(args) => args.run(),
+            Self::EncryptSigningKey(args) => args.run(),
+            Self::GenerateSigningKey(args) => args.run(),
+            Self::ShowVerificationKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
             Self::Info(args) => args.run().await,
         }
@@ -255,7 +260,7 @@ async fn read_validator_from_contract(
 
 /// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorIdentityArgs {
+pub struct ValidatorIdentityArgs {
     /// The validator's Ethereum address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
@@ -287,38 +292,65 @@ impl ValidatorIdentityArgs {
 
 /// Either a pre-computed signature or a signing key to compute it from.
 #[derive(Debug, clap::Args)]
-#[group(required = true, multiple = false)]
-pub(crate) struct ValidatorSignatureArgs {
+#[group(required = true, multiple = false, args = ["signature", "signing_key"])]
+pub struct ValidatorSignatureArgs {
     /// A pre-computed ed25519 signature over the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
 
-    /// Path to the ed25519 signing private key file. The signature is computed
-    /// automatically so a separate `create-*-signature` step is not needed.
-    #[arg(long = "consensus.signing-key", value_name = "FILE")]
-    signing_key: Option<PathBuf>,
+    #[command(flatten)]
+    signing_key: Option<SigningKeyArgs>,
 }
 
 impl ValidatorSignatureArgs {
     fn resolve(self, namespace: &[u8], message: &B256) -> eyre::Result<Bytes> {
-        match (self.signature, self.signing_key) {
+        let Self {
+            signature,
+            signing_key,
+        } = self;
+
+        match (signature, signing_key) {
             (Some(sig), _) => Ok(sig),
-            (None, Some(path)) => {
-                let key =
-                    SigningKey::read_from_file(&path).wrap_err("failed reading signing key")?;
+            (None, Some(signing_key)) => {
+                let key = signing_key.read()?;
                 let private_key = key.into_inner();
                 let sig = private_key.sign(namespace, message.as_slice());
                 Ok(sig.encode().into())
             }
-            (None, None) => Err(eyre!(
-                "either --signature or --consensus.signing-key must be provided"
-            )),
+            (None, None) => unreachable!("clap requires either --signature or --signing-key"),
         }
     }
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct WalletArgs {
+pub struct SigningKeyArgs {
+    /// Passphrase source for decrypting `--signing-key`.
+    ///
+    /// A FIFO path, including shell process substitution like `<(...)`, is preferred.
+    /// If omitted, the signing key is read as plaintext hex.
+    #[arg(long, alias = "consensus.secret", value_name = "PATH")]
+    secret: Option<PathBuf>,
+
+    /// Path to the ed25519 signing private key file.
+    ///
+    /// In commands that also accept `--signature`, the signature is computed
+    /// automatically so a separate `create-*-signature` step is not needed.
+    #[arg(long, alias = "consensus.signing-key", value_name = "FILE")]
+    signing_key: PathBuf,
+}
+
+impl SigningKeyArgs {
+    fn read(self) -> eyre::Result<SigningKey> {
+        let Self {
+            signing_key,
+            secret,
+        } = self;
+        read_signing_key(signing_key, secret)
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct WalletArgs {
     /// Path to the file holding the validator's Ethereum private key.
     #[arg(long, value_name = "FILE", help_heading = "Wallet options - raw")]
     wallet_key: Option<PathBuf>,
@@ -403,7 +435,7 @@ impl WalletArgs {
 
 /// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorTransactionArgs {
+pub struct ValidatorTransactionArgs {
     #[command(flatten)]
     wallet: WalletArgs,
 
@@ -485,7 +517,7 @@ impl ValidatorTransactionArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct AddValidator {
+pub struct AddValidator {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     #[command(flatten)]
@@ -533,7 +565,7 @@ impl AddValidator {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct TransferValidatorOwnership {
+pub struct TransferValidatorOwnership {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -571,7 +603,7 @@ impl TransferValidatorOwnership {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct RotateValidator {
+pub struct RotateValidator {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     #[command(flatten)]
@@ -616,7 +648,8 @@ impl RotateValidator {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct CreateAddValidatorSignatureArgs {
+#[group(required = true, args = ["signing_key"])]
+pub struct CreateAddValidatorSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     /// The fee recipient address
@@ -629,15 +662,13 @@ pub(crate) struct CreateAddValidatorSignatureArgs {
         default_value = "https://rpc.presto.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
-    /// Path to the ed25519 signing key file.
-    #[arg(long, value_name = "FILE")]
-    signing_key: PathBuf,
+    #[command(flatten)]
+    signing_key: SigningKeyArgs,
 }
 
 impl CreateAddValidatorSignatureArgs {
     async fn run(self) -> eyre::Result<()> {
-        let signing_key =
-            SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
+        let signing_key = self.signing_key.read()?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.chain_id_from_rpc_url)
@@ -661,7 +692,8 @@ impl CreateAddValidatorSignatureArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct CreateRotateValidatorSignatureArgs {
+#[group(required = true, args = ["signing_key"])]
+pub struct CreateRotateValidatorSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     /// RPC used to fetch the chain id
@@ -671,15 +703,13 @@ pub(crate) struct CreateRotateValidatorSignatureArgs {
         default_value = "https://rpc.presto.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
-    /// Path to the ed25519 signing key file.
-    #[arg(long, value_name = "FILE")]
-    signing_key: PathBuf,
+    #[command(flatten)]
+    signing_key: SigningKeyArgs,
 }
 
 impl CreateRotateValidatorSignatureArgs {
     async fn run(self) -> eyre::Result<()> {
-        let signing_key =
-            SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
+        let signing_key = self.signing_key.read()?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.chain_id_from_rpc_url)
@@ -703,7 +733,7 @@ impl CreateRotateValidatorSignatureArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct SetValidatorIpAddress {
+pub struct SetValidatorIpAddress {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -740,7 +770,7 @@ impl SetValidatorIpAddress {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct DeactivateValidator {
+pub struct DeactivateValidator {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -765,7 +795,7 @@ impl DeactivateValidator {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct SetValidatorFeeRecipient {
+pub struct SetValidatorFeeRecipient {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -793,22 +823,49 @@ impl SetValidatorFeeRecipient {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct GeneratePrivateKey {
+pub struct GenerateSigningKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
+
+    /// Passphrase source for encrypting the generated signing key.
+    ///
+    /// A FIFO path, including shell process substitution like `<(...)`, is preferred.
+    /// If omitted, the signing key is written unencrypted for compatibility.
+    #[arg(long, value_name = "PATH")]
+    secret: Option<PathBuf>,
 
     /// Whether to override `output`, if it already exists.
     #[arg(long, short)]
     force: bool,
 }
 
-impl GeneratePrivateKey {
+impl GenerateSigningKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { output, force } = self;
+        let Self {
+            output,
+            secret,
+            force,
+        } = self;
         let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
+        let passphrase = secret
+            .as_ref()
+            .map(|secret| {
+                read_secret(secret).wrap_err_with(|| {
+                    format!(
+                        "failed reading signing-key encryption passphrase from `{}`",
+                        secret.display()
+                    )
+                })
+            })
+            .transpose()?;
+
+        if passphrase.is_none() {
+            warn_unencrypted_signing_key_deprecation();
+        }
+
         OpenOptions::new()
             .write(true)
             .create_new(!force)
@@ -816,10 +873,15 @@ impl GeneratePrivateKey {
             .truncate(force)
             .open(&output)
             .map_err(Report::new)
-            .and_then(|f| signing_key.to_writer(f).map_err(Report::new))
-            .wrap_err_with(|| format!("failed writing private key to `{}`", output.display()))?;
+            .and_then(|f| match passphrase {
+                Some(passphrase) => signing_key
+                    .write_encrypted(f, passphrase)
+                    .map_err(Report::new),
+                None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
+            })
+            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
         eprintln!(
-            "wrote private key to: {}\npublic key: {public_key}",
+            "wrote signing key to: {}\npublic key: {public_key}",
             output.display()
         );
 
@@ -827,22 +889,142 @@ impl GeneratePrivateKey {
     }
 }
 
-#[derive(Debug, clap::Args)]
-pub(crate) struct CalculatePublicKey {
-    /// Private key to calculate the public key from.
-    #[arg(long, short, value_name = "FILE")]
-    private_key: PathBuf,
+fn warn_unencrypted_signing_key_deprecation() {
+    eprintln!(
+        "\
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WARNING: generated consensus signing key will be written UNENCRYPTED.
+This compatibility mode is deprecated and will be removed in a future release.
+Pass `--secret <PATH>` (preferably a FIFO, for example `--secret <(cmd)`) to encrypt the key at rest.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    );
 }
 
-impl CalculatePublicKey {
+fn read_secret<P: AsRef<Path>>(path: P) -> eyre::Result<SigningKeyPassphrase> {
+    let path = path.as_ref();
+    let (passphrase, is_fifo) =
+        tempo_consensus_config::read_secret(path).wrap_err("failed reading from secret path")?;
+    if !is_fifo {
+        eprintln!(
+            "WARNING: signing-key passphrase was read from a non-FIFO path `{}`; prefer a FIFO to avoid persisting the passphrase on disk.",
+            path.display()
+        );
+    }
+    Ok(passphrase)
+}
+
+fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
+    key_path: P1,
+    secret_path: Option<P2>,
+) -> eyre::Result<SigningKey> {
+    let key_path = key_path.as_ref();
+    match secret_path.as_ref().map(AsRef::<Path>::as_ref) {
+        Some(secret_path) => {
+            let passphrase = read_secret(secret_path).wrap_err_with(|| {
+                format!(
+                    "failed reading signing-key passphrase from `{}`",
+                    secret_path.display()
+                )
+            })?;
+
+            SigningKey::read_from_file_encrypted(key_path, passphrase).wrap_err_with(|| {
+                format!(
+                    "failed decrypting signing key from `{}`",
+                    key_path.display()
+                )
+            })
+        }
+        None => SigningKey::read_from_file_unencrypted(key_path)
+            .wrap_err_with(|| format!("failed reading signing key from `{}`", key_path.display())),
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct EncryptSigningKey {
+    /// Existing plaintext ed25519 signing key file.
+    #[arg(long, short, value_name = "FILE")]
+    input: PathBuf,
+
+    /// Destination for the passphrase-encrypted signing key.
+    #[arg(long, short, value_name = "FILE")]
+    output: PathBuf,
+
+    /// Passphrase source. A FIFO path, including shell process substitution like `<(...)`, is preferred.
+    #[arg(long, value_name = "PATH")]
+    secret: PathBuf,
+
+    /// Whether to override `output`, if it already exists.
+    #[arg(long, short)]
+    force: bool,
+}
+
+impl EncryptSigningKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { private_key } = self;
-        let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
+        let Self {
+            input,
+            output,
+            secret,
+            force,
+        } = self;
+
+        let signing_key = SigningKey::read_from_file_unencrypted(&input).wrap_err_with(|| {
             format!(
-                "failed reading private key from `{}`",
-                private_key.display()
+                "failed reading plaintext signing key from `{}`",
+                input.display()
             )
         })?;
+        let passphrase = read_secret(&secret).wrap_err_with(|| {
+            format!(
+                "failed reading signing-key encryption passphrase from `{}`",
+                secret.display()
+            )
+        })?;
+
+        OpenOptions::new()
+            .write(true)
+            .create_new(!force)
+            .create(force)
+            .truncate(force)
+            .open(&output)
+            .map_err(Report::new)
+            .and_then(|f| {
+                signing_key
+                    .write_encrypted(f, passphrase)
+                    .map_err(Report::new)
+            })
+            .wrap_err_with(|| {
+                format!(
+                    "failed writing encrypted signing key to `{}`",
+                    output.display()
+                )
+            })?;
+
+        eprintln!("wrote encrypted signing key to: {}", output.display());
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ShowVerificationKey {
+    /// Signing key to show the verification key for.
+    #[arg(long, short, value_name = "FILE")]
+    private_key: PathBuf,
+
+    /// Passphrase source for decrypting the signing key.
+    ///
+    /// A FIFO path, including shell process substitution like `<(...)`, is preferred.
+    /// If omitted, the signing key is read as plaintext hex.
+    #[arg(long, value_name = "PATH")]
+    secret: Option<PathBuf>,
+}
+
+impl ShowVerificationKey {
+    fn run(self) -> eyre::Result<()> {
+        let Self {
+            private_key,
+            secret,
+        } = self;
+        let private_key = read_signing_key(&private_key, secret.as_deref())?;
 
         let validating_key = private_key.public_key();
         println!("public key: {validating_key}");
@@ -851,7 +1033,7 @@ impl CalculatePublicKey {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorInfo {
+pub struct ValidatorInfo {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -931,7 +1113,7 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to get latest block number")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let epoch_strategy = FixedEpocher::new(epoch_length);
         let current_height = Height::new(latest_block_number);
         let current_epoch_info = epoch_strategy
             .containing(current_height)
@@ -1018,7 +1200,7 @@ struct InfoOutput {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct Info {
+pub struct Info {
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
@@ -1068,7 +1250,7 @@ impl Info {
             .await
             .wrap_err("failed to get latest block number")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let epoch_strategy = FixedEpocher::new(epoch_length);
         let current_height = Height::new(latest_block_number);
         let current_epoch_info = epoch_strategy
             .containing(current_height)
@@ -1194,7 +1376,7 @@ impl Info {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
-            epoch_length,
+            epoch_length: epoch_length.get(),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
         };
@@ -1225,6 +1407,14 @@ mod tests {
         crate::TempoRpcModuleValidator,
         TempoSubcommand,
     >;
+
+    const TEST_VALIDATOR_ADDRESS: &str = "0x0000000000000000000000000000000000000001";
+    const TEST_FEE_RECIPIENT: &str = "0x0000000000000000000000000000000000000002";
+    const TEST_PUBLIC_KEY: &str =
+        "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
+    const TEST_INGRESS: &str = "127.0.0.1:8000";
+    const TEST_EGRESS: &str = "127.0.0.1";
 
     #[test]
     fn parse_p2p_proxy_defaults() {
@@ -1276,6 +1466,318 @@ mod tests {
     fn parse_p2p_proxy_missing_rpc_url_fails() {
         let result = TempoCli::try_parse_from(["tempo", "p2p-proxy"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_encrypt_signing_key() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "encrypt-signing-key",
+            "--input",
+            "/tmp/signing.key",
+            "--output",
+            "/tmp/signing.key.age",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let EncryptSigningKey {
+            input,
+            output,
+            secret,
+            force,
+        } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::EncryptSigningKey(cmd),
+            )) => cmd,
+            other => panic!("expected variant EncryptSigningKey, got `{other:?}`"),
+        };
+        assert_eq!(&input, "/tmp/signing.key");
+        assert_eq!(&output, "/tmp/signing.key.age");
+        assert_eq!(&secret, "/dev/fd/11");
+        assert!(!force);
+    }
+
+    #[test]
+    fn parse_show_verification_key_with_secret() {
+        assert_parse_show_verification_key("show-verification-key");
+    }
+
+    #[test]
+    fn parse_calculate_public_key_alias_with_secret() {
+        assert_parse_show_verification_key("calculate-public-key");
+    }
+
+    #[track_caller]
+    fn assert_parse_show_verification_key(command: &str) {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            command,
+            "--private-key",
+            "/tmp/signing.key.age",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let ShowVerificationKey {
+            private_key,
+            secret,
+        } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::ShowVerificationKey(cmd),
+            )) => cmd,
+            other => panic!("expected ShowVerificationKey, got `{other:?}`"),
+        };
+        assert_eq!(&private_key, "/tmp/signing.key.age");
+        assert_eq!(&secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[test]
+    fn parse_generate_signing_key_command() {
+        assert_parse_generate_signing_key("generate-signing-key");
+    }
+
+    #[test]
+    fn parse_generate_private_key_alias() {
+        assert_parse_generate_signing_key("generate-private-key");
+    }
+
+    #[test]
+    fn parse_generate_signing_key_with_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "generate-signing-key",
+            "--output",
+            "/tmp/signing.key",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let GenerateSigningKey {
+            output,
+            secret,
+            force,
+        } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::GenerateSigningKey(cmd),
+            )) => cmd,
+            other => panic!("expected GenerateSigningKey, got `{other:?}`"),
+        };
+        assert!(!force);
+        assert_eq!(&output, "/tmp/signing.key");
+        assert_eq!(&secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[track_caller]
+    fn assert_parse_generate_signing_key(command: &str) {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            command,
+            "--output",
+            "/tmp/signing.key",
+        ])
+        .unwrap();
+
+        let GenerateSigningKey { output, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::GenerateSigningKey(cmd),
+            )) => cmd,
+            other => panic!("expected GenerateSigningKey, got `{other:?}`"),
+        };
+        assert_eq!(&output, "/tmp/signing.key");
+    }
+
+    #[test]
+    fn parse_create_add_validator_signature_with_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "create-add-validator-signature",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--consensus.public-key",
+            TEST_PUBLIC_KEY,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--fee-recipient",
+            TEST_FEE_RECIPIENT,
+            "--signing-key",
+            "/tmp/signing.key.age",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let CreateAddValidatorSignatureArgs { signing_key, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::CreateAddValidatorSignature(cmd),
+            )) => cmd,
+            other => panic!("expected CreateAddValidatorSignature, got `{other:?}`"),
+        };
+        assert_eq!(&signing_key.signing_key, "/tmp/signing.key.age");
+        assert_eq!(&signing_key.secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[test]
+    fn parse_create_rotate_validator_signature_with_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "create-rotate-validator-signature",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--consensus.public-key",
+            TEST_PUBLIC_KEY,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--signing-key",
+            "/tmp/signing.key.age",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let CreateRotateValidatorSignatureArgs { signing_key, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::CreateRotateValidatorSignature(cmd),
+            )) => cmd,
+            other => panic!("expected CreateRotateValidatorSignature, got `{other:?}`"),
+        };
+        assert_eq!(&signing_key.signing_key, "/tmp/signing.key.age");
+        assert_eq!(&signing_key.secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[test]
+    fn parse_add_validator_with_signature_does_not_require_signing_key() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "add-validator",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--consensus.public-key",
+            TEST_PUBLIC_KEY,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--fee-recipient",
+            TEST_FEE_RECIPIENT,
+            "--signature",
+            TEST_SIGNATURE,
+        ])
+        .unwrap();
+
+        let AddValidator { sig, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::AddValidator(cmd),
+            )) => cmd,
+            other => panic!("expected AddValidator, got `{other:?}`"),
+        };
+        assert!(sig.signing_key.is_none());
+    }
+
+    #[test]
+    fn parse_add_validator_rejects_signature_and_signing_key() {
+        let err = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "add-validator",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--consensus.public-key",
+            TEST_PUBLIC_KEY,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--fee-recipient",
+            TEST_FEE_RECIPIENT,
+            "--signature",
+            TEST_SIGNATURE,
+            "--signing-key",
+            "/tmp/signing.key.age",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn parse_add_validator_with_consensus_signing_key_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "add-validator",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--consensus.public-key",
+            TEST_PUBLIC_KEY,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--fee-recipient",
+            TEST_FEE_RECIPIENT,
+            "--consensus.signing-key",
+            "/tmp/signing.key.age",
+            "--consensus.secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let AddValidator { sig, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::AddValidator(cmd),
+            )) => cmd,
+            other => panic!("expected AddValidator, got `{other:?}`"),
+        };
+        let signing_key = sig.signing_key.unwrap();
+        assert_eq!(&signing_key.signing_key, "/tmp/signing.key.age");
+        assert_eq!(&signing_key.secret.unwrap(), "/dev/fd/11");
+    }
+
+    #[test]
+    fn parse_rotate_validator_with_consensus_signing_key_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "rotate-validator",
+            "--validator-address",
+            TEST_VALIDATOR_ADDRESS,
+            "--consensus.public-key",
+            TEST_PUBLIC_KEY,
+            "--ingress",
+            TEST_INGRESS,
+            "--egress",
+            TEST_EGRESS,
+            "--consensus.signing-key",
+            "/tmp/signing.key.age",
+            "--consensus.secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        let RotateValidator { sig, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::RotateValidator(cmd),
+            )) => cmd,
+            other => panic!("expected RotateValidator, got `{other:?}`"),
+        };
+        let signing_key = sig.signing_key.unwrap();
+        assert_eq!(&signing_key.signing_key, "/tmp/signing.key.age");
+        assert_eq!(&signing_key.secret.unwrap(), "/dev/fd/11");
     }
 
     #[test]

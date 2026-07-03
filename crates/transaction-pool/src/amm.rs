@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{
     ChainSpecProvider, ExecutionOutcome, HeaderProvider, ProviderError, ProviderResult,
-    StateProvider, StateProviderFactory,
+    StateProviderFactory,
 };
 use tempo_chainspec::{
     TempoChainSpec,
@@ -20,6 +20,7 @@ use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
+    storage::StorageActions,
     tip_fee_manager::{
         TipFeeManager,
         amm::{Pool, compute_amount_out},
@@ -59,12 +60,15 @@ impl AmmLiquidityCache {
     /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
-    pub fn has_enough_liquidity(
+    pub fn has_enough_liquidity<S, M>(
         &self,
         user_token: Address,
         fee: U256,
-        state_provider: &mut impl StateProvider,
-    ) -> Result<bool, ProviderError> {
+        mut state_provider: S,
+    ) -> Result<bool, ProviderError>
+    where
+        S: TempoStateAccess<M>,
+    {
         let mut missing_in_cache = Vec::new();
         let hardfork;
 
@@ -125,31 +129,35 @@ impl AmmLiquidityCache {
         // Slow path: ask the planner. Unconditionally warm all its reported `data.pools`.
         // This might race other fetches but we're OK with it.
         state_provider
-            .with_read_only_storage_ctx(hardfork, || -> TempoResult<bool> {
-                let manager = TipFeeManager::new();
-                for validator_token in missing_in_cache {
-                    let (route, intermediate, pools) =
-                        manager.plan_fee_route(user_token, validator_token, fee)?;
-                    if !pools.is_empty() || intermediate.is_some() {
-                        let mut inner = self.inner.write();
-                        for &(pair, reserve) in &pools {
-                            let id = manager.pool_id(pair.0, pair.1);
-                            let slot = manager.pools[id].base_slot();
-                            inner.pool_cache.insert(pair, U256::from(reserve));
-                            inner.slot_to_pool.insert(slot, pair);
+            .with_read_only_storage_ctx(
+                hardfork,
+                StorageActions::disabled(),
+                || -> TempoResult<bool> {
+                    let manager = TipFeeManager::new();
+                    for validator_token in missing_in_cache {
+                        let (route, intermediate, pools) =
+                            manager.plan_fee_route(user_token, validator_token, fee)?;
+                        if !pools.is_empty() || intermediate.is_some() {
+                            let mut inner = self.inner.write();
+                            for &(pair, reserve) in &pools {
+                                let id = manager.pool_id(pair.0, pair.1);
+                                let slot = manager.pools[id].base_slot();
+                                inner.pool_cache.insert(pair, U256::from(reserve));
+                                inner.slot_to_pool.insert(slot, pair);
+                            }
+                            if let Some(hop) = intermediate {
+                                inner.quote_token_cache.insert(user_token, hop);
+                            }
                         }
-                        if let Some(hop) = intermediate {
-                            inner.quote_token_cache.insert(user_token, hop);
+                        // If there is enough liquidity, short circuit and return `true`
+                        if route.is_some() {
+                            return Ok(true);
                         }
                     }
-                    // If there is enough liquidity, short circuit and return `true`
-                    if route.is_some() {
-                        return Ok(true);
-                    }
-                }
 
-                Ok(false)
-            })
+                    Ok(false)
+                },
+            )
             .map_err(ProviderError::other)
     }
 
@@ -419,10 +427,10 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(100), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
 
         assert!(result.is_ok());
         assert!(
@@ -449,9 +457,9 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -477,9 +485,9 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -494,10 +502,10 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -534,9 +542,9 @@ mod tests {
         // Provider would return zero for any storage read; if the slow path runs we'd see
         // either a `false` result or a panic from the missing TIP-20 prefix on `user`.
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user, U256::from(100), &mut state);
+        let result = cache.has_enough_liquidity(user, U256::from(100), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -558,10 +566,10 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
         // Provider returns default (zero) storage values
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),

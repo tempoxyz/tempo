@@ -9,11 +9,32 @@ use alloy::{
     },
     sol_types::SolEvent,
 };
+use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{constants::gas::TEMPO_T7_BASE_FEE_FLOOR, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
+
+async fn block_base_fee<P, R>(provider: &P, receipt: &R) -> eyre::Result<u128>
+where
+    P: Provider,
+    R: ReceiptResponse,
+{
+    let block_number = receipt
+        .block_number()
+        .expect("mined receipt should have a block number");
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(block_number))
+        .await?
+        .expect("receipt block should exist");
+    Ok(u128::from(
+        block
+            .header
+            .base_fee_per_gas
+            .expect("tempo blocks should have base fee"),
+    ))
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
@@ -228,7 +249,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                     .from(accounts[j])
                     .to(accounts[j]) // Send to self
                     .gas_price(TEMPO_T1_BASE_FEE as u128)
-                    .gas_limit(2_000_000)
+                    .gas_limit(250_000)
                     .value(U256::ZERO);
 
                 all_futures.push((provider.send_transaction(tx), "non-payment"));
@@ -241,8 +262,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                 let tx = transfer_tx
                     .into_transaction_request()
                     .from(caller2)
-                    .gas_price(TEMPO_T1_BASE_FEE as u128)
-                    .gas_limit(2_000_000);
+                    .gas_price(TEMPO_T7_BASE_FEE_FLOOR as u128)
+                    .gas_limit(250_000);
 
                 all_futures.push((provider2.send_transaction(tx), "payment"));
             }
@@ -331,15 +352,16 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         payment_receipts.len()
     );
 
-    // Expectation 2: Payment fees should remain low (basefee) as they're not competing with DeFi
+    // Expectation 2: Payment transactions should pay the block base fee.
     for receipt in &payment_receipts {
-        let effective_price = receipt.effective_gas_price();
+        let base_fee = block_base_fee(&provider, receipt).await?;
         assert_eq!(
-            effective_price, TEMPO_T1_BASE_FEE as u128,
-            "Payment tx should pay base fee, not elevated prices"
+            receipt.effective_gas_price(),
+            base_fee,
+            "payment tx should pay the block base fee"
         );
     }
-    println!("Payment transactions paid base fee ({TEMPO_T1_BASE_FEE})");
+    println!("Payment transactions paid the block base fee");
 
     // Expectation 3: Both types of transactions coexist in blocks
     let total_non_payment = non_payment_receipts.len() + continued_non_payment_receipts.len();
@@ -716,16 +738,18 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
         .await?;
     assert!(settle_r.status(), "reserve settle should succeed");
 
-    // All payment calls should pay base fee, not elevated prices
+    // These reserve calls use a high gas limit. With zero priority fee, they should pay the block
+    // base fee.
     for (name, r) in [
         ("open", &open_r),
         ("topUp", &topup_r),
         ("settle", &settle_r),
     ] {
+        let base_fee = block_base_fee(&payer_provider, r).await?;
         assert_eq!(
             r.effective_gas_price(),
-            TEMPO_T1_BASE_FEE as u128,
-            "{name} should pay base fee"
+            base_fee,
+            "{name} should pay the block base fee"
         );
     }
 

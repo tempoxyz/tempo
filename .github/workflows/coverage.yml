@@ -188,6 +188,12 @@ jobs:
             > coverage-report/full.lcov 2>/dev/null || true
 
           if [[ -s coverage-report/full.lcov ]]; then
+            # The coverage-producing jobs can run from nested checkouts, so
+            # llvm-cov may emit stale absolute source paths. Rewrite them to
+            # this checkout before genhtml tries to read source files.
+            sed -E "s#^SF:.*/crates/#SF:${PWD}/crates/#" \
+              coverage-report/full.lcov > coverage-report/full.normalized.lcov
+
             # Generate per-crate lcov files
             # Paths in lcov are absolute: SF:/home/runner/.../crates/precompiles/src/...
             mkdir -p coverage-report/precompiles
@@ -198,14 +204,14 @@ jobs:
               /^SF:.*crates\/precompiles\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
-            ' coverage-report/full.lcov > coverage-report/precompiles/coverage.lcov
+            ' coverage-report/full.normalized.lcov > coverage-report/precompiles/coverage.lcov
 
             # Filter lcov for crates/contracts/
             awk '
               /^SF:.*crates\/contracts\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
-            ' coverage-report/full.lcov > coverage-report/contracts/coverage.lcov
+            ' coverage-report/full.normalized.lcov > coverage-report/contracts/coverage.lcov
 
             echo "precompiles lcov lines: $(wc -l < coverage-report/precompiles/coverage.lcov)"
             echo "contracts lcov lines: $(wc -l < coverage-report/contracts/coverage.lcov)"
@@ -215,7 +221,8 @@ jobs:
               genhtml coverage-report/precompiles/coverage.lcov \
                 --output-directory coverage-report/precompiles/html \
                 --title "precompiles Coverage" \
-                --legend 2>/dev/null || true
+                --legend
+              test -f coverage-report/precompiles/html/index.html
               echo "Generated HTML report for precompiles"
             fi
 
@@ -224,7 +231,8 @@ jobs:
               genhtml coverage-report/contracts/coverage.lcov \
                 --output-directory coverage-report/contracts/html \
                 --title "contracts Coverage" \
-                --legend 2>/dev/null || true
+                --legend
+              test -f coverage-report/contracts/html/index.html
               echo "Generated HTML report for contracts"
             fi
 
@@ -233,13 +241,14 @@ jobs:
               /^SF:.*(crates\/precompiles\/|crates\/contracts\/).*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
-            ' coverage-report/full.lcov > coverage-report/combined.lcov
+            ' coverage-report/full.normalized.lcov > coverage-report/combined.lcov
 
             if [[ -s coverage-report/combined.lcov ]]; then
               genhtml coverage-report/combined.lcov \
                 --output-directory coverage-report/html \
                 --title "Tempo Precompiles Coverage (Combined)" \
-                --legend 2>/dev/null || true
+                --legend
+              test -f coverage-report/html/index.html
               echo "Generated combined HTML report"
             fi
           fi

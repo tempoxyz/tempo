@@ -18,10 +18,12 @@ pub mod amm;
 pub mod best;
 pub mod maintain;
 pub mod metrics;
+pub mod ordering;
 pub mod paused;
+pub(crate) mod state_cache;
 pub mod tt_2d_pool;
 
-pub use best::StateAwareBestTransactions;
+pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
 pub use maintain::TempoPoolUpdates;
 
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};

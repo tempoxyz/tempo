@@ -79,12 +79,15 @@ function changeFromPct(pct, lowerIsBetter) {
 function fmtChange(change) {
   if (!change || change.pct == null) return '';
   const sign = change.pct >= 0 ? '+' : '';
-  const ci = change.ci_pct ? ` (±${change.ci_pct.toFixed(2)}%)` : '';
+  const details = [];
+  if (change.ci_pct != null) details.push(`±${change.ci_pct.toFixed(2)}%`);
+  if (change.floor_pct != null) details.push(`floor ${change.floor_pct.toFixed(2)}%`);
+  const ci = details.length ? ` (${details.join(', ')})` : '';
   return `${sign}${change.pct.toFixed(2)}%${ci} ${SIG_EMOJI[change.sig] || ''}`.trim();
 }
 
 function verdictFromChanges(changes, neutralLabel = 'No Difference') {
-  const vals = Object.values(changes || {});
+  const vals = Object.values(changes || {}).filter(v => !v.informational);
   const hasBad = vals.some(v => v.sig === 'bad');
   const hasGood = vals.some(v => v.sig === 'good');
   if (hasBad && hasGood) return { emoji: ':warning:', label: 'Mixed Results' };
@@ -94,16 +97,21 @@ function verdictFromChanges(changes, neutralLabel = 'No Difference') {
 }
 
 function hasImprovement(changes) {
-  return Object.values(changes || {}).some(v => v.sig === 'good');
+  return Object.values(changes || {}).some(v => !v.informational && v.sig === 'good');
 }
 
-function e2eChanges(deltas) {
+function e2eChanges(summary) {
+  if (summary.results?.changes) {
+    return Object.fromEntries(
+      Object.entries(summary.results.changes)
+        .filter(([key]) => !key.startsWith('serialized_block_size')),
+    );
+  }
+  const deltas = summary.results.deltas;
   return {
     tps: changeFromPct(deltas.tps, false),
-    tps_p50: changeFromPct(deltas.tps_p50, false),
-    tps_p90: changeFromPct(deltas.tps_p90, false),
-    tps_p99: changeFromPct(deltas.tps_p99, false),
     mgas_s: changeFromPct(deltas.mgas_s, false),
+    block_time_mean: changeFromPct(deltas.block_time_mean, true),
     block_time_p50: changeFromPct(deltas.block_time_p50, true),
     block_time_p90: changeFromPct(deltas.block_time_p90, true),
     block_time_p99: changeFromPct(deltas.block_time_p99, true),
@@ -130,14 +138,11 @@ function fmtBlockCount(baselineBlocks, featureBlocks) {
 function buildMetricRows(summary) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
-  const d = summary.results.deltas;
-  const c = e2eChanges(d);
+  const c = e2eChanges(summary);
   return [
-    { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtChange(c.tps) },
-    { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtChange(c.tps_p50) },
-    { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtChange(c.tps_p90) },
-    { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtChange(c.tps_p99) },
+    { label: 'TPS Mean',        baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtChange(c.tps) },
     { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtChange(c.mgas_s) },
+    { label: 'Block Time Mean', baseline: fmtMs(b.block_time_mean), feature: fmtMs(f.block_time_mean), change: fmtChange(c.block_time_mean) },
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
     { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtChange(c.block_time_p90) },
     { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtChange(c.block_time_p99) },
@@ -147,8 +152,10 @@ function buildMetricRows(summary) {
 function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
-  const d = summary.results.deltas;
-  const { emoji, label } = verdictFromChanges(e2eChanges(d), 'No Significant Change');
+  const changes = e2eChanges(summary);
+  const classified = verdictFromChanges(changes, 'No Significant Change');
+  const emoji = classified.slack_emoji || classified.emoji || ':white_circle:';
+  const label = classified.label || 'No Significant Change';
 
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const commitUrl = `https://github.com/${repo}/commit`;
@@ -174,6 +181,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     '',
     `*Preset:* \`${config.preset}\` | *Bloat:* \`${Math.round(config.bloat / 1000)} GB\``,
     `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Run pairs:* \`${runPairs}\` | *Blocks:* ${blockCount}`,
+    `*Criteria:* 95% CI clears floor`,
   ].join('\n');
 
   const rows = buildMetricRows(summary);
@@ -197,6 +205,22 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
       text: { type: 'plain_text', text: 'Diff :github:', emoji: true },
       url: diffUrl,
       action_id: 'diff_button',
+    });
+  }
+  if (summary.internal_perf_url) {
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Internal dashboard', emoji: true },
+      url: summary.internal_perf_url,
+      action_id: 'internal_perf_button',
+    });
+  }
+  if (summary.grafana_url) {
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Grafana', emoji: true },
+      url: summary.grafana_url,
+      action_id: 'grafana_button',
     });
   }
 
@@ -284,7 +308,7 @@ async function success({ core, context }) {
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo bench: baseline vs feature (${summary.config?.run_pairs ?? '-'} run pairs)`;
 
-  const changes = e2eChanges(summary.results.deltas);
+  const changes = e2eChanges(summary);
   const channel = process.env.SLACK_BENCH_CHANNEL;
   const slackMode = process.env.BENCH_SLACK || 'always';
   let postedToChannel = false;

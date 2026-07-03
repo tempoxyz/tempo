@@ -1,6 +1,6 @@
 use core::fmt;
 
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolCall;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -9,7 +9,7 @@ use tempo_contracts::precompiles::{
         TokenLimit as AbiTokenLimit, removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall,
         updateSpendingLimitCall,
     },
-    ITIP20, authorizeKeyCall, legacyAuthorizeKeyCall,
+    ITIP20, authorizeAdminKeyCall, authorizeKeyCall, legacyAuthorizeKeyCall,
 };
 use tempo_primitives::{
     SignatureType,
@@ -310,6 +310,19 @@ pub fn authorize_key(
         keyId: key_id,
         signatureType: signature_type.into(),
         config: restrictions.into(),
+    })
+}
+
+/// Build an `authorizeAdminKey(address,uint8,bytes32)` precompile call.
+///
+/// Admin keys (TIP-1049) can perform account-management calls such as authorizing or
+/// revoking other keys and setting a receive policy. Pass [`B256::ZERO`] for `witness`
+/// when no TIP-1053 key-authorization witness is required.
+pub fn authorize_admin_key(key_id: Address, signature_type: SignatureType, witness: B256) -> Call {
+    account_keychain_call(authorizeAdminKeyCall {
+        keyId: key_id,
+        signatureType: signature_type.into(),
+        witness,
     })
 }
 

@@ -915,7 +915,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             uint256[] memory amounts = new uint256[](1);
             amounts[0] = limit;
             _authorizeKey(ctx.owner, ctx.keyId, expiry, true, tokens, amounts);
-        } catch { }
+            _syncProtocolNonceFromVm(ctx.owner);
+        } catch {
+            _syncProtocolNonceFromVm(ctx.owner);
+        }
     }
 
     /// @notice Handler: Revoke an access key (secp256k1 or P256)
@@ -929,7 +932,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.prank(ctx.owner);
         try keychain.revokeKey(ctx.keyId) {
             _revokeKey(ctx.owner, ctx.keyId);
-        } catch { }
+            _syncProtocolNonceFromVm(ctx.owner);
+        } catch {
+            _syncProtocolNonceFromVm(ctx.owner);
+        }
     }
 
     /// @notice Handler: Attempt to use a revoked key - should be rejected
@@ -1822,7 +1828,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
                 _authorizeKey(owner, keyIdA, expiryA, false, tokens, amounts);
+                _syncProtocolNonceFromVm(owner);
             } catch {
+                _syncProtocolNonceFromVm(owner);
                 return;
             }
         }
@@ -2145,7 +2153,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 uint256[] memory amounts = new uint256[](0);
                 _authorizeKey(owner, keyId, expiry, false, tokens, amounts);
                 ghost_keyUnlimitedSpending[owner][keyId] = true;
+                _syncProtocolNonceFromVm(owner);
             } catch {
+                _syncProtocolNonceFromVm(owner);
                 return;
             }
         }
@@ -2216,7 +2226,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 address[] memory tokens = new address[](0);
                 uint256[] memory amounts = new uint256[](0);
                 _authorizeKey(owner, keyId, expiry, true, tokens, amounts);
+                _syncProtocolNonceFromVm(owner);
             } catch {
+                _syncProtocolNonceFromVm(owner);
                 return;
             }
         }
@@ -2300,7 +2312,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 _authorizeKey(owner, keyId, expiry, false, tokens, amounts);
                 ghost_keySignatureType[owner][keyId] =
                     uint8(IAccountKeychain.SignatureType.Secp256k1);
+                _syncProtocolNonceFromVm(owner);
             } catch {
+                _syncProtocolNonceFromVm(owner);
                 return;
             }
         }
@@ -2503,6 +2517,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         vm.prank(ctx.recipient);
         feeToken.approve(ctx.sender, ctx.amount);
+        _syncProtocolNonceFromVm(ctx.recipient);
 
         bytes memory signedTx = TxBuilder.buildTempoMultiCall(
             vmRlp, vm, calls, ctx.nonceKey, ctx.currentNonce, actorKeys[ctx.senderIdx]
@@ -3375,7 +3390,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(signedTx) {
             _recordProtocolNonceTxSuccess(sender);
         } catch {
-            _syncNonceAfterFailure(sender);
+            _syncProtocolNonceFromVm(sender);
             ghost_totalTxReverted++;
         }
     }
@@ -3444,26 +3459,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         ghost_previousProtocolNonce[sender] = ghost_protocolNonce[sender];
 
-        // Track authority nonce before tx for EIP-7702 nonce consumption verification
-        uint256 authorityNonceBefore = vm.getNonce(authority);
-
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
             _recordProtocolNonceTxSuccess(sender);
-
-            // Per EIP-7702: authority nonce is consumed when authorization is applied
-            // Verify authority nonce incremented (only if sender != authority)
-            if (sender != authority) {
-                uint256 authorityNonceAfter = vm.getNonce(authority);
-                if (authorityNonceAfter > authorityNonceBefore) {
-                    // Authority nonce was consumed - update ghost state
-                    ghost_protocolNonce[authority] = authorityNonceAfter;
-                    ghost_totalProtocolNonceTxs++;
-                }
-            }
+            // Per EIP-7702, applying an authorization can consume the authority nonce.
+            // If sender == authority, this can be an additional bump beyond the tx nonce.
+            _syncProtocolNonceFromVm(authority);
         } catch {
             _handleRevertProtocol(sender);
+            _syncProtocolNonceFromVm(authority);
         }
     }
 
@@ -3516,11 +3521,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(signedTx) {
             // CREATE with authorization list unexpectedly succeeded - TX7 violation!
             ghost_eip7702CreateWithAuthAllowed++;
-            ghost_protocolNonce[sender]++;
             ghost_totalTxExecuted++;
             ghost_totalCreatesExecuted++;
-            ghost_totalProtocolNonceTxs++;
+            _syncProtocolNonceFromVm(sender);
+            _syncProtocolNonceFromVm(authority);
         } catch {
+            _syncProtocolNonceFromVm(sender);
+            _syncProtocolNonceFromVm(authority);
             ghost_totalTxReverted++;
         }
     }
@@ -3935,8 +3942,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_keyAuthGasUsed[owner] = gasUsed;
 
             _authorizeKey(owner, keyId, expiry, numLimits > 0, tokens, amounts);
+            _syncProtocolNonceFromVm(owner);
             _recordGasTrackingKeyAuth();
-        } catch { }
+        } catch {
+            _syncProtocolNonceFromVm(owner);
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -4606,7 +4616,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.prank(ctx.owner);
         try keychain.revokeKey(ctx.keyId) {
             _revokeKey(ctx.owner, ctx.keyId);
+            _syncProtocolNonceFromVm(ctx.owner);
         } catch {
+            _syncProtocolNonceFromVm(ctx.owner);
             return;
         }
 
@@ -4700,7 +4712,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 uint256[] memory amounts = new uint256[](1);
                 amounts[0] = 1000e6;
                 _authorizeKey(ownerA, keyId, expiry, true, tokens, amounts);
+                _syncProtocolNonceFromVm(ownerA);
             } catch {
+                _syncProtocolNonceFromVm(ownerA);
                 return;
             }
         }

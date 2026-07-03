@@ -3,8 +3,13 @@ name = "tempo-payload-types"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -20,11 +25,13 @@ reth-primitives-traits.workspace = true
 
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 
 derive_more.workspace = true
 serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempo-primitives = { workspace = true, features = ["arbitrary", "reth-codec", "serde"] }

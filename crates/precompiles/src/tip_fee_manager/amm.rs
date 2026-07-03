@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{Handler, StorageAction, StorageCtx, StorageKey},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -66,6 +66,60 @@ impl Pool {
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode Pool from slot")
+    }
+
+    /// Encodes a [`Pool`] into the raw EVM storage slot value.
+    pub fn encode_to_slot(&self) -> Result<U256> {
+        use crate::storage::packing::insert_into_word;
+
+        let slot = insert_into_word(
+            U256::ZERO,
+            &self.reserve_user_token,
+            __packing_pool::RESERVE_USER_TOKEN_LOC.offset_bytes,
+            __packing_pool::RESERVE_USER_TOKEN_LOC.size,
+        )?;
+        let slot = insert_into_word(
+            slot,
+            &self.reserve_validator_token,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_LOC.offset_bytes,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_LOC.size,
+        )?;
+        Ok(slot)
+    }
+
+    /// Applies a fee swap to the pool.
+    ///
+    /// Checks `amount_out <= self.reserve_validator_token`, increments `self.reserve_user_token` by `amount_in`,
+    /// and decrements `self.reserve_validator_token` by `amount_out`.
+    pub fn apply_swap(&mut self, amount_in: U256, amount_out: U256) -> Result<()> {
+        // Check if there's enough validatorToken available
+        if amount_out > U256::from(self.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        let amount_in: u128 = amount_in
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        let amount_out: u128 = amount_out
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        // Update reserves
+        self.reserve_user_token = self
+            .reserve_user_token
+            .checked_add(amount_in)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.reserve_validator_token = self
+            .reserve_validator_token
+            .checked_sub(amount_out)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+
+        Ok(())
+    }
+
+    /// Returns whether the pool has enough reserve validator token to cover the given amount.
+    pub fn has_enough_reserve_validator_token(&self, amount: U256) -> bool {
+        U256::from(self.reserve_validator_token) >= amount
     }
 }
 
@@ -185,6 +239,8 @@ impl TipFeeManager {
             amount_in,
         )?;
 
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
         TIP20Token::from_address(user_token)?.transfer(
             self.address,
             ITIP20::transferCall {
@@ -512,44 +568,74 @@ impl TipFeeManager {
             return Ok((Some(FeeRoute::SameToken), None, data));
         }
 
-        // Direct (single-hop) path — always checked.
-        let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
-        data.push((
-            (user_token, validator_token),
-            direct.reserve_validator_token,
-        ));
-        let amount_out = compute_amount_out(max_amount)?;
-        if amount_out <= U256::from(direct.reserve_validator_token) {
-            return Ok((Some(FeeRoute::Direct), None, data));
-        }
+        let actions = self.storage.actions();
 
-        // T5+: two-hop fallback through `userToken.quoteToken()`.
-        if !self.storage.spec().is_t5() {
-            return Ok((None, None, data));
-        }
+        actions.unrecorded(|| {
+            let amount_out = compute_amount_out(max_amount)?;
 
-        // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
-        let mid_token = TIP20Token::from_address(user_token)?.quote_token()?;
-        if mid_token.is_zero() || mid_token == validator_token {
-            return Ok((None, Some(mid_token), data));
-        }
+            // Direct (single-hop) path — always checked.
+            let direct_slot = &self.pools[self.pool_id(user_token, validator_token)];
+            let direct = direct_slot.read()?;
+            data.push((
+                (user_token, validator_token),
+                direct.reserve_validator_token,
+            ));
+            let has_enough_liquidity = direct.has_enough_reserve_validator_token(amount_out);
+            actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                direct_slot.as_slot().slot(),
+                direct.encode_to_slot()?,
+                amount_out,
+                has_enough_liquidity,
+            ));
+            if has_enough_liquidity {
+                return Ok((Some(FeeRoute::Direct), None, data));
+            }
 
-        // First leg: user_token -> intermediate.
-        let leg1 = self.pools[self.pool_id(user_token, mid_token)].read()?;
-        data.push(((user_token, mid_token), leg1.reserve_validator_token));
-        if amount_out > U256::from(leg1.reserve_validator_token) {
-            return Ok((None, Some(mid_token), data));
-        }
+            // T5+: two-hop fallback through `userToken.quoteToken()`.
+            if !self.storage.spec().is_t5() {
+                return Ok((None, None, data));
+            }
 
-        // Second leg: intermediate -> validator_token.
-        let amount_out2 = compute_amount_out(amount_out)?;
-        let leg2 = self.pools[self.pool_id(mid_token, validator_token)].read()?;
-        data.push(((mid_token, validator_token), leg2.reserve_validator_token));
-        if amount_out2 > U256::from(leg2.reserve_validator_token) {
-            return Ok((None, Some(mid_token), data));
-        }
+            // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
+            let mid_token =
+                actions.recorded(|| TIP20Token::from_address(user_token)?.quote_token())?;
+            if mid_token.is_zero() || mid_token == validator_token {
+                return Ok((None, Some(mid_token), data));
+            }
 
-        Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
+            // First leg: user_token -> intermediate.
+            let leg1_slot = &self.pools[self.pool_id(user_token, mid_token)];
+            let leg1 = leg1_slot.read()?;
+            data.push(((user_token, mid_token), leg1.reserve_validator_token));
+            let has_enough_liquidity = leg1.has_enough_reserve_validator_token(amount_out);
+            actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                leg1_slot.as_slot().slot(),
+                leg1.encode_to_slot()?,
+                amount_out,
+                has_enough_liquidity,
+            ));
+            if !has_enough_liquidity {
+                return Ok((None, Some(mid_token), data));
+            }
+
+            // Second leg: intermediate -> validator_token.
+            let amount_out2 = compute_amount_out(amount_out)?;
+            let leg2_slot = &self.pools[self.pool_id(mid_token, validator_token)];
+            let leg2 = leg2_slot.read()?;
+            data.push(((mid_token, validator_token), leg2.reserve_validator_token));
+            let has_enough_liquidity = leg2.has_enough_reserve_validator_token(amount_out2);
+            actions.record_always(StorageAction::FeeAmmLiquidityCheck(
+                leg2_slot.as_slot().slot(),
+                leg2.encode_to_slot()?,
+                amount_out2,
+                has_enough_liquidity,
+            ));
+            if !has_enough_liquidity {
+                return Ok((None, Some(mid_token), data));
+            }
+
+            Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
+        })
     }
 
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
@@ -564,37 +650,26 @@ impl TipFeeManager {
         validator_token: Address,
         amount_in: U256,
     ) -> Result<U256> {
-        let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools[pool_id].read()?;
+        let actions = self.storage.actions();
+        // We suppress the actions recording to instead emit a single `FeeAmmSwap` action
+        actions.unrecorded(|| {
+            // Calculate output at fixed price m = 0.9970
+            let amount_out = compute_amount_out(amount_in)?;
 
-        // Calculate output at fixed price m = 0.9970
-        let amount_out = compute_amount_out(amount_in)?;
+            let pool_id = self.pool_id(user_token, validator_token);
+            let mut pool = self.pools[pool_id].read()?;
+            let pool_slot = pool.encode_to_slot()?;
+            pool.apply_swap(amount_in, amount_out)?;
+            self.pools[pool_id].write(pool)?;
 
-        // Check if there's enough validatorToken available
-        if amount_out > U256::from(pool.reserve_validator_token) {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
+            actions.record_always(StorageAction::FeeAmmSwap(
+                pool_id.mapping_slot(self.pools.slot()),
+                pool_slot,
+                amount_in,
+            ));
 
-        // Update reserves
-        let amount_in_u128: u128 = amount_in
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let amount_out_u128: u128 = amount_out
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-
-        pool.reserve_user_token = pool
-            .reserve_user_token
-            .checked_add(amount_in_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        pool.reserve_validator_token = pool
-            .reserve_validator_token
-            .checked_sub(amount_out_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        self.pools[pool_id].write(pool)?;
-
-        Ok(amount_out)
+            Ok(amount_out)
+        })
     }
 
     /// Returns the total supply of LP tokens for the given pool.

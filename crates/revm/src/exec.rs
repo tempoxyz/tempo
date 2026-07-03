@@ -37,7 +37,7 @@ where
 
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx.set_tx(tx);
-        let mut h = TempoEvmHandler::new();
+        let mut h = TempoEvmHandler::<DB, I>::new();
         h.run(self)
     }
 
@@ -48,7 +48,7 @@ where
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
-        let mut h = TempoEvmHandler::new();
+        let mut h = TempoEvmHandler::<DB, I>::new();
         h.run(self).map(|result| {
             let state = self.finalize();
             ExecResultAndState::new(result, state)
@@ -78,7 +78,7 @@ where
 
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx.set_tx(tx);
-        let mut h = TempoEvmHandler::new();
+        let mut h = TempoEvmHandler::<DB, I>::new();
         h.inspect_run(self)
     }
 }
@@ -103,7 +103,7 @@ where
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
-        let mut h = TempoEvmHandler::new();
+        let mut h = TempoEvmHandler::<DB, I>::new();
         h.run_system_call(self)
     }
 }
@@ -122,7 +122,7 @@ where
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
-        let mut h = TempoEvmHandler::new();
+        let mut h = TempoEvmHandler::<DB, I>::new();
         h.inspect_run_system_call(self)
     }
 }

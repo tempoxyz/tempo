@@ -11,6 +11,8 @@
 #   BENCH_BLOCKS                  – number of blocks to benchmark
 #   BENCH_WARMUP_BLOCKS           – number of warmup blocks
 #   BENCH_RUN_PAIRS               – number of baseline/feature run pairs
+#   BENCH_BASELINE_FEATURES       – cargo features for baseline build (optional)
+#   BENCH_FEATURE_FEATURES        – cargo features for feature build (optional)
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
@@ -75,6 +77,8 @@ export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+BENCH_BASELINE_FEATURES="${BENCH_BASELINE_FEATURES:-$BENCH_FEATURES}"
+BENCH_FEATURE_FEATURES="${BENCH_FEATURE_FEATURES:-$BENCH_FEATURES}"
 if [ -z "${BENCHMARK_ID:-}" ]; then
   if [ -z "${GITHUB_RUN_ID:-}" ]; then
     echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
@@ -127,6 +131,12 @@ command -v "$TXGEN_BENCH_BIN"
 
 build_tempo() {
   local label="$1" ref="$2" src_dir="$3"
+  local build_features="$BENCH_FEATURES"
+
+  case "$label" in
+    baseline*) build_features="$BENCH_BASELINE_FEATURES" ;;
+    feature*) build_features="$BENCH_FEATURE_FEATURES" ;;
+  esac
 
   if [ -d "$src_dir" ]; then
     git -C "$src_dir" fetch origin "$ref" --quiet 2>/dev/null || true
@@ -135,10 +145,10 @@ build_tempo() {
   fi
   git -C "$src_dir" checkout "$ref"
 
-  echo "Building $label tempo ($ref)..."
+  echo "Building $label tempo ($ref) with features: $build_features"
   cd "$src_dir"
   RUSTFLAGS="-C target-cpu=native" \
-    cargo build --profile profiling --bin tempo --no-default-features --features "$BENCH_FEATURES"
+    cargo build --profile profiling --bin tempo --no-default-features --features "$build_features"
   cd -
 }
 
@@ -417,6 +427,10 @@ run_single() {
   if [ -n "${CLICKHOUSE_URL:-}" ]; then
     clickhouse_report=(--report "clickhouse:$CLICKHOUSE_URL")
   fi
+  local victoriametrics_report=()
+  if [ "${BENCH_METRICS:-false}" = "true" ] && [ -n "${BENCH_VICTORIAMETRICS_URL:-}" ]; then
+    victoriametrics_report=(--report "victoriametrics:$BENCH_VICTORIAMETRICS_URL")
+  fi
 
   "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
     | "$TXGEN_BENCH_BIN" send-blocks \
@@ -425,6 +439,7 @@ run_single() {
       --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" \
       "${clickhouse_report[@]}" \
+      "${victoriametrics_report[@]}" \
       -m "git-sha=$git_sha" \
       -m "git-ref=$git_ref" \
       -m "platform=tempo" \
@@ -464,15 +479,15 @@ update_bench_status() {
 }
 
 # ============================================================================
-# Interleaved runs. For run-pairs=2 this preserves the previous B-F-F-B order.
+# Interleaved runs. For run-pairs=2 this uses F-B-B-F order.
 # ============================================================================
 
 build_run_order() {
   local run_pairs="$1"
   if [ $((run_pairs % 2)) -eq 0 ]; then
-    printf 'BFFB%.0s' $(seq 1 $((run_pairs / 2)))
+    printf 'FBBF%.0s' $(seq 1 $((run_pairs / 2)))
   else
-    printf 'BF%.0s' $(seq 1 "$run_pairs")
+    printf 'FB%.0s' $(seq 1 "$run_pairs")
   fi
   echo
 }

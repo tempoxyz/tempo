@@ -139,6 +139,9 @@ crate::sol! {
         /// Returns the EIP-712 domain separator for the current chain.
         function domainSeparator() external view returns (bytes32);
 
+        /// Returns the number of reusable channel storage credits owned by `payer`.
+        function storageCredits(address payer) external view returns (uint64 credits);
+
         /// Emitted after a channel is opened and funded.
         event ChannelOpened(
             bytes32 indexed channelId,
@@ -234,28 +237,38 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
     /// # NOTES
     /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_RESERVE_ADDRESS`.
     /// - Static-only calls require exact ABI-encoded length.
-    /// - Dynamic calls require valid ABI decoding + calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`]
+    /// - Dynamic calls require valid ABI decoding and calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`].
+    /// - Dynamic calls also require valid `signature` encoding.
     ///
     /// [TIP-20 channel reserve payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-    pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            if input.first_chunk::<4>() != Some(&C::SELECTOR) {
-                return false;
-            }
-
-            if let Some(canonical_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE {
-                input.len() == 4 + canonical_size
-            } else {
-                input.len() <= MAX_PAYMENT_CALLDATA_LEN && C::abi_decode_validate(input).is_ok()
-            }
+    pub fn is_payment_with_valid_signature(
+        input: &[u8],
+        validate_signature: impl Fn(&[u8]) -> bool,
+    ) -> bool {
+        fn is_static_call<C: SolCall>(input: &[u8]) -> bool {
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && <C::Parameters<'_> as SolType>::ENCODED_SIZE
+                    .is_some_and(|canonical_size| input.len() == 4 + canonical_size)
         }
 
-        is_call::<ITIP20ChannelReserve::openCall>(input)
-            || is_call::<ITIP20ChannelReserve::topUpCall>(input)
-            || is_call::<ITIP20ChannelReserve::closeCall>(input)
-            || is_call::<ITIP20ChannelReserve::settleCall>(input)
-            || is_call::<ITIP20ChannelReserve::requestCloseCall>(input)
-            || is_call::<ITIP20ChannelReserve::withdrawCall>(input)
+        fn decode_dynamic_call<C: SolCall>(input: &[u8]) -> Option<C> {
+            if input.first_chunk::<4>() != Some(&C::SELECTOR)
+                || input.len() > MAX_PAYMENT_CALLDATA_LEN
+            {
+                return None;
+            }
+
+            C::abi_decode_validate(input).ok()
+        }
+
+        is_static_call::<ITIP20ChannelReserve::openCall>(input)
+            || is_static_call::<ITIP20ChannelReserve::topUpCall>(input)
+            || decode_dynamic_call::<ITIP20ChannelReserve::closeCall>(input)
+                .is_some_and(|call| validate_signature(call.signature.as_ref()))
+            || decode_dynamic_call::<ITIP20ChannelReserve::settleCall>(input)
+                .is_some_and(|call| validate_signature(call.signature.as_ref()))
+            || is_static_call::<ITIP20ChannelReserve::requestCloseCall>(input)
+            || is_static_call::<ITIP20ChannelReserve::withdrawCall>(input)
     }
 }
 
@@ -264,6 +277,14 @@ mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
     use alloy_primitives::{B256, aliases::U96};
+
+    impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
+        /// Test-only helper that accepts any decoded signature.
+        /// Avoids depending on `tempo-primitives`, which performs real signature validation.
+        fn is_payment(input: &[u8]) -> bool {
+            Self::is_payment_with_valid_signature(input, |_| true)
+        }
+    }
 
     fn descriptor() -> ITIP20ChannelReserve::ChannelDescriptor {
         ITIP20ChannelReserve::ChannelDescriptor {

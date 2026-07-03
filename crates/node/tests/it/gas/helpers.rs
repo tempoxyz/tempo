@@ -244,6 +244,12 @@ impl TempoCalls {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = gas_limit;
+        self
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn expect_existing_nonce(mut self) -> Self {
         self.expect_existing_nonce = true;
         self

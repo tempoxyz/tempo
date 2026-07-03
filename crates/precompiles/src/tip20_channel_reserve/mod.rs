@@ -8,10 +8,11 @@
 pub mod dispatch;
 
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    storage_credits::StorageCredits,
+    tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
 };
 use alloy::{
@@ -19,11 +20,13 @@ use alloy::{
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
+use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
     TIP20ChannelReserveEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
+use tempo_primitives::TempoAddressExt;
 
 /// 15 minute grace period between `requestClose` and `withdraw`.
 pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
@@ -31,7 +34,7 @@ pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
 /// EIP-712 type hash for signed cumulative payment vouchers.
 static VOUCHER_TYPEHASH: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Voucher(bytes32 channelId,uint96 cumulativeAmount)"));
-/// EIP-712 domain type hash used by [`TIP20ChannelReserve::domain_separator_inner`].
+/// EIP-712 domain type hash used by [`TIP20ChannelReserve::domain_separator`].
 static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 });
@@ -39,6 +42,13 @@ static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 static NAME_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"TIP20 Channel Reserve"));
 /// EIP-712 domain version hash for the reserve voucher domain.
 static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
+
+/// EIP-712 domain separator for the reserve voucher domain on mainnet.
+static DOMAIN_SEPARATOR_MAINNET: LazyLock<B256> =
+    LazyLock::new(|| domain_separator_inner(MAINNET_CHAIN_ID));
+/// EIP-712 domain separator for the reserve voucher domain on testnet.
+static DOMAIN_SEPARATOR_TESTNET: LazyLock<B256> =
+    LazyLock::new(|| domain_separator_inner(MODERATO_CHAIN_ID));
 
 /// Packed persistent state for one channel.
 ///
@@ -77,6 +87,8 @@ impl PackedChannelState {
 pub struct TIP20ChannelReserve {
     /// Persistent channel state keyed by `compute_channel_id_inner`.
     channel_states: Mapping<B256, PackedChannelState>,
+    /// Per-payer reusable credits for deleted packed channel-state slots.
+    channel_storage_credits: Mapping<Address, u64>,
 
     // WARNING: transient storage slots must remain after persistent storage fields until the
     // `contract` macro supports independent persistent/transient layouts.
@@ -102,16 +114,27 @@ impl TIP20ChannelReserve {
         self.channel_open_context_hash.t_write(hash)
     }
 
+    /// Returns the number of reusable channel storage credits owned by `payer`.
+    pub fn storage_credits(&self, payer: Address) -> Result<u64> {
+        self.channel_storage_credits[payer].read()
+    }
+
     /// Opens a channel and pulls the initial deposit from the payer into reserve.
     ///
-    /// Payees cannot be zero or TIP-20-prefix addresses. TIP-20-prefix payees would be token
-    /// contracts rather than ordinary recipients, which can make later payee payouts fail.
+    /// Payees and integrators must independently decide whether any nonzero operator is acceptable
+    /// before relying on the channel.
+    ///
+    /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
+    /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
     pub fn open(
         &mut self,
         msg_sender: Address,
         call: ITIP20ChannelReserve::openCall,
     ) -> Result<B256> {
-        if call.payee == Address::ZERO || is_tip20_prefix(call.payee) {
+        if call.payee.is_zero()
+            || is_tip20_prefix(call.payee)
+            || (call.payee.is_virtual() && (call.operator.is_zero() || call.operator.is_virtual()))
+        {
             return Err(TIP20ChannelReserveError::invalid_payee().into());
         }
 
@@ -138,14 +161,18 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
 
-        token.ensure_authorized_as(call.payee, AuthRole::Recipient)?;
+        token.ensure_authorized_as(Recipient::resolve(call.payee)?.target, AuthRole::Recipient)?;
         token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
 
-        self.channel_states[channel_id].write(PackedChannelState {
-            settled: U96::ZERO,
-            deposit,
-            close_requested_at: 0,
-        })?;
+        self.write_channel_state_spending_credit(
+            msg_sender,
+            channel_id,
+            PackedChannelState {
+                settled: U96::ZERO,
+                deposit,
+                close_requested_at: 0,
+            },
+        )?;
         self.opened_this_tx[channel_id].t_write(true)?;
 
         self.emit_event(TIP20ChannelReserveEvent::ChannelOpened(
@@ -242,17 +269,24 @@ impl TIP20ChannelReserve {
         }
 
         let additional = call.additionalDeposit;
-        let next_deposit = state
-            .deposit
-            .checked_add(additional)
-            .ok_or_else(TIP20ChannelReserveError::deposit_overflow)?;
-
         let had_close_request = state.close_requested_at().is_some();
 
+        if additional.is_zero() && !had_close_request {
+            return Ok(());
+        }
+
         if !additional.is_zero() {
+            let next_deposit = state
+                .deposit
+                .checked_add(additional)
+                .ok_or_else(TIP20ChannelReserveError::deposit_overflow)?;
+
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            token.ensure_authorized_as(call.descriptor.payee, AuthRole::Recipient)?;
+            token.ensure_authorized_as(
+                Recipient::resolve(call.descriptor.payee)?.target,
+                AuthRole::Recipient,
+            )?;
             token.system_transfer_from(
                 self.address,
                 msg_sender,
@@ -363,7 +397,7 @@ impl TIP20ChannelReserve {
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
-        self.channel_states[channel_id].delete()?;
+        self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
@@ -424,7 +458,7 @@ impl TIP20ChannelReserve {
             .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
-        self.channel_states[channel_id].delete()?;
+        self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
         if !refund.is_zero() {
             TIP20Token::from_address(call.descriptor.token)?.transfer(
                 self.address,
@@ -508,7 +542,85 @@ impl TIP20ChannelReserve {
 
     /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
-        self.domain_separator_inner()
+        let hash = match self.storage.chain_id() {
+            MAINNET_CHAIN_ID => *DOMAIN_SEPARATOR_MAINNET,
+            MODERATO_CHAIN_ID => *DOMAIN_SEPARATOR_TESTNET,
+            chain_id => domain_separator_inner(chain_id),
+        };
+
+        Ok(hash)
+    }
+
+    /// Deletes a packed channel-state slot and credits its payer for any minted storage credits.
+    fn delete_channel_state_and_credit_payer(
+        &mut self,
+        channel_id: B256,
+        payer: Address,
+    ) -> Result<()> {
+        let (_, credits) = StorageCredits::new()
+            .track_minted_credits(self.address, || self.channel_states[channel_id].delete())?;
+        self.credit_channel_storage_slots(payer, credits)
+    }
+
+    /// Credits `payer` for deleted packed channel-state slots.
+    fn credit_channel_storage_slots(&mut self, payer: Address, slots: u64) -> Result<()> {
+        if slots == 0 {
+            return Ok(());
+        }
+
+        let current = self.channel_storage_credits[payer].read()?;
+        let updated = current.saturating_add(slots);
+
+        if current == 0 {
+            let mut storage_credits = StorageCredits::new();
+            let (_, delta) = storage_credits.with_budget(self.address, 1, || {
+                self.channel_storage_credits[payer].write(updated)
+            })?;
+
+            if delta != -1 {
+                return Err(TempoPrecompileError::Fatal(format!(
+                    "channel storage credit bookkeeping spend mismatch: reserved 1, delta {delta}"
+                )));
+            }
+
+            Ok(())
+        } else {
+            self.channel_storage_credits[payer].write(updated)
+        }
+    }
+
+    /// Creates a packed channel-state slot, consuming one payer-attributed credit when available.
+    fn write_channel_state_spending_credit(
+        &mut self,
+        payer: Address,
+        channel_id: B256,
+        state: PackedChannelState,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t7() {
+            return self.channel_states[channel_id].write(state);
+        }
+
+        let current = self.channel_storage_credits[payer].read()?;
+        if current == 0 {
+            return self.channel_states[channel_id].write(state);
+        }
+
+        self.channel_storage_credits[payer].delete()?;
+
+        let mut storage_credits = StorageCredits::new();
+        let (_, delta) = storage_credits.with_budget(self.address, current, || {
+            self.channel_states[channel_id].write(state)
+        })?;
+        let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
+
+        if spent_credits != 1 {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "channel storage credit spend mismatch: reserved 1, spent {spent_credits}"
+            )));
+        }
+
+        self.credit_channel_storage_slots(payer, current.saturating_sub(spent_credits))?;
+        Ok(())
     }
 
     /// Returns the current block timestamp as `u64`.
@@ -625,7 +737,7 @@ impl TIP20ChannelReserve {
         let struct_hash = self
             .storage
             .keccak256(&(*VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
-        let domain_separator = self.domain_separator_inner()?;
+        let domain_separator = self.domain_separator()?;
 
         let mut digest_input = [0u8; 66];
         digest_input[0] = 0x19;
@@ -634,20 +746,22 @@ impl TIP20ChannelReserve {
         digest_input[34..66].copy_from_slice(struct_hash.as_slice());
         self.storage.keccak256(&digest_input)
     }
+}
 
-    /// Computes the EIP-712 domain separator.
-    fn domain_separator_inner(&self) -> Result<B256> {
-        self.storage.keccak256(
-            &(
-                *EIP712_DOMAIN_TYPEHASH,
-                *NAME_HASH,
-                *VERSION_HASH,
-                U256::from(self.storage.chain_id()),
-                self.address,
-            )
-                .abi_encode(),
+/// Computes the EIP-712 domain separator.
+///
+/// NOTE: This keccak is unmetered because it is not computed at tx runtime.
+fn domain_separator_inner(chain_id: u64) -> B256 {
+    keccak256(
+        (
+            *EIP712_DOMAIN_TYPEHASH,
+            *NAME_HASH,
+            *VERSION_HASH,
+            U256::from(chain_id),
+            TIP20_CHANNEL_RESERVE_ADDRESS,
         )
-    }
+            .abi_encode(),
+    )
 }
 
 #[cfg(test)]
@@ -655,8 +769,12 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
+        address_registry::AddressRegistry,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{
+            TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
+            register_virtual_master,
+        },
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
@@ -767,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(
@@ -815,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_open_rejects_tip20_prefix_payee() -> eyre::Result<()> {
+    fn test_open_rejects_invalid_payees() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer = Address::random();
 
@@ -824,25 +942,121 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
+            let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
             let mut reserve = TIP20ChannelReserve::new();
             reserve.initialize()?;
             seed_expiring_nonce_hash(&mut reserve)?;
 
-            let result = reserve.open(
+            for invalid_payee in &[token.address(), virtual_payee] {
+                for invalid_operator_for_virtual_payee in &[Address::ZERO, virtual_payee] {
+                    let result = reserve.open(
+                        payer,
+                        open_call(
+                            *invalid_payee,
+                            *invalid_operator_for_virtual_payee,
+                            token.address(),
+                            1,
+                            B256::random(),
+                            Address::ZERO,
+                        ),
+                    );
+                    assert_eq!(
+                        result.unwrap_err(),
+                        TIP20ChannelReserveError::invalid_payee().into()
+                    );
+                }
+            }
+
+            // Virtual payees are valid when a non-virtual operator is set to submit vouchers on their behalf.
+            reserve.open(
                 payer,
                 open_call(
-                    token.address(),
-                    Address::ZERO,
+                    virtual_payee,
+                    Address::random(),
                     token.address(),
                     1,
                     B256::random(),
                     Address::ZERO,
                 ),
+            )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_virtual_payee_admission_checks_resolved_master() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let admin = payer;
+        let operator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let (mut registry, _sender_policy, recipient_policy) =
+                install_blacklist_policy(&mut token, admin)?;
+            let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            // Admission must check the effective recipient, not just the virtual alias.
+            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            seed_expiring_nonce_hash(&mut reserve)?;
+            let res = reserve.open(
+                payer,
+                open_call(
+                    virtual_payee,
+                    operator,
+                    token.address(),
+                    100,
+                    B256::random(),
+                    Address::ZERO,
+                ),
             );
-            assert_eq!(
-                result.unwrap_err(),
-                TIP20ChannelReserveError::invalid_payee().into()
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            // Top-ups must enforce the same resolved-recipient admission check.
+            set_blacklisted(
+                &mut registry,
+                admin,
+                recipient_policy,
+                VIRTUAL_MASTER,
+                false,
+            )?;
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            reserve.open(
+                payer,
+                open_call(
+                    virtual_payee,
+                    operator,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                virtual_payee,
+                operator,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
             );
+
+            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            let res = reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor,
+                    additionalDeposit: U96::from(1),
+                },
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
             Ok(())
         })
     }
@@ -1369,6 +1583,66 @@ mod tests {
             assert_eq!(
                 result.unwrap_err(),
                 TIP20ChannelReserveError::not_payee_or_operator().into()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_zero_top_up_without_close_request_is_noop() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let payee = Address::random();
+        let salt = B256::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            reserve.clear_emitted_events();
+
+            reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor: descriptor.clone(),
+                    additionalDeposit: U96::ZERO,
+                },
+            )?;
+
+            let channel =
+                reserve.get_channel(ITIP20ChannelReserve::getChannelCall { descriptor })?;
+            assert_eq!(channel.state.closeRequestedAt, 0);
+            assert_eq!(channel.state.deposit, 100);
+            assert!(
+                StorageCtx
+                    .get_events(TIP20_CHANNEL_RESERVE_ADDRESS)
+                    .is_empty()
             );
 
             Ok(())

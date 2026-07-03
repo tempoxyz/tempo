@@ -57,7 +57,7 @@ impl GenerateGenesis {
                     .and_then(|f| {
                         validator
                             .signing_key
-                            .to_writer(f)
+                            .to_writer_unencrypted(f)
                             .map_err(eyre::Report::new)
                     })
                     .wrap_err_with(|| {

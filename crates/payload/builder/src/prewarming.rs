@@ -4,36 +4,27 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use alloy_sol_types::SolInterface;
-use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, SavedCache};
-use reth_evm::{Database, Evm, EvmEnvFor};
+use alloy_primitives::B256;
+use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
-use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    nonce::slots as nonce_slots,
-    storage::StorageKey as _,
-    tip_fee_manager::slots as fee_manager_slots,
-    tip20::{ITIP20, tip20_slots},
-};
-use tempo_primitives::TempoAddressExt;
-use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
+use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
+use tracing::{instrument, trace};
 
-type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
-    transactions_rx: Receiver<Option<BestTransaction>>,
+    transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
 }
@@ -41,11 +32,7 @@ pub(crate) struct BestTransactionsPrewarming {
 impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
-        executor: TaskExecutor,
-        provider: Provider,
-        cache: Option<SavedCache>,
-        parent_hash: B256,
-        evm_env: EvmEnvFor<TempoEvmConfig>,
+        prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: Txs,
     ) -> Self
     where
@@ -54,34 +41,28 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let prewarm = PrewarmingExecutionContext {
-            provider,
-            parent_hash,
-            cache,
-            evm_env,
-            stop: stop.clone(),
-        };
-
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
-            stop,
+            stop: prewarm.stop.clone(),
         };
 
-        let prewarm_executor = executor.clone();
-        executor.spawn_blocking_named("builder-prewarm", move || {
-            Self::start_prewarming(
-                prewarm_executor,
-                BestTransactionsPrewarmingContext {
-                    best_txs,
-                    transactions_tx,
-                    commands_rx,
-                    commands_tx,
-                    prewarm,
-                },
-            );
-        });
+        let prewarm_executor = prewarm.executor();
+        prewarm
+            .executor()
+            .spawn_blocking_named("builder-prewarm", move || {
+                Self::start_prewarming(
+                    prewarm_executor,
+                    BestTransactionsPrewarmingContext {
+                        best_txs,
+                        transactions_tx,
+                        commands_rx,
+                        commands_tx,
+                        prewarm,
+                        next_expiring_nonce_offset: 0,
+                    },
+                );
+            });
 
         this
     }
@@ -109,12 +90,30 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                    let offset = ctx.next_expiring_nonce_offset;
+                    ctx.next_expiring_nonce_offset += 1;
+                    Some(offset)
+                } else {
+                    None
+                };
 
+                let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
+                let transactions_tx = ctx.transactions_tx.clone();
+
+                if !parallel {
+                    let _ = ctx
+                        .transactions_tx
+                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                }
+
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone());
+                    let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    if parallel {
+                        let _ = transactions_tx.send(Some(tx));
+                    }
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -141,7 +140,7 @@ impl BestTransactionsPrewarming {
 
                         for tx in old_rx {
                             if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
+                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
                             {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
@@ -153,8 +152,9 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::SkipBlobs(skip_blobs) => {
                         ctx.best_txs.set_skip_blobs(skip_blobs);
                     }
-                    BestTransactionsCommand::Stop => {
+                    BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
+                        drop(drain_rx);
                         return;
                     }
                 }
@@ -164,81 +164,105 @@ impl BestTransactionsPrewarming {
         pool.clear();
     }
 
+    /// Prewarms a transaction by executing it on top of the latest state.
+    ///
+    /// If [`PrewarmingExecutionContext::parallel`] is enabled and prewarming was successful,
+    /// a [`PrewarmedTransaction`] with populated replay data is returned.
+    #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
-    ) where
+        expiring_nonce_offset: Option<usize>,
+    ) -> PrewarmedTransaction
+    where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        if prewarm.is_stopped() {
-            return;
-        }
+        let replay = WorkerPool::with_worker_mut(|worker| {
+            if prewarm.parallel && !is_parallel_candidate(&tx) {
+                return None;
+            }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
+            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
 
-            let tx_hash = *tx.hash();
+            if prewarm.is_stopped() {
+                return None;
+            }
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+            let mut tx_env = tx.transaction.clone_tx_env();
+            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+            }
 
-                for touch in &touches {
-                    if prewarm.is_stopped() {
-                        return;
-                    }
-                    if let Err(err) = touch.warm(evm) {
-                        trace!(
-                            target: "payload_builder",
-                            %err,
-                            ?tx_hash,
-                            "Failed to prewarm transaction storage"
-                        );
-                        return;
-                    }
-                }
-
-                Some(touches.len())
-            } else {
-                if prewarm.is_stopped() {
-                    return;
-                }
-
-                if let Err(err) = evm.transact_raw(tx.transaction.clone().into_with_tx_env().tx_env)
-                {
+            let result = match evm.transact_raw(tx_env) {
+                Ok(result) => result.result,
+                Err(err) => {
                     trace!(
                         target: "payload_builder",
                         %err,
-                        ?tx_hash,
                         "Failed to prewarm transaction by execution"
                     );
-                    return;
-                }
 
-                None
+                    return None;
+                }
             };
+
+            trace!(target: "payload_builder", "Prewarmed transaction");
+
+            if !prewarm.parallel {
+                return None;
+            }
+
+            let actions = evm.take_actions()?;
+            let expiring_nonce = tx
+                .transaction
+                .is_expiring_nonce()
+                .then(|| {
+                    let valid_before = tx
+                        .transaction
+                        .tx_env()
+                        .tempo_tx_env
+                        .as_ref()?
+                        .valid_before?;
+                    Some(ExpiringNonceReplay {
+                        hash: tx.transaction.expiring_nonce_hash()?,
+                        valid_before,
+                    })
+                })
+                .flatten();
 
             trace!(
                 target: "payload_builder",
-                touched,
-                ?tx_hash,
-                "Prewarmed transaction"
+                actions = actions.len(),
+                expiring_nonce = expiring_nonce.is_some(),
+                "Generated replay for transaction"
             );
+
+            Some(Box::new(StorageActionReplay {
+                result,
+                actions,
+                validator_fee: evm.validator_fee(),
+                expiring_nonce,
+            }))
         });
+
+        PrewarmedTransaction { tx, replay }
     }
 }
 
 impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.commands_tx.send(BestTransactionsCommand::Stop);
+        // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
+        let (_drain_tx, replacement_rx) = mpsc::channel();
+        let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::Stop { drain_rx });
     }
 }
 
 impl Iterator for BestTransactionsPrewarming {
-    type Item = BestTransaction;
+    type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
@@ -257,7 +281,7 @@ impl BestTransactions for BestTransactionsPrewarming {
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
-                tx: transaction.clone(),
+                tx: transaction.tx.clone(),
                 kind,
             },
             old_rx,
@@ -279,27 +303,68 @@ impl BestTransactions for BestTransactionsPrewarming {
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
-    transactions_tx: Sender<Option<BestTransaction>>,
+    transactions_tx: Sender<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    next_expiring_nonce_offset: usize,
+}
+
+/// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
+#[derive(Debug)]
+pub(crate) struct PrewarmedTransaction {
+    pub(crate) tx: BestTransaction,
+    pub(crate) replay: Option<Box<StorageActionReplay>>,
+}
+
+impl PrewarmedTransaction {
+    pub(crate) fn without_replay(tx: BestTransaction) -> Self {
+        Self { tx, replay: None }
+    }
+}
+
+impl StateAwarePoolTransaction for PrewarmedTransaction {
+    fn best_transaction(&self) -> &BestTransaction {
+        &self.tx
+    }
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
-struct PrewarmingExecutionContext<Provider> {
+pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
+    executor: TaskExecutor,
     parent_hash: B256,
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    parallel: bool,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn evm_for_ctx(&self) -> PrewarmEvmState {
+    pub(crate) fn new(
+        provider: Provider,
+        executor: TaskExecutor,
+        cache: Option<SavedCache>,
+        parent_hash: B256,
+        evm_env: EvmEnvFor<TempoEvmConfig>,
+        parallel: bool,
+    ) -> Self {
+        Self {
+            provider,
+            executor,
+            parent_hash,
+            cache,
+            evm_env,
+            stop: Arc::new(AtomicBool::new(false)),
+            parallel,
+        }
+    }
+
+    pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
         let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
@@ -317,261 +382,40 @@ where
             state_provider = Box::new(CachedStateProvider::new_prewarm(
                 state_provider,
                 cache.cache().clone(),
-                // Use unlabeled default metrics to avoid polluting the builder metrics.
-                CachedStateMetrics::default(),
             ));
         }
 
         let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm_env = self.evm_env.clone();
-        evm_env.cfg_env.disable_nonce_check = true;
-        evm_env.cfg_env.disable_balance_check = true;
 
-        Some(TempoEvm::new(state_provider, evm_env))
+        let mut evm_env = self.evm_env.clone();
+
+        if !self.parallel {
+            evm_env.cfg_env.disable_nonce_check = true;
+            evm_env.cfg_env.disable_balance_check = true;
+        }
+
+        let mut evm = TempoEvm::new(state_provider, evm_env);
+
+        // Record storage actions for future replay
+        if self.parallel {
+            evm = evm.with_actions();
+        }
+
+        Some(evm)
     }
 
-    fn is_stopped(&self) -> bool {
+    pub(crate) fn executor(&self) -> TaskExecutor {
+        self.executor.clone()
+    }
+}
+
+impl<Provider> PrewarmingExecutionContext<Provider> {
+    pub(crate) fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
 
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StorageTouch {
-    Account(Address),
-    Storage { address: Address, slot: U256 },
-}
-
-impl StorageTouch {
-    fn warm<DB: Database>(&self, evm: &mut TempoEvm<DB>) -> Result<(), DB::Error> {
-        match *self {
-            Self::Account(address) => {
-                let _ = evm.db_mut().basic(address)?;
-            }
-            Self::Storage { address, slot } => {
-                let _ = evm.db_mut().storage(address, slot)?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
-    tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
-}
-
-fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
-    let mut has_call = false;
-    for (kind, input) in calls {
-        has_call = true;
-        if !is_tip20_transfer_call(kind, input) {
-            return false;
-        }
-    }
-    has_call
-}
-
-fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
-    let Some(token) = kind.to().copied() else {
-        return false;
-    };
-    if !token.is_tip20() {
-        return false;
-    }
-
-    matches!(
-        ITIP20::ITIP20Calls::abi_decode(input),
-        Ok(ITIP20::ITIP20Calls::transfer(_)
-            | ITIP20::ITIP20Calls::transferWithMemo(_)
-            | ITIP20::ITIP20Calls::transferFrom(_)
-            | ITIP20::ITIP20Calls::transferFromWithMemo(_))
-    )
-}
-
-fn storage_touches_for_transaction(
-    tx: &BestTransaction,
-    fee_recipient: Address,
-) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
-    let sender = tx.transaction.sender();
-    let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
-    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-        tx.transaction
-            .inner()
-            .fee_token()
-            .unwrap_or(DEFAULT_FEE_TOKEN)
-    });
-
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
-
-    if tx.transaction.is_payment() {
-        for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
-        }
-    }
-
-    add_expiring_nonce_touches(&mut touches, tx);
-
-    touches
-}
-
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
-    if !fee_token.is_tip20() {
-        return;
-    }
-
-    add_tip20_common_touches(touches, fee_token);
-    add_tip20_balance_touch(touches, fee_token, fee_payer);
-    add_tip20_balance_touch(touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
-    add_tip20_reward_touches(touches, fee_token, fee_payer);
-}
-
-fn add_tip20_call_touches(
-    touches: &mut Vec<StorageTouch>,
-    sender: Address,
-    kind: TxKind,
-    input: &[u8],
-) {
-    let Some(token) = kind.to().copied() else {
-        return;
-    };
-    if !token.is_tip20() {
-        return;
-    }
-
-    add_tip20_common_touches(touches, token);
-    let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
-        return;
-    };
-
-    match call {
-        ITIP20::ITIP20Calls::transfer(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFrom(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::approve(call) => {
-            add_tip20_allowance_touch(touches, token, sender, call.spender);
-        }
-        ITIP20::ITIP20Calls::mint(call) => {
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::mintWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::burn(_) | ITIP20::ITIP20Calls::burnWithMemo(_) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_reward_touches(touches, token, sender);
-        }
-        _ => {}
-    }
-}
-
-fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
-    add_account_touch(touches, token);
-    add_storage_touch(touches, token, tip20_slots::CURRENCY);
-    add_storage_touch(touches, token, tip20_slots::PAUSED);
-    add_storage_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
-    add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
-    add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
-}
-
-fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
-    add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
-}
-
-fn add_tip20_allowance_touch(
-    touches: &mut Vec<StorageTouch>,
-    token: Address,
-    owner: Address,
-    spender: Address,
-) {
-    add_storage_touch(
-        touches,
-        token,
-        spender.mapping_slot(owner.mapping_slot(tip20_slots::ALLOWANCES)),
-    );
-}
-
-fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
-    let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
-    add_storage_touch(touches, token, base_slot);
-    add_storage_touch(touches, token, base_slot + U256::from(1));
-    add_storage_touch(touches, token, base_slot + U256::from(2));
-}
-
-fn add_fee_manager_touches(
-    touches: &mut Vec<StorageTouch>,
-    fee_recipient: Address,
-    fee_token: Address,
-) {
-    add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
-    add_storage_touch(
-        touches,
-        TIP_FEE_MANAGER_ADDRESS,
-        fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
-    );
-    add_storage_touch(
-        touches,
-        TIP_FEE_MANAGER_ADDRESS,
-        fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
-    );
-}
-
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
-    let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
-        return;
-    };
-
-    add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
-    add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
-    add_storage_touch(
-        touches,
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce_slots::EXPIRING_NONCE_RING_PTR,
-    );
-}
-
-fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
-    add_unique_touch(touches, StorageTouch::Account(address));
-}
-
-fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
-    add_account_touch(touches, address);
-    add_unique_touch(touches, StorageTouch::Storage { address, slot });
-}
-
-fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
-    if !touches.contains(&touch) {
-        touches.push(touch);
     }
 }
 
@@ -581,12 +425,15 @@ enum BestTransactionsCommand {
     Advance,
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: Receiver<Option<BestTransaction>>,
-        new_tx: Sender<Option<BestTransaction>>,
+        old_rx: Receiver<Option<PrewarmedTransaction>>,
+        new_tx: Sender<Option<PrewarmedTransaction>>,
     },
     NoUpdates,
     SkipBlobs(bool),
-    Stop,
+    Stop {
+        /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
+        drain_rx: Receiver<Option<PrewarmedTransaction>>,
+    },
 }
 
 /// Invalid transaction encountered during execution.
@@ -614,8 +461,20 @@ fn is_invalidated_buffered_transaction(
             .zip(invalid.transaction.aa_transaction_id())
             .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
     } else {
-        candidate.transaction.sender() == invalid.transaction.sender()
+        !candidate.transaction.is_aa_2d()
+            && candidate.transaction.sender() == invalid.transaction.sender()
     }
+}
+
+/// Returns true if the transaction is a candidate for parallel prewarming.
+fn is_parallel_candidate(tx: &BestTransaction) -> bool {
+    // Payment lane transactions
+    tx.transaction.is_payment()
+        // 2D or expiring nonces, no protocol nonces
+        && tx
+            .transaction
+            .nonce_key()
+            .is_some_and(|nonce_key| !nonce_key.is_zero())
 }
 
 #[cfg(test)]
@@ -623,7 +482,6 @@ mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-    use alloy_sol_types::SolCall;
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
@@ -804,11 +662,15 @@ mod tests {
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
         let prewarming = BestTransactionsPrewarming::new(
-            executor.clone(),
-            provider,
-            None,
-            parent_header.hash(),
-            evm_env,
+            PrewarmingExecutionContext {
+                provider,
+                executor: executor.clone(),
+                parent_hash: parent_header.hash(),
+                cache: None,
+                evm_env,
+                stop: Arc::default(),
+                parallel: false,
+            },
             TestBestTransactions::new(txs, log),
         );
         TestPrewarming {
@@ -829,83 +691,6 @@ mod tests {
     }
 
     #[test]
-    fn tip20_touch_collection_dedups_overlapping_fee_and_call_slots() {
-        let sender = Address::random();
-        let recipient = Address::random();
-        let token = DEFAULT_FEE_TOKEN;
-        let mut touches = Vec::new();
-
-        add_tip20_fee_touches(&mut touches, token, sender);
-        add_tip20_call_touches(
-            &mut touches,
-            sender,
-            TxKind::Call(token),
-            &ITIP20::transferCall {
-                to: recipient,
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-
-        for (index, touch) in touches.iter().enumerate() {
-            assert!(
-                !touches[index + 1..].contains(touch),
-                "duplicate storage prewarm touch: {touch:?}"
-            );
-        }
-
-        assert!(touches.contains(&StorageTouch::Account(token)));
-        assert!(touches.contains(&StorageTouch::Storage {
-            address: token,
-            slot: sender.mapping_slot(tip20_slots::BALANCES)
-        }));
-        assert!(touches.contains(&StorageTouch::Storage {
-            address: token,
-            slot: recipient.mapping_slot(tip20_slots::BALANCES)
-        }));
-    }
-
-    #[test]
-    fn tip20_fast_path_is_limited_to_transfers() {
-        let token = DEFAULT_FEE_TOKEN;
-        let transfer = Bytes::from(
-            ITIP20::transferCall {
-                to: Address::random(),
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-        let transfer_from = Bytes::from(
-            ITIP20::transferFromCall {
-                from: Address::random(),
-                to: Address::random(),
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-        let approve = Bytes::from(
-            ITIP20::approveCall {
-                spender: Address::random(),
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-
-        assert!(is_tip20_transfer_call(TxKind::Call(token), &transfer));
-        assert!(is_tip20_transfer_calls(
-            [&transfer, &transfer_from]
-                .into_iter()
-                .map(|input| (TxKind::Call(token), input)),
-        ));
-        assert!(!is_tip20_transfer_call(TxKind::Call(token), &approve));
-        assert!(!is_tip20_transfer_calls(
-            [&transfer, &approve]
-                .into_iter()
-                .map(|input| (TxKind::Call(token), input)),
-        ));
-    }
-
-    #[test]
     fn source_ordering_is_unchanged_when_prewarming_is_enabled() {
         let sender = Address::random();
         let txs = vec![test_tx(sender, 0), test_tx(sender, 1), test_tx(sender, 2)];
@@ -914,7 +699,7 @@ mod tests {
 
         let mut prewarming = prewarming(txs, log);
         let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").hash())
+            .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
@@ -934,7 +719,7 @@ mod tests {
         wait_until(|| log.lock().unwrap().yielded == expected.len());
 
         let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").hash())
+            .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }
@@ -969,19 +754,19 @@ mod tests {
 
         let mut prewarming = prewarming(vec![tx1.clone(), tx2.clone(), tx3.clone()], log.clone());
         assert_eq!(
-            prewarming.next().as_ref().map(|tx| tx.hash()),
+            prewarming.next().as_ref().map(|tx| tx.tx.hash()),
             Some(tx1.hash())
         );
 
         wait_until(|| log.lock().unwrap().yielded == 3);
         prewarming.mark_invalid(
-            &tx1,
+            &PrewarmedTransaction::without_replay(tx1),
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
         );
 
         let next = prewarming.next().expect("non-invalidated transaction");
-        assert_eq!(next.hash(), tx3.hash());
-        assert_ne!(next.hash(), tx2.hash());
+        assert_eq!(next.tx.hash(), tx3.hash());
+        assert_ne!(next.tx.hash(), tx2.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
     }
 

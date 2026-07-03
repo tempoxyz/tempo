@@ -5,8 +5,7 @@ use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
 };
-use reth_primitives_traits::{SealedBlock, SignedTransaction};
-use std::sync::Arc;
+use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoTxEnvelope};
 use tempo_revm::TempoTxEnv;
@@ -16,7 +15,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(&payload.block)
+        self.evm_env(payload.block.header())
     }
 
     fn context_for_payload<'a>(
@@ -25,6 +24,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let TempoExecutionData {
             block,
+            block_access_list: _,
             validator_set,
         } = payload;
         let mut context = self.context_for_block(block)?;
@@ -39,19 +39,21 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
-        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+        for (idx, tx) in block.body().transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push((idx, Some(expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push((idx, None));
             }
         }
 
-        Ok((transactions, RecoveredInBlock::new))
+        Ok((transactions, move |(index, expiring_nonce_idx)| {
+            RecoveredInBlock::new(block.clone(), index, expiring_nonce_idx)
+        }))
     }
 }
 
@@ -60,7 +62,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
 /// clone block or transaction.
 #[derive(Clone)]
 struct RecoveredInBlock {
-    block: Arc<SealedBlock<Block>>,
+    block: SealedOrRecoveredBlock<Block>,
     index: usize,
     sender: Address,
     expiring_nonce_idx: Option<usize>,
@@ -68,9 +70,15 @@ struct RecoveredInBlock {
 
 impl RecoveredInBlock {
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        block: SealedOrRecoveredBlock<Block>,
+        index: usize,
+        expiring_nonce_idx: Option<usize>,
     ) -> Result<Self, RecoveryError> {
-        let sender = block.body().transactions[index].try_recover()?;
+        let sender = block
+            .recovered_block()
+            .and_then(|block| block.senders().get(index).copied())
+            .map(Ok)
+            .unwrap_or_else(|| block.body().transactions[index].try_recover())?;
         Ok(Self {
             block,
             index,
@@ -118,6 +126,8 @@ mod tests {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
+    use reth_primitives_traits::SealedBlock;
+    use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -193,7 +203,8 @@ mod tests {
         let block = create_test_block(vec![tx1, tx2, system_tx]);
 
         let payload = TempoExecutionData {
-            block,
+            block: block.into(),
+            block_access_list: None,
             validator_set: None,
         };
 
@@ -224,7 +235,8 @@ mod tests {
         let validator_set = Some(vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)]);
 
         let payload = TempoExecutionData {
-            block,
+            block: block.into(),
+            block_access_list: None,
             validator_set: validator_set.clone(),
         };
 
@@ -249,7 +261,8 @@ mod tests {
         let block = create_test_block(vec![system_tx]);
 
         let payload = TempoExecutionData {
-            block: block.clone(),
+            block: block.clone().into(),
+            block_access_list: None,
             validator_set: None,
         };
 

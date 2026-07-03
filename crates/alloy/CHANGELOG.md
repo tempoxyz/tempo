@@ -1,5 +1,37 @@
 # Changelog
 
+## `tempo-alloy@1.10.0`
+
+### Minor Changes
+
+- Bump the Tempo SDK crate set to the `1.10` minor release. (by @DerekCofausper, [#6610](https://github.com/tempoxyz/tempo/pull/6610))
+
+## `tempo-alloy@1.9.1`
+
+
+## `tempo-alloy@1.9.0`
+
+### Minor Changes
+
+- Extracts Tempo hardfork definitions and activation schedules into a new `tempo-hardfork` crate for SDK reuse without chainspec dependencies.
+- Updates `tempo-alloy` to depend on and re-export `tempo-hardfork` instead of `tempo-chainspec`. (by @DerekCofausper, [#6480](https://github.com/tempoxyz/tempo/pull/6480))
+
+## `tempo-alloy@1.8.1`
+
+
+## `tempo-alloy@1.8.0`
+
+### Minor Changes
+
+- Added T6 admin access key support for account keychain authorization and SDK transaction builders. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+
+## `tempo-alloy@1.7.3`
+
+### Patch Changes
+
+- Added sponsored transaction support via a new `RelayTransport` that routes `eth_sendRawTransaction` requests through a sponsor service.
+- Introduced `SponsorFiller`, `SponsoredProviderBuilder`, and `.sponsor()` / `.sponsor_with_config()` provider builder extensions supporting both sign-and-relay and sign-only modes. (by @DerekCofausper, [#4188](https://github.com/tempoxyz/tempo/pull/4188))
+
 ## `tempo-alloy@1.7.2`
 
 ### Patch Changes

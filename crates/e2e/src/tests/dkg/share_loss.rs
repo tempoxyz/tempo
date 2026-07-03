@@ -2,28 +2,12 @@ use std::time::Duration;
 
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock as _, Metrics as _, Runner as _,
+    Clock as _, Runner as _,
     deterministic::{Config, Runner},
 };
 use futures::future::join_all;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
-
-fn metric_value(metrics: &str, uid: &str, metric_suffix: &str) -> Option<u64> {
-    metrics.lines().find_map(|line| {
-        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-            return None;
-        }
-        let mut parts = line.split_whitespace();
-        let metric = parts.next()?;
-        let value = parts.next()?;
-        if metric.contains(uid) && metric.ends_with(metric_suffix) {
-            value.parse::<u64>().ok()
-        } else {
-            None
-        }
-    })
-}
+use crate::{Setup, connect_execution_peers, metrics::MetricsExt, setup_validators};
 
 #[test_traced]
 fn validator_lost_share_but_gets_share_in_next_epoch() {
@@ -41,17 +25,15 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
 
-        let uid = {
-            let last_node = validators
-                .last_mut()
-                .expect("we just asked for a couple of validators");
+        let lost_share_index = validators.len() - 1;
+        {
+            let last_node = &mut validators[lost_share_index];
             last_node
                 .consensus_config_mut()
                 .share
                 .take()
                 .expect("the node must have had a share");
-            last_node.uid().to_string()
-        };
+        }
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
@@ -60,28 +42,28 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
 
         'acquire_share: loop {
             context.sleep(Duration::from_secs(1)).await;
-            let metrics = context.encode();
+            let metrics = context
+                .to_metrics()
+                .for_scope(&validators[lost_share_index]);
 
-            if let Some(v) = metric_value(&metrics, &uid, "peers_blocked") {
+            if let Some(v) = metrics.value::<u64>("peers_blocked") {
                 assert_eq!(v, 0);
             }
 
-            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+            if let Some(epoch) = metrics.latest_consensus_epoch() {
                 assert!(epoch < 2, "reached 2nd epoch without recovering new share");
             }
 
             // Ensures that node has no share.
             if !node_forgot_share
-                && let Some(v) =
-                    metric_value(&metrics, &uid, "_epoch_manager_how_often_verifier_total")
+                && let Some(v) = metrics.value::<u64>("_epoch_manager_how_often_verifier_total")
             {
                 node_forgot_share = v > 0;
             }
 
             // Ensure that the node gets a share by becoming a signer.
             if node_forgot_share
-                && let Some(v) =
-                    metric_value(&metrics, &uid, "_epoch_manager_how_often_signer_total")
+                && let Some(v) = metrics.value::<u64>("_epoch_manager_how_often_signer_total")
                 && v > 0
             {
                 break 'acquire_share;
@@ -112,16 +94,13 @@ fn validator_loses_consensus_state_becomes_observer() {
 
         'setup: loop {
             context.sleep(Duration::from_secs(1)).await;
-            let metrics = context.encode();
+            let metrics = context.to_metrics().for_scope(&specimen);
 
             // Dealings in the first epoch.
-            if let Some(epoch) =
-                metric_value(&metrics, &specimen.uid, "_epoch_manager_latest_epoch")
-            {
+            if let Some(epoch) = metrics.latest_consensus_epoch() {
                 assert_eq!(epoch, 0);
 
-                if let Some(v) =
-                    metric_value(&metrics, &specimen.uid, "_dkg_manager_ceremony_acks_sent")
+                if let Some(v) = metrics.value::<u64>("_dkg_manager_ceremony_acks_sent")
                     && v > 0
                 {
                     break 'setup;
@@ -141,17 +120,14 @@ fn validator_loses_consensus_state_becomes_observer() {
 
         specimen.start(&context).await;
 
-        let uid = specimen.metric_prefix();
-
         'recover: for iteration in 1.. {
-            let metrics = context.encode();
+            let metrics = context.to_metrics().for_scope(&specimen);
 
-            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+            if let Some(epoch) = metrics.latest_consensus_epoch() {
                 assert!(epoch < 3, "node should have recovered its share by epoch 3");
 
                 if epoch < 2
-                    && let Some(v) =
-                        metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
+                    && let Some(v) = metrics.value::<u64>("_dkg_manager_how_often_dealer_total")
                 {
                     assert_eq!(
                         v, 0,
@@ -160,8 +136,7 @@ fn validator_loses_consensus_state_becomes_observer() {
                 }
 
                 if epoch == 2
-                    && let Some(v) =
-                        metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
+                    && let Some(v) = metrics.value::<u64>("_dkg_manager_how_often_dealer_total")
                 {
                     assert_eq!(
                         v, 1,

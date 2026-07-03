@@ -12,7 +12,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
+use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Keccak256, U256};
 use commonware_codec::Encode;
@@ -46,7 +46,7 @@ use reth_node_core::{
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
-use tempo_commonware_node::feed::FeedStateHandle;
+use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
@@ -56,7 +56,7 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
-    storage::StorageCtx,
+    storage::{StorageActions, StorageCtx},
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -75,7 +75,6 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
-    t4_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -84,7 +83,6 @@ impl Builder {
         Self {
             epoch_length: None,
             initial_dkg_outcome: None,
-            t4_time: None,
             validators: None,
         }
     }
@@ -110,15 +108,10 @@ impl Builder {
         }
     }
 
-    pub fn with_t4_time(self, t4_time: Option<u64>) -> Self {
-        Self { t4_time, ..self }
-    }
-
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
-            t4_time,
             validators,
         } = self;
 
@@ -143,14 +136,6 @@ impl Builder {
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
 
-        if let Some(t4_time) = t4_time {
-            genesis
-                .config
-                .extra_fields
-                .insert_value("t4Time".to_string(), t4_time)
-                .unwrap();
-        }
-
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
         // Just remove whatever is already written into chainspec.
@@ -159,49 +144,56 @@ impl Builder {
         let mut evm = setup_tempo_evm(genesis.config.chain_id);
         {
             let cx = evm.ctx_mut();
-            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, &cx.tx, || {
-                let mut validator_config_v2 = ValidatorConfigV2::new();
-                validator_config_v2
-                    .initialize(admin())
-                    .wrap_err("failed to initialize validator config v2")
-                    .unwrap();
+            StorageCtx::enter_evm(
+                &mut cx.journaled_state,
+                &cx.block,
+                &cx.cfg,
+                &cx.tx,
+                StorageActions::disabled(),
+                || {
+                    let mut validator_config_v2 = ValidatorConfigV2::new();
+                    validator_config_v2
+                        .initialize(admin())
+                        .wrap_err("failed to initialize validator config v2")
+                        .unwrap();
 
-                for (public_key, validator) in validators {
-                    if let ConsensusNodeConfig {
-                        address,
-                        ingress,
-                        egress,
-                        fee_recipient,
-                        private_key,
-                        share: Some(_),
-                    } = validator
-                    {
-                        validator_config_v2
-                            .add_validator(
-                                admin(),
-                                IValidatorConfigV2::addValidatorCall {
-                                    validatorAddress: address,
-                                    publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                    ingress: ingress.to_string(),
-                                    egress: egress.ip().to_string(),
-                                    feeRecipient: fee_recipient,
-                                    signature: sign_add_validator_args(
-                                        genesis.config.chain_id,
-                                        &private_key,
-                                        address,
-                                        ingress,
-                                        egress.ip(),
-                                        fee_recipient,
-                                    )
-                                    .encode()
-                                    .to_vec()
-                                    .into(),
-                                },
-                            )
-                            .unwrap();
+                    for (public_key, validator) in validators {
+                        if let ConsensusNodeConfig {
+                            address,
+                            ingress,
+                            egress,
+                            fee_recipient,
+                            private_key,
+                            share: Some(_),
+                        } = validator
+                        {
+                            validator_config_v2
+                                .add_validator(
+                                    admin(),
+                                    IValidatorConfigV2::addValidatorCall {
+                                        validatorAddress: address,
+                                        publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                        ingress: ingress.to_string(),
+                                        egress: egress.ip().to_string(),
+                                        feeRecipient: fee_recipient,
+                                        signature: sign_add_validator_args(
+                                            genesis.config.chain_id,
+                                            &private_key,
+                                            address,
+                                            ingress,
+                                            egress.ip(),
+                                            fee_recipient,
+                                        )
+                                        .encode()
+                                        .to_vec()
+                                        .into(),
+                                    },
+                                )
+                                .unwrap();
+                        }
                     }
-                }
-            })
+                },
+            );
         }
 
         let evm_state = evm.ctx_mut().journaled_state.evm_state();

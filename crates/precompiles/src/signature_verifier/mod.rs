@@ -1,10 +1,13 @@
 pub mod dispatch;
 
-use crate::{SIGNATURE_VERIFIER_ADDRESS, error::Result};
+use crate::{SIGNATURE_VERIFIER_ADDRESS, account_keychain::AccountKeychain, error::Result};
 use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{SignatureType, tt_signature::PrimitiveSignature};
+use tempo_primitives::transaction::{
+    SignatureType,
+    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+};
 
 /// Gas cost for secp256k1 signature verification.
 const SECP256K1_VERIFY_GAS: u64 = 3_000;
@@ -39,6 +42,50 @@ impl SignatureVerifier {
         // Verify and recover signer.
         sig.recover_signer(&hash)
             .map_err(|_| SignatureVerifierError::invalid_signature().into())
+    }
+
+    pub fn verify_keychain(
+        &mut self,
+        account: Address,
+        hash: B256,
+        signature: Bytes,
+    ) -> Result<bool> {
+        let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
+        if embedded_account != account {
+            return Ok(false);
+        }
+
+        AccountKeychain::new().is_active_key(account, key_id)
+    }
+
+    pub fn verify_keychain_admin(
+        &mut self,
+        account: Address,
+        hash: B256,
+        signature: Bytes,
+    ) -> Result<bool> {
+        let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
+        if embedded_account != account {
+            return Ok(false);
+        }
+
+        AccountKeychain::new().is_admin_key(account, key_id)
+    }
+
+    fn recover_keychain_key(&mut self, hash: B256, signature: Bytes) -> Result<(Address, Address)> {
+        let sig = TempoSignature::from_bytes(&signature)
+            .map_err(|_| SignatureVerifierError::invalid_format())?;
+        let keychain_sig = sig
+            .as_keychain()
+            .ok_or_else(SignatureVerifierError::invalid_format)?;
+
+        if keychain_sig.is_legacy() {
+            return Err(SignatureVerifierError::invalid_format().into());
+        }
+
+        let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
+        let key_id = self.recover(signing_hash, keychain_sig.signature.to_bytes())?;
+        Ok((keychain_sig.user_address, key_id))
     }
 }
 

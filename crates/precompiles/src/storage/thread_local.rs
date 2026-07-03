@@ -4,20 +4,19 @@ use alloy::{
 };
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{
-        Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
-    },
+    context::{CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint},
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
 use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     Precompile,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    storage::{PrecompileStorageProvider, StorageActions, evm::EvmPrecompileStorageProvider},
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
@@ -124,17 +123,27 @@ impl StorageCtx {
 
     /// Returns the current block timestamp.
     pub fn timestamp(&self) -> U256 {
-        Self::with_storage(|s| s.timestamp())
+        self.with_block_env(|block_env| block_env.timestamp)
     }
 
     /// Returns the current block beneficiary (coinbase).
     pub fn beneficiary(&self) -> Address {
-        Self::with_storage(|s| s.beneficiary())
+        self.with_block_env(|block_env| block_env.beneficiary)
     }
 
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
-        Self::with_storage(|s| s.block_number())
+        self.with_block_env(|block_env| block_env.number.saturating_to::<u64>())
+    }
+
+    /// Executes a closure with access to the current Tempo block environment.
+    pub fn with_block_env<R>(&self, f: impl FnOnce(&TempoBlockEnv) -> R) -> R {
+        Self::with_storage(|s| f(s.block_env()))
+    }
+
+    /// Returns the epoch containing `height`.
+    pub fn epoch(&self, height: u64) -> u64 {
+        self.with_block_env(|block_env| block_env.epoch(height))
     }
 
     /// Sets the bytecode at the given address.
@@ -155,6 +164,16 @@ impl StorageCtx {
     /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
+    }
+
+    /// Increments a persistent storage slot by `delta`.
+    pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.sinc(address, key, delta))
+    }
+
+    /// Decrements a persistent storage slot by `delta`.
+    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.sdec(address, key, delta))
     }
 
     /// Performs a TSTORE operation (transient storage write).
@@ -202,6 +221,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.spec())
     }
 
+    /// Returns the shared storage-actions recorder for the current storage context.
+    pub fn actions(&self) -> StorageActions {
+        Self::with_storage(|s| s.storage_actions())
+    }
+
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
     /// regular/state gas split independently of the active hardfork.
     pub fn amsterdam_eip8037_enabled(&self) -> bool {
@@ -211,6 +235,16 @@ impl StorageCtx {
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
+    }
+
+    /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
+    pub fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
+    }
+
+    /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+        Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.
@@ -332,29 +366,60 @@ impl<'evm> StorageCtx {
     /// Sets up the storage provider and executes a closure within that context.
     pub fn enter_evm<J, R>(
         journal: &'evm mut J,
-        block_env: &'evm dyn Block,
+        block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm impl Transaction,
+        actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
     where
         J: JournalTr<Database: Database> + Debug,
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
     }
 
+    /// Enters storage with TIP-1060 storage-credit accounting disabled.
+    ///
+    /// Use when provider gas is not charged, or is charged externally, and the writes must not
+    /// mint, consume, or settle storage credits. If those writes create persistent storage, the
+    /// external charge must include `STORAGE_CREDIT_VALUE` unless exempt.
+    pub fn enter_evm_without_tip1060_accounting<J, R>(
+        journal: &'evm mut J,
+        block_env: &'evm TempoBlockEnv,
+        cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
+        actions: StorageActions,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        J: JournalTr<Database: Database> + Debug,
+    {
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
+        provider.set_tip1060_storage_credits(false);
+
+        Self::enter(&mut provider, f)
+    }
+
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
     /// directly instead of requiring the caller to destructure the context.
-    pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
+    pub fn enter_ctx<C, R>(ctx: &mut C, actions: StorageActions, f: impl FnOnce() -> R) -> R
     where
-        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+        C: ContextTr<
+                Block = TempoBlockEnv,
+                Cfg = CfgEnv<TempoHardfork>,
+                Journal: Debug,
+                Db: Database,
+            >,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
-        Self::enter_evm(journal, block, cfg, tx, f)
+        Self::enter_evm(journal, block, cfg, tx, actions, f)
     }
 
     /// Like [`enter_ctx`](Self::enter_ctx), but meters storage access under `gas_limit`
@@ -363,15 +428,22 @@ impl<'evm> StorageCtx {
         ctx: &mut C,
         gas_limit: u64,
         reservoir: u64,
+        actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> (R, u64)
     where
-        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+        C: ContextTr<
+                Block = TempoBlockEnv,
+                Cfg = CfgEnv<TempoHardfork>,
+                Journal: Debug,
+                Db: Database,
+            >,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         let internals = EvmInternals::new(journal, block, cfg, tx);
         let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir);
+            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir)
+                .with_actions(actions);
         let result = Self::enter(&mut provider, f);
         let gas_used = provider.gas_used();
         (result, gas_used)
@@ -380,9 +452,10 @@ impl<'evm> StorageCtx {
     /// Entry point for a "canonical" precompile (with unique known address).
     pub fn enter_precompile<J, P, R>(
         journal: &'evm mut J,
-        block_env: &'evm dyn Block,
+        block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm impl Transaction,
+        actions: StorageActions,
         f: impl FnOnce(P) -> R,
     ) -> R
     where
@@ -391,7 +464,7 @@ impl<'evm> StorageCtx {
     {
         // Delegate all the setup logic to `enter_evm`.
         // We just need to provide a closure that `enter_evm` expects.
-        Self::enter_evm(journal, block_env, cfg, tx_env, || f(P::default()))
+        Self::enter_evm(journal, block_env, cfg, tx_env, actions, || f(P::default()))
     }
 }
 
