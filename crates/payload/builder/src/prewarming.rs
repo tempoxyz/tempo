@@ -237,12 +237,12 @@ impl BestTransactionsPrewarming {
                 "Generated replay for transaction"
             );
 
-            Some(Box::new(StorageActionReplay {
+            Some(StorageActionReplay {
                 result,
                 actions,
                 validator_fee: evm.validator_fee(),
                 expiring_nonce,
-            }))
+            })
         });
 
         PrewarmedTransaction { tx, replay }
@@ -314,7 +314,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 #[derive(Debug)]
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
-    pub(crate) replay: Option<Box<StorageActionReplay>>,
+    pub(crate) replay: Option<StorageActionReplay>,
 }
 
 impl PrewarmedTransaction {
