@@ -1,12 +1,16 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
 use reth_consensus::ConsensusError;
-use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
+use reth_node_api::{
+    InvalidPayloadAttributesError, LazyHashedPostState, NewPayloadError, PayloadValidator,
+};
 use reth_primitives_traits::{AlloyBlockHeader as _, RecoveredBlock, SealedBlock};
 use reth_storage_api::StateProviderFactory;
-use reth_trie_common::HashedPostState;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{consensus::TempoConsensusError, proof_trie::EMPTY_PROOF_ROOT_HASH};
+use tempo_evm::{
+    consensus::TempoConsensusError,
+    proof_trie::{EMPTY_PROOF_ROOT_HASH, proof_root_from_hashed_post_state},
+};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader};
 
@@ -15,7 +19,6 @@ use tempo_primitives::{Block, TempoHeader};
 #[non_exhaustive]
 pub struct TempoEngineValidator<Provider> {
     chain_spec: Arc<TempoChainSpec>,
-    #[allow(dead_code)]
     provider: Provider,
 }
 
@@ -47,9 +50,9 @@ where
         Ok(Arc::unwrap_or_clone(block))
     }
 
-    fn validate_block_post_execution_with_hashed_state<'a>(
+    fn validate_block_post_execution_with_hashed_state(
         &self,
-        _state_updates: &dyn FnOnce() -> &'a HashedPostState,
+        state_updates: &LazyHashedPostState,
         block: &RecoveredBlock<Self::Block>,
     ) -> Result<(), ConsensusError> {
         let timestamp = block.header().timestamp();
@@ -62,7 +65,16 @@ where
             let expected = if provable_accounts.is_empty() {
                 EMPTY_PROOF_ROOT_HASH
             } else {
-                return Ok(());
+                let state_provider = self
+                    .provider
+                    .state_by_block_hash(block.header().parent_hash())
+                    .map_err(ConsensusError::other)?;
+                proof_root_from_hashed_post_state(
+                    &*state_provider,
+                    state_updates.get(),
+                    provable_accounts,
+                )
+                .map_err(ConsensusError::other)?
             };
 
             if actual != expected {
@@ -98,8 +110,8 @@ mod tests {
     use alloy_primitives::{B256, U256, keccak256};
     use reth_primitives_traits::Account;
     use reth_storage_api::noop::NoopProvider;
+    use reth_trie_common::HashedPostState;
     use tempo_chainspec::spec::INITIAL_PROVABLE_ACCOUNTS;
-    use tempo_evm::proof_trie::proof_root_from_hashed_post_state;
     use tempo_primitives::BlockBody;
 
     fn chainspec_with_t8_at(t8_time: u64) -> Arc<TempoChainSpec> {
@@ -155,14 +167,18 @@ mod tests {
         RecoveredBlock::new_unhashed(block, vec![])
     }
 
+    fn lazy_hashed_state(state_updates: HashedPostState) -> LazyHashedPostState {
+        LazyHashedPostState::ready(Arc::new(state_updates))
+    }
+
     #[test]
     fn validates_proof_root_against_empty_provable_state_updates() {
         let validator = validator_with_t8_at(10);
-        let state_updates = HashedPostState::default();
+        let state_updates = lazy_hashed_state(HashedPostState::default());
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &|| &state_updates,
+                &state_updates,
                 &recovered_block(9, None),
             )
             .expect("pre-activation proof_root omission is valid");
@@ -170,7 +186,7 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &|| &state_updates,
+                    &state_updates,
                     &recovered_block(9, Some(EMPTY_PROOF_ROOT_HASH)),
                 )
                 .is_err(),
@@ -179,7 +195,7 @@ mod tests {
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &|| &state_updates,
+                &state_updates,
                 &recovered_block(10, Some(EMPTY_PROOF_ROOT_HASH)),
             )
             .expect("activation proof_root must be present");
@@ -187,7 +203,7 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &|| &state_updates,
+                    &state_updates,
                     &recovered_block(10, None),
                 )
                 .is_err(),
@@ -210,10 +226,11 @@ mod tests {
             HashedPostState::default().with_accounts([(keccak256(address), Some(account))]);
         let expected =
             proof_root_from_hashed_post_state(&provider, &state_updates, &[address]).unwrap();
+        let state_updates = lazy_hashed_state(state_updates);
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &|| &state_updates,
+                &state_updates,
                 &recovered_block(10, Some(expected)),
             )
             .expect("matching proof_root is valid");
@@ -221,11 +238,11 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &|| &state_updates,
+                    &state_updates,
                     &recovered_block(10, Some(EMPTY_PROOF_ROOT_HASH)),
                 )
-                .is_ok(),
-            "post-activation proof_root hashed-state comparison is deferred for lazy Reth state updates"
+                .is_err(),
+            "post-activation proof_root must match the hashed-state proof root"
         );
     }
 }

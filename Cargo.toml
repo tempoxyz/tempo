@@ -144,66 +144,66 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
 reth-codecs = { version = "0.5.2", default-features = false }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto", default-features = false }
-reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto", default-features = false }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing", default-features = false }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
 reth-primitives-traits = { version = "0.5.2", default-features = false }
-reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto" }
+reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing" }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/lthash-proto", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "rkrasiuk/fix-hashed-post-state-passing", features = [
   "std",
   "optional-checks",
 ] }
