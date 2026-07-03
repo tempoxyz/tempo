@@ -227,26 +227,18 @@ impl<TContext: Spawner> Actor<TContext> {
             .latest_finalized
             .as_ref()
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
-        let latest_finalized_height = state
-            .latest_finalized
-            .as_ref()
-            .map(|b| b.block.inner.number);
 
         let latest_notarized_round = state
             .latest_notarized
             .as_ref()
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
-        let latest_notarized_height = state
-            .latest_notarized
-            .as_ref()
-            .map(|b| b.block.inner.number);
 
         // Update state and broadcast events
         let height = certified.block.inner.number;
         let subscribers = self.state.events_tx().receiver_count();
         match activity {
             Activity::Notarization(_) => {
-                if latest_notarized_height.is_none_or(|previous| height > previous) {
+                if latest_notarized_round.is_none_or(|previous| round > previous) {
                     debug!(subscribers, height, "sending new notarized event");
                     let _ = self.state.events_tx().send(Event::Notarized {
                         block: certified.clone(),
@@ -262,7 +254,7 @@ impl<TContext: Spawner> Actor<TContext> {
             }
 
             Activity::Finalization(_) => {
-                if latest_finalized_height.is_none_or(|previous| height > previous) {
+                if latest_finalized_round.is_none_or(|previous| round > previous) {
                     debug!(subscribers, height, "sending new finalized event");
                     let _ = self.state.events_tx().send(Event::Finalized {
                         block: certified.clone(),
