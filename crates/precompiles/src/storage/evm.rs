@@ -266,7 +266,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions.record_always(StorageAction::Sstore(
             address,
@@ -274,7 +274,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
             val.data.present_value,
             value,
         ));
-        Ok(val)
+        Ok(val.into())
     }
 
     #[inline]
@@ -590,6 +590,110 @@ impl EvmPrecompileStorageProvider<'_> {
             top,
             "out-of-order checkpoint {op} (expected top of stack)"
         );
+    }
+}
+
+/// SSTORE transition flags that drive gas/refund accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SstoreTransitionFlags(u8);
+
+impl SstoreTransitionFlags {
+    /// The slot's transaction-start value is zero.
+    const ORIGINAL_ZERO: u8 = 1 << 0;
+    /// The slot's pre-SSTORE value is zero.
+    const PRESENT_ZERO: u8 = 1 << 1;
+    /// The slot's post-SSTORE value is zero.
+    const NEW_ZERO: u8 = 1 << 2;
+    /// The slot's transaction-start value equals its pre-SSTORE value.
+    const ORIGINAL_EQ_PRESENT: u8 = 1 << 3;
+    /// The slot's transaction-start value equals its post-SSTORE value.
+    const ORIGINAL_EQ_NEW: u8 = 1 << 4;
+    /// The slot's pre-SSTORE current value equals its post-SSTORE value.
+    const PRESENT_EQ_NEW: u8 = 1 << 5;
+
+    /// Computes the SSTORE transition flags from the values that drive gas/refund accounting.
+    pub fn from_values(original: U256, present: U256, new: U256) -> Self {
+        let mut bits = 0;
+
+        if original.is_zero() {
+            bits |= Self::ORIGINAL_ZERO;
+        }
+        if present.is_zero() {
+            bits |= Self::PRESENT_ZERO;
+        }
+        if new.is_zero() {
+            bits |= Self::NEW_ZERO;
+        }
+        if original == present {
+            bits |= Self::ORIGINAL_EQ_PRESENT;
+        }
+        if original == new {
+            bits |= Self::ORIGINAL_EQ_NEW;
+        }
+        if present == new {
+            bits |= Self::PRESENT_EQ_NEW;
+        }
+
+        Self(bits)
+    }
+
+    /// Returns whether the write changes slot occupancy.
+    pub fn crosses_zero_boundary(&self) -> bool {
+        self.has(Self::PRESENT_ZERO) != self.has(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write creates an occupied slot.
+    pub fn is_zero_to_nonzero(&self) -> bool {
+        self.has(Self::PRESENT_ZERO) && !self.has(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write clears an occupied slot.
+    pub fn is_nonzero_to_zero(&self) -> bool {
+        !self.has(Self::PRESENT_ZERO) && self.has(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write changes the present value.
+    pub fn changes_present(&self) -> bool {
+        !self.has(Self::PRESENT_EQ_NEW)
+    }
+
+    /// Returns whether this slot is still clean before the write.
+    ///
+    /// In EVM SSTORE terminology, "clean" means the transaction has not changed
+    /// the slot yet, so the transaction-start value (`original`) still equals
+    /// the current pre-write value (`present`).
+    pub fn is_original_eq_present(&self) -> bool {
+        self.has(Self::ORIGINAL_EQ_PRESENT)
+    }
+
+    /// Returns whether the warm clean-update SSTORE cost applies.
+    ///
+    /// This is the `present != new && original == present` case: the write
+    /// changes a slot for the first time in the transaction. Dirty writes
+    /// (`original != present`) use different SSTORE accounting and do not pay
+    /// this clean-update charge again.
+    pub fn charges_clean_update(&self) -> bool {
+        self.changes_present() && self.is_original_eq_present()
+    }
+
+    fn has(&self, flag: u8) -> bool {
+        self.0 & flag != 0
+    }
+}
+
+impl From<&StateLoad<SStoreResult>> for SstoreTransitionFlags {
+    fn from(result: &StateLoad<SStoreResult>) -> Self {
+        Self::from_values(
+            result.data.original_value,
+            result.data.present_value,
+            result.data.new_value,
+        )
+    }
+}
+
+impl From<StateLoad<SStoreResult>> for SstoreTransitionFlags {
+    fn from(result: StateLoad<SStoreResult>) -> Self {
+        Self::from(&result)
     }
 }
 
