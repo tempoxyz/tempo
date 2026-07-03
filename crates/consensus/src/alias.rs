@@ -204,13 +204,18 @@ pub(crate) mod marshal {
 
         info!(
             marshal_stored_height = %marshal_stored_height.unwrap_or_default(),
-            "marshal reported durable processed height"
+            %finalized_floor_height,
+            "marshal floor"
         );
+
+        let last_finalized_height = marshal_stored_height
+            .unwrap_or_default()
+            .max(finalized_floor_height);
 
         Ok(Initialized {
             actor,
             mailbox,
-            finalized_floor: finalized_floor_height,
+            finalized_floor: last_finalized_height,
             finalized_tip,
         })
     }
