@@ -127,6 +127,7 @@ fn test_stablecoin_dex_layout() {
         orderbook_base_slot,
         base,
         quote,
+        id,
         bids,
         asks,
         best_bid_tick,

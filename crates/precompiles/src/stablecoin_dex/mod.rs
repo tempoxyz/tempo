@@ -534,8 +534,12 @@ impl StablecoinDEX {
         if book_key != self.book_key_for_index(index)? {
             return Err(StablecoinDEXError::invalid_book_index().into());
         }
-        if let (true, _) = self.book_id(book_key)? {
-            return Err(StablecoinDEXError::index_already_set().into());
+        if let (true, current) = self.book_id(book_key)? {
+            return if current == index {
+                Ok(())
+            } else {
+                Err(StablecoinDEXError::index_already_set().into())
+            };
         }
 
         self.books[book_key].id.write(OrderbookId {

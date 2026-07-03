@@ -12,9 +12,16 @@ contract StablecoinDEX {
         uint128 totalLiquidity;
     }
 
+    // Only applicable for T8 and above. Always set to zero beforehand.
+    struct OrderbookId {
+        bool isSet;
+        uint32 index;
+    }
+
     struct Orderbook {
         address base;
         address quote;
+        OrderbookId id;
         mapping(int16 => TickLevel) bids;
         mapping(int16 => TickLevel) asks;
         int16 bestBidTick;
