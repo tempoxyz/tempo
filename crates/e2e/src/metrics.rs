@@ -7,6 +7,7 @@ use commonware_runtime::{Clock as _, deterministic::Context};
 use crate::TestingNode;
 
 const PEERS_BLOCKED: &str = "peers_blocked";
+const ACTIVE_EPOCHS: &str = "epoch_manager_active_epochs";
 const LATEST_EPOCH: &str = "epoch_manager_latest_epoch";
 const LATEST_PARTICIPANTS: &str = "epoch_manager_latest_participants";
 const PROCESSED_HEIGHT: &str = "marshal_processed_height";
@@ -140,6 +141,18 @@ impl Metrics {
 
     pub fn latest_consensus_epoch(&self) -> Option<u64> {
         self.value::<u64>(LATEST_EPOCH)
+    }
+
+    pub fn active_consensus_epochs(&self) -> Option<u64> {
+        self.value::<u64>(ACTIVE_EPOCHS)
+    }
+
+    pub fn latest_active_consensus_epoch(&self) -> Option<u64> {
+        if self.active_consensus_epochs()? == 0 {
+            return None;
+        }
+
+        self.latest_consensus_epoch()
     }
 
     pub fn latest_consensus_height(&self) -> Option<u64> {

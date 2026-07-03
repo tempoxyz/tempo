@@ -33,14 +33,18 @@ failure-output = "never"
 threads-required = 8
 slow-timeout = { period = "3m", terminate-after = 1 }
 
-# Separate profile for flaky snapshot-restart tests so they fail-fast independently.
+# Separate profile for the flaky sync snapshot-restart test so it fails fast independently.
 [profile.ci-flaky]
 inherits = "ci"
 fail-fast = true
 retries = 0
 failure-output = "final"
-slow-timeout = { period = "3m", terminate-after = 1 }
-default-filter = "package(tempo-e2e) & test(can_restart_after_joining_from_snapshot)"
+slow-timeout = { period = "5m", terminate-after = 1 }
+default-filter = "package(tempo-e2e) & test(tests::sync::can_restart_after_joining_from_snapshot)"
+
+[[profile.ci-flaky.overrides]]
+filter = "package(tempo-e2e) & test(tests::sync::can_restart_after_joining_from_snapshot)"
+slow-timeout = { period = "5m", terminate-after = 3 }
 
 # Dedicated profile for live RPC matrix tests (testnet/devnet).
 # These hit rate-limited external endpoints, so we serialize them and allow

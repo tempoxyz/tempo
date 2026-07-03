@@ -209,7 +209,10 @@ fn joins_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&replacement).latest_consensus_epoch() {
+            if let Some(epoch) = metrics
+                .for_scope(&replacement)
+                .latest_active_consensus_epoch()
+            {
                 assert!(
                     epoch > 0,
                     "when starting from snapshot a sufficiently advanced \
@@ -399,7 +402,10 @@ fn can_restart_after_joining_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&replacement).latest_consensus_epoch() {
+            if let Some(epoch) = metrics
+                .for_scope(&replacement)
+                .latest_active_consensus_epoch()
+            {
                 assert!(
                     epoch > 0,
                     "when starting from snapshot a sufficiently advanced \

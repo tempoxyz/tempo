@@ -387,8 +387,8 @@ where
         info!("started consensus engine backing the epoch");
 
         self.metrics.latest_participants.set(n_participants as i64);
-        self.metrics.active_epochs.inc();
         let _ = self.metrics.latest_epoch.try_set(epoch.get());
+        self.metrics.active_epochs.inc();
         self.metrics.how_often_signer.inc_by(u64::from(is_signer));
         self.metrics
             .how_often_verifier
@@ -402,6 +402,7 @@ where
         if let Some((engine, engine_ctx)) = self.active_epochs.remove(&epoch) {
             drop(engine_ctx);
             engine.abort();
+            self.metrics.active_epochs.dec();
             info!("stopped engine backing epoch");
         } else {
             warn!(

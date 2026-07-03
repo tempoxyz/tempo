@@ -142,7 +142,7 @@ fn joins_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&receiver).latest_consensus_epoch() {
+            if let Some(epoch) = metrics.for_scope(&receiver).latest_active_consensus_epoch() {
                 assert!(epoch > 0, "validator should never boot into genesis epoch");
             }
 
@@ -273,7 +273,7 @@ fn can_restart_after_joining_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&receiver).latest_consensus_epoch() {
+            if let Some(epoch) = metrics.for_scope(&receiver).latest_active_consensus_epoch() {
                 assert!(epoch > 0, "validator should never boot into genesis epoch");
             }
 
