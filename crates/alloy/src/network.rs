@@ -188,7 +188,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
         match self.output_tx_type() {
-            TempoTxType::AA => Some(TempoTxType::AA).filter(|_| self.can_build_aa()),
+            TempoTxType::AA => self.can_build_aa().then_some(TempoTxType::AA),
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559

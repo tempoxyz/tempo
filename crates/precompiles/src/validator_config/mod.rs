@@ -69,7 +69,7 @@ impl ValidatorConfig {
     /// Returns `Ok(())` if `caller` is the owner, otherwise reverts with `unauthorized`.
     pub fn check_owner(&self, caller: Address) -> Result<()> {
         if self.owner()? != caller {
-            return Err(ValidatorConfigError::unauthorized())?;
+            return Err(ValidatorConfigError::unauthorized().into());
         }
 
         Ok(())
@@ -173,7 +173,7 @@ impl ValidatorConfig {
     ) -> Result<()> {
         // Reject zero public key - zero is used as sentinel value for non-existence
         if call.publicKey.is_zero() {
-            return Err(ValidatorConfigError::invalid_public_key())?;
+            return Err(ValidatorConfigError::invalid_public_key().into());
         }
 
         // Only owner can create validators
@@ -181,7 +181,7 @@ impl ValidatorConfig {
 
         // Check if validator already exists
         if self.validator_exists(call.newValidatorAddress)? {
-            return Err(ValidatorConfigError::validator_already_exists())?;
+            return Err(ValidatorConfigError::validator_already_exists().into());
         }
 
         // Validate addresses.
@@ -263,12 +263,12 @@ impl ValidatorConfig {
     ) -> Result<()> {
         // Reject zero public key - zero is used as sentinel value for non-existence
         if call.publicKey.is_zero() {
-            return Err(ValidatorConfigError::invalid_public_key())?;
+            return Err(ValidatorConfigError::invalid_public_key().into());
         }
 
         // Validator can update their own info
         if !self.validator_exists(sender)? {
-            return Err(ValidatorConfigError::validator_not_found())?;
+            return Err(ValidatorConfigError::validator_not_found().into());
         }
 
         // Load the current validator info
@@ -277,7 +277,7 @@ impl ValidatorConfig {
         // Check if rotating to a new address
         if call.newValidatorAddress != sender {
             if self.validator_exists(call.newValidatorAddress)? {
-                return Err(ValidatorConfigError::validator_already_exists())?;
+                return Err(ValidatorConfigError::validator_already_exists().into());
             }
 
             // Update the validators array to point at the new validator address
@@ -346,7 +346,7 @@ impl ValidatorConfig {
         self.check_owner(sender)?;
 
         if !self.validator_exists(call.validator)? {
-            return Err(ValidatorConfigError::validator_not_found())?;
+            return Err(ValidatorConfigError::validator_not_found().into());
         }
 
         let mut validator = self.validators[call.validator].read()?;
@@ -371,7 +371,7 @@ impl ValidatorConfig {
         // Look up validator address by index
         let validator_address = match self.validators_array.at(call.index as usize)? {
             Some(elem) => elem.read()?,
-            None => return Err(ValidatorConfigError::validator_not_found())?,
+            None => return Err(ValidatorConfigError::validator_not_found().into()),
         };
 
         let mut validator = self.validators[validator_address].read()?;

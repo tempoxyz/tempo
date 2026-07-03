@@ -53,6 +53,7 @@ if [[ -z "$PATCHES" ]]; then
   echo "ERROR: No path-based tempo-* workspace dependencies found in $TEMPO_CARGO" >&2
   exit 1
 fi
+PATCHED_TEMPO_CRATES="$(cut -f1 <<< "$PATCHES" | sort -u)"
 
 # ── 2. Patch [patch."https://github.com/tempoxyz/tempo"] ────────────────────
 {
@@ -140,6 +141,7 @@ stale_tempo_pkgs="$(
   awk '
     /^\[\[package\]\]/ {
       name = ""
+      version = ""
       next
     }
     /^name = / {
@@ -147,12 +149,22 @@ stale_tempo_pkgs="$(
       gsub(/"/, "", name)
       next
     }
+    /^version = / {
+      version = $3
+      gsub(/"/, "", version)
+      next
+    }
     /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
-      if (name != "") {
-        print name
+      if (name != "" && version != "") {
+        print name "@" version
       }
     }
-  ' Cargo.lock | sort -u
+  ' Cargo.lock | sort -u | while IFS= read -r pkg; do
+    name="${pkg%@*}"
+    if grep -qx "$name" <<< "$PATCHED_TEMPO_CRATES"; then
+      printf '%s\n' "$pkg"
+    fi
+  done
 )"
 if [[ -n "$stale_tempo_pkgs" ]]; then
   update_args=()
@@ -166,11 +178,40 @@ if [[ -n "$stale_tempo_pkgs" ]]; then
 fi
 popd >/dev/null
 
-if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
-  echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2
-  grep '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock" >&2
-  echo "Expected all Tempo crates to resolve locally after patching" >&2
+remaining_stale_tempo_pkgs="$(
+  awk '
+    /^\[\[package\]\]/ {
+      name = ""
+      version = ""
+      next
+    }
+    /^name = / {
+      name = $3
+      gsub(/"/, "", name)
+      next
+    }
+    /^version = / {
+      version = $3
+      gsub(/"/, "", version)
+      next
+    }
+    /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
+      if (name != "" && version != "") {
+        print name "@" version
+      }
+    }
+  ' "$FOUNDRY_ROOT/Cargo.lock" | sort -u | while IFS= read -r pkg; do
+    name="${pkg%@*}"
+    if grep -qx "$name" <<< "$PATCHED_TEMPO_CRATES"; then
+      printf '%s\n' "$pkg"
+    fi
+  done
+)"
+if [[ -n "$remaining_stale_tempo_pkgs" ]]; then
+  echo "ERROR: Local Tempo crates still resolve from git after patching:" >&2
+  printf '%s\n' "$remaining_stale_tempo_pkgs" >&2
+  echo "Expected all locally patched Tempo crates to resolve from $TEMPO_ROOT" >&2
   exit 1
 fi
 
-echo "Foundry patched successfully – all tempo crates resolve from $TEMPO_ROOT"
+echo "Foundry patched successfully – all local Tempo crates resolve from $TEMPO_ROOT"
