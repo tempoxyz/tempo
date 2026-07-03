@@ -58,25 +58,6 @@ enum ArchiveEntryKind {
 /// contiguous path from execution finalized to the anchor.
 pub async fn prepare<TContext, P>(
     context: &TContext,
-    execution_provider: P,
-    archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
-) -> eyre::Result<State>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync,
-{
-    prepare_with_partition_prefix(
-        context,
-        crate::PARTITION_PREFIX,
-        execution_provider,
-        archive_entries,
-    )
-    .await
-}
-
-/// Prepares consensus storage state for snapshot packaging using an explicit partition prefix.
-pub async fn prepare_with_partition_prefix<TContext, P>(
-    context: &TContext,
     storage_partition_prefix: &str,
     execution_provider: P,
     archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
@@ -128,34 +109,28 @@ where
 
 /// Returns whether `name` is one of the finalized-block prunable storage
 /// partitions that must be copied into a consensus snapshot archive.
-pub fn is_prunable_finalized_blocks_partition(name: &str) -> bool {
-    name.starts_with(&partition_prefix(super::PRUNABLE_FINALIZED_BLOCKS))
+pub fn is_prunable_finalized_blocks_partition(storage_partition_prefix: &str, name: &str) -> bool {
+    name.starts_with(&archive_partition_prefix(
+        storage_partition_prefix,
+        super::PRUNABLE_FINALIZED_BLOCKS,
+    ))
 }
 
 /// Returns whether `name` is a consensus storage partition that can appear in a
 /// consensus snapshot archive.
-pub fn is_snapshot_storage_partition(name: &str) -> bool {
-    name.starts_with(&partition_prefix(super::FINALIZATIONS_BY_HEIGHT))
-        || is_prunable_finalized_blocks_partition(name)
+pub fn is_snapshot_storage_partition(storage_partition_prefix: &str, name: &str) -> bool {
+    name.starts_with(&archive_partition_prefix(
+        storage_partition_prefix,
+        super::FINALIZATIONS_BY_HEIGHT,
+    )) || is_prunable_finalized_blocks_partition(storage_partition_prefix, name)
 }
 
-fn partition_prefix(archive_name: &str) -> String {
-    format!("{}-{archive_name}-", crate::PARTITION_PREFIX)
+fn archive_partition_prefix(storage_partition_prefix: &str, archive_name: &str) -> String {
+    format!("{storage_partition_prefix}-{archive_name}-")
 }
 
 /// Materialize consensus archive entries into fresh storage archives.
 pub async fn write_archive<TContext>(
-    context: &TContext,
-    entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
-) -> eyre::Result<()>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-{
-    write_archive_with_partition_prefix(context, crate::PARTITION_PREFIX, entries).await
-}
-
-/// Materialize consensus archive entries into fresh storage archives using an explicit partition prefix.
-pub async fn write_archive_with_partition_prefix<TContext>(
     context: &TContext,
     storage_partition_prefix: &str,
     mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,

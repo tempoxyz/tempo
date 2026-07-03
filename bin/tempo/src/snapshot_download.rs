@@ -517,7 +517,10 @@ fn consensus_archive_entry(
     };
     let partition = partition.to_string_lossy().to_string();
     ensure!(
-        tempo_consensus::storage::snapshot::is_snapshot_storage_partition(&partition),
+        tempo_consensus::storage::snapshot::is_snapshot_storage_partition(
+            tempo_consensus::PARTITION_PREFIX,
+            &partition,
+        ),
         "consensus archive contains unexpected storage partition: {partition}",
     );
     let mut output_relative = PathBuf::from(&partition);

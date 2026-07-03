@@ -230,7 +230,12 @@ fn prepare_snapshot_consensus_archive(
             .with_storage_directory(archive_storage_dir);
         let output_runner = commonware_runtime::tokio::Runner::new(output_runtime_config);
         output_runner.start(|context| async move {
-            tempo_consensus::storage::snapshot::write_archive(&context, archive_entries_rx).await
+            tempo_consensus::storage::snapshot::write_archive(
+                &context,
+                tempo_consensus::PARTITION_PREFIX,
+                archive_entries_rx,
+            )
+            .await
         })
     });
 
@@ -241,6 +246,7 @@ fn prepare_snapshot_consensus_archive(
     let state = source_runner.start(|context| async move {
         tempo_consensus::storage::snapshot::prepare(
             &context,
+            tempo_consensus::PARTITION_PREFIX,
             execution_provider,
             archive_entries_tx,
         )

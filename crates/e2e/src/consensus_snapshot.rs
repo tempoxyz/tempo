@@ -15,7 +15,7 @@ pub async fn write_consensus_snapshot(
     let source_partition_prefix = source.consensus_config.partition_prefix.clone();
     let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
 
-    let state = tempo_consensus::storage::snapshot::prepare_with_partition_prefix(
+    let state = tempo_consensus::storage::snapshot::prepare(
         &context.with_label("snapshot_prepare"),
         &source_partition_prefix,
         execution_provider,
@@ -24,7 +24,7 @@ pub async fn write_consensus_snapshot(
     .await
     .expect("snapshot must prepare");
 
-    tempo_consensus::storage::snapshot::write_archive_with_partition_prefix(
+    tempo_consensus::storage::snapshot::write_archive(
         &context.with_label("snapshot_write"),
         target_partition_prefix,
         archive_entries_rx,
