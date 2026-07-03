@@ -195,17 +195,46 @@ where
             state.insert(sender, account);
         }
 
-        for (address, slots) in self.replay_state.tx_changes.iter() {
-            for (slot, change) in slots {
-                if !change.written && !commit_reads {
-                    continue;
+        if commit_reads {
+            for (address, slots) in self.replay_state.tx_changes.iter() {
+                for (slot, change) in slots {
+                    let account = match state.entry(*address) {
+                        Entry::Occupied(e) => e.into_mut(),
+                        Entry::Vacant(e) => {
+                            let mut account = Account::from(
+                                db.basic(*address)
+                                    .map_err(BlockExecutionError::other)?
+                                    .unwrap_or_default(),
+                            );
+                            account.mark_touch();
+                            e.insert(account)
+                        }
+                    };
+                    account.storage.insert(
+                        *slot,
+                        EvmStorageSlot::new_changed(
+                            change.original,
+                            change.current,
+                            TransactionId::ZERO,
+                        ),
+                    );
                 }
+            }
+        } else {
+            for (address, slot) in self.replay_state.tx_writes.iter().copied() {
+                let change = self
+                    .replay_state
+                    .tx_changes
+                    .get(&address)
+                    .and_then(|slots| slots.get(&slot))
+                    .filter(|change| change.written)
+                    .ok_or(StorageActionReplayError::ActionConflict)?;
 
-                let account = match state.entry(*address) {
+                let account = match state.entry(address) {
                     Entry::Occupied(e) => e.into_mut(),
                     Entry::Vacant(e) => {
                         let mut account = Account::from(
-                            db.basic(*address)
+                            db.basic(address)
                                 .map_err(BlockExecutionError::other)?
                                 .unwrap_or_default(),
                         );
@@ -214,7 +243,7 @@ where
                     }
                 };
                 account.storage.insert(
-                    *slot,
+                    slot,
                     EvmStorageSlot::new_changed(
                         change.original,
                         change.current,
@@ -381,6 +410,8 @@ impl From<StorageActionReplayError> for BlockExecutionError {
 pub struct StorageActionReplayState {
     /// Changes for the current transaction.
     tx_changes: AddressMap<U256Map<SlotChange>>,
+    /// Slots written by the current transaction.
+    tx_writes: Vec<(Address, U256)>,
     /// Expiring nonce replay state.
     expiring_nonce: ExpiringNonceReplayState,
 }
@@ -407,8 +438,12 @@ impl StorageActionReplayState {
             .get_mut(&address)
             .and_then(|slots| slots.get_mut(&slot))
             .ok_or(StorageActionReplayError::ActionConflict)?;
+        let first_write = !change.written;
         change.current = value;
         change.written = true;
+        if first_write {
+            self.tx_writes.push((address, slot));
+        }
 
         Ok(())
     }
@@ -433,19 +468,25 @@ impl StorageActionReplayState {
 
     /// Records a storage slot write with a known transaction-start value.
     fn record_sstore(&mut self, address: Address, slot: U256, original: U256, current: U256) {
-        self.tx_changes
-            .entry(address)
-            .or_default()
-            .entry(slot)
-            .and_modify(|change| {
+        match self.tx_changes.entry(address).or_default().entry(slot) {
+            Entry::Occupied(mut entry) => {
+                let change = entry.get_mut();
+                let first_write = !change.written;
                 change.current = current;
                 change.written = true;
-            })
-            .or_insert(SlotChange {
-                original,
-                current,
-                written: true,
-            });
+                if first_write {
+                    self.tx_writes.push((address, slot));
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(SlotChange {
+                    original,
+                    current,
+                    written: true,
+                });
+                self.tx_writes.push((address, slot));
+            }
+        }
     }
 
     fn cached_storage_value<DB: Database>(
@@ -542,12 +583,14 @@ impl StorageActionReplayState {
     /// Resets the accumulated transaction changes.
     fn reset_tx_changes(&mut self) {
         self.tx_changes.clear();
+        self.tx_writes.clear();
         self.expiring_nonce.reset_pending_ring_ptr();
     }
 
     /// Commits the accumulated transaction changes to the state.
     pub(crate) fn commit_tx_changes(&mut self) {
         self.tx_changes.clear();
+        self.tx_writes.clear();
         self.expiring_nonce.commit_pending_ring_ptr();
     }
 }
@@ -767,6 +810,26 @@ mod tests {
         assert_eq!(change.original, U256::from(10));
         assert_eq!(change.current, U256::from(11));
         assert!(change.written);
+    }
+
+    #[test]
+    fn write_index_tracks_first_write_per_slot() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(10));
+        let mut replay_state = StorageActionReplayState::default();
+
+        replay_state
+            .sstore_exact(&mut db, address, slot, U256::from(10), U256::from(11))
+            .expect("first store should establish the slot view");
+        replay_state
+            .sstore(address, slot, U256::from(12))
+            .expect("second store should update existing slot");
+
+        assert_eq!(replay_state.tx_writes, vec![(address, slot)]);
+
+        replay_state.reset_tx_changes();
+        assert!(replay_state.tx_writes.is_empty());
     }
 
     #[test]
