@@ -73,8 +73,6 @@ struct V1Order {
     _unused: FixedBytes<6>,
     /// Physical layout marker stored in packed slot 0.
     version: OrderVersion,
-    /// Orderbook key identifying the trading pair.
-    book_key: B256,
     /// Original order amount.
     amount: u128,
     /// Remaining unfilled amount.
@@ -83,6 +81,8 @@ struct V1Order {
     prev: u128,
     /// Next order ID in the tick-level FIFO linked list.
     next: u128,
+    /// Orderbook key identifying the trading pair.
+    book_key: B256,
 }
 
 impl V1Order {
