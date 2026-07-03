@@ -577,7 +577,13 @@ impl TempoTransaction {
                 if !header.list {
                     return Err(alloy_rlp::Error::UnexpectedString);
                 }
-                Some(Signature::decode_rlp_vrs(buf, bool::decode)?)
+                let mut signature_buf = &buf[..header.payload_length];
+                let signature = Signature::decode_rlp_vrs(&mut signature_buf, bool::decode)?;
+                if !signature_buf.is_empty() {
+                    return Err(alloy_rlp::Error::UnexpectedLength);
+                }
+                buf.advance(header.payload_length);
+                Some(signature)
             }
         } else {
             return Err(alloy_rlp::Error::InputTooShort);
@@ -956,10 +962,36 @@ mod tests {
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
-    use alloy_rlp::{Decodable, Encodable};
+    use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test timestamp must be non-zero")
+    }
+
+    fn rlp_item_end(encoded: &[u8], start: usize) -> usize {
+        if encoded[start] <= 0x7f {
+            return start + 1;
+        }
+
+        let mut item = &encoded[start..];
+        let header = RlpHeader::decode(&mut item).unwrap();
+        let header_len = encoded.len() - start - item.len();
+        start + header_len + header.payload_length
+    }
+
+    fn transaction_field_bounds(encoded: &[u8], field_index: usize) -> (usize, usize) {
+        let mut payload = encoded;
+        let header = RlpHeader::decode(&mut payload).unwrap();
+        assert!(header.list);
+        assert_eq!(payload.len(), header.payload_length);
+
+        let payload_start = encoded.len() - payload.len();
+        let mut field_start = payload_start;
+        for _ in 0..field_index {
+            field_start = rlp_item_end(encoded, field_start);
+        }
+
+        (field_start, rlp_item_end(encoded, field_start))
     }
 
     #[test]
@@ -1881,6 +1913,63 @@ mod tests {
             result.unwrap_err(),
             alloy_rlp::Error::InputTooShort | alloy_rlp::Error::UnexpectedLength
         ));
+    }
+
+    #[test]
+    fn test_fee_payer_signature_decode_rejects_inner_trailing_bytes() {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(Address::random()),
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: Some(nz(1000000)),
+            valid_after: Some(nz(500000)),
+            key_authorization: None,
+            tempo_authorization_list: vec![],
+        };
+
+        let mut encoded = Vec::new();
+        tx.encode(&mut encoded);
+
+        let (signature_start, signature_end) = transaction_field_bounds(&encoded, 11);
+        let (authorization_list_start, authorization_list_end) =
+            transaction_field_bounds(&encoded, 12);
+        assert_eq!(
+            &encoded[authorization_list_start..authorization_list_end],
+            &[EMPTY_LIST_CODE]
+        );
+
+        let mut signature_payload = &encoded[signature_start..signature_end];
+        let signature_header = RlpHeader::decode(&mut signature_payload).unwrap();
+        assert!(signature_header.list);
+        let signature_header_len = signature_end - signature_start - signature_payload.len();
+
+        let mut malformed = Vec::new();
+        malformed.extend_from_slice(&encoded[..signature_start]);
+        RlpHeader {
+            list: true,
+            payload_length: signature_header.payload_length
+                + (authorization_list_end - authorization_list_start),
+        }
+        .encode(&mut malformed);
+        malformed
+            .extend_from_slice(&encoded[signature_start + signature_header_len..signature_end]);
+        malformed.extend_from_slice(&encoded[authorization_list_start..authorization_list_end]);
+        malformed.extend_from_slice(&encoded[signature_end..authorization_list_start]);
+        malformed.extend_from_slice(&encoded[authorization_list_end..]);
+
+        assert_eq!(malformed.len(), encoded.len());
+        assert!(TempoTransaction::decode(&mut malformed.as_slice()).is_err());
     }
 
     #[test]
