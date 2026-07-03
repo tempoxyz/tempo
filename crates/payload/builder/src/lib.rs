@@ -133,6 +133,11 @@ impl PayloadTransactions {
             }
         }
     }
+
+    /// Returns whether this transaction source consumes execution results for future selection.
+    fn observes_results(&self) -> bool {
+        !matches!(self, Self::Parallel(_))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -635,6 +640,7 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let best_txs_observes_results = best_txs.observes_results();
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -773,7 +779,9 @@ where
                 total_fees += result.validator_fee();
 
                 // Notify transactions iterator about the new state.
-                best_txs.on_new_result(result);
+                if best_txs_observes_results {
+                    best_txs.on_new_result(result);
+                }
             };
 
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
