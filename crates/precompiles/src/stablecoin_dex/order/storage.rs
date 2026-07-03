@@ -333,8 +333,9 @@ impl Handler<Order> for OrderHandler {
             OrderVersion::V2 => V2Order::SLOTS,
         };
 
-        let new_slots = if let (true, id) = StablecoinDEX::new().book_id(value.book_key)? {
-            V2Order::new(value, id).store(self, self.base_slot, LayoutCtx::FULL)?;
+        let state = StablecoinDEX::new().book_state(value.book_key)?;
+        let new_slots = if state.is_index_set {
+            V2Order::new(value, state.index).store(self, self.base_slot, LayoutCtx::FULL)?;
             V2Order::SLOTS
         } else {
             V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
@@ -941,7 +942,8 @@ mod tests {
             }
             OrderVersion::V2 => {
                 ensure_book_index(exchange, order.book_key)?;
-                let (_, book_index) = exchange.book_id(order.book_key)?;
+                let state = exchange.book_state(order.book_key)?;
+                let book_index = state.index;
                 let handler = &exchange.orders[order.order_id()];
                 let mut storage = handler.clone();
                 V2Order::new(order, book_index).store(
@@ -1698,8 +1700,8 @@ mod tests {
                 active_orders,
                 bid_level,
                 ask_level,
-                best_bid_tick: book.best_bid_tick,
-                best_ask_tick: book.best_ask_tick,
+                best_bid_tick: book.best_bid_tick(),
+                best_ask_tick: book.best_ask_tick(),
                 alice_internal_base: exchange.balance_of(test.alice, base_token)?,
                 alice_internal_quote: exchange.balance_of(test.alice, quote_token)?,
                 bob_internal_base: exchange.balance_of(test.bob, base_token)?,
@@ -1910,7 +1912,7 @@ mod tests {
     }
 
     fn ensure_book_index(exchange: &mut StablecoinDEX, book_key: B256) -> StorageResult<()> {
-        if exchange.book_id(book_key)?.0 {
+        if exchange.book_state(book_key)?.is_index_set {
             return Ok(());
         }
 

@@ -82,7 +82,7 @@ impl Precompile for StablecoinDEX {
                     storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
 
                     #[schedule(since = T8)]
-                    bookIndexForKey(call) => view(call, |c| self.book_id(c.bookKey).map(Into::into)),
+                    bookIndexForKey(call) => view(call, |c| self.book_state(c.bookKey).map(|data| (data.is_index_set, data.index).into())),
                     #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
                     #[schedule(since = T8)]

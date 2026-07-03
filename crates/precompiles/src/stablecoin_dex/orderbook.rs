@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorableType},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinDEXError;
@@ -142,6 +142,33 @@ impl From<TickLevel> for IStablecoinDEX::PriceLevel {
     }
 }
 
+/// Per-book state stored in the slot that originally held only the best bid/ask ticks.
+///
+/// T8 adds an orderbook identifier for V2 orders, which maps to the book index in `book_keys`.
+/// Tick fields left enough unused bytes in the slot to pack the index without shifting the layout.
+#[derive(Storable, Clone, Copy)]
+pub(crate) struct OrderbookState {
+    /// Best bid tick for highest bid price.
+    pub best_bid_tick: i16,
+    /// Best ask tick for lowest ask price.
+    pub best_ask_tick: i16,
+    /// (+T8) Distinguishes indexed books, including index zero, from unmigrated books.
+    pub is_index_set: bool,
+    /// (+T8) Index into `book_keys`.
+    pub index: u32,
+}
+
+impl Default for OrderbookState {
+    fn default() -> Self {
+        Self {
+            best_bid_tick: i16::MIN,
+            best_ask_tick: i16::MAX,
+            is_index_set: false,
+            index: 0,
+        }
+    }
+}
+
 /// Orderbook for token pair with price-time priority
 /// Uses tick-based pricing with bitmaps for price discovery
 #[derive(Storable, Default)]
@@ -150,18 +177,14 @@ pub struct Orderbook {
     pub base: Address,
     /// Quote token address
     pub quote: Address,
-    /// (+T8) Persisted book identifier for compact order storage
-    pub(crate) id: OrderbookId,
     /// Bid orders by tick
     #[allow(dead_code)]
     bids: Mapping<i16, TickLevel>,
     /// Ask orders by tick
     #[allow(dead_code)]
     asks: Mapping<i16, TickLevel>,
-    /// Best bid tick for highest bid price
-    pub best_bid_tick: i16,
-    /// Best ask tick for lowest ask price
-    pub best_ask_tick: i16,
+    /// Best bid/ask tick cache with (T8+) packed book index.
+    pub(crate) state: OrderbookState,
     #[allow(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
     bid_bitmap: Mapping<i16, U256>,
@@ -170,23 +193,12 @@ pub struct Orderbook {
     ask_bitmap: Mapping<i16, U256>,
 }
 
-/// (+T8) orderbook identifier backed by the append-only `book_keys` vector
-#[derive(Storable, Default)]
-pub(crate) struct OrderbookId {
-    /// Distinguishes indexed books, including index zero, from unmigrated books
-    pub is_set: bool,
-    /// Index into `book_keys`
-    pub index: u32,
-}
-
 impl Orderbook {
     /// Creates a new orderbook for a token pair
     pub fn new(base: Address, quote: Address) -> Self {
         Self {
             base,
             quote,
-            best_bid_tick: i16::MIN,
-            best_ask_tick: i16::MAX,
             ..Default::default()
         }
     }
@@ -194,9 +206,10 @@ impl Orderbook {
     /// Creates a new orderbook with its persisted `book_keys` index
     pub fn new_with_id(base: Address, quote: Address, id: u32) -> Self {
         Self {
-            id: OrderbookId {
-                is_set: true,
+            state: OrderbookState {
+                is_index_set: true,
                 index: id,
+                ..Default::default()
             },
             ..Self::new(base, quote)
         }
@@ -205,6 +218,14 @@ impl Orderbook {
     /// Returns true if this orderbook is initialized
     pub fn is_initialized(&self) -> bool {
         self.base != Address::ZERO
+    }
+
+    pub fn best_bid_tick(&self) -> i16 {
+        self.state.best_bid_tick
+    }
+
+    pub fn best_ask_tick(&self) -> i16 {
+        self.state.best_ask_tick
     }
 
     /// Returns true if the base and quote tokens match the provided base and quote token options.
@@ -232,6 +253,14 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
+    pub fn best_bid_tick(&mut self) -> &mut <i16 as StorableType>::Handler {
+        &mut self.state.best_bid_tick
+    }
+
+    pub fn best_ask_tick(&mut self) -> &mut <i16 as StorableType>::Handler {
+        &mut self.state.best_ask_tick
+    }
+
     /// Returns a reference to the tick level handler for the given tick and side.
     pub fn tick_level_handler(&self, tick: i16, is_bid: bool) -> &TickLevelHandler {
         if is_bid {
@@ -443,8 +472,8 @@ impl From<Orderbook> for IStablecoinDEX::Orderbook {
         Self {
             base: value.base,
             quote: value.quote,
-            bestBidTick: value.best_bid_tick,
-            bestAskTick: value.best_ask_tick,
+            bestBidTick: value.best_bid_tick(),
+            bestAskTick: value.best_ask_tick(),
         }
     }
 }
@@ -512,8 +541,8 @@ mod tests {
 
         assert_eq!(book.base, base);
         assert_eq!(book.quote, quote);
-        assert_eq!(book.best_bid_tick, i16::MIN);
-        assert_eq!(book.best_ask_tick, i16::MAX);
+        assert_eq!(book.best_bid_tick(), i16::MIN);
+        assert_eq!(book.best_ask_tick(), i16::MAX);
         assert!(book.is_initialized());
     }
 
