@@ -1157,6 +1157,14 @@ where
         self.protocol_pool.get_all_blobs_exact(tx_hashes)
     }
 
+    fn has_blobs_for_versioned_hashes(
+        &self,
+        versioned_hashes: &[B256],
+    ) -> Result<Vec<bool>, reth_transaction_pool::blobstore::BlobStoreError> {
+        self.protocol_pool
+            .has_blobs_for_versioned_hashes(versioned_hashes)
+    }
+
     fn get_blobs_for_versioned_hashes_v1(
         &self,
         versioned_hashes: &[B256],

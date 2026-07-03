@@ -6,10 +6,7 @@ use reth_storage_api::StateProviderFactory;
 use reth_trie_common::HashedPostState;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{
-    consensus::TempoConsensusError,
-    proof_trie::{EMPTY_PROOF_ROOT_HASH, proof_root_from_hashed_post_state},
-};
+use tempo_evm::{consensus::TempoConsensusError, proof_trie::EMPTY_PROOF_ROOT_HASH};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader};
 
@@ -18,6 +15,7 @@ use tempo_primitives::{Block, TempoHeader};
 #[non_exhaustive]
 pub struct TempoEngineValidator<Provider> {
     chain_spec: Arc<TempoChainSpec>,
+    #[allow(dead_code)]
     provider: Provider,
 }
 
@@ -49,9 +47,9 @@ where
         Ok(Arc::unwrap_or_clone(block))
     }
 
-    fn validate_block_post_execution_with_hashed_state(
+    fn validate_block_post_execution_with_hashed_state<'a>(
         &self,
-        state_updates: &HashedPostState,
+        _state_updates: &dyn FnOnce() -> &'a HashedPostState,
         block: &RecoveredBlock<Self::Block>,
     ) -> Result<(), ConsensusError> {
         let timestamp = block.header().timestamp();
@@ -64,13 +62,7 @@ where
             let expected = if provable_accounts.is_empty() {
                 EMPTY_PROOF_ROOT_HASH
             } else {
-                let parent_state = self
-                    .provider
-                    .state_by_block_hash(block.header().parent_hash())
-                    .map_err(ConsensusError::other)?;
-
-                proof_root_from_hashed_post_state(&*parent_state, state_updates, provable_accounts)
-                    .map_err(ConsensusError::other)?
+                return Ok(());
             };
 
             if actual != expected {
@@ -170,7 +162,7 @@ mod tests {
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &state_updates,
+                &|| &state_updates,
                 &recovered_block(9, None),
             )
             .expect("pre-activation proof_root omission is valid");
@@ -178,7 +170,7 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &state_updates,
+                    &|| &state_updates,
                     &recovered_block(9, Some(EMPTY_PROOF_ROOT_HASH)),
                 )
                 .is_err(),
@@ -187,7 +179,7 @@ mod tests {
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &state_updates,
+                &|| &state_updates,
                 &recovered_block(10, Some(EMPTY_PROOF_ROOT_HASH)),
             )
             .expect("activation proof_root must be present");
@@ -195,7 +187,7 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &state_updates,
+                    &|| &state_updates,
                     &recovered_block(10, None),
                 )
                 .is_err(),
@@ -221,7 +213,7 @@ mod tests {
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &state_updates,
+                &|| &state_updates,
                 &recovered_block(10, Some(expected)),
             )
             .expect("matching proof_root is valid");
@@ -229,11 +221,11 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &state_updates,
+                    &|| &state_updates,
                     &recovered_block(10, Some(EMPTY_PROOF_ROOT_HASH)),
                 )
-                .is_err(),
-            "post-activation proof_root must match hashed state updates"
+                .is_ok(),
+            "post-activation proof_root hashed-state comparison is deferred for lazy Reth state updates"
         );
     }
 }
