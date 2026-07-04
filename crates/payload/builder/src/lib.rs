@@ -370,7 +370,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            state_root_handle: mut trie_handle,
             config,
             cancel,
             best_payload,
@@ -1021,7 +1021,7 @@ where
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
+            .and_then(|handle| handle.try_take_hashed_state_rx().map(|rx| rx.recv()))
         {
             hashed_state
         } else {
