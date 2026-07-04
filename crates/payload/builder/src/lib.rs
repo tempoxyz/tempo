@@ -1016,6 +1016,30 @@ where
         // finalize the state root.
         db.set_state_hook(None);
 
+        // Flat-MPT commitment (experimental, env-gated): the flat engine's root for
+        // this bundle. In `Root` mode it becomes the header's state root; in
+        // `Compare` mode it is asserted against the regular pipeline's root below.
+        let flat_root = if tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Off {
+            None
+        } else {
+            let chain_spec = self.provider.chain_spec();
+            let shadow = tempo_flatmpt::shadow(|| {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            })
+            .expect("flat mode is on");
+            let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
+            let root = shadow
+                .lock()
+                .root_for(parent_header.number(), parent_header.state_root(), ops)
+                .map_err(|e| PayloadBuilderError::Other(e.into()))?;
+            Some(root)
+        };
+        let flat_is_root =
+            flat_root.is_some() && tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root;
+
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
@@ -1029,7 +1053,7 @@ where
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if self.config.skip_state_root {
+            if self.config.skip_state_root || flat_is_root {
                 debug!(
                     target: "payload_builder",
                     id = %payload_id,
@@ -1076,7 +1100,9 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if self.config.skip_state_root {
+        let (state_root, trie_updates) = if flat_is_root {
+            (flat_root.expect("flat_is_root"), Arc::new(Default::default()))
+        } else if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
@@ -1087,6 +1113,19 @@ where
 
             (state_root, Arc::new(trie_updates))
         };
+
+        // Compare mode: the flat engine must reproduce the pipeline's root exactly.
+        // (Skipped when the pipeline root is itself skipped — nothing real to compare.)
+        if let Some(flat_root) = flat_root
+            && !flat_is_root
+            && !self.config.skip_state_root
+            && flat_root != state_root
+        {
+            panic!(
+                "flat MPT root DIVERGENCE at block {}: flat {flat_root} vs pipeline {state_root}",
+                parent_header.number() + 1,
+            );
+        }
 
         let RootsTaskResult {
             transactions_root,

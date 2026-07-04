@@ -8,6 +8,7 @@ use crate::{
         TempoToken, TempoTokenApiServer,
     },
 };
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
 use reth_node_api::{
@@ -341,10 +342,77 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = FlatMptEngineValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
-        self.inner.engine_validator_builder()
+        FlatMptEngineValidatorBuilder(self.inner.engine_validator_builder())
+    }
+}
+
+/// [`BasicEngineValidatorBuilder`] wrapper that, in flat-MPT `Root` mode, installs
+/// the flat engine as the tree validator's custom state-root computation — every
+/// inserted block's header root is then checked against the flat MPT.
+#[derive(Debug, Clone, Default)]
+pub struct FlatMptEngineValidatorBuilder(BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>);
+
+impl<Node> reth_node_builder::rpc::EngineValidatorBuilder<Node> for FlatMptEngineValidatorBuilder
+where
+    Node: FullNodeComponents<
+        Types = TempoNode,
+        Evm: reth_node_api::ConfigureEngineEvm<
+            <<TempoNode as NodeTypes>::Payload as PayloadTypes>::ExecutionData,
+        >,
+    >,
+    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>:
+        reth_node_builder::rpc::EngineValidatorBuilder<
+            Node,
+            EngineValidator = reth_engine_tree::tree::BasicEngineValidator<
+                Node::Provider,
+                Node::Evm,
+                TempoEngineValidator,
+            >,
+        >,
+{
+    type EngineValidator =
+        reth_engine_tree::tree::BasicEngineValidator<Node::Provider, Node::Evm, TempoEngineValidator>;
+
+    async fn build_tree_validator(
+        self,
+        ctx: &AddOnsContext<'_, Node>,
+        tree_config: reth_node_api::TreeConfig,
+        changeset_cache: reth_node_builder::rpc::ChangesetCache,
+        state_trie_overlays: reth_chain_state::StateTrieOverlayManager<TempoPrimitives>,
+    ) -> eyre::Result<Self::EngineValidator> {
+        let validator = self
+            .0
+            .build_tree_validator(ctx, tree_config, changeset_cache, state_trie_overlays)
+            .await?;
+        if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Root {
+            return Ok(validator);
+        }
+        let chain_spec = ctx.config.chain.clone();
+        info!(target: "flatmpt", "installing flat MPT as the engine's state-root computation");
+        Ok(validator.with_custom_state_root(Arc::new(move |input| {
+            let shadow = tempo_flatmpt::shadow(|| {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            })
+            .expect("flat root mode is on");
+            let ops = tempo_flatmpt::bundle_to_ops(&input.output.state);
+            let root = shadow
+                .lock()
+                .root_for(
+                    input.parent_block.number(),
+                    input.parent_block.state_root(),
+                    ops,
+                )
+                .map_err(|e| {
+                    reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}")))
+                })?;
+            Ok((root, reth_trie_common::updates::TrieUpdates::default()))
+        })))
     }
 }
 

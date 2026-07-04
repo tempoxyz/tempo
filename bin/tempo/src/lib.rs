@@ -88,6 +88,14 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
     {
         node_cmd.engine.share_execution_cache_with_payload_builder = false;
     }
+
+    // Flat-MPT `Root` mode: the flat engine is the state commitment on both the
+    // build and validation paths, so never spawn the sparse-trie task.
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root
+    {
+        node_cmd.engine.share_sparse_trie_with_payload_builder = false;
+    }
 }
 
 /// Runs the Tempo node CLI.
