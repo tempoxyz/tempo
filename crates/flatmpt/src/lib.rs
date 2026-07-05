@@ -143,12 +143,47 @@ impl FlatShadow {
         let n_alloc = genesis_ops.len();
         let n_dump = dump_ops.len();
 
+        // Group per-account: alloc accounts + their slots, then dump slots on top.
+        let mut seeds: std::collections::HashMap<Key, mpt_flat_poc::AccountSeed> =
+            std::collections::HashMap::new();
+        for (key, op) in genesis_ops.into_iter().chain(dump_ops) {
+            match op {
+                StateOp::SetAccount { nonce, balance, code_hash } => {
+                    let e = seeds.entry(key).or_insert_with(|| mpt_flat_poc::AccountSeed {
+                        nonce: 0,
+                        balance: U256::ZERO,
+                        code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                        slots: Vec::new(),
+                    });
+                    e.nonce = nonce;
+                    e.balance = balance;
+                    e.code_hash = code_hash;
+                }
+                StateOp::SetStorage { slot, value } => {
+                    seeds
+                        .entry(key)
+                        .or_insert_with(|| mpt_flat_poc::AccountSeed {
+                            nonce: 0,
+                            balance: U256::ZERO,
+                            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                            slots: Vec::new(),
+                        })
+                        .slots
+                        .push((slot, value));
+                }
+                _ => anyhow::bail!("unexpected op in bloat init"),
+            }
+        }
+        let mut batch: Vec<(Key, mpt_flat_poc::AccountSeed)> = seeds.into_iter().collect();
+        for (_, seed) in batch.iter_mut() {
+            seed.slots.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        batch.sort_by(|a, b| a.0.cmp(&b.0));
+
         let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
-        db.apply_block(genesis_ops).map_err(|e| anyhow::anyhow!("genesis apply: {e:#}"))?;
-        for chunk in dump_ops.chunks(1 << 21) {
-            db.apply_block(chunk.to_vec()).map_err(|e| anyhow::anyhow!("bloat apply: {e:#}"))?;
-        }
+        db.insert_batch_accounts(batch)
+            .map_err(|e| anyhow::anyhow!("bloat seed insert: {e:#}"))?;
         db.persist().map_err(|e| anyhow::anyhow!("{e:#}"))?;
         let root = db.root();
         drop(db);
