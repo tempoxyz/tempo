@@ -700,7 +700,7 @@ def run-bench-single [
 
     # Wait for RPC
     sleep 2sec
-    let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
+    let rpc_timeout = if $bloat > 0 { 2400 } else { 120 }
     wait-for-rpc "http://localhost:8545" $rpc_timeout
 
     # Start tracy-capture after RPC is ready (node must be running for connection)
@@ -2956,7 +2956,7 @@ def "main bench" [
     sleep 2sec
     print "Waiting for nodes to be ready..."
     let rpc_urls = (0..<$num_nodes | each { |i| $"http://localhost:(8545 + $i)" })
-    let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
+    let rpc_timeout = if $bloat > 0 { 2400 } else { 120 }
     for url in $rpc_urls {
         wait-for-rpc $url $rpc_timeout
     }
