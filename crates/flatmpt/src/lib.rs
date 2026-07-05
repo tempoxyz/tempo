@@ -114,70 +114,99 @@ impl FlatShadow {
 
     /// Bloat-mode init: genesis alloc + state-bloat dump.
     ///
-    /// Mirrors `tempo init-from-binary-dump` semantics: dump entries whose
-    /// (account, slot) already exists in the genesis alloc are SKIPPED (genesis
-    /// wins on collisions — the fee-token setup writes token slots at genesis).
-    /// Built with the engine's RAM-build mode (bulk load, single spill at
-    /// persist) — the chunked-apply path write-amplifies ~8x and takes minutes.
-    /// Rebuilt from scratch every init: genesis regenerates per bench leg, so a
-    /// cached checkpoint would go stale with it.
+    /// Streams the dump straight into per-account seed maps (no intermediate op
+    /// vector — at 100M+ slots that alone is >10 GB), merges the genesis alloc
+    /// on top (genesis wins storage collisions, mirroring
+    /// `tempo init-from-binary-dump`), and loads through the engine's seeded
+    /// RAM-build path — the same one the mainnet loader used for 535M slots.
+    /// Rebuilt every init: genesis regenerates per bench leg.
     fn init_with_bloat(path: &str, genesis_ops: Vec<(Key, StateOp)>, dump: &str) -> anyhow::Result<Self> {
+        use std::io::Read as _;
         for suffix in ["", ".meta", ".meta.prev", ".timings"] {
             let _ = std::fs::remove_file(format!("{path}{suffix}"));
         }
-        let genesis_slots: std::collections::HashSet<(Key, Key)> = genesis_ops
-            .iter()
-            .filter_map(|(k, op)| match op {
-                StateOp::SetStorage { slot, .. } => Some((*k, *slot)),
-                _ => None,
-            })
-            .collect();
         let t = std::time::Instant::now();
-        let dump_ops: Vec<(Key, StateOp)> = bloat_dump_to_ops(dump)?
-            .into_iter()
-            .filter(|(k, op)| match op {
-                StateOp::SetStorage { slot, .. } => !genesis_slots.contains(&(*k, *slot)),
-                _ => true,
-            })
-            .collect();
-        let n_alloc = genesis_ops.len();
-        let n_dump = dump_ops.len();
 
-        // Group per-account: alloc accounts + their slots, then dump slots on top.
-        let mut seeds: std::collections::HashMap<Key, mpt_flat_poc::AccountSeed> =
-            std::collections::HashMap::new();
-        for (key, op) in genesis_ops.into_iter().chain(dump_ops) {
+        struct Acc {
+            nonce: u64,
+            balance: U256,
+            code_hash: [u8; 32],
+            slots: std::collections::HashMap<Key, Vec<u8>>,
+        }
+        impl Default for Acc {
+            fn default() -> Self {
+                Self {
+                    nonce: 0,
+                    balance: U256::ZERO,
+                    code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                    slots: std::collections::HashMap::new(),
+                }
+            }
+        }
+        let mut accs: std::collections::HashMap<Key, Acc> = std::collections::HashMap::new();
+
+        // 1) Dump, streamed. 2) Genesis alloc second — its inserts overwrite
+        //    colliding dump slots, which is exactly the node's collision rule.
+        let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
+        let mut header = [0u8; 40];
+        let mut n_dump: usize = 0;
+        loop {
+            match f.read_exact(&mut header) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e.into()),
+            }
+            anyhow::ensure!(&header[0..8] == b"TEMPOSB\0", "bad bloat magic");
+            anyhow::ensure!(u16::from_be_bytes([header[8], header[9]]) == 1, "bad bloat version");
+            let key: Key = keccak256(&header[12..32]).0;
+            let pair_count = u64::from_be_bytes(header[32..40].try_into().unwrap());
+            let acc = accs.entry(key).or_default();
+            let mut pair = [0u8; 64];
+            for _ in 0..pair_count {
+                f.read_exact(&mut pair)?;
+                let value = U256::from_be_slice(&pair[32..64]);
+                if value == U256::ZERO {
+                    continue;
+                }
+                acc.slots.insert(
+                    keccak256(&pair[0..32]).0,
+                    mpt_flat_poc::eth::storage_value_rlp(value),
+                );
+                n_dump += 1;
+            }
+        }
+        let n_alloc = genesis_ops.len();
+        for (key, op) in genesis_ops {
             match op {
                 StateOp::SetAccount { nonce, balance, code_hash } => {
-                    let e = seeds.entry(key).or_insert_with(|| mpt_flat_poc::AccountSeed {
-                        nonce: 0,
-                        balance: U256::ZERO,
-                        code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
-                        slots: Vec::new(),
-                    });
-                    e.nonce = nonce;
-                    e.balance = balance;
-                    e.code_hash = code_hash;
+                    let acc = accs.entry(key).or_default();
+                    acc.nonce = nonce;
+                    acc.balance = balance;
+                    acc.code_hash = code_hash;
                 }
                 StateOp::SetStorage { slot, value } => {
-                    seeds
-                        .entry(key)
-                        .or_insert_with(|| mpt_flat_poc::AccountSeed {
-                            nonce: 0,
-                            balance: U256::ZERO,
-                            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
-                            slots: Vec::new(),
-                        })
-                        .slots
-                        .push((slot, value));
+                    accs.entry(key).or_default().slots.insert(slot, value);
                 }
                 _ => anyhow::bail!("unexpected op in bloat init"),
             }
         }
-        let mut batch: Vec<(Key, mpt_flat_poc::AccountSeed)> = seeds.into_iter().collect();
-        for (_, seed) in batch.iter_mut() {
-            seed.slots.sort_by(|a, b| a.0.cmp(&b.0));
-        }
+
+        let mut batch: Vec<(Key, mpt_flat_poc::AccountSeed)> = accs
+            .into_iter()
+            .map(|(key, acc)| {
+                let mut slots: Vec<(Key, Vec<u8>)> = acc.slots.into_iter().collect();
+                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                (
+                    key,
+                    mpt_flat_poc::AccountSeed {
+                        nonce: acc.nonce,
+                        balance: acc.balance,
+                        code_hash: acc.code_hash,
+                        slots,
+                    },
+                )
+            })
+            .collect();
         batch.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
@@ -194,7 +223,7 @@ impl FlatShadow {
             target: "flatmpt",
             root = %hex(root), n_alloc, n_dump,
             elapsed_s = t.elapsed().as_secs(), path,
-            "flat MPT initialized from genesis alloc + bloat dump (RAM build)"
+            "flat MPT initialized from genesis alloc + bloat dump (seeded RAM build)"
         );
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
@@ -254,6 +283,23 @@ impl FlatShadow {
 
     /// Roll the live state back until its root equals `parent_root`.
     fn unwind_to(&mut self, parent_root: B256) -> anyhow::Result<()> {
+        // Bloat mode: `init-from-binary-dump` computes the post-dump state root
+        // but leaves the genesis HEADER carrying the alloc-only root, so the
+        // first build's parent anchor cannot match by construction. Anchor on
+        // our own post-dump root instead — block 1 validation through the
+        // engine (CustomStateRoot) remains the hard correctness gate.
+        if self.entries.is_empty()
+            && self.db.root() != parent_root.0
+            && std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
+        {
+            tracing::warn!(
+                target: "flatmpt",
+                header_root = %parent_root,
+                live_root = %hex(self.db.root()),
+                "genesis header carries the pre-dump root; anchoring on the post-dump state"
+            );
+            return Ok(());
+        }
         while self.db.root() != parent_root.0 {
             let e = self.entries.pop().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -437,43 +483,6 @@ pub fn shadow(
             Some(Mutex::new(shadow.expect("flat MPT genesis init failed")))
         })
         .as_ref()
-}
-
-/// Parse a `TEMPOSB` state-bloat dump into storage ops (keccak-hashed keys).
-fn bloat_dump_to_ops(dump: &str) -> anyhow::Result<Vec<(Key, StateOp)>> {
-    use std::io::Read as _;
-    let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
-    let mut ops: Vec<(Key, StateOp)> = Vec::new();
-    let mut header = [0u8; 40];
-    loop {
-        match f.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e.into()),
-        }
-        anyhow::ensure!(&header[0..8] == b"TEMPOSB\0", "bad bloat magic");
-        anyhow::ensure!(u16::from_be_bytes([header[8], header[9]]) == 1, "bad bloat version");
-        let address = &header[12..32];
-        let key: Key = keccak256(address).0;
-        let pair_count = u64::from_be_bytes(header[32..40].try_into().unwrap());
-        let mut pair = [0u8; 64];
-        for _ in 0..pair_count {
-            f.read_exact(&mut pair)?;
-            let slot_key: Key = keccak256(&pair[0..32]).0;
-            let value = U256::from_be_slice(&pair[32..64]);
-            if value == U256::ZERO {
-                continue;
-            }
-            ops.push((
-                key,
-                StateOp::SetStorage {
-                    slot: slot_key,
-                    value: mpt_flat_poc::eth::storage_value_rlp(value),
-                },
-            ));
-        }
-    }
-    Ok(ops)
 }
 
 /// Map an alloy genesis alloc to flat-MPT ops (hashed keys).

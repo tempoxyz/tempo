@@ -392,6 +392,17 @@ where
         }
         let chain_spec = ctx.config.chain.clone();
         info!(target: "flatmpt", "installing flat MPT as the engine's state-root computation");
+        // Initialize the shadow now, at node startup — a large bloat-mode load
+        // (minutes at 100M+ slots) must not run inside the first payload build.
+        {
+            let chain_spec = chain_spec.clone();
+            tempo_flatmpt::shadow(move || {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            });
+        }
         Ok(validator.with_custom_state_root(Arc::new(move |input| {
             let shadow = tempo_flatmpt::shadow(|| {
                 (
