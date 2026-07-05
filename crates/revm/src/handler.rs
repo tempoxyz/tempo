@@ -37,7 +37,6 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
-#[cfg(test)]
 use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_precompiles::{
     ECRECOVER_GAS,
@@ -1383,6 +1382,8 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            // Capture validator token to report the swap pair on liquidity errors.
+            let mut validator_token = Address::default();
             let result = StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 block,
@@ -1390,6 +1391,8 @@ where
                 tx,
                 actions.clone(),
                 || {
+                    validator_token =
+                        TipFeeManager::new().get_validator_token(block.beneficiary())?;
                     fee_manager.collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
@@ -1411,6 +1414,8 @@ where
                     TempoPrecompileError::TIPFeeAMMError(
                         TIPFeeAMMError::InsufficientLiquidity(_),
                     ) => FeePaymentError::InsufficientAmmLiquidity {
+                        user_token: fee_token,
+                        validator_token,
                         fee: gas_balance_spending,
                     }
                     .into(),
@@ -2884,6 +2889,68 @@ mod tests {
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
+    }
+
+    /// A cross-token fee swap with no pool must fail with `InsufficientLiquidity`,
+    /// and the validator token captured for the error must match what was set.
+    #[test]
+    fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair() -> eyre::Result<()> {
+        use tempo_contracts::precompiles::IFeeManager;
+        use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            // Minted + approved so the pre-tx transfer reaches the route check.
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10_000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            // Different token with no pool: no route can be planned.
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            // Stored under `sender`; `beneficiary` must differ (same-block guard).
+            TipFeeManager::new().set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // The token the handler captures for the error.
+            let captured_validator_token = TipFeeManager::new().get_validator_token(validator)?;
+            assert_eq!(captured_validator_token, validator_token.address());
+
+            let err = TipFeeManager::new()
+                .collect_fee_pre_tx(user, user_token.address(), U256::from(1_000), validator, false)
+                .expect_err("fee swap must fail with insufficient liquidity");
+            assert!(matches!(
+                err,
+                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_))
+            ));
+
+            // The message built from the captured pair must name it.
+            let msg = FeePaymentError::InsufficientAmmLiquidity {
+                user_token: user_token.address(),
+                validator_token: captured_validator_token,
+                fee: U256::from(1_000),
+            }
+            .to_string();
+            assert!(
+                msg.contains(&format!("{} -> {}", user_token.address(), validator_token.address())),
+                "error message must name the swap pair, got: {msg}"
+            );
+
+            Ok(())
+        })
     }
 
     #[test]

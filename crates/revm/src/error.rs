@@ -374,10 +374,16 @@ impl From<KeychainVersionError> for TempoInvalidTransaction {
 pub enum FeePaymentError {
     /// Insufficient liquidity in the FeeAMM pool to perform fee token swap.
     ///
-    /// This indicates the user's fee token cannot be swapped for the native token
-    /// because there's insufficient liquidity in the AMM pool.
-    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee})")]
+    /// This indicates the user's fee token cannot be swapped for the validator's
+    /// token because there's insufficient liquidity in the AMM pool for that pair.
+    #[error(
+        "insufficient liquidity in FeeAMM pool to swap fee tokens for pair {user_token} -> {validator_token} (required: {fee})"
+    )]
     InsufficientAmmLiquidity {
+        /// The fee payer's fee token (the token being swapped from).
+        user_token: Address,
+        /// The validator's preferred token (the token being swapped to).
+        validator_token: Address,
         /// The required fee amount that couldn't be swapped.
         fee: U256,
     },
@@ -451,13 +457,21 @@ mod tests {
             "system transaction must be a call, not a create"
         );
 
+        let user_token = Address::with_last_byte(0x11);
+        let validator_token = Address::with_last_byte(0x22);
         let err = FeePaymentError::InsufficientAmmLiquidity {
+            user_token,
+            validator_token,
             fee: U256::from(1000),
         };
-        assert!(
-            err.to_string()
-                .contains("insufficient liquidity in FeeAMM pool")
-        );
+        let msg = err.to_string();
+        assert!(msg.contains("insufficient liquidity in FeeAMM pool"));
+        // The swap pair and required amount must be surfaced so callers can
+        // diagnose which fee-token route is under-provisioned.
+        assert!(msg.contains(&user_token.to_string()));
+        assert!(msg.contains(&validator_token.to_string()));
+        assert!(msg.contains(&format!("{user_token} -> {validator_token}")));
+        assert!(msg.contains("required: 1000"));
 
         let err = FeePaymentError::InsufficientFeeTokenBalance {
             fee: U256::from(1000),
@@ -515,6 +529,8 @@ mod tests {
     #[test]
     fn test_fee_payment_error() {
         let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: Address::ZERO,
+            validator_token: Address::ZERO,
             fee: U256::from(1000),
         }
         .into();
