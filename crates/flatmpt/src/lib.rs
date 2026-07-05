@@ -112,6 +112,36 @@ impl FlatShadow {
         Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
     }
 
+    /// Golden-restore init (billion-slot scale): copy a prebuilt dump-only
+    /// checkpoint (built offline by the `build_golden` example) and apply the
+    /// genesis alloc as a small overlay on top. Account-field updates preserve
+    /// existing storage, and genesis slot writes overwrite colliding dump
+    /// slots — the node's collision rule.
+    fn init_from_golden(path: &str, genesis_ops: Vec<(Key, StateOp)>, golden: &str) -> anyhow::Result<Self> {
+        for suffix in ["", ".meta", ".meta.prev", ".timings"] {
+            let _ = std::fs::remove_file(format!("{path}{suffix}"));
+        }
+        let t = std::time::Instant::now();
+        std::fs::copy(golden, path)?;
+        std::fs::copy(format!("{golden}.meta"), format!("{path}.meta"))?;
+        let copy_s = t.elapsed().as_secs();
+        let mut db = FlatMpt::open(path).map_err(|e| anyhow::anyhow!("golden open: {e:#}"))?;
+        let n_alloc = genesis_ops.len();
+        db.apply_block(genesis_ops)
+            .map_err(|e| anyhow::anyhow!("genesis overlay: {e:#}"))?;
+        db.persist().map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        tracing::info!(
+            target: "flatmpt",
+            root = %hex(db.root()), n_alloc, copy_s,
+            elapsed_s = t.elapsed().as_secs(), path,
+            "flat MPT restored from golden + genesis overlay"
+        );
+        let timings = std::io::BufWriter::new(
+            std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
+        );
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
+    }
+
     /// Bloat-mode init: genesis alloc + state-bloat dump.
     ///
     /// Streams the dump straight into per-account seed maps (no intermediate op
@@ -290,7 +320,8 @@ impl FlatShadow {
         // engine (CustomStateRoot) remains the hard correctness gate.
         if self.entries.is_empty()
             && self.db.root() != parent_root.0
-            && std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
+            && (std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
+                || std::env::var_os("TEMPO_FLATMPT_GOLDEN").is_some())
         {
             tracing::warn!(
                 target: "flatmpt",
@@ -475,10 +506,12 @@ pub fn shadow(
             }
             let path = std::env::var("TEMPO_FLATMPT").expect("TEMPO_FLATMPT checked by mode()");
             let bloat = std::env::var("TEMPO_FLATMPT_BLOAT").ok();
+            let golden = std::env::var("TEMPO_FLATMPT_GOLDEN").ok();
             let (ops, root) = genesis();
-            let shadow = match bloat {
-                None => FlatShadow::init(&path, ops, root),
-                Some(dump) => FlatShadow::init_with_bloat(&path, ops, &dump),
+            let shadow = match (golden, bloat) {
+                (Some(prefix), _) => FlatShadow::init_from_golden(&path, ops, &prefix),
+                (None, Some(dump)) => FlatShadow::init_with_bloat(&path, ops, &dump),
+                (None, None) => FlatShadow::init(&path, ops, root),
             };
             Some(Mutex::new(shadow.expect("flat MPT genesis init failed")))
         })
