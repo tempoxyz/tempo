@@ -112,6 +112,55 @@ impl FlatShadow {
         Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
     }
 
+    /// Bloat-mode init: genesis alloc + state-bloat dump, with a golden
+    /// checkpoint cache keyed on the dump's size+mtime.
+    fn init_with_bloat(path: &str, genesis_ops: Vec<(Key, StateOp)>, dump: &str) -> anyhow::Result<Self> {
+        let meta = std::fs::metadata(dump)?;
+        let marker = format!("{} {}", meta.len(), meta.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs());
+        let golden_ok = std::fs::read_to_string(format!("{path}.golden.marker"))
+            .is_ok_and(|m| m.trim() == marker);
+
+        for suffix in ["", ".meta", ".meta.prev", ".timings"] {
+            let _ = std::fs::remove_file(format!("{path}{suffix}"));
+        }
+        if golden_ok {
+            std::fs::copy(format!("{path}.golden"), path)?;
+            std::fs::copy(format!("{path}.golden.meta"), format!("{path}.meta"))?;
+            let db = FlatMpt::open(path).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+            let timings = std::io::BufWriter::new(
+                std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
+            );
+            tracing::info!(target: "flatmpt", root = %hex(db.root()), path, "flat MPT restored from golden bloat checkpoint");
+            return Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false });
+        }
+
+        let mut db = FlatMpt::create(path, mpt_flat_poc::Config::default())
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        let n_alloc = genesis_ops.len();
+        db.apply_block(genesis_ops).map_err(|e| anyhow::anyhow!("genesis apply: {e:#}"))?;
+        let t = std::time::Instant::now();
+        let dump_ops = bloat_dump_to_ops(dump)?;
+        let n_dump = dump_ops.len();
+        // Chunked so peak memory stays bounded and progress is visible.
+        for chunk in dump_ops.chunks(1 << 20) {
+            db.apply_block(chunk.to_vec()).map_err(|e| anyhow::anyhow!("bloat apply: {e:#}"))?;
+        }
+        db.persist().map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        tracing::info!(
+            target: "flatmpt",
+            root = %hex(db.root()), n_alloc, n_dump,
+            elapsed_s = t.elapsed().as_secs(), path,
+            "flat MPT initialized from genesis alloc + bloat dump"
+        );
+        std::fs::copy(path, format!("{path}.golden"))?;
+        std::fs::copy(format!("{path}.meta"), format!("{path}.golden.meta"))?;
+        std::fs::write(format!("{path}.golden.marker"), marker)?;
+        let timings = std::io::BufWriter::new(
+            std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
+        );
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
+    }
+
     /// State root after applying `ops` on the state whose root is `parent_root`.
     ///
     /// The shadow advances optimistically: the applied block stays applied, and a
@@ -320,6 +369,14 @@ impl FlatShadow {
 /// The process-wide shadow. First caller initializes it from the genesis alloc
 /// (supplied lazily so only the winning caller pays for it); returns `None` when
 /// the flat MPT is disabled.
+///
+/// With `TEMPO_FLATMPT_BLOAT=<file>` the state-bloat binary dump (the same one
+/// `tempo init-from-binary-dump` loads) is applied on top of the alloc, and the
+/// resulting checkpoint is cached as `<path>.golden*` — later inits with the
+/// same dump restore by file copy instead of re-applying millions of slots.
+/// In bloat mode the genesis-root assertion is skipped here (the header root is
+/// only known post-dump); the first `root_for`/`begin_stream` parent check is
+/// the gate instead.
 pub fn shadow(
     genesis: impl FnOnce() -> (Vec<(Key, StateOp)>, B256),
 ) -> Option<&'static Mutex<FlatShadow>> {
@@ -330,12 +387,52 @@ pub fn shadow(
                 return None;
             }
             let path = std::env::var("TEMPO_FLATMPT").expect("TEMPO_FLATMPT checked by mode()");
+            let bloat = std::env::var("TEMPO_FLATMPT_BLOAT").ok();
             let (ops, root) = genesis();
-            Some(Mutex::new(
-                FlatShadow::init(&path, ops, root).expect("flat MPT genesis init failed"),
-            ))
+            let shadow = match bloat {
+                None => FlatShadow::init(&path, ops, root),
+                Some(dump) => FlatShadow::init_with_bloat(&path, ops, &dump),
+            };
+            Some(Mutex::new(shadow.expect("flat MPT genesis init failed")))
         })
         .as_ref()
+}
+
+/// Parse a `TEMPOSB` state-bloat dump into storage ops (keccak-hashed keys).
+fn bloat_dump_to_ops(dump: &str) -> anyhow::Result<Vec<(Key, StateOp)>> {
+    use std::io::Read as _;
+    let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
+    let mut ops: Vec<(Key, StateOp)> = Vec::new();
+    let mut header = [0u8; 40];
+    loop {
+        match f.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e.into()),
+        }
+        anyhow::ensure!(&header[0..8] == b"TEMPOSB\0", "bad bloat magic");
+        anyhow::ensure!(u16::from_be_bytes([header[8], header[9]]) == 1, "bad bloat version");
+        let address = &header[12..32];
+        let key: Key = keccak256(address).0;
+        let pair_count = u64::from_be_bytes(header[32..40].try_into().unwrap());
+        let mut pair = [0u8; 64];
+        for _ in 0..pair_count {
+            f.read_exact(&mut pair)?;
+            let slot_key: Key = keccak256(&pair[0..32]).0;
+            let value = U256::from_be_slice(&pair[32..64]);
+            if value == U256::ZERO {
+                continue;
+            }
+            ops.push((
+                key,
+                StateOp::SetStorage {
+                    slot: slot_key,
+                    value: mpt_flat_poc::eth::storage_value_rlp(value),
+                },
+            ));
+        }
+    }
+    Ok(ops)
 }
 
 /// Map an alloy genesis alloc to flat-MPT ops (hashed keys).
