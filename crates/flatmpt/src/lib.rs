@@ -166,6 +166,7 @@ impl FlatShadow {
             &serde_json::json!({ "block": number, "n_ops": n_ops, "apply_us": apply_us }),
         )?;
         self.timings.write_all(b"\n")?;
+        self.timings.flush()?;
 
         self.entries.push(Entry { number, parent_root: parent_root.0, root, ops, inverse });
         if self.entries.len() > WINDOW {

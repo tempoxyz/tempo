@@ -574,7 +574,7 @@ where
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
         for tx in &system_txs {
-            estimated_rlp_block_size += tx.inner().length();
+            estimated_rlp_block_size += tx.inner().length() + 4;
         }
         let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
         self.metrics
@@ -741,7 +741,12 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.transaction.encoded_length();
+            // Typed transactions are re-wrapped as RLP strings inside the block
+            // body, adding a few length-prefix bytes per tx that
+            // `encoded_length()` (the pool encoding) does not include. Without
+            // this pad a full ~8 MiB block of small payment txs overshoots
+            // MAX_RLP_BLOCK_SIZE by ~0.8% and fails post-build validation.
+            let tx_rlp_length = tx.transaction.encoded_length() + 4;
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
