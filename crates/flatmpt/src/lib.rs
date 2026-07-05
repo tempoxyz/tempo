@@ -112,49 +112,55 @@ impl FlatShadow {
         Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
     }
 
-    /// Bloat-mode init: genesis alloc + state-bloat dump, with a golden
-    /// checkpoint cache keyed on the dump's size+mtime.
+    /// Bloat-mode init: genesis alloc + state-bloat dump.
+    ///
+    /// Mirrors `tempo init-from-binary-dump` semantics: dump entries whose
+    /// (account, slot) already exists in the genesis alloc are SKIPPED (genesis
+    /// wins on collisions — the fee-token setup writes token slots at genesis).
+    /// Built with the engine's RAM-build mode (bulk load, single spill at
+    /// persist) — the chunked-apply path write-amplifies ~8x and takes minutes.
+    /// Rebuilt from scratch every init: genesis regenerates per bench leg, so a
+    /// cached checkpoint would go stale with it.
     fn init_with_bloat(path: &str, genesis_ops: Vec<(Key, StateOp)>, dump: &str) -> anyhow::Result<Self> {
-        let meta = std::fs::metadata(dump)?;
-        let marker = format!("{} {}", meta.len(), meta.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs());
-        let golden_ok = std::fs::read_to_string(format!("{path}.golden.marker"))
-            .is_ok_and(|m| m.trim() == marker);
-
         for suffix in ["", ".meta", ".meta.prev", ".timings"] {
             let _ = std::fs::remove_file(format!("{path}{suffix}"));
         }
-        if golden_ok {
-            std::fs::copy(format!("{path}.golden"), path)?;
-            std::fs::copy(format!("{path}.golden.meta"), format!("{path}.meta"))?;
-            let db = FlatMpt::open(path).map_err(|e| anyhow::anyhow!("{e:#}"))?;
-            let timings = std::io::BufWriter::new(
-                std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
-            );
-            tracing::info!(target: "flatmpt", root = %hex(db.root()), path, "flat MPT restored from golden bloat checkpoint");
-            return Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false });
-        }
-
-        let mut db = FlatMpt::create(path, mpt_flat_poc::Config::default())
-            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
-        let n_alloc = genesis_ops.len();
-        db.apply_block(genesis_ops).map_err(|e| anyhow::anyhow!("genesis apply: {e:#}"))?;
+        let genesis_slots: std::collections::HashSet<(Key, Key)> = genesis_ops
+            .iter()
+            .filter_map(|(k, op)| match op {
+                StateOp::SetStorage { slot, .. } => Some((*k, *slot)),
+                _ => None,
+            })
+            .collect();
         let t = std::time::Instant::now();
-        let dump_ops = bloat_dump_to_ops(dump)?;
+        let dump_ops: Vec<(Key, StateOp)> = bloat_dump_to_ops(dump)?
+            .into_iter()
+            .filter(|(k, op)| match op {
+                StateOp::SetStorage { slot, .. } => !genesis_slots.contains(&(*k, *slot)),
+                _ => true,
+            })
+            .collect();
+        let n_alloc = genesis_ops.len();
         let n_dump = dump_ops.len();
-        // Chunked so peak memory stays bounded and progress is visible.
-        for chunk in dump_ops.chunks(1 << 20) {
+
+        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        db.apply_block(genesis_ops).map_err(|e| anyhow::anyhow!("genesis apply: {e:#}"))?;
+        for chunk in dump_ops.chunks(1 << 21) {
             db.apply_block(chunk.to_vec()).map_err(|e| anyhow::anyhow!("bloat apply: {e:#}"))?;
         }
         db.persist().map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        let root = db.root();
+        drop(db);
+        // Reopen without RAM-build so live block applies use the normal path.
+        let db = FlatMpt::open(path).map_err(|e| anyhow::anyhow!("reopen: {e:#}"))?;
+        anyhow::ensure!(db.root() == root, "root changed across reopen");
         tracing::info!(
             target: "flatmpt",
-            root = %hex(db.root()), n_alloc, n_dump,
+            root = %hex(root), n_alloc, n_dump,
             elapsed_s = t.elapsed().as_secs(), path,
-            "flat MPT initialized from genesis alloc + bloat dump"
+            "flat MPT initialized from genesis alloc + bloat dump (RAM build)"
         );
-        std::fs::copy(path, format!("{path}.golden"))?;
-        std::fs::copy(format!("{path}.meta"), format!("{path}.golden.meta"))?;
-        std::fs::write(format!("{path}.golden.marker"), marker)?;
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
         );
