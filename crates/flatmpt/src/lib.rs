@@ -272,14 +272,18 @@ pub fn bundle_to_ops(bundle: &revm::database::BundleState) -> Vec<(Key, StateOp)
                 continue;
             }
         }
+        // Emit slot ops in sorted slot order: bundle storage is a hash map, and a
+        // canonical per-account order is what lets the validator's op list match
+        // the builder's memoized one exactly.
+        let mut slots: Vec<(Key, StateOp)> = Vec::with_capacity(acct.storage.len());
         for (slot, value) in &acct.storage {
             let slot_key: Key = keccak256(slot.to_be_bytes::<32>()).0;
             let present = value.present_value();
             if present == U256::ZERO {
-                ops.push((key, StateOp::DeleteStorage { slot: slot_key }));
+                slots.push((slot_key, StateOp::DeleteStorage { slot: slot_key }));
             } else {
-                ops.push((
-                    key,
+                slots.push((
+                    slot_key,
                     StateOp::SetStorage {
                         slot: slot_key,
                         value: mpt_flat_poc::eth::storage_value_rlp(present),
@@ -287,6 +291,8 @@ pub fn bundle_to_ops(bundle: &revm::database::BundleState) -> Vec<(Key, StateOp)
                 ));
             }
         }
+        slots.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.extend(slots.into_iter().map(|(_, op)| (key, op)));
     }
     ops
 }
