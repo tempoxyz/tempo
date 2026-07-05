@@ -414,6 +414,34 @@ where
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
 
+        // Flat-MPT streaming (root mode): apply state changes to the flat engine
+        // concurrently with execution; payload-finish only pays for the residual
+        // chunk. Declared before the executor so a cancelled build drops the
+        // hook (inside the executor) before the stream's rollback guard runs.
+        let flat_stream = if tempo_flatmpt::stream_enabled() {
+            let chain_spec = self.provider.chain_spec();
+            let shadow = tempo_flatmpt::shadow(|| {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            })
+            .expect("flat root mode is on");
+            match tempo_flatmpt::FlatStream::begin(
+                shadow,
+                parent_header.number(),
+                parent_header.state_root(),
+            ) {
+                Ok(stream) => Some(stream),
+                Err(err) => {
+                    warn!(target: "flatmpt", %err, "stream begin failed; falling back to finish-path apply");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
@@ -538,20 +566,21 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
+        let root_hook: Option<Box<dyn OnStateHook>> = match (&trie_handle, &flat_stream) {
+            (Some(handle), _) => Some(Box::new(handle.state_hook())),
+            (None, Some(stream)) => Some(Box::new(stream.hook())),
+            (None, None) => None,
+        };
         let bal_task_handle = if self.enable_bal {
-            let bal_task_handle =
-                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
+            let bal_task_handle = self.spawn_bal_task(root_hook);
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(ref handle) = trie_handle {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
+            if let Some(hook) = root_hook {
+                executor.evm_mut().db_mut().set_state_hook(Some(hook));
             }
             None
         };
@@ -1024,7 +1053,14 @@ where
         // Flat-MPT commitment (experimental, env-gated): the flat engine's root for
         // this bundle. In `Root` mode it becomes the header's state root; in
         // `Compare` mode it is asserted against the regular pipeline's root below.
-        let flat_root = if tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Off {
+        let flat_root = if let Some(stream) = flat_stream {
+            let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
+            Some(
+                stream
+                    .finish(ops)
+                    .map_err(|e| PayloadBuilderError::Other(e.into()))?,
+            )
+        } else if tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Off {
             None
         } else {
             let chain_spec = self.provider.chain_spec();
@@ -1404,7 +1440,7 @@ where
         (transactions_tx, result_rx)
     }
 
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+    fn spawn_bal_task(&self, mut state_root_task_hook: Option<Box<dyn OnStateHook>>) -> BalTaskHandle {
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
         self.executor.spawn_blocking_named("builder-bal-task", || {
