@@ -5,7 +5,7 @@
 source contrib/bench/txgen/helpers.nu
 
 const BENCH_DIR = "contrib/bench"
-const LOCALNET_DIR = "localnet"
+const LOCALNET_DIR = "/mnt2/tempo-localnet"
 const LOGS_DIR = "contrib/bench/logs"
 const RUSTFLAGS = "-C target-cpu=native"
 const DEFAULT_PROFILE = "profiling"
