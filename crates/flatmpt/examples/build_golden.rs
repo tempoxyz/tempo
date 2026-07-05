@@ -1,29 +1,63 @@
 //! Build a dump-only golden flat checkpoint from a TEMPOSB state-bloat file.
 //!
-//! Two-phase to respect RAM-build's insert-once design (spilled subtrees must
-//! not be revisited — re-seeding the same account across batches re-promotes
-//! its mega-subtree and OOMs): (1) split the dump into one raw slot file per
-//! account, (2) seed each account exactly once with its full sorted slot set,
-//! letting the engine spill between accounts.
+//! Memory-safe at 1B slots (two prior attempts OOM'd a 62 GB box):
+//! - Phase 1 splits the dump into one raw (hashed_slot, value) file per
+//!   account; skipped if split files from a previous attempt exist.
+//! - Phase 2 loads each account's rows as fixed-width 64-byte entries (one
+//!   flat allocation — 250M individual `Vec<u8>` values cost ~14 GB of heap
+//!   overhead alone), sorts, and seeds in sorted disjoint 25M-slot ranges so
+//!   each storage subtree region is written once and the per-range conversion
+//!   buffer stays ~2 GB. RAM-build spills between inserts.
 //!
-//!   MPT_RAM_BUILD_GIB=26 cargo run --release -p tempo-flatmpt \
+//!   MPT_RAM_BUILD_GIB=24 cargo run --release -p tempo-flatmpt \
 //!       --example build_golden -- <dump.bin> <out.flat>
 
 use alloy_primitives::{keccak256, U256};
 use mpt_flat_poc::{AccountSeed, Config, FlatMpt, Key};
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
+use std::time::Instant;
+
+const RANGE: usize = 25_000_000;
 
 fn main() -> anyhow::Result<()> {
     let dump = std::env::args().nth(1).expect("dump path");
     let out = std::env::args().nth(2).expect("output flat path");
-    for suffix in ["", ".meta", ".meta.prev"] {
-        let _ = std::fs::remove_file(format!("{out}{suffix}"));
-    }
-    let t0 = std::time::Instant::now();
+    let t0 = Instant::now();
 
-    // Phase 1: split into per-account files of raw (hashed_slot, value) pairs.
-    let mut f = std::io::BufReader::with_capacity(128 << 20, std::fs::File::open(&dump)?);
+    let keys = match existing_split_keys(&out)? {
+        Some(keys) => {
+            eprintln!("reusing {} existing split files", keys.len());
+            keys
+        }
+        None => split_dump(&dump, &out, t0)?,
+    };
+    seed(&out, keys, t0)
+}
+
+/// Keys of split files left by a previous attempt, if any.
+fn existing_split_keys(out: &str) -> anyhow::Result<Option<Vec<Key>>> {
+    let path = std::path::Path::new(out);
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let prefix = format!("{}.split.", path.file_name().unwrap().to_str().unwrap());
+    let mut keys = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let name = entry?.file_name().into_string().unwrap_or_default();
+        if let Some(hex_part) = name.strip_prefix(&prefix) {
+            anyhow::ensure!(hex_part.len() == 64, "bad split file name {name}");
+            let mut k = [0u8; 32];
+            for i in 0..32 {
+                k[i] = u8::from_str_radix(&hex_part[i * 2..i * 2 + 2], 16)?;
+            }
+            keys.push(k);
+        }
+    }
+    Ok(if keys.is_empty() { None } else { Some(keys) })
+}
+
+/// Split the TEMPOSB dump into one raw 64-byte-row file per account.
+fn split_dump(dump: &str, out: &str, t0: Instant) -> anyhow::Result<Vec<Key>> {
+    let mut f = std::io::BufReader::with_capacity(128 << 20, std::fs::File::open(dump)?);
     let mut header = [0u8; 40];
     let mut writers: HashMap<Key, std::io::BufWriter<std::fs::File>> = HashMap::new();
     let mut total: u64 = 0;
@@ -45,8 +79,7 @@ fn main() -> anyhow::Result<()> {
         let mut pair = [0u8; 64];
         for _ in 0..pair_count {
             f.read_exact(&mut pair)?;
-            let value = U256::from_be_slice(&pair[32..64]);
-            if value == U256::ZERO {
+            if U256::from_be_slice(&pair[32..64]) == U256::ZERO {
                 continue;
             }
             w.write_all(&keccak256(&pair[0..32]).0)?;
@@ -59,38 +92,65 @@ fn main() -> anyhow::Result<()> {
         w.flush()?;
     }
     eprintln!("split {} pairs into {} accounts in {:.0}s", total, keys.len(), t0.elapsed().as_secs_f64());
+    Ok(keys)
+}
 
-    // Phase 2: seed each account once with its full sorted slot set.
-    let mut db = FlatMpt::create_ram_build(&out, Config::default())?;
+/// Seed each account from its split file in sorted disjoint ranges.
+fn seed(out: &str, keys: Vec<Key>, t0: Instant) -> anyhow::Result<()> {
+    for suffix in ["", ".meta", ".meta.prev"] {
+        let _ = std::fs::remove_file(format!("{out}{suffix}"));
+    }
+    let mut db = FlatMpt::create_ram_build(out, Config::default())?;
+    let mut total: u64 = 0;
     for key in keys {
         let split_path = format!("{}.split.{}", out, mpt_flat_poc::hex(key));
-        let data = std::fs::read(&split_path)?;
-        let mut slots: Vec<(Key, Vec<u8>)> = data
-            .chunks_exact(64)
-            .map(|c| {
-                let mut k = [0u8; 32];
-                k.copy_from_slice(&c[0..32]);
-                (k, mpt_flat_poc::eth::storage_value_rlp(U256::from_be_slice(&c[32..64])))
-            })
-            .collect();
-        drop(data);
-        slots.sort_by(|a, b| a.0.cmp(&b.0));
-        let n = slots.len();
-        let t = std::time::Instant::now();
-        db.insert_batch_accounts(vec![(key, AccountSeed {
-            nonce: 0,
-            balance: U256::ZERO,
-            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
-            slots,
-        })])?;
+        let mut rows: Vec<[u8; 64]> = {
+            let data = std::fs::read(&split_path)?;
+            anyhow::ensure!(data.len() % 64 == 0, "truncated split file");
+            let mut rows = Vec::with_capacity(data.len() / 64);
+            for c in data.chunks_exact(64) {
+                let mut row = [0u8; 64];
+                row.copy_from_slice(c);
+                rows.push(row);
+            }
+            rows
+        };
+        rows.sort_unstable_by(|a, b| a[0..32].cmp(&b[0..32]));
+        let n = rows.len();
+        total += n as u64;
+        let t = Instant::now();
+        for range in rows.chunks(RANGE) {
+            let slots: Vec<(Key, Vec<u8>)> = range
+                .iter()
+                .map(|row| {
+                    let mut k = [0u8; 32];
+                    k.copy_from_slice(&row[0..32]);
+                    (k, mpt_flat_poc::eth::storage_value_rlp(U256::from_be_slice(&row[32..64])))
+                })
+                .collect();
+            db.insert_batch_accounts(vec![(key, AccountSeed {
+                nonce: 0,
+                balance: U256::ZERO,
+                code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                slots,
+            })])?;
+            eprintln!(
+                "  range done, footprint {:.1} GiB",
+                mpt_flat_poc::process_footprint_bytes() as f64 / (1u64 << 30) as f64,
+            );
+        }
+        drop(rows);
         eprintln!(
-            "seeded account {} ({} slots) in {:.0}s (cum {:.0}s, footprint {:.1} GiB)",
+            "seeded account {} ({} slots) in {:.0}s (cum {:.0}s)",
             mpt_flat_poc::hex(key), n, t.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64(),
-            mpt_flat_poc::process_footprint_bytes() as f64 / (1u64 << 30) as f64,
         );
         let _ = std::fs::remove_file(&split_path);
     }
     db.persist()?;
-    println!("golden built: {total} slots, root {}, {:.0}s", mpt_flat_poc::hex(db.root()), t0.elapsed().as_secs_f64());
+    println!(
+        "golden built: {total} slots, root {}, {:.0}s",
+        mpt_flat_poc::hex(db.root()),
+        t0.elapsed().as_secs_f64()
+    );
     Ok(())
 }
