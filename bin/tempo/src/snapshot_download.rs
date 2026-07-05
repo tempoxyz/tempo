@@ -424,7 +424,7 @@ fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Res
         }
 
         ensure!(
-            entry_type.is_file(),
+            is_consensus_archive_file(entry_type),
             "consensus archive contains a non-file entry",
         );
 
@@ -539,10 +539,14 @@ fn consensus_archive_entry(
         );
     }
     ensure!(
-        entry_type.is_dir() || entry_type.is_file(),
+        entry_type.is_dir() || is_consensus_archive_file(entry_type),
         "consensus archive contains a non-file entry",
     );
     Ok(Some((partition, output_relative)))
+}
+
+fn is_consensus_archive_file(entry_type: tar::EntryType) -> bool {
+    entry_type.is_file() || entry_type.is_contiguous() || entry_type.is_gnu_sparse()
 }
 
 fn safe_output_path(root: &Path, relative: &str) -> eyre::Result<PathBuf> {
@@ -693,6 +697,23 @@ mod tests {
         assert_eq!(
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
             b"abc"
+        );
+    }
+
+    #[test]
+    fn consensus_archive_entry_allows_sparse_file_entries() {
+        let entry = consensus_archive_entry(
+            "consensus/engine-finalizations-by-height-freezer-table/7461626c65",
+            tar::EntryType::GNUSparse,
+        )
+        .unwrap();
+
+        assert_eq!(
+            entry,
+            Some((
+                "engine-finalizations-by-height-freezer-table".to_string(),
+                PathBuf::from("engine-finalizations-by-height-freezer-table/7461626c65")
+            ))
         );
     }
 
