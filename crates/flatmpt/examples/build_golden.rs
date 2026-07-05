@@ -104,13 +104,16 @@ fn seed(out: &str, keys: Vec<Key>, t0: Instant) -> anyhow::Result<()> {
     let mut total: u64 = 0;
     for key in keys {
         let split_path = format!("{}.split.{}", out, mpt_flat_poc::hex(key));
+        // Stream the file into the row vector — reading it whole first doubles
+        // the peak (16 GB file + 16 GB rows) and OOM'd on top of trie residue.
         let mut rows: Vec<[u8; 64]> = {
-            let data = std::fs::read(&split_path)?;
-            anyhow::ensure!(data.len() % 64 == 0, "truncated split file");
-            let mut rows = Vec::with_capacity(data.len() / 64);
-            for c in data.chunks_exact(64) {
-                let mut row = [0u8; 64];
-                row.copy_from_slice(c);
+            let len = std::fs::metadata(&split_path)?.len();
+            anyhow::ensure!(len % 64 == 0, "truncated split file");
+            let mut r = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(&split_path)?);
+            let mut rows = Vec::with_capacity((len / 64) as usize);
+            let mut row = [0u8; 64];
+            for _ in 0..len / 64 {
+                r.read_exact(&mut row)?;
                 rows.push(row);
             }
             rows
