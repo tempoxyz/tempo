@@ -308,12 +308,16 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     }
 
     print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    $addresses | par-each { |address|
-        txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-    } | ignore
-
-    print "  Waiting for faucet transactions to drain..."
-    txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
+    # Fund in bounded batches with a txpool drain between them: one flat par-each
+    # over many thousands of addresses floods the faucet, and a single RPC
+    # rejection aborts the whole eval block.
+    for batch in ($addresses | chunks 1000) {
+        $batch | par-each { |address|
+            txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
+        } | ignore
+        print "  Waiting for faucet transactions to drain..."
+        txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
+    }
 }
 
 def txgen-run-preset-pipeline [
