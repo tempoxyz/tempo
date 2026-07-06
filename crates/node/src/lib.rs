@@ -24,10 +24,12 @@ pub mod engine;
 pub mod node;
 pub mod rpc;
 pub mod telemetry;
+pub use page_state::TempoPageStateValidatorBuilder;
 pub use tempo_evm as evm;
 pub use tempo_evm::consensus;
 pub use tempo_primitives as primitives;
 
+mod page_state;
 mod version;
 
 type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;

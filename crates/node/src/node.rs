@@ -1,14 +1,16 @@
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
+    page_state::{SharedPageStateManager, TempoPageStateValidatorBuilder},
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
-        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoOperatorApiServer, TempoOperatorRpc, TempoPageStateApiServer, TempoPageStateRpc,
+        TempoSimulate, TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
+use futures::StreamExt;
 use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
@@ -21,20 +23,23 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::ProviderFactoryBuilder;
+use reth_provider::{
+    CanonStateNotification, CanonStateSubscriptions, ChainSpecProvider,
+    providers::ProviderFactoryBuilder,
+};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
-use reth_tracing::tracing::{debug, info};
+use reth_tracing::tracing::{debug, error, info};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
     TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
@@ -43,6 +48,7 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_page_state::{PageStateManager, PageStoreError};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
@@ -140,28 +146,41 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            page_state_manager: SharedPageStateManager::default(),
         }
     }
 }
 
 /// Type configuration for a regular Ethereum node.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
     /// Payload builder builder.
     payload_builder_builder: TempoPayloadBuilderBuilder,
+    /// Shared page-state manager handle used by builder, validator, RPC, and persistence tasks.
+    page_state_manager: SharedPageStateManager,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
+}
+
+impl Default for TempoNode {
+    fn default() -> Self {
+        Self::new(&TempoNodeArgs::default(), None)
+    }
 }
 
 impl TempoNode {
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
+        let page_state_manager = SharedPageStateManager::default();
+        let mut payload_builder_builder = args.payload_builder_builder();
+        payload_builder_builder.page_state_manager = page_state_manager.clone();
         Self {
             pool_builder: args.pool_builder(),
-            payload_builder_builder: args.payload_builder_builder(),
+            payload_builder_builder,
+            page_state_manager,
             validator_key,
         }
     }
@@ -216,8 +235,9 @@ impl TempoNode {
     /// Sets the payload builder builder.
     pub fn with_payload_builder_builder(
         mut self,
-        payload_builder_builder: TempoPayloadBuilderBuilder,
+        mut payload_builder_builder: TempoPayloadBuilderBuilder,
     ) -> Self {
+        payload_builder_builder.page_state_manager = self.page_state_manager.clone();
         self.payload_builder_builder = payload_builder_builder;
         self
     }
@@ -227,7 +247,9 @@ impl TempoNode {
     where
         F: FnOnce(TempoPayloadBuilderBuilder) -> TempoPayloadBuilderBuilder,
     {
-        self.payload_builder_builder = f(self.payload_builder_builder);
+        let mut payload_builder_builder = f(self.payload_builder_builder);
+        payload_builder_builder.page_state_manager = self.page_state_manager.clone();
+        self.payload_builder_builder = payload_builder_builder;
         self
     }
 
@@ -253,9 +275,10 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        TempoPageStateValidatorBuilder,
         Identity,
     >,
+    page_state_manager: SharedPageStateManager,
     validator_key: Option<B256>,
 }
 
@@ -264,16 +287,17 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    fn new(validator_key: Option<B256>, page_state_manager: SharedPageStateManager) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                TempoPageStateValidatorBuilder::new(page_state_manager.clone()),
                 Identity::default(),
                 Default::default(),
             ),
+            page_state_manager,
             validator_key,
         }
     }
@@ -293,6 +317,12 @@ where
             ctx.node.provider.clone(),
             ctx.node.components.evm_config.clone(),
         );
+        let page_state_manager = self.page_state_manager.get_or_open(
+            ctx.config.datadir().data_dir(),
+            FullNodeComponents::provider(&ctx.node).chain_spec(),
+        )?;
+        spawn_page_state_canonical_task(&ctx, page_state_manager.clone());
+        let validator_key = self.validator_key;
 
         self.inner
             .launch_add_ons_with(ctx, move |container| {
@@ -304,15 +334,17 @@ where
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api.clone());
                 let simulate = TempoSimulate::new(eth_api);
-                let admin = TempoAdminApi::new(self.validator_key);
+                let admin = TempoAdminApi::new(validator_key);
                 let operator = TempoOperatorRpc::new(registry.admin_api());
                 let fork_schedule =
                     TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
+                let page_state = TempoPageStateRpc::new(page_state_manager.clone());
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
+                modules.merge_configured(page_state.into_rpc())?;
                 modules.merge_if_module_configured(
                     RethRpcModule::Other("operator".to_string()),
                     operator.into_rpc(),
@@ -323,6 +355,60 @@ where
                 Ok(())
             })
             .await
+    }
+}
+
+fn spawn_page_state_canonical_task<N>(
+    ctx: &AddOnsContext<'_, NodeAdapter<N>>,
+    manager: PageStateManager,
+) where
+    N: FullNodeTypes<Types = TempoNode>,
+{
+    let mut notifications = FullNodeComponents::provider(&ctx.node).canonical_state_stream();
+    ctx.node
+        .task_executor()
+        .spawn_critical_task("page-state canonical persistence", async move {
+            while let Some(notification) = notifications.next().await {
+                if let Err(err) = apply_page_state_notification(&manager, notification) {
+                    error!(
+                        target: "tempo::page_state",
+                        %err,
+                        "failed to persist canonical page-state updates"
+                    );
+                }
+            }
+
+            debug!(
+                target: "tempo::page_state",
+                "page-state canonical notification stream ended"
+            );
+        });
+}
+
+fn apply_page_state_notification(
+    manager: &PageStateManager,
+    notification: CanonStateNotification<TempoPrimitives>,
+) -> Result<(), PageStoreError> {
+    match notification {
+        CanonStateNotification::Commit { new } => {
+            let blocks = new
+                .blocks_iter()
+                .map(|block| block.num_hash().into_components())
+                .collect::<Vec<_>>();
+            manager.on_canonical_commit(&blocks)
+        }
+        CanonStateNotification::Reorg { old, new } => {
+            let orphaned = old
+                .blocks_iter()
+                .map(|block| block.hash())
+                .collect::<Vec<_>>();
+            manager.on_reorg(&orphaned);
+            let blocks = new
+                .blocks_iter()
+                .map(|block| block.num_hash().into_components())
+                .collect::<Vec<_>>();
+            manager.on_canonical_commit(&blocks)
+        }
     }
 }
 
@@ -341,7 +427,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = TempoPageStateValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -364,11 +450,14 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder.clone(), self.payload_builder_builder)
+        Self::components(
+            self.pool_builder.clone(),
+            self.payload_builder_builder.clone(),
+        )
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.page_state_manager.clone())
     }
 }
 
@@ -696,7 +785,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
@@ -708,6 +797,7 @@ pub struct TempoPayloadBuilderBuilder {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
+    page_state_manager: SharedPageStateManager,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -717,6 +807,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            page_state_manager: SharedPageStateManager::default(),
         }
     }
 }
@@ -743,6 +834,10 @@ where
             _ => None,
         });
 
+        let page_state_manager = self
+            .page_state_manager
+            .get_or_open(ctx.config().datadir().data_dir(), ctx.chain_spec())?;
+
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -757,7 +852,8 @@ where
                 enable_parallel: self.enable_parallel,
                 build_time_multiplier: self.build_time_multiplier,
             },
-        ))
+        )
+        .with_page_state_manager(page_state_manager))
     }
 }
 

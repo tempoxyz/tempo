@@ -20,6 +20,7 @@ tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-page-state.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
@@ -30,6 +31,8 @@ thiserror.workspace = true
 
 reth-chainspec.workspace = true
 reth-errors.workspace = true
+reth-engine-tree.workspace = true
+reth-chain-state.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true

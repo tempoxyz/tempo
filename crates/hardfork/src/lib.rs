@@ -234,6 +234,11 @@ impl TempoHardfork {
         }
     }
 
+    /// Returns true if T9 page storage is active.
+    pub const fn is_page_storage(&self) -> bool {
+        self.is_t9()
+    }
+
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
     /// - Pre-T1: None
     /// - T1+: 30M gas (fixed)

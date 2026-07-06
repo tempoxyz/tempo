@@ -4,6 +4,7 @@ pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
 pub mod operator;
+pub mod page_proof;
 pub mod simulate;
 pub mod token;
 
@@ -15,6 +16,7 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
+pub use page_proof::{PageProofResponse, TempoPageStateApiServer, TempoPageStateRpc};
 use reth_errors::RethError;
 use reth_primitives_traits::{HeaderTy, Recovered, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};

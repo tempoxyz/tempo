@@ -27,6 +27,7 @@ members = [
   "crates/e2e",
   "crates/faucet",
   "crates/node",
+  "crates/page-state",
   "crates/payload/builder",
   "crates/payload/types",
   "crates/precompiles",
@@ -125,6 +126,7 @@ incremental = false
 [workspace.dependencies]
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
+tempo-page-state = { path = "crates/page-state", default-features = false }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
@@ -147,6 +149,7 @@ tempo-transaction-pool = { path = "crates/transaction-pool", default-features = 
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "011c2fd" }
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth", rev = "011c2fd" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "011c2fd", default-features = false }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "011c2fd" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "011c2fd" }

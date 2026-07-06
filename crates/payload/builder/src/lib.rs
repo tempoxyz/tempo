@@ -71,6 +71,7 @@ use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
 };
+use tempo_page_state::PageStateManager;
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
@@ -161,6 +162,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
+    /// Shared page-state commitment manager for T9 page storage.
+    page_state_manager: Option<PageStateManager>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -228,7 +231,13 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
+            page_state_manager: None,
         }
+    }
+
+    pub fn with_page_state_manager(mut self, manager: PageStateManager) -> Self {
+        self.page_state_manager = Some(manager);
+        self
     }
 
     fn build_time_multiplier(&self) -> u64 {
@@ -446,6 +455,12 @@ where
             shared_gas_limit,
         );
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+        let page_storage_active = hardfork.is_page_storage();
+        if page_storage_active {
+            // The page transform owns the commitment input for page-account storage. The sparse
+            // trie task would otherwise see the unfiltered page-account writes.
+            state_root_handle = None;
+        }
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -1019,7 +1034,7 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
+        let mut hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
             .and_then(|handle| handle.try_take_hashed_state_rx())
             .map(|rx| rx.recv())
@@ -1027,6 +1042,25 @@ where
             hashed_state
         } else {
             finish_provider.hashed_post_state(&db.bundle_state)
+        };
+
+        let page_state_updates = if page_storage_active {
+            let manager = self.page_state_manager.as_ref().ok_or_else(|| {
+                PayloadBuilderError::other(std::io::Error::other(
+                    "T9 page storage is active but no page-state manager is installed",
+                ))
+            })?;
+            let updates = manager
+                .process_block(
+                    attributes.timestamp,
+                    parent_header.hash(),
+                    &mut db.bundle_state,
+                    &mut hashed_state,
+                )
+                .map_err(PayloadBuilderError::other)?;
+            Some(updates)
+        } else {
+            None
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1118,6 +1152,14 @@ where
         )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
+
+        if let Some(updates) = page_state_updates {
+            if let Some(manager) = &self.page_state_manager {
+                manager
+                    .insert_block(block.hash(), block.number(), parent_header.hash(), updates)
+                    .map_err(PayloadBuilderError::other)?;
+            }
+        }
 
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics

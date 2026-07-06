@@ -12,9 +12,13 @@ mod bootnodes;
 #[cfg(feature = "reth")]
 mod network_identity;
 #[cfg(feature = "reth")]
+mod page_account;
+#[cfg(feature = "reth")]
 pub mod spec;
 #[cfg(feature = "reth")]
 pub use network_identity::NetworkIdentity;
+#[cfg(feature = "reth")]
+pub use page_account::PageAccountPredicate;
 #[cfg(feature = "reth")]
 pub use spec::{TempoChainSpec, TempoHardforks};
 

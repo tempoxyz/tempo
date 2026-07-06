@@ -13236,8 +13236,10 @@ dependencies = [
  "p256",
  "rand 0.9.4",
  "reqwest 0.13.3",
+ "reth-chain-state",
  "reth-chainspec",
  "reth-e2e-test-utils",
+ "reth-engine-tree",
  "reth-errors",
  "reth-ethereum",
  "reth-evm",
@@ -13265,6 +13267,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
+ "tempo-page-state",
  "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",
@@ -13277,6 +13280,25 @@ dependencies = [
  "url",
  "vergen",
  "vergen-git2",
+]
+
+[[package]]
+name = "tempo-page-state"
+version = "1.10.1"
+dependencies = [
+ "alloy-primitives",
+ "blake3",
+ "proptest",
+ "rand 0.9.4",
+ "reth-db",
+ "reth-db-api",
+ "reth-revm",
+ "reth-trie",
+ "serde",
+ "tempfile",
+ "tempo-chainspec",
+ "tempo-primitives",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -13309,6 +13331,7 @@ dependencies = [
  "reth-trie-common",
  "tempo-chainspec",
  "tempo-evm",
+ "tempo-page-state",
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
