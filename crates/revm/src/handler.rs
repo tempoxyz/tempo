@@ -1283,21 +1283,6 @@ where
                             }
                         })?;
 
-                        if !tempo_tx_env.nonce_key.is_zero() || tx.nonce() != 0 {
-                            return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                reason:
-                                    "first native multisig transaction must use protocol nonce 0"
-                                        .to_string(),
-                            }
-                            .into());
-                        }
-                        if caller_account_info.nonce != 0 {
-                            return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                reason: "native multisig account nonce is already used"
-                                    .to_string(),
-                            }
-                            .into());
-                        }
                         if !is_rpc_simulation {
                             multisig_precompile
                                 .verify_authorization(
