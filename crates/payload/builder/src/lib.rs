@@ -370,7 +370,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            mut state_root_handle,
             config,
             cancel,
             best_payload,
@@ -540,14 +540,14 @@ where
 
         let bal_task_handle = if self.enable_bal {
             let bal_task_handle =
-                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
+                self.spawn_bal_task(state_root_handle.as_ref().map(|handle| handle.state_hook()));
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(ref handle) = trie_handle {
+            if let Some(ref handle) = state_root_handle {
                 executor
                     .evm_mut()
                     .db_mut()
@@ -1019,9 +1019,10 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
+            .and_then(|handle| handle.try_take_hashed_state_rx())
+            .map(|rx| rx.recv())
         {
             hashed_state
         } else {
@@ -1037,7 +1038,7 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = trie_handle {
+            } else if let Some(mut handle) = state_root_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
