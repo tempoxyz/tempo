@@ -676,6 +676,7 @@ impl SstoreTransitionFlags {
         self.changes_present() && self.is_original_eq_present()
     }
 
+    #[inline]
     fn has(&self, flag: u8) -> bool {
         self.0 & flag != 0
     }
