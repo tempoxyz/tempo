@@ -13294,6 +13294,7 @@ dependencies = [
  "rand 0.9.4",
  "reth-db",
  "reth-db-api",
+ "reth-etl",
  "reth-revm",
  "reth-trie",
  "serde",

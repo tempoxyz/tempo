@@ -4,7 +4,7 @@
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
@@ -14,7 +14,7 @@ use std::{
 };
 
 use alloy_primitives::{
-    Address, B256, U256, keccak256,
+    B256, U256, keccak256,
     map::{AddressMap, B256Map, Entry},
 };
 use clap::Parser;
@@ -44,7 +44,7 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoChainSpecParser},
 };
 use tempo_page_state::{
-    MdbxPageStore, MemoryPageStore, Page, PageIndex, PageSmt, PageStateUpdates, Watermark,
+    AccountSeed, MdbxPageStore, Page, PageIndex, Watermark,
     page::page_offset,
     sentinel::{root_to_storage_value, sentinel_slot_hashed},
 };
@@ -163,7 +163,7 @@ impl InitFromBinaryDump<TempoChainSpecParser> {
         let (hash_tx, hash_rx) = mpsc::sync_channel::<
             Vec<(alloy_primitives::Address, B256, CompactU256)>,
         >(HASH_WORKER_QUEUE_DEPTH);
-        let hashed_etl_dir = etl_dir;
+        let hashed_etl_dir = etl_dir.clone();
         let hash_worker =
             thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
                 let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
@@ -450,6 +450,7 @@ impl InitFromBinaryDump<TempoChainSpecParser> {
         let page_roots = if page_storage_active {
             seed_page_state(
                 &page_state_dir,
+                &etl_dir,
                 self.env.chain.genesis_hash(),
                 &mut page_collector,
             )?
@@ -620,13 +621,19 @@ where
     Ok(())
 }
 
+/// Pages per seed write batch: bounds tx size and memory (~tens of MiB per batch).
+const PAGE_SEED_BATCH: usize = 1 << 18;
+
 /// Builds the page-state sidecar from sorted plain `(address, slot, value)` entries and
 /// returns each seeded account's page root.
 ///
-/// Whole accounts are assembled in memory before the SMT build, so peak memory scales with
-/// the largest page account in the dump (pages plus tree nodes).
+/// Streaming: pages are appended to the sidecar in sorted batches as they are assembled,
+/// and each account's tree is built bottom-up ([`tempo_page_state::build_bulk`]) with nodes
+/// spilled through a disk-backed ETL collector. Peak memory is one 64-byte leaf per page of
+/// the largest account plus the current batch — NOT the account's full page contents.
 fn seed_page_state(
     path: &std::path::Path,
+    etl_dir: &std::path::Path,
     genesis_hash: B256,
     collector: &mut Collector<Vec<u8>, CompactU256>,
 ) -> eyre::Result<AddressMap<B256>> {
@@ -635,40 +642,83 @@ fn seed_page_state(
         std::fs::remove_dir_all(path).wrap_err("failed to clear existing page-state dir")?;
     }
     let store = MdbxPageStore::open(path)?;
-    let watermark = Watermark {
-        block_number: 0,
-        block_hash: genesis_hash,
-    };
 
     let start = Instant::now();
     let mut roots = AddressMap::default();
-    let mut current: Option<Address> = None;
-    let mut pages: BTreeMap<PageIndex, Option<Page>> = BTreeMap::new();
+    let mut seed: Option<AccountSeed> = None;
+    let mut batch: Vec<(PageIndex, Page)> = Vec::with_capacity(PAGE_SEED_BATCH);
+    let mut current_page: Option<(PageIndex, Page)> = None;
+
+    let finish_account = |seed: Option<AccountSeed>,
+                              batch: &mut Vec<(PageIndex, Page)>,
+                              current_page: &mut Option<(PageIndex, Page)>,
+                              roots: &mut AddressMap<B256>|
+     -> eyre::Result<()> {
+        let Some(mut seed) = seed else {
+            return Ok(());
+        };
+        if let Some(page) = current_page.take() {
+            batch.push(page);
+        }
+        if !batch.is_empty() {
+            store.seed_account_pages(&mut seed, batch)?;
+            batch.clear();
+        }
+        let address = seed.address();
+        let pages = seed.page_count();
+        let account_start = Instant::now();
+        let root = store.seed_account_finish(seed, etl_dir, ETL_FILE_SIZE)?;
+        info!(
+            target: "tempo::cli",
+            %address,
+            pages,
+            root = %root,
+            tree_elapsed = ?account_start.elapsed(),
+            "Seeded page account"
+        );
+        roots.insert(address, root);
+        Ok(())
+    };
 
     let total = collector.len();
     load_storage_etl(collector, total, "page-state pages", |address, slot, value| {
         if value.is_zero() {
             return Ok(());
         }
-        if current != Some(address) {
-            if let Some(previous) = current.replace(address) {
-                flush_page_account(&store, watermark, previous, &mut pages, &mut roots)?;
-            }
+        if seed.as_ref().map(AccountSeed::address) != Some(address) {
+            finish_account(seed.take(), &mut batch, &mut current_page, &mut roots)?;
+            seed = Some(store.seed_account_begin(address));
         }
         let slot = U256::from_be_bytes(slot.0);
-        let offset = page_offset(slot);
-        pages
-            .entry(PageIndex::of_slot(slot))
-            .or_insert_with(|| Some(Page::default()))
-            .as_mut()
-            .expect("seeded pages are always Some")
-            .set_word(offset, value);
+        let index = PageIndex::of_slot(slot);
+        match &mut current_page {
+            Some((current_index, page)) if *current_index == index => {
+                page.set_word(page_offset(slot), value);
+            }
+            _ => {
+                if let Some(page) = current_page.take() {
+                    batch.push(page);
+                    if batch.len() >= PAGE_SEED_BATCH {
+                        store.seed_account_pages(
+                            seed.as_mut().expect("seed is initialized above"),
+                            &batch,
+                        )?;
+                        batch.clear();
+                    }
+                }
+                let mut page = Page::default();
+                page.set_word(page_offset(slot), value);
+                current_page = Some((index, page));
+            }
+        }
         Ok(())
     })?;
-    if let Some(address) = current {
-        flush_page_account(&store, watermark, address, &mut pages, &mut roots)?;
-    }
+    finish_account(seed.take(), &mut batch, &mut current_page, &mut roots)?;
 
+    store.set_watermark(Watermark {
+        block_number: 0,
+        block_hash: genesis_hash,
+    })?;
     info!(
         target: "tempo::cli",
         accounts = roots.len(),
@@ -676,37 +726,6 @@ fn seed_page_state(
         "Page-state sidecar seeded"
     );
     Ok(roots)
-}
-
-/// Builds one account's page SMT from its assembled pages and commits it to the sidecar.
-fn flush_page_account(
-    store: &MdbxPageStore,
-    watermark: Watermark,
-    address: Address,
-    pages: &mut BTreeMap<PageIndex, Option<Page>>,
-    roots: &mut AddressMap<B256>,
-) -> eyre::Result<()> {
-    if pages.is_empty() {
-        return Ok(());
-    }
-    let pages = std::mem::take(pages);
-    let scratch = MemoryPageStore::default();
-    let updates = PageSmt::new(&scratch, address).update(&pages)?;
-    info!(
-        target: "tempo::cli",
-        %address,
-        pages = pages.len(),
-        root = %updates.new_root,
-        "Seeded page account"
-    );
-    roots.insert(address, updates.new_root);
-    store.commit_genesis(
-        watermark,
-        &PageStateUpdates {
-            accounts: BTreeMap::from([(address, updates)]),
-        },
-    )?;
-    Ok(())
 }
 
 /// Composite ETL key for unhashed storage, sorted by address then slot.

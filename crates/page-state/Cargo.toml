@@ -16,6 +16,7 @@ alloy-primitives = { workspace = true, features = ["map"] }
 blake3.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
+reth-etl.workspace = true
 reth-trie.workspace = true
 reth-revm.workspace = true
 serde.workspace = true

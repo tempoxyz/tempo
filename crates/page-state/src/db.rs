@@ -12,10 +12,11 @@ use reth_db::{
 };
 use reth_db_api::{
     DatabaseError,
-    cursor::DbCursorRO,
+    cursor::{DbCursorRO, DbCursorRW},
     table::{Decode, Encode},
     transaction::{DbTx, DbTxMut},
 };
+use reth_etl::Collector;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path, sync::Arc};
 
@@ -23,6 +24,23 @@ use std::{fs, path::Path, sync::Arc};
 pub struct Watermark {
     pub block_number: u64,
     pub block_hash: B256,
+}
+
+/// In-flight bulk seed for one account (see [`MdbxPageStore::seed_account_begin`]).
+#[derive(Debug)]
+pub struct AccountSeed {
+    address: Address,
+    leaves: Vec<(PageIndex, B256)>,
+}
+
+impl AccountSeed {
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.leaves.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +75,88 @@ impl MdbxPageStore {
         updates: &PageStateUpdates,
     ) -> Result<(), PageStoreError> {
         self.commit_inner(block, updates, false)
+    }
+
+    /// Starts bulk-seeding one account. Accounts MUST be seeded in ascending address order
+    /// and pages in ascending index order — page and node writes use MDBX `append`.
+    pub fn seed_account_begin(&self, address: Address) -> AccountSeed {
+        AccountSeed {
+            address,
+            leaves: Vec::new(),
+        }
+    }
+
+    /// Appends a sorted batch of pages for the account being seeded and records their
+    /// leaf hashes. Bounds memory to the batch plus one 64-byte leaf per page.
+    pub fn seed_account_pages(
+        &self,
+        seed: &mut AccountSeed,
+        pages: &[(PageIndex, Page)],
+    ) -> Result<(), PageStoreError> {
+        let tx = self.db.tx_mut().map_err(to_store_error)?;
+        {
+            let mut cursor = tx
+                .cursor_write::<tables::Pages>()
+                .map_err(to_store_error)?;
+            for (index, page) in pages {
+                seed.leaves.push((*index, page.hash(seed.address, *index)));
+                cursor
+                    .append(PageDbKey::new(seed.address, *index), &page.encode())
+                    .map_err(to_store_error)?;
+            }
+        }
+        tx.commit().map_err(to_store_error)?;
+        Ok(())
+    }
+
+    /// Builds the account's page tree bottom-up from the recorded leaves and writes the
+    /// nodes (spilled through a disk-backed ETL collector, then bulk-appended) plus the
+    /// page root. Returns the root.
+    pub fn seed_account_finish(
+        &self,
+        seed: AccountSeed,
+        etl_dir: &Path,
+        etl_file_size: usize,
+    ) -> Result<B256, PageStoreError> {
+        let mut nodes: Collector<Vec<u8>, Vec<u8>> =
+            Collector::new(etl_file_size, Some(etl_dir.to_path_buf()));
+        let mut sink_error = None;
+        let root = crate::smt::build_bulk(&seed.leaves, |path, node| {
+            if sink_error.is_none()
+                && let Err(err) = nodes.insert(NodeDbKey::new(seed.address, &path).0, node.encode())
+            {
+                sink_error = Some(err);
+            }
+        });
+        if let Some(err) = sink_error {
+            return Err(to_store_error(err));
+        }
+
+        let tx = self.db.tx_mut().map_err(to_store_error)?;
+        {
+            let mut cursor = tx
+                .cursor_write::<tables::Nodes>()
+                .map_err(to_store_error)?;
+            for item in nodes.iter().map_err(to_store_error)? {
+                let (key, value) = item.map_err(to_store_error)?;
+                cursor
+                    .append(NodeDbKey::decode(&key).map_err(to_store_error)?, &value)
+                    .map_err(to_store_error)?;
+            }
+        }
+        tx.put::<tables::PageRoots>(seed.address, root.as_slice().to_vec())
+            .map_err(to_store_error)?;
+        tx.commit().map_err(to_store_error)?;
+        Ok(root)
+    }
+
+    /// Sets the watermark without touching page data (used once after bulk seeding).
+    pub fn set_watermark(&self, block: Watermark) -> Result<(), PageStoreError> {
+        let tx = self.db.tx_mut().map_err(to_store_error)?;
+        tx.put::<tables::Watermarks>(WATERMARK_KEY, encode_watermark(block))
+            .map_err(to_store_error)?;
+        tx.commit().map_err(to_store_error)?;
+        Ok(())
     }
 
     fn commit_inner(

@@ -144,6 +144,54 @@ impl PageTreeNode {
     }
 }
 
+/// Builds an account's page tree bottom-up from sorted, deduplicated `(index, page_hash)`
+/// leaves, emitting every node through `sink`. Produces exactly the node layout the
+/// incremental [`PageSmt::update`] editor would, but in O(leaves) time with O(depth)
+/// memory — use this for bulk seeding instead of a giant `update` batch.
+pub fn build_bulk(
+    leaves: &[(PageIndex, B256)],
+    mut sink: impl FnMut(NodePath, &PageTreeNode),
+) -> B256 {
+    fn build<F: FnMut(NodePath, &PageTreeNode)>(
+        leaves: &[(PageIndex, B256)],
+        path: NodePath,
+        sink: &mut F,
+    ) -> B256 {
+        if let [(index, page_hash)] = leaves {
+            // A subtree with a single page is represented by its leaf hoisted to the
+            // divergence point.
+            let node = PageTreeNode::Leaf {
+                index: *index,
+                page_hash: *page_hash,
+            };
+            let hash = node.hash();
+            sink(path, &node);
+            return hash;
+        }
+
+        let depth = usize::from(path.len());
+        let split = leaves.partition_point(|(index, _)| !index.bit(depth));
+        let left = match &leaves[..split] {
+            [] => B256::ZERO,
+            left => build(left, path.child(false), sink),
+        };
+        let right = match &leaves[split..] {
+            [] => B256::ZERO,
+            right => build(right, path.child(true), sink),
+        };
+        let node = PageTreeNode::Branch { left, right };
+        let hash = node.hash();
+        sink(path, &node);
+        hash
+    }
+
+    debug_assert!(leaves.is_sorted_by(|a, b| a.0 < b.0), "leaves must be sorted and unique");
+    if leaves.is_empty() {
+        return empty_page_root();
+    }
+    build(leaves, NodePath::root(), &mut sink)
+}
+
 pub struct PageSmt<'a, S: PageStoreRead + ?Sized> {
     store: &'a S,
     address: Address,
@@ -549,6 +597,36 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn build_bulk_matches_incremental_editor(ops in prop::collection::vec((any::<u16>(), any::<u8>(), any::<u64>().prop_map(|v| v | 1)), 0..120)) {
+            let address = Address::repeat_byte(0x33);
+            let mut pages = BTreeMap::<PageIndex, Page>::new();
+            for (raw_index, raw_offset, value) in ops {
+                let slot = (U256::from(raw_index) << 7) + U256::from(raw_offset % 128);
+                pages.entry(PageIndex::of_slot(slot)).or_default().set_word(page_offset(slot), U256::from(value));
+            }
+
+            // Incremental editor from an empty store.
+            let store = MemoryPageStore::default();
+            let dirty: BTreeMap<_, _> = pages.iter().map(|(&index, page)| (index, Some(page.clone()))).collect();
+            let editor_updates = PageSmt::new(&store, address).update(&dirty).unwrap();
+            let editor_nodes: BTreeMap<_, _> = editor_updates
+                .nodes
+                .iter()
+                .filter_map(|(path, node)| node.clone().map(|node| (path.clone(), node)))
+                .collect();
+
+            // Bulk builder over the same leaves.
+            let leaves: Vec<_> = pages.iter().map(|(&index, page)| (index, page.hash(address, index))).collect();
+            let mut bulk_nodes = BTreeMap::new();
+            let bulk_root = build_bulk(&leaves, |path, node| {
+                bulk_nodes.insert(path, node.clone());
+            });
+
+            prop_assert_eq!(bulk_root, editor_updates.new_root);
+            prop_assert_eq!(bulk_nodes, editor_nodes);
+        }
+
         #[test]
         fn smt_proofs_verify_after_random_batches(ops in prop::collection::vec((any::<u16>(), any::<u8>(), any::<u64>()), 1..80)) {
             let address = Address::repeat_byte(0x22);

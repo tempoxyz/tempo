@@ -15,12 +15,14 @@ pub mod smt;
 pub mod store;
 pub mod updates;
 
-pub use db::{MdbxPageStore, Watermark};
+pub use db::{AccountSeed, MdbxPageStore, Watermark};
 pub use manager::{PageBlockOutput, PageStateError, PageStateManager};
 pub use page::{PAGE_DOMAIN, PAGE_INDEX_BITS, PAGE_SIZE_BYTES, PAGE_SIZE_WORDS, Page, PageIndex};
 pub use recovery::{
     PageStateRecoverySource, RecoveryPageKey, RecoveryReport, recover_from_plain_state,
 };
-pub use smt::{EMPTY_PAGE_ROOT, NodePath, PageProof, PageSmt, PageTreeNode, empty_page_root};
+pub use smt::{
+    EMPTY_PAGE_ROOT, NodePath, PageProof, PageSmt, PageTreeNode, build_bulk, empty_page_root,
+};
 pub use store::{MemoryPageStore, OverlayPageStore, PageStoreError, PageStoreRead, PageStoreScan};
 pub use updates::{AccountPageUpdates, PageStateUpdates};
