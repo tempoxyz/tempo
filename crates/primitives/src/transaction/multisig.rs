@@ -327,28 +327,6 @@ impl InitMultisig {
         Ok(account)
     }
 
-    /// Validates RPC simulation mock multisig signatures by treating the first
-    /// `signature_count` configured owners as signers.
-    pub fn validate_rpc_mock_signatures(&self, signature_count: usize) -> Result<(), &'static str> {
-        self.validate().map_err(MultisigConfigError::as_str)?;
-        if signature_count == 0 {
-            return Err("multisig signatures cannot be empty");
-        }
-        if signature_count > MAX_MULTISIG_SIGNATURES || signature_count > self.owners.len() {
-            return Err("too many multisig signatures");
-        }
-
-        multisig_signature_count_for_threshold(
-            self.owners
-                .iter()
-                .take(signature_count)
-                .map(|owner| owner.weight),
-            self.threshold,
-        )
-        .map(|_| ())
-        .map_err(MultisigQuorumError::as_str)
-    }
-
     /// Returns the configured weight for an owner, if present.
     pub fn owner_weight(&self, owner: Address) -> Option<u8> {
         self.owners
@@ -356,7 +334,6 @@ impl InitMultisig {
             .ok()
             .map(|idx| self.owners[idx].weight)
     }
-
     /// Decodes, verifies, and weight-accounts primitive owner approvals.
     ///
     /// This helper does not validate nested multisig owner approvals because that requires state

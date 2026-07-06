@@ -1248,23 +1248,11 @@ where
                     }
 
                     if caller_is_multisig {
-                        let threshold = multisig_precompile
-                            .load_registered_threshold(multisig_signature.account())
-                            .map_err(NativeMultisigAuthError::from)
-                            .map_err(map_native_multisig_error::<DB>)?;
-                        if is_rpc_simulation {
-                            let config = multisig_precompile
-                                .load_registered_config(multisig_signature.account())
+                        if !is_rpc_simulation {
+                            let threshold = multisig_precompile
+                                .load_registered_threshold(multisig_signature.account())
                                 .map_err(NativeMultisigAuthError::from)
                                 .map_err(map_native_multisig_error::<DB>)?;
-                            config
-                                .validate_rpc_mock_signatures(multisig_signature.signature_count())
-                                .map_err(|reason| {
-                                TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                    reason: reason.to_string(),
-                                }
-                            })?;
-                        } else {
                             multisig_precompile
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
@@ -1310,15 +1298,7 @@ where
                             }
                             .into());
                         }
-                        if is_rpc_simulation {
-                            init_config
-                                .validate_rpc_mock_signatures(multisig_signature.signature_count())
-                            .map_err(|reason| {
-                                TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                    reason: reason.to_string(),
-                                }
-                            })?;
-                        } else {
+                        if !is_rpc_simulation {
                             multisig_precompile
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
@@ -3476,7 +3456,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t8_rpc_simulation_accepts_mock_registered_multisig_signature() {
+    fn test_t8_rpc_simulation_skips_registered_multisig_owner_verification() {
         let config = native_multisig_config();
         let account = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
@@ -3500,7 +3480,7 @@ mod tests {
         store_native_multisig_account(&mut test, &config);
 
         test.validate_against_state_and_deduct_caller()
-            .expect("RPC simulation should accept mock native multisig signatures");
+            .expect("RPC simulation should skip native multisig owner-signature verification");
     }
 
     #[test]
