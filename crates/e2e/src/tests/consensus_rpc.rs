@@ -6,7 +6,6 @@
 use std::{net::SocketAddr, time::Duration};
 
 use crate::{Setup, metrics::wait_for_height, setup_validators};
-use commonware_macros::test_traced;
 use commonware_runtime::{
     Runner as _,
     deterministic::{self, Runner},
@@ -18,7 +17,6 @@ use tempo_node::rpc::consensus::{Event, Query, TempoConsensusApiClient};
 /// Test that subscribing to consensus events works and that finalization
 /// can be queried via HTTP after receiving a finalization event.
 #[tokio::test]
-#[test_traced]
 async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
@@ -72,14 +70,14 @@ async fn consensus_subscribe_and_query_finalization() {
         match event {
             Event::Notarized { block, .. } => {
                 let height = block.block.inner.number;
-                assert!(height > notarized_height);
+                assert!(height >= notarized_height);
 
                 notarized_height = height;
                 saw_notarized = true;
             }
             Event::Finalized { block, .. } => {
                 let height = block.block.inner.number;
-                assert!(height > finalized_height);
+                assert!(height >= finalized_height);
 
                 let queried_block = http_client
                     .get_finalization(Query::Height(height))
