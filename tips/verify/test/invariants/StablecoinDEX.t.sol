@@ -9,8 +9,7 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @title StablecoinDEX Invariant Tests
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
 /// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
-/// Pinned to T5 so TEMPO-DEX17 covers TIP-1030's same-tick flip path
-/// (`flipTick == tick`).
+/// Pinned to T8 so TEMPO-DEX7 covers quote/swap parity.
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs
@@ -898,10 +897,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     {
         // TEMPO-DEX7: Quote should match execution (T8+).
         uint128 quotedOut;
+        bool quoteSucceeded;
         try exchange.quoteSwapExactAmountIn(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
         ) {
             quotedOut = quoted;
+            quoteSucceeded = true;
         } catch {
             quotedOut = 0;
         }
@@ -909,12 +910,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // TEMPO-DEX8: Record dust before swap
         _dustBeforeSwap = _computeDust();
 
+        uint128 fallbackMin = amount > 100 ? amount - 100 : 0;
+        uint128 minAmountOut = quoteSucceeded ? quotedOut : fallbackMin;
+
         vm.recordLogs();
-        try exchange.swapExactAmountIn(
-            before.tokenIn, before.tokenOut, amount, amount - 100
-        ) returns (
-            uint128 amountOut
-        ) {
+        try exchange.swapExactAmountIn(before.tokenIn, before.tokenOut, amount, minAmountOut)
+        returns (uint128 amountOut) {
             uint64 ordersFilled = _processSwapLogs();
             // For multi-hop swaps, each hop can add dust from rounding (not just per order)
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
@@ -930,7 +931,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             );
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
-                amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
+                amountOut >= minAmountOut,
+                "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
             );
 
             // TEMPO-DEX6: Swapper total balance changes correctly
@@ -940,10 +942,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
 
             // TEMPO-DEX7: Quote matches execution (T8+).
-            if (quotedOut > 0) {
+            if (quoteSucceeded) {
                 assertEq(amountOut, quotedOut, "TEMPO-DEX7: quote mismatch for swapExactAmountIn");
             }
         } catch (bytes memory reason) {
+            assertTrue(!quoteSucceeded, "TEMPO-DEX7: swapExactAmountIn reverted after quote");
             _assertKnownSwapError(reason);
         }
     }
@@ -959,10 +962,12 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     {
         // TEMPO-DEX7: Quote should match execution
         uint128 quotedIn;
+        bool quoteSucceeded;
         try exchange.quoteSwapExactAmountOut(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
         ) {
             quotedIn = quoted;
+            quoteSucceeded = true;
         } catch {
             quotedIn = 0;
         }
@@ -970,12 +975,13 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // TEMPO-DEX8: Record dust before swap
         _dustBeforeSwap = _computeDust();
 
+        uint128 fallbackMax =
+            amount > type(uint128).max - 100 ? type(uint128).max : amount + 100;
+        uint128 maxAmountIn = quoteSucceeded ? quotedIn : fallbackMax;
+
         vm.recordLogs();
-        try exchange.swapExactAmountOut(
-            before.tokenIn, before.tokenOut, amount, amount + 100
-        ) returns (
-            uint128 amountIn
-        ) {
+        try exchange.swapExactAmountOut(before.tokenIn, before.tokenOut, amount, maxAmountIn)
+        returns (uint128 amountIn) {
             uint64 ordersFilled = _processSwapLogs();
             // For multi-hop swaps, each hop can add dust from rounding (not just per order)
             uint64 hops = uint64(_findRoute(before.tokenIn, before.tokenOut));
@@ -992,7 +998,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
             // TEMPO-DEX5: amountIn <= maxAmountIn
             assertTrue(
-                amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
+                amountIn <= maxAmountIn,
+                "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
             );
 
             // TEMPO-DEX6: Swapper total balance changes correctly
@@ -1002,10 +1009,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
 
             // TEMPO-DEX7: Quote matches execution (T8+).
-            if (quotedIn > 0) {
+            if (quoteSucceeded) {
                 assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
             }
         } catch (bytes memory reason) {
+            assertTrue(!quoteSucceeded, "TEMPO-DEX7: swapExactAmountOut reverted after quote");
             _assertKnownSwapError(reason);
         }
     }
