@@ -22,7 +22,7 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     error::{Result, TempoPrecompileError},
-    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, OrderbookState, compute_book_key},
+    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
     storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
@@ -511,9 +511,10 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
-    /// Returns the packed state for `book_key`.
-    pub(crate) fn book_state(&self, book_key: B256) -> Result<OrderbookState> {
-        self.books[book_key].state.read()
+    /// Returns whether `book_key` has a persisted index and its zero-based `book_keys` index.
+    pub(crate) fn book_key_index(&self, book_key: B256) -> Result<(bool, u32)> {
+        let book_key_index = self.books[book_key].book_key_index.read()?;
+        Ok((book_key_index != 0, book_key_index.saturating_sub(1)))
     }
 
     /// Resolves a book key by index from the append-only `book_keys` vector.
@@ -527,17 +528,15 @@ impl StablecoinDEX {
     /// Persists the `book_keys` vector index for an existing orderbook.
     pub fn set_book_index(&mut self, index: u32) -> Result<()> {
         let book_key = self.book_key_for_index(index)?;
-        let mut state = self.book_state(book_key)?;
-        if state.is_index_set {
-            if index == state.index {
+        let (is_index_set, current_index) = self.book_key_index(book_key)?;
+        if is_index_set {
+            if index == current_index {
                 return Ok(());
             }
             return Err(StablecoinDEXError::index_already_set().into());
         }
 
-        state.index = index;
-        state.is_index_set = true;
-        self.books[book_key].state.write(state)
+        self.books[book_key].book_key_index.write(index + 1)
     }
 
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
@@ -712,14 +711,14 @@ impl StablecoinDEX {
             self.books[order.book_key()].set_tick_bit(order.tick(), order.is_bid())?;
 
             if order.is_bid() {
-                if order.tick() > orderbook.best_bid_tick() {
+                if order.tick() > orderbook.best_bid_tick {
                     self.books[order.book_key()]
-                        .best_bid_tick()
+                        .best_bid_tick
                         .write(order.tick())?;
                 }
-            } else if order.tick() < orderbook.best_ask_tick() {
+            } else if order.tick() < orderbook.best_ask_tick {
                 self.books[order.book_key()]
-                    .best_ask_tick()
+                    .best_ask_tick
                     .write(order.tick())?;
             }
         } else {
@@ -1140,10 +1139,10 @@ impl StablecoinDEX {
             // Update best_tick when tick is exhausted
             if order.is_bid() {
                 let new_best = if has_liquidity { tick } else { i16::MIN };
-                self.books[book_key].best_bid_tick().write(new_best)?;
+                self.books[book_key].best_bid_tick.write(new_best)?;
             } else {
                 let new_best = if has_liquidity { tick } else { i16::MAX };
-                self.books[book_key].best_ask_tick().write(new_best)?;
+                self.books[book_key].best_ask_tick.write(new_best)?;
             }
 
             if !has_liquidity {
@@ -1352,15 +1351,15 @@ impl StablecoinDEX {
         let orderbook = self.books[book_key].read()?;
 
         let current_tick = if is_bid {
-            if orderbook.best_bid_tick() == i16::MIN {
+            if orderbook.best_bid_tick == i16::MIN {
                 return Err(StablecoinDEXError::insufficient_liquidity().into());
             }
-            orderbook.best_bid_tick()
+            orderbook.best_bid_tick
         } else {
-            if orderbook.best_ask_tick() == i16::MAX {
+            if orderbook.best_ask_tick == i16::MAX {
                 return Err(StablecoinDEXError::insufficient_liquidity().into());
             }
-            orderbook.best_ask_tick()
+            orderbook.best_ask_tick
         };
 
         self.books[book_key]
@@ -1429,9 +1428,9 @@ impl StablecoinDEX {
             // If this was the best tick, update it
             let orderbook = self.books[order.book_key()].read()?;
             let best_tick = if order.is_bid() {
-                orderbook.best_bid_tick()
+                orderbook.best_bid_tick
             } else {
-                orderbook.best_ask_tick()
+                orderbook.best_ask_tick
             };
 
             if best_tick == order.tick() {
@@ -1440,14 +1439,10 @@ impl StablecoinDEX {
 
                 if order.is_bid() {
                     let new_best = if has_liquidity { next_tick } else { i16::MIN };
-                    self.books[order.book_key()]
-                        .best_bid_tick()
-                        .write(new_best)?;
+                    self.books[order.book_key()].best_bid_tick.write(new_best)?;
                 } else {
                     let new_best = if has_liquidity { next_tick } else { i16::MAX };
-                    self.books[order.book_key()]
-                        .best_ask_tick()
-                        .write(new_best)?;
+                    self.books[order.book_key()].best_ask_tick.write(new_best)?;
                 }
             }
         }
@@ -1551,9 +1546,9 @@ impl StablecoinDEX {
         let orderbook = self.books[book_key].read()?;
 
         let mut current_tick = if is_bid {
-            orderbook.best_bid_tick()
+            orderbook.best_bid_tick
         } else {
-            orderbook.best_ask_tick()
+            orderbook.best_ask_tick
         };
         // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
         if current_tick == i16::MIN || current_tick == i16::MAX {
@@ -1772,9 +1767,9 @@ impl StablecoinDEX {
         let orderbook = self.books[book_key].read()?;
 
         let mut current_tick = if is_bid {
-            orderbook.best_bid_tick()
+            orderbook.best_bid_tick
         } else {
-            orderbook.best_ask_tick()
+            orderbook.best_ask_tick
         };
 
         // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
@@ -1897,6 +1892,30 @@ mod tests {
             .apply()?;
 
         Ok((base.address(), quote.address()))
+    }
+
+    #[test]
+    fn test_t8_book_index_state_is_one_based() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let user = Address::random();
+            let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
+            let book_key = compute_book_key(base, quote);
+
+            exchange.create_pair(base)?;
+
+            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+            assert_eq!(exchange.book_key_for_index(0)?, book_key);
+
+            exchange.set_book_index(0)?;
+            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -2845,8 +2864,8 @@ mod tests {
 
             let book = exchange.books[book_key].read()?;
             // TIP-1030 "locked book": best bid and best ask both at `tick`.
-            assert_eq!(book.best_bid_tick(), tick, "best bid should remain at tick");
-            assert_eq!(book.best_ask_tick(), tick, "best ask can't equal best bid");
+            assert_eq!(book.best_bid_tick, tick, "best bid should remain at tick");
+            assert_eq!(book.best_ask_tick, tick, "best ask can't equal best bid");
 
             // Follow-up swap-buy at the locked tick consumes only the new ask
             // (not the resting bid on the other side) and the ask flips back
@@ -2876,8 +2895,8 @@ mod tests {
             // Ask level is empty (best_ask_tick reset), bid level holds both
             // the resting bid and the freshly flipped-back bid.
             let book_after = exchange.books[book_key].read()?;
-            assert_eq!(book_after.best_bid_tick(), tick);
-            assert_eq!(book_after.best_ask_tick(), i16::MAX);
+            assert_eq!(book_after.best_bid_tick, tick);
+            assert_eq!(book_after.best_ask_tick, i16::MAX);
 
             let bid_level_after = exchange.books[book_key]
                 .tick_level_handler(tick, true)
@@ -3339,8 +3358,8 @@ mod tests {
             // Best ask collapses to `tick` (no asks before, now one at tick).
             let book_key = compute_book_key(base_token, quote_token);
             let book = exchange.books[book_key].read()?;
-            assert_eq!(book.best_ask_tick(), tick);
-            assert_eq!(book.best_bid_tick(), i16::MIN);
+            assert_eq!(book.best_ask_tick, tick);
+            assert_eq!(book.best_bid_tick, i16::MIN);
 
             Ok(())
         })
@@ -4326,24 +4345,24 @@ mod tests {
 
             // Verify initial best ticks
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), bid_tick_1);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_1);
+            assert_eq!(orderbook.best_bid_tick, bid_tick_1);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Fill all bids at tick 100 (bob sells base)
             exchange.set_balance(bob, base_token, amount)?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
             // Verify best_bid_tick moved to tick 90, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), bid_tick_2);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_1);
+            assert_eq!(orderbook.best_bid_tick, bid_tick_2);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Fill remaining bid at tick 90
             exchange.set_balance(bob, base_token, amount)?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), i16::MIN);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_1);
+            assert_eq!(orderbook.best_bid_tick, i16::MIN);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Fill all asks at tick 50 (bob buys base)
             let ask_price_1 = orderbook::tick_to_price(ask_tick_1);
@@ -4353,8 +4372,8 @@ mod tests {
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
             // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_2);
-            assert_eq!(orderbook.best_bid_tick(), i16::MIN);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_2);
+            assert_eq!(orderbook.best_bid_tick, i16::MIN);
 
             Ok(())
         })
@@ -4401,43 +4420,43 @@ mod tests {
 
             // Verify initial best ticks
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), bid_tick_1);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_1);
+            assert_eq!(orderbook.best_bid_tick, bid_tick_1);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel one bid at tick 100
             exchange.cancel(alice, bid_order_1)?;
             // Verify best_bid_tick remains 100, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), bid_tick_1);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_1);
+            assert_eq!(orderbook.best_bid_tick, bid_tick_1);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel remaining bid at tick 100
             exchange.cancel(alice, bid_order_2)?;
             // Verify best_bid_tick moved to 90, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), bid_tick_2);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_1);
+            assert_eq!(orderbook.best_bid_tick, bid_tick_2);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel ask at tick 50
             exchange.cancel(alice, ask_order_1)?;
             // Verify best_ask_tick moved to 60, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), bid_tick_2);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_2);
+            assert_eq!(orderbook.best_bid_tick, bid_tick_2);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
             // Cancel bid at tick 90
             exchange.cancel(alice, bid_order_3)?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), i16::MIN);
-            assert_eq!(orderbook.best_ask_tick(), ask_tick_2);
+            assert_eq!(orderbook.best_bid_tick, i16::MIN);
+            assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
             // Cancel ask at tick 60
             exchange.cancel(alice, ask_order_2)?;
             // Verify best_ask_tick is now i16::MAX, best_bid_tick unchanged
             let orderbook = exchange.books[book_key].read()?;
-            assert_eq!(orderbook.best_bid_tick(), i16::MIN);
-            assert_eq!(orderbook.best_ask_tick(), i16::MAX);
+            assert_eq!(orderbook.best_bid_tick, i16::MIN);
+            assert_eq!(orderbook.best_ask_tick, i16::MAX);
 
             Ok(())
         })
@@ -4771,8 +4790,7 @@ mod tests {
 
             let orderbook = book_handler.read()?;
             assert_eq!(
-                orderbook.best_bid_tick(),
-                tick,
+                orderbook.best_bid_tick, tick,
                 "Best bid tick should be updated"
             );
 
@@ -4833,8 +4851,7 @@ mod tests {
 
             let orderbook = book_handler.read()?;
             assert_eq!(
-                orderbook.best_bid_tick(),
-                tick,
+                orderbook.best_bid_tick, tick,
                 "Best bid tick should be updated"
             );
 
@@ -4895,7 +4912,7 @@ mod tests {
             assert_eq!(level.total_liquidity, min_order_amount);
 
             let book = exchange.books[book_key].read()?;
-            assert_eq!(book.best_bid_tick(), tick);
+            assert_eq!(book.best_bid_tick, tick);
 
             assert_eq!(exchange.next_order_id()?, 2);
 
@@ -5827,8 +5844,8 @@ mod tests {
 
             // Verify book has liquidity
             let book = exchange.books[book_key].read()?;
-            assert_eq!(book.best_bid_tick(), tick);
-            assert_eq!(book.best_ask_tick(), tick);
+            assert_eq!(book.best_bid_tick, tick);
+            assert_eq!(book.best_ask_tick, tick);
 
             // Fill the bid by selling base into it
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
@@ -5839,12 +5856,12 @@ mod tests {
             // Verify sentinel values are restored
             let book = exchange.books[book_key].read()?;
             assert_eq!(
-                book.best_bid_tick(),
+                book.best_bid_tick,
                 i16::MIN,
                 "best_bid_tick must be sentinel after all bids filled"
             );
             assert_eq!(
-                book.best_ask_tick(),
+                book.best_ask_tick,
                 i16::MAX,
                 "best_ask_tick must be sentinel after all asks filled"
             );
@@ -5941,12 +5958,12 @@ mod tests {
             // Verify sentinel values are restored
             let book = exchange.books[book_key].read()?;
             assert_eq!(
-                book.best_bid_tick(),
+                book.best_bid_tick,
                 i16::MIN,
                 "best_bid_tick must be sentinel after all bids cancelled"
             );
             assert_eq!(
-                book.best_ask_tick(),
+                book.best_ask_tick,
                 i16::MAX,
                 "best_ask_tick must be sentinel after all asks cancelled"
             );

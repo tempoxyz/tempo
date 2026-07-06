@@ -12,20 +12,15 @@ contract StablecoinDEX {
         uint128 totalLiquidity;
     }
 
-    struct OrderbookState {
-        int16 bestBidTick;
-        int16 bestAskTick;
-        // Only applicable for T8 and above. Always set to zero beforehand.
-        bool isIndexSet;
-        uint32 index;
-    }
-
     struct Orderbook {
         address base;
         address quote;
         mapping(int16 => TickLevel) bids;
         mapping(int16 => TickLevel) asks;
-        OrderbookState state;
+        int16 bestBidTick;
+        int16 bestAskTick;
+        // Only applicable for T8 and above. One-based; zero means unset.
+        uint32 bookKeyIndex;
         mapping(int16 => uint256) bidBitmap;
         mapping(int16 => uint256) askBitmap;
     }
