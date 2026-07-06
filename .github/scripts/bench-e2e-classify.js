@@ -134,6 +134,7 @@ function bootstrapCiPct(baseline, feature, base, rand) {
 
 function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
   const meta = AXES[axis];
+  const runSide = summary.config?.run_side || 'comparison';
   const base = summary.results.baseline[axis];
   const feature = summary.results.feature[axis];
   const changePct = pct(base, feature);
@@ -146,6 +147,12 @@ function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
     floor_pct: meta.floor,
     sig: 'neutral',
   };
+
+  if (runSide !== 'comparison') {
+    change.informational = true;
+    change.informational_reason = `${runSide}-only run`;
+    return change;
+  }
 
   if (base <= 0 || ciPct == null) {
     change.informational = true;
@@ -215,12 +222,14 @@ function buildMarkdown(summary) {
   const derekCommand = summary.config?.derek_command || '';
   const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
   const featureRemovedArgs = summary.config?.feature_removed_args || '';
-  const featureOnly = summary.config?.run_side === 'feature';
+  const runSide = summary.config?.run_side || 'comparison';
+  const featureOnly = runSide === 'feature';
+  const baselineOnly = runSide === 'baseline';
   const lines = [
-    featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
+    featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : baselineOnly ? `# ${c.emoji} Baseline Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
     `**Refs:** ${summary.baseline_ref} vs ${summary.feature_ref}`,
-    featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
+    featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : baselineOnly ? `**Criteria:** Baseline-only run; feature columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
     '',
     '## Configuration',
     ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
@@ -230,7 +239,7 @@ function buildMarkdown(summary) {
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
-    ...(featureOnly ? [`- Run side: feature`] : []),
+    ...(runSide !== 'comparison' ? [`- Run side: ${runSide}`] : []),
     ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
     ...(featureRemovedArgs ? [`- Feature removed args: \`${featureRemovedArgs}\``] : []),
     `- Baseline blocks: ${summary.results.baseline.blocks}`,
