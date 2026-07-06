@@ -101,13 +101,15 @@ mod tests {
 
     use crate::{
         Precompile,
-        stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
+        stablecoin_dex::{
+            IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX, orderbook::compute_book_key,
+        },
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::{Address, U256},
-        sol_types::{SolCall, SolValue},
+        primitives::{Address, B256, U256},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
@@ -453,6 +455,80 @@ mod tests {
             // Should dispatch to quote_swap_exact_amount_out function and succeed
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_book_index_abi_round_trip() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let user = Address::random();
+            let quote = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::ZERO)
+                .with_approval(user, exchange.address, U256::ZERO)
+                .apply()?;
+            let base = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::ZERO)
+                .with_approval(user, exchange.address, U256::ZERO)
+                .apply()?;
+            let book_key = compute_book_key(base.address(), quote.address());
+
+            exchange.create_pair(base.address())?;
+
+            let index_call = IStablecoinDEX::bookIndexForKeyCall { bookKey: book_key };
+            let index_result = exchange.call(&index_call.abi_encode(), user)?;
+            assert!(!index_result.is_revert());
+            assert_eq!(<(bool, u32)>::abi_decode(&index_result.bytes)?, (true, 0));
+
+            let key_call = IStablecoinDEX::bookKeyForIndexCall { index: 0 };
+            let key_result = exchange.call(&key_call.abi_encode(), user)?;
+            assert!(!key_result.is_revert());
+            assert_eq!(B256::abi_decode(&key_result.bytes)?, book_key);
+
+            let set_call = IStablecoinDEX::setBookIndexCall { index: 0 };
+            let set_result = exchange.call(&set_call.abi_encode(), user)?;
+            assert!(!set_result.is_revert());
+
+            let index_result = exchange.call(&index_call.abi_encode(), user)?;
+            assert_eq!(<(bool, u32)>::abi_decode(&index_result.bytes)?, (true, 0));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_book_index_selectors_are_gated_pre_t8() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            let calls = [
+                IStablecoinDEX::bookIndexForKeyCall {
+                    bookKey: B256::ZERO,
+                }
+                .abi_encode(),
+                IStablecoinDEX::bookKeyForIndexCall { index: 0 }.abi_encode(),
+                IStablecoinDEX::setBookIndexCall { index: 0 }.abi_encode(),
+            ];
+
+            for calldata in calls {
+                let result = exchange.call(&calldata, Address::ZERO)?;
+                assert!(result.is_revert());
+                assert!(
+                    tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(
+                        &result.bytes
+                    )
+                    .is_ok()
+                );
+            }
 
             Ok(())
         })

@@ -625,6 +625,7 @@ mod tests {
         assert_eq!(__packing_v1_order::TICK_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::FLIP_TICK_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::VERSION_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::VERSION_LOC.offset_bytes, 31);
         assert_eq!(__packing_v1_order::BOOK_KEY_LOC.offset_bytes, 0);
         assert_eq!(__packing_v1_order::BOOK_KEY_LOC.size, 32);
         assert_eq!(
@@ -649,6 +650,7 @@ mod tests {
         assert_eq!(__packing_v2_order::BOOK_INDEX_LOC.offset_slots, 0);
         assert_eq!(__packing_v2_order::BOOK_INDEX_LOC.size, 4);
         assert_eq!(__packing_v2_order::VERSION_LOC.offset_slots, 0);
+        assert_eq!(__packing_v2_order::VERSION_LOC.offset_bytes, 31);
         assert_eq!(
             __packing_v2_order::AMOUNT_LOC.offset_slots,
             __packing_v2_order::REMAINING_LOC.offset_slots
@@ -921,6 +923,42 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_t8_old_book_writes_v1_until_indexed_then_v2() -> eyre::Result<()> {
+        let amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            let (base_token, book_key) = test.pair(OrderVersion::V1);
+
+            assert_eq!(exchange.book_key_index(book_key)?, (false, 0));
+
+            let before_migration = exchange.place(test.alice, base_token, amount, true, tick)?;
+            assert_eq!(
+                exchange.orders[before_migration].version()?,
+                OrderVersion::V1
+            );
+
+            exchange.set_book_index(0)?;
+            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+
+            let after_migration = exchange.place(test.bob, base_token, amount, true, tick)?;
+            assert_eq!(
+                exchange.orders[after_migration].version()?,
+                OrderVersion::V2
+            );
+
+            let (new_base_token, new_book_key) = test.pair(OrderVersion::V2);
+            assert_eq!(exchange.book_key_index(new_book_key)?, (true, 1));
+            let new_book_order = exchange.place(test.carol, new_base_token, amount, true, tick)?;
+            assert_eq!(exchange.orders[new_book_order].version()?, OrderVersion::V2);
+
+            Ok(())
+        })
     }
 
     fn store_legacy_order(handler: &OrderHandler, order: Order) -> StorageResult<()> {

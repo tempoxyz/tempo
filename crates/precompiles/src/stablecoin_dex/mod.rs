@@ -1919,6 +1919,69 @@ mod tests {
     }
 
     #[test]
+    fn test_t8_set_book_index_migrates_old_book_idempotently() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let user = Address::random();
+            let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
+            let book_key = compute_book_key(base, quote);
+
+            exchange.create_pair(base)?;
+            assert_eq!(exchange.book_key_index(book_key)?, (false, 0));
+            assert_eq!(exchange.book_key_for_index(0)?, book_key);
+
+            StorageCtx.set_spec(TempoHardfork::T8);
+            exchange.set_book_index(0)?;
+            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+
+            exchange.set_book_index(0)?;
+            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_set_book_index_rejects_dirty_different_index() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let user = Address::random();
+            let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
+            let first_book_key = compute_book_key(base, quote);
+            exchange.create_pair(base)?;
+
+            let second_base = TIP20Setup::create("BASE2", "BASE2", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::ZERO)
+                .with_approval(user, exchange.address, U256::ZERO)
+                .apply()?;
+            let second_book_key = compute_book_key(second_base.address(), quote);
+            exchange.create_pair(second_base.address())?;
+
+            assert_eq!(exchange.book_key_for_index(0)?, first_book_key);
+            assert_eq!(exchange.book_key_for_index(1)?, second_book_key);
+
+            exchange.books[first_book_key].book_key_index.write(2)?;
+            let err = exchange.set_book_index(0).unwrap_err();
+            assert!(matches!(
+                err,
+                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::IndexAlreadySet(_))
+            ));
+            assert_eq!(exchange.book_key_index(first_book_key)?, (true, 1));
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_tick_to_price() {
         let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
         for tick in test_ticks {
