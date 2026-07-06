@@ -36,13 +36,13 @@ fn finished_height_send_error(error: SendError<ExExEvent>) -> AdapterError {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProtocolMonitorExExConfig {
+pub struct MonitorExExConfig {
     pub hardfork: TempoHardfork,
     pub retry_interval: Duration,
     pub loop_config: FinalizedLoopConfig,
 }
 
-impl Default for ProtocolMonitorExExConfig {
+impl Default for MonitorExExConfig {
     fn default() -> Self {
         Self {
             hardfork: TempoHardfork::Genesis,
@@ -52,10 +52,10 @@ impl Default for ProtocolMonitorExExConfig {
     }
 }
 
-pub async fn run_protocol_monitor_exex<Node, Store>(
+pub async fn run_monitor_exex<Node, Store>(
     mut ctx: ExExContext<Node>,
     store: Store,
-    config: ProtocolMonitorExExConfig,
+    config: MonitorExExConfig,
 ) -> AdapterResult<()>
 where
     Node: FullNodeComponents,

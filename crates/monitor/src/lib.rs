@@ -1,4 +1,4 @@
-//! Tempo Protocol Monitor.
+//! Tempo Tempo Monitor.
 //!
 //! This crate contains monitor-owned protocol proof types and processing
 //! boundaries. Core modules intentionally avoid Reth types; Reth integration is

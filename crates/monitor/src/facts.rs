@@ -1,4 +1,4 @@
-//! Normalized finalized-block facts owned by the protocol monitor.
+//! Normalized finalized-block facts owned by the tempo monitor.
 
 use alloy_consensus::Transaction;
 pub use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};

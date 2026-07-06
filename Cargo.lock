@@ -6825,6 +6825,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor"
+version = "1.10.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "futures",
+ "reth-exex",
+ "reth-node-api",
+ "reth-primitives-traits",
+ "reth-storage-api",
+ "serde",
+ "serde_json",
+ "tempo-contracts",
+ "tempo-hardfork",
+ "tempo-primitives",
+ "tokio",
+]
+
+[[package]]
 name = "more-asserts"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8049,26 +8069,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "protocol-monitor"
-version = "1.10.1"
-dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "futures",
- "reth-exex",
- "reth-node-api",
- "reth-primitives-traits",
- "reth-storage-api",
- "serde",
- "serde_json",
- "tempo-contracts",
- "tempo-hardfork",
- "tempo-primitives",
- "tokio",
 ]
 
 [[package]]
@@ -13268,6 +13268,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-monitor"
+version = "1.10.1"
+dependencies = [
+ "eyre",
+ "monitor",
+ "tempo",
+]
+
+[[package]]
 name = "tempo-node"
 version = "1.10.1"
 dependencies = [
@@ -13475,15 +13484,6 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-contracts",
  "tracing-subscriber 0.3.23",
-]
-
-[[package]]
-name = "tempo-protocol-monitor"
-version = "1.10.1"
-dependencies = [
- "eyre",
- "protocol-monitor",
- "tempo",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [package]
-name = "tempo-protocol-monitor"
-description = "Tempo protocol monitor sidecar"
+name = "tempo-monitor"
+description = "Tempo monitor sidecar"
 
 version.workspace = true
 edition.workspace = true
@@ -18,5 +18,9 @@ workspace = true
 
 [dependencies]
 eyre.workspace = true
-protocol-monitor = { workspace = true, features = ["reth"] }
+monitor = { workspace = true, features = ["reth"] }
 tempo = { path = "../tempo", features = ["exex-overrides"] }
+
+[[bin]]
+name = "tempo-monitor"
+path = "src/main.rs"

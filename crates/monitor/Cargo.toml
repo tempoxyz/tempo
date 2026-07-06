@@ -1,6 +1,6 @@
 [package]
-name = "protocol-monitor"
-description = "Tempo protocol monitor core and Reth adapter"
+name = "monitor"
+description = "Tempo monitor core and Reth adapter"
 
 version.workspace = true
 edition.workspace = true
