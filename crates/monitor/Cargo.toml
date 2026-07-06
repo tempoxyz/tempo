@@ -18,7 +18,7 @@ workspace = true
 
 [features]
 default = []
-store = []
+store = ["dep:tracing"]
 reth = [
     "store",
     "tempo-primitives/reth",
@@ -47,3 +47,4 @@ reth-node-api = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-storage-api = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }

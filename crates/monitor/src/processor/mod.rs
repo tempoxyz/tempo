@@ -3,6 +3,11 @@
 //! The processor builds monitor-owned block views, runs checks, computes
 //! coverage/finding/report rows, and hands a single block commit to the store.
 
+#[cfg(feature = "store")]
+mod checks;
+#[cfg(feature = "store")]
+use checks::{CheckSummary, check_outcome_label, run_block_checks};
+
 use crate::facts::{BlockFacts, BlockNumHash, BlockWithParent, OrderedLog, ReceiptFacts, TxFacts};
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +54,14 @@ impl FinalizedBlockProcessor {
     ) -> Result<crate::store::BlockCommit, ProcessorError> {
         validate_input(&input)?;
         let block = input.block();
+        let check_results = run_block_checks(&input);
+        let coverage_records = check_results
+            .iter()
+            .map(|result| result.coverage.clone())
+            .collect();
+        // Finding and outbox rows for violations are deferred until the reporting policy is wired;
+        // this PoC persists the durable check result and coverage record.
+
         Ok(crate::store::BlockCommit {
             finalized_block: crate::store::FinalizedBlockRecord {
                 reference: input.reference,
@@ -64,8 +77,8 @@ impl FinalizedBlockProcessor {
             keyset_updates: Vec::new(),
             aggregate_updates: Vec::new(),
             history_updates: Vec::new(),
-            check_results: Vec::new(),
-            coverage_records: Vec::new(),
+            check_results,
+            coverage_records,
             finding_updates: Vec::new(),
             health_updates: Vec::new(),
             outbox_events: Vec::new(),
@@ -81,7 +94,43 @@ impl FinalizedBlockProcessor {
         let prior_head = store.monitor_head()?;
         let block = input.block();
         let commit = self.build_commit(input, prior_head)?;
+        let check_summary = CheckSummary::from_results(&commit.check_results);
+        let check_logs = commit
+            .check_results
+            .iter()
+            .map(|result| {
+                (
+                    result.invariant_id.as_str().to_owned(),
+                    result.entity.clone(),
+                    result.severity,
+                    result.coverage.status.clone(),
+                    check_outcome_label(&result.outcome),
+                )
+            })
+            .collect::<Vec<_>>();
         store.commit_block(commit)?;
+        for (invariant_id, entity, severity, coverage_status, outcome) in check_logs {
+            tracing::info!(
+                block_number = block.number,
+                block_hash = ?block.hash,
+                invariant_id,
+                entity = ?entity,
+                severity = ?severity,
+                coverage_status = ?coverage_status,
+                outcome,
+                "monitor check result"
+            );
+        }
+        tracing::info!(
+            block_number = block.number,
+            block_hash = ?block.hash,
+            checks_total = check_summary.total,
+            checks_passed = check_summary.passed,
+            checks_violated = check_summary.violations,
+            checks_inconclusive = check_summary.inconclusive,
+            checks_errored = check_summary.errors,
+            "monitor block committed"
+        );
         Ok(block)
     }
 }

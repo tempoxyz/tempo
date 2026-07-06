@@ -3,6 +3,7 @@ use crate::{
     processor::{FinalizedBlockInput, FinalizedBlockProcessor},
     store::{MonitorStore, SchemaStatus},
 };
+use tracing::{debug, info};
 
 use super::{AdapterError, AdapterResult, FinalizedWatermark};
 
@@ -70,7 +71,26 @@ where
 
     pub fn tick(&mut self) -> AdapterResult<usize> {
         self.startup_once()?;
-        let target = self.watermark.observe(self.source.finalized_watermark()?)?;
+        let previous_watermark = self.watermark.last();
+        let observed_watermark = self.source.finalized_watermark()?;
+        if let Some(watermark) = observed_watermark {
+            if previous_watermark != Some(watermark) {
+                info!(
+                    finalized_number = watermark.number,
+                    finalized_hash = ?watermark.hash,
+                    "monitor finalized watermark observed"
+                );
+            } else {
+                debug!(
+                    finalized_number = watermark.number,
+                    finalized_hash = ?watermark.hash,
+                    "monitor finalized watermark unchanged"
+                );
+            }
+        } else {
+            debug!("monitor finalized watermark unavailable");
+        }
+        let target = self.watermark.observe(observed_watermark)?;
         let Some(target) = target else {
             return Ok(0);
         };
@@ -110,6 +130,11 @@ where
                 ));
             }
             self.finished.send_finished_height(committed)?;
+            info!(
+                block_number = committed.number,
+                block_hash = ?committed.hash,
+                "monitor FinishedHeight emitted"
+            );
             processed += 1;
         }
         Ok(processed)
@@ -137,6 +162,11 @@ where
                 )));
             }
             self.finished.send_finished_height(head)?;
+            info!(
+                block_number = head.number,
+                block_hash = ?head.hash,
+                "monitor FinishedHeight emitted for existing durable head"
+            );
         }
         Ok(())
     }

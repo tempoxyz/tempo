@@ -157,7 +157,7 @@ pub fn initial_metadata() -> Vec<InvariantMetadata> {
     vec![
         metadata(
             ids::BLOCK_TOTAL_GAS,
-            "Block gas used must not exceed block gas limit.",
+            "Block total gas derived from receipts must match header gas used and not exceed the block gas limit.",
             InvariantCategory::Stateless,
             Severity::Critical,
             "finalized block",
@@ -168,7 +168,7 @@ pub fn initial_metadata() -> Vec<InvariantMetadata> {
                 entity: "Block".into(),
                 reason: "candidate is the finalized block itself".into(),
             }],
-            "gas_used <= gas_limit",
+            "receipt_total_gas == gas_used && gas_used <= gas_limit",
             vec![],
         ),
         metadata(

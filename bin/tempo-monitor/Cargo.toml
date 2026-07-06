@@ -20,6 +20,7 @@ workspace = true
 eyre.workspace = true
 monitor = { workspace = true, features = ["reth"] }
 tempo = { path = "../tempo", features = ["exex-overrides"] }
+tracing.workspace = true
 
 [[bin]]
 name = "tempo-monitor"

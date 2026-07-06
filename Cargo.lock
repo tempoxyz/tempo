@@ -6842,6 +6842,7 @@ dependencies = [
  "tempo-hardfork",
  "tempo-primitives",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -13274,6 +13275,7 @@ dependencies = [
  "eyre",
  "monitor",
  "tempo",
+ "tracing",
 ]
 
 [[package]]
