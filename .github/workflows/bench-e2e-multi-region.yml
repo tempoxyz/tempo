@@ -287,12 +287,23 @@ jobs:
 
       - name: Install txgen
         env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
-          "$BENCH_REPO_DIR/scripts/install_txgen.sh"
+          CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$CARGO_BIN_DIR:$PATH"
+
+          TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
+          install_args=(--git "$TXGEN_GIT_URL" --locked)
+          if [ -n "$BENCH_TXGEN_REF" ]; then
+            TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
+            install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
+          fi
+
+          cargo install "${install_args[@]}" txgen-tempo bench-cli
+          command -v txgen-tempo
+          command -v bench
 
       - name: Prepare era_invalidate cache
         run: |
