@@ -45,7 +45,10 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    native_multisig::{NativeMultisig, auth::NativeMultisigAuthError},
+    native_multisig::{
+        NativeMultisig,
+        auth::{NativeMultisigAuthConfig, NativeMultisigAuthError},
+    },
     nonce::{
         EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
         NonceManager,
@@ -82,12 +85,14 @@ const P256_VERIFY_GAS: u64 = 5_000;
 /// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 
-/// Additional gas for native multisig validation.
+/// Additional gas for each native multisig config/header validation.
 ///
-/// This meters the protocol-side config/account validation as one cold storage read equivalent.
-/// Owner signature verification is charged separately, relative to the secp256k1 verification
-/// already covered by the base transaction stipend.
+/// Owner signature verification and owner-weight lookups are charged separately, relative to the
+/// secp256k1 verification already covered by the base transaction stipend.
 const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
+
+/// Additional gas for each native multisig owner-weight lookup.
+const NATIVE_MULTISIG_OWNER_WEIGHT_GAS: u64 = COLD_SLOAD_COST;
 
 /// Persistent storage rows created by native multisig bootstrap before owner rows:
 /// the packed `{ threshold, owner_count }` account header.
@@ -181,8 +186,12 @@ fn native_multisig_signature_verification_gas(
         .iter()
         .map(|sig| native_multisig_owner_approval_verification_gas(sig, depth))
         .fold(0u64, u64::saturating_add);
+    let owner_weight_gas =
+        NATIVE_MULTISIG_OWNER_WEIGHT_GAS.saturating_mul(signature.signatures().len() as u64);
 
-    let gas = NATIVE_MULTISIG_VALIDATION_GAS.saturating_add(owner_signature_gas);
+    let gas = NATIVE_MULTISIG_VALIDATION_GAS
+        .saturating_add(owner_weight_gas)
+        .saturating_add(owner_signature_gas);
     if subtract_base_secp256k1 {
         gas.saturating_sub(ECRECOVER_GAS)
     } else {
@@ -211,7 +220,7 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 #[inline]
 fn native_multisig_bootstrap_storage_slots(init: &InitMultisig) -> u64 {
     let owner_slots = u64::try_from(init.owners.len()).unwrap_or(u64::MAX);
-    NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS.saturating_add(owner_slots)
+    NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS.saturating_add(owner_slots.saturating_mul(2))
 }
 
 /// Calculates persistent storage gas for native multisig bootstrap.
@@ -1274,13 +1283,22 @@ where
                     }
 
                     if caller_is_multisig {
-                        let config = multisig_cache
-                            .load_registered_config(&multisig_precompile, multisig_signature.account())
+                        let threshold = multisig_cache
+                            .load_registered_threshold(
+                                &multisig_precompile,
+                                multisig_signature.account(),
+                            )
                             .map_err(map_native_multisig_error::<DB>)?;
                         if is_rpc_simulation {
+                            let config = multisig_cache
+                                .load_registered_config(
+                                    &multisig_precompile,
+                                    multisig_signature.account(),
+                                )
+                                .map_err(map_native_multisig_error::<DB>)?;
                             config
                                 .validate_rpc_mock_signatures(multisig_signature.signature_count())
-                            .map_err(|reason| {
+                                .map_err(|reason| {
                                 TempoInvalidTransaction::NativeMultisigValidationFailed {
                                     reason: reason.to_string(),
                                 }
@@ -1290,8 +1308,19 @@ where
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
-                                    &config,
-                                    |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
+                                    NativeMultisigAuthConfig::Registered {
+                                        account: multisig_signature.account(),
+                                        threshold,
+                                    },
+                                    |acc| {
+                                        multisig_cache
+                                            .load_registered_threshold(&multisig_precompile, acc)
+                                    },
+                                    |account, owner| {
+                                        multisig_precompile
+                                            .read_owner_weight(account, owner)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -1343,8 +1372,16 @@ where
                                 .verify_authorization(
                                     tempo_tx_env.signature_hash,
                                     multisig_signature,
-                                    init_config,
-                                    |acc| { multisig_cache.load_registered_config(&multisig_precompile, acc) },
+                                    NativeMultisigAuthConfig::Inline(init_config),
+                                    |acc| {
+                                        multisig_cache
+                                            .load_registered_threshold(&multisig_precompile, acc)
+                                    },
+                                    |account, owner| {
+                                        multisig_precompile
+                                            .read_owner_weight(account, owner)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
                                 )
                                 .map_err(map_native_multisig_error::<DB>)?;
                         }
@@ -3545,31 +3582,22 @@ mod tests {
         use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
 
         let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
-        let grandchild_config = single_owner_native_multisig_config(0x41, signer.address());
-        let grandchild_account = grandchild_config.account().unwrap();
-        let child_config = single_owner_native_multisig_config(0x42, grandchild_account);
+        let child_config = single_owner_native_multisig_config(0x42, signer.address());
         let child_account = child_config.account().unwrap();
         let parent_config = single_owner_native_multisig_config(0x43, child_account);
         let parent_account = parent_config.account().unwrap();
         let signature_hash = B256::repeat_byte(0x44);
         let parent_digest = multisig_digest(signature_hash, parent_account);
         let child_digest = multisig_digest(parent_digest, child_account);
-        let grandchild_digest = multisig_digest(child_digest, grandchild_account);
-        let grandchild_owner_signature = PrimitiveSignature::Secp256k1(
+        let child_owner_signature = PrimitiveSignature::Secp256k1(
             signer
-                .sign_hash_sync(&grandchild_digest)
+                .sign_hash_sync(&child_digest)
                 .expect("owner signing succeeds"),
         )
         .to_bytes();
-        let grandchild_signature = TempoSignature::Multisig(MultisigSignature::new(
-            grandchild_account,
-            vec![grandchild_owner_signature],
-            None,
-        ))
-        .to_bytes();
         let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
             child_account,
-            vec![grandchild_signature],
+            vec![child_owner_signature],
             None,
         ))
         .to_bytes();
@@ -3593,7 +3621,6 @@ mod tests {
             tx_env.inner.caller = parent_account;
             tx_env.inner.kind = TxKind::Call(Address::random());
         });
-        store_native_multisig_account(&mut test, &grandchild_config);
         store_native_multisig_account(&mut test, &child_config);
         store_native_multisig_account(&mut test, &parent_config);
 
@@ -3608,9 +3635,7 @@ mod tests {
         use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
 
         let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
-        let great_grandchild_config = single_owner_native_multisig_config(0x41, signer.address());
-        let great_grandchild_account = great_grandchild_config.account().unwrap();
-        let grandchild_config = single_owner_native_multisig_config(0x42, great_grandchild_account);
+        let grandchild_config = single_owner_native_multisig_config(0x42, signer.address());
         let grandchild_account = grandchild_config.account().unwrap();
         let child_config = single_owner_native_multisig_config(0x43, grandchild_account);
         let child_account = child_config.account().unwrap();
@@ -3621,22 +3646,15 @@ mod tests {
         let parent_digest = multisig_digest(signature_hash, parent_account);
         let child_digest = multisig_digest(parent_digest, child_account);
         let grandchild_digest = multisig_digest(child_digest, grandchild_account);
-        let great_grandchild_digest = multisig_digest(grandchild_digest, great_grandchild_account);
-        let great_grandchild_owner_signature = PrimitiveSignature::Secp256k1(
+        let grandchild_owner_signature = PrimitiveSignature::Secp256k1(
             signer
-                .sign_hash_sync(&great_grandchild_digest)
+                .sign_hash_sync(&grandchild_digest)
                 .expect("owner signing succeeds"),
         )
         .to_bytes();
-        let great_grandchild_signature = TempoSignature::Multisig(MultisigSignature::new(
-            great_grandchild_account,
-            vec![great_grandchild_owner_signature],
-            None,
-        ))
-        .to_bytes();
         let grandchild_signature = TempoSignature::Multisig(MultisigSignature::new(
             grandchild_account,
-            vec![great_grandchild_signature],
+            vec![grandchild_owner_signature],
             None,
         ))
         .to_bytes();
@@ -3666,7 +3684,6 @@ mod tests {
             tx_env.inner.caller = parent_account;
             tx_env.inner.kind = TxKind::Call(Address::random());
         });
-        store_native_multisig_account(&mut test, &great_grandchild_config);
         store_native_multisig_account(&mut test, &grandchild_config);
         store_native_multisig_account(&mut test, &child_config);
         store_native_multisig_account(&mut test, &parent_config);
@@ -3819,10 +3836,13 @@ mod tests {
             signed.into_iter().map(|(_, signature)| signature).collect(),
             None,
         );
-        let result =
-            NativeMultisig::new().verify_authorization(signature_hash, &signature, &config, |_| {
-                unreachable!("primitive owner approvals should not load nested configs")
-            });
+        let result = NativeMultisig::new().verify_authorization(
+            signature_hash,
+            &signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        );
 
         assert!(
             matches!(
@@ -3858,10 +3878,13 @@ mod tests {
             None,
         );
 
-        let result =
-            NativeMultisig::new().verify_authorization(signature_hash, &signature, &config, |_| {
-                unreachable!("primitive owner approvals should not load nested configs")
-            });
+        let result = NativeMultisig::new().verify_authorization(
+            signature_hash,
+            &signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        );
 
         assert!(
             matches!(
@@ -3870,6 +3893,63 @@ mod tests {
                     if reason.contains("not an owner")
             ),
             "owner membership depends on current stored config and should remain revalidatable"
+        );
+    }
+
+    #[test]
+    fn native_multisig_authorization_rejects_trailing_owner_approvals() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x42),
+            threshold: 1,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.account().unwrap();
+        let signature_hash = B256::repeat_byte(0x43);
+        let digest = multisig_digest(signature_hash, account);
+        let signatures = signers
+            .iter()
+            .map(|signer| {
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes()
+            })
+            .collect();
+
+        let signature = MultisigSignature::new(account, signatures, None);
+        let result = NativeMultisig::new().verify_authorization(
+            signature_hash,
+            &signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(NativeMultisigAuthError::InvalidTransaction(reason))
+                    if reason.contains("excess")
+            ),
+            "unused trailing approvals should make multisig signatures non-canonical"
         );
     }
 
@@ -3887,10 +3967,13 @@ mod tests {
         );
         let multisig = NativeMultisig::new();
 
-        let result =
-            multisig.verify_authorization(B256::repeat_byte(0x42), &signature, &config, |_| {
-                unreachable!("oversized owner approval should fail before nested config lookup")
-            });
+        let result = multisig.verify_authorization(
+            B256::repeat_byte(0x42),
+            &signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("oversized owner approval should fail before nested config lookup"),
+            |_, _| unreachable!("oversized owner approval should fail before owner weight lookup"),
+        );
 
         assert!(
             matches!(
@@ -4237,11 +4320,11 @@ mod tests {
         )
         .unwrap();
 
-        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS;
+        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
-            "1-of-1 native multisig should add only native validation gas because base tx gas already covers one secp256k1 verification"
+            "1-of-1 native multisig should add validation plus one owner-weight lookup because base tx gas already covers one secp256k1 verification"
         );
         assert_eq!(
             multisig_gas.initial_state_gas, base_gas.initial_state_gas,
@@ -4281,7 +4364,8 @@ mod tests {
         )
         .unwrap();
 
-        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + ECRECOVER_GAS;
+        let expected_overhead =
+            NATIVE_MULTISIG_VALIDATION_GAS + 2 * NATIVE_MULTISIG_OWNER_WEIGHT_GAS + ECRECOVER_GAS;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
@@ -4323,7 +4407,8 @@ mod tests {
         )
         .unwrap();
 
-        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + P256_VERIFY_GAS;
+        let expected_overhead =
+            NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS + P256_VERIFY_GAS;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
@@ -4365,7 +4450,8 @@ mod tests {
         )
         .unwrap();
 
-        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS * 2;
+        let expected_overhead =
+            (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
@@ -4405,15 +4491,17 @@ mod tests {
         .unwrap();
 
         let storage_slots = native_multisig_bootstrap_storage_slots(&config);
-        assert_eq!(storage_slots, 1 + config.owners.len() as u64);
+        assert_eq!(storage_slots, 1 + 2 * config.owners.len() as u64);
 
         let expected_storage_gas =
             SSTORE_CREATE_COST * storage_slots + NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER;
-        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + expected_storage_gas;
+        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS
+            + NATIVE_MULTISIG_OWNER_WEIGHT_GAS
+            + expected_storage_gas;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
-            "bootstrap should charge packed account header, one owner slot per owner, and an event buffer"
+            "bootstrap should charge packed account header, indexed and lookup owner slots, and an event buffer"
         );
         assert_eq!(
             multisig_gas.initial_state_gas, base_gas.initial_state_gas,
