@@ -1,4 +1,4 @@
-use super::{PrimitiveSignature, tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH};
+use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::TempoSignature};
 use crate::TempoAddressExt;
 use alloc::{
     string::{String, ToString},
@@ -344,7 +344,12 @@ impl InitMultisig {
         signatures: &[Bytes],
     ) -> Result<u8, &'static str> {
         self.validate().map_err(MultisigConfigError::as_str)?;
-        let owners = recover_multisig_owner_addresses(digest, signatures)?;
+        let signatures = signatures
+            .iter()
+            .cloned()
+            .map(decode_multisig_owner_signature)
+            .collect::<Result<Vec<_>, _>>()?;
+        let owners = recover_multisig_owner_addresses(digest, &signatures)?;
         verify_recovered_multisig_owners(&owners, self)
     }
 
@@ -362,10 +367,10 @@ impl InitMultisig {
 pub struct MultisigSignature {
     /// Native multisig account address.
     account: Address,
-    /// Encoded owner approvals over the multisig digest.
+    /// Owner approvals over the multisig digest.
     ///
     /// Each approval is either a primitive signature or a nested native multisig signature.
-    signatures: Vec<Bytes>,
+    signatures: Vec<TempoSignature>,
     /// Initial native multisig config for bootstrapping this account.
     init: Option<InitMultisig>,
     /// Cached multisig digest for the transaction hash this signature approved.
@@ -378,13 +383,35 @@ pub struct MultisigSignature {
 
 impl MultisigSignature {
     pub fn new(account: Address, signatures: Vec<Bytes>, init: Option<InitMultisig>) -> Self {
-        Self {
+        Self::try_new(account, signatures, init).expect("valid multisig owner signatures")
+    }
+
+    pub fn try_new(
+        account: Address,
+        signatures: Vec<Bytes>,
+        init: Option<InitMultisig>,
+    ) -> Result<Self, &'static str> {
+        let signatures = signatures
+            .into_iter()
+            .map(decode_multisig_owner_signature)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_decoded(account, signatures, init)
+    }
+
+    pub fn from_decoded(
+        account: Address,
+        signatures: Vec<TempoSignature>,
+        init: Option<InitMultisig>,
+    ) -> Result<Self, &'static str> {
+        let signature = Self {
             account,
             signatures,
             init,
             cached_digest: OnceLock::new(),
             cached_recovered_owners: OnceLock::new(),
-        }
+        };
+        signature.validate_shape()?;
+        Ok(signature)
     }
 
     /// Returns the native multisig account address.
@@ -393,7 +420,7 @@ impl MultisigSignature {
     }
 
     /// Returns encoded owner approvals.
-    pub fn signatures(&self) -> &[Bytes] {
+    pub fn signatures(&self) -> &[TempoSignature] {
         &self.signatures
     }
 
@@ -430,13 +457,10 @@ impl MultisigSignature {
         if self.signatures.len() > MAX_MULTISIG_SIGNATURES {
             return Err("too many multisig signatures");
         }
-        if self.signatures.iter().any(|sig| sig.is_empty()) {
-            return Err("multisig owner signature cannot be empty");
-        }
         if self
             .signatures
             .iter()
-            .any(|sig| sig.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
+            .any(|sig| sig.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
         {
             return Err("multisig owner signature too large");
         }
@@ -530,8 +554,12 @@ impl MultisigSignature {
     /// Returns a heuristic for the in-memory size of the signature.
     pub fn size(&self) -> usize {
         size_of::<Self>()
-            + self.signatures.capacity() * size_of::<Bytes>()
-            + self.signatures.iter().map(|sig| sig.len()).sum::<usize>()
+            + self.signatures.capacity() * size_of::<TempoSignature>()
+            + self
+                .signatures
+                .iter()
+                .map(TempoSignature::size)
+                .sum::<usize>()
             + self.init.as_ref().map_or(0, InitMultisig::size)
     }
 }
@@ -566,7 +594,11 @@ impl From<&MultisigSignature> for MultisigSignatureWire {
     fn from(value: &MultisigSignature) -> Self {
         Self {
             account: value.account,
-            signatures: value.signatures.clone(),
+            signatures: value
+                .signatures
+                .iter()
+                .map(TempoSignature::to_bytes)
+                .collect(),
             init: value.init.clone(),
         }
     }
@@ -576,11 +608,7 @@ impl TryFrom<MultisigSignatureWire> for MultisigSignature {
     type Error = alloy_rlp::Error;
 
     fn try_from(value: MultisigSignatureWire) -> alloy_rlp::Result<Self> {
-        let signature = Self::new(value.account, value.signatures, value.init);
-        signature
-            .validate_shape()
-            .map_err(alloy_rlp::Error::Custom)?;
-        Ok(signature)
+        Self::try_new(value.account, value.signatures, value.init).map_err(alloy_rlp::Error::Custom)
     }
 }
 
@@ -666,7 +694,7 @@ pub fn verify_ordered_owner_weights(
 
 fn recover_multisig_owner_addresses(
     digest: B256,
-    signatures: &[Bytes],
+    signatures: &[TempoSignature],
 ) -> Result<Vec<Address>, &'static str> {
     if signatures.is_empty() {
         return Err("multisig signatures cannot be empty");
@@ -676,19 +704,26 @@ fn recover_multisig_owner_addresses(
     }
 
     let mut owners = Vec::with_capacity(signatures.len());
-    for signature_bytes in signatures {
-        if signature_bytes.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES {
-            return Err("multisig owner signature too large");
-        }
-
-        let signature = PrimitiveSignature::from_bytes(signature_bytes)
-            .map_err(|_| "invalid multisig owner signature")?;
+    for signature in signatures {
+        let TempoSignature::Primitive(signature) = signature else {
+            return Err("invalid multisig owner signature");
+        };
         let owner = signature
             .recover_signer(&digest)
             .map_err(|_| "invalid multisig owner signature")?;
         owners.push(owner);
     }
     Ok(owners)
+}
+
+fn decode_multisig_owner_signature(signature: Bytes) -> Result<TempoSignature, &'static str> {
+    if signature.is_empty() {
+        return Err("multisig owner signature cannot be empty");
+    }
+    if signature.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES {
+        return Err("multisig owner signature too large");
+    }
+    TempoSignature::from_bytes(&signature).map_err(|_| "invalid multisig owner signature")
 }
 
 fn verify_recovered_multisig_owners(
@@ -704,12 +739,7 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
         let len = u.int_in_range(1..=MAX_MULTISIG_SIGNATURES)?;
         let mut signatures = Vec::new();
         for _ in 0..len {
-            let mut signature = Vec::<u8>::arbitrary(u)?;
-            if signature.is_empty() {
-                signature.push(0);
-            }
-            signature.truncate(MAX_MULTISIG_OWNER_SIGNATURE_BYTES);
-            signatures.push(Bytes::from(signature));
+            signatures.push(TempoSignature::Primitive(u.arbitrary()?));
         }
 
         let mut account = Address::arbitrary(u)?;
@@ -717,7 +747,8 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
             account = Address::repeat_byte(1);
         }
 
-        Ok(Self::new(account, signatures, u.arbitrary()?))
+        Self::from_decoded(account, signatures, u.arbitrary()?)
+            .map_err(|_| arbitrary::Error::IncorrectFormat)
     }
 }
 
@@ -760,6 +791,10 @@ mod tests {
         let mut bytes = [0u8; 20];
         bytes[18..].copy_from_slice(&index.to_be_bytes());
         Address::from(bytes)
+    }
+
+    fn valid_owner_signature_bytes() -> Bytes {
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
     }
 
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256, Address) {
@@ -1066,7 +1101,7 @@ mod tests {
     #[test]
     fn multisig_signature_without_init_omits_trailing_slot() {
         let account = Address::repeat_byte(0x11);
-        let signatures = vec![Bytes::from(vec![0x03, 0x04])];
+        let signatures = vec![valid_owner_signature_bytes()];
         let signature = MultisigSignature::new(account, signatures.clone(), None);
 
         let mut encoded = Vec::new();
@@ -1101,7 +1136,7 @@ mod tests {
 
     #[test]
     fn multisig_signature_shape_rejects_oversized_owner_signature() {
-        let signature = MultisigSignature::new(
+        let signature = MultisigSignature::try_new(
             Address::repeat_byte(0x11),
             vec![Bytes::from(vec![
                 0xaa;
@@ -1110,24 +1145,15 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            signature.validate_shape(),
-            Err("multisig owner signature too large")
-        );
+        assert_eq!(signature, Err("multisig owner signature too large"));
     }
 
     #[test]
     fn multisig_signature_decode_rejects_oversized_owner_signature() {
-        let signature = MultisigSignature::new(
+        let encoded = encoded_multisig_without_init_slot(
             Address::repeat_byte(0x11),
-            vec![Bytes::from(vec![
-                0xaa;
-                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
-            ])],
-            None,
+            vec![vec![0xaa; MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1]],
         );
-        let mut encoded = Vec::new();
-        signature.encode(&mut encoded);
         let mut input = encoded.as_slice();
 
         assert!(
@@ -1138,17 +1164,14 @@ mod tests {
 
     #[test]
     fn tempo_signature_decode_rejects_oversized_multisig_owner_signature() {
-        let signature = TempoSignature::Multisig(MultisigSignature::new(
+        let mut encoded = vec![SIGNATURE_TYPE_MULTISIG];
+        encoded.extend(encoded_multisig_without_init_slot(
             Address::repeat_byte(0x11),
-            vec![Bytes::from(vec![
-                0xaa;
-                MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
-            ])],
-            None,
+            vec![vec![0xaa; MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1]],
         ));
 
         assert!(
-            TempoSignature::from_bytes(&signature.to_bytes()).is_err(),
+            TempoSignature::from_bytes(&encoded).is_err(),
             "TempoSignature decode should reject multisig payloads with oversized owner approvals"
         );
     }

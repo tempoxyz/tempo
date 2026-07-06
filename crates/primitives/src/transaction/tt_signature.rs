@@ -1082,6 +1082,10 @@ mod tests {
         (signing_key, pub_key_x, pub_key_y)
     }
 
+    fn valid_multisig_owner_signature_bytes() -> Bytes {
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
+    }
+
     /// Sign a message hash with P256, normalize s, return (r, s)
     fn sign_p256_normalized(signing_key: &P256SigningKey, message_hash: &B256) -> (B256, B256) {
         let signature: p256::ecdsa::Signature =
@@ -1974,8 +1978,8 @@ mod tests {
     #[test]
     fn test_signature_type_is_none_for_multisig() {
         let signature = TempoSignature::Multisig(MultisigSignature::new(
-            Address::ZERO,
-            vec![Bytes::from(vec![0xff])],
+            Address::repeat_byte(0x11),
+            vec![valid_multisig_owner_signature_bytes()],
             None,
         ));
 
@@ -1998,7 +2002,7 @@ mod tests {
         let inner_hash = B256::repeat_byte(0x24);
         let signature = TempoSignature::Multisig(MultisigSignature::new(
             account,
-            vec![Bytes::from(vec![0xff])],
+            vec![valid_multisig_owner_signature_bytes()],
             Some(config.clone()),
         ));
 
@@ -2010,7 +2014,7 @@ mod tests {
             multisig_signature
                 .verify_with_trusted_config(digest, &config)
                 .is_err(),
-            "stateful multisig authorization should still reject the invalid owner signature"
+            "stateful multisig authorization should still reject a non-owner signature"
         );
     }
 

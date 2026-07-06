@@ -162,16 +162,20 @@ fn native_multisig_primitive_owner_signature_verification_gas(
     ECRECOVER_GAS + primitive_signature_verification_gas(signature)
 }
 
-fn native_multisig_owner_approval_verification_gas(signature: &[u8], depth: usize) -> u64 {
-    match TempoSignature::from_bytes(signature) {
-        Ok(TempoSignature::Primitive(primitive)) => {
-            native_multisig_primitive_owner_signature_verification_gas(&primitive)
+fn native_multisig_owner_approval_verification_gas(
+    signature: &TempoSignature,
+    depth: usize,
+) -> u64 {
+    match signature {
+        TempoSignature::Primitive(primitive) => {
+            native_multisig_primitive_owner_signature_verification_gas(primitive)
         }
-        Ok(TempoSignature::Multisig(multisig_signature)) if depth < MAX_MULTISIG_NESTING_DEPTH => {
-            native_multisig_signature_verification_gas(&multisig_signature, false, depth + 1)
+        TempoSignature::Multisig(multisig_signature) if depth < MAX_MULTISIG_NESTING_DEPTH => {
+            native_multisig_signature_verification_gas(multisig_signature, false, depth + 1)
         }
-        Ok(TempoSignature::Keychain(_)) | Err(_) => ECRECOVER_GAS + P256_VERIFY_GAS,
-        Ok(TempoSignature::Multisig(_)) => ECRECOVER_GAS + P256_VERIFY_GAS,
+        TempoSignature::Keychain(_) | TempoSignature::Multisig(_) => {
+            ECRECOVER_GAS + P256_VERIFY_GAS
+        }
     }
 }
 
@@ -1149,11 +1153,13 @@ where
                 > {
                     let caller_is_multisig = multisig_precompile
                         .is_multisig_account(tx.caller())
+                        .map_err(NativeMultisigAuthError::from)
                         .map_err(map_native_multisig_error::<DB>)?;
 
                     if tx.has_fee_payer_signature()
                         && multisig_precompile
                             .is_multisig_account(fee_payer)
+                            .map_err(NativeMultisigAuthError::from)
                             .map_err(map_native_multisig_error::<DB>)?
                     {
                         return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
@@ -1162,10 +1168,11 @@ where
                         .into());
                     }
 
-                    let mut validate_authorization_authority =
+                    let validate_authorization_authority =
                         |authority| -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
                             if multisig_precompile
                                 .is_multisig_account(authority)
+                                .map_err(NativeMultisigAuthError::from)
                                 .map_err(map_native_multisig_error::<DB>)?
                             {
                                 return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
@@ -2976,8 +2983,8 @@ mod tests {
         storage::ContractStorage, test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
     };
     use tempo_primitives::transaction::{
-        Call, InitMultisig, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MultisigOwner, MultisigSignature,
-        RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
+        Call, InitMultisig, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MultisigOwner,
+        MultisigSignature, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     };
 
@@ -3148,7 +3155,7 @@ mod tests {
             tx_env.fee_token = Some(invalid_token);
         });
 
-        let result = test.validate_against_state_and_deduct_caller();
+        let result = test.validate_env();
 
         assert!(
             matches!(
@@ -3179,7 +3186,7 @@ mod tests {
 
         test.evm.inner.ctx.tx.fee_token = Some(fee_token);
 
-        let result = test.validate_against_state_and_deduct_caller();
+        let result = test.validate_env();
 
         assert!(
             matches!(
@@ -3284,7 +3291,7 @@ mod tests {
         });
         store_native_multisig_account(&mut test, &config);
 
-        let result = test.validate_env();
+        let result = test.validate_against_state_and_deduct_caller();
         assert!(
             matches!(
                 result,
@@ -3342,7 +3349,7 @@ mod tests {
             tx_env.inner.caller = account;
         });
 
-        let result = test.validate_against_state_and_deduct_caller();
+        let result = test.validate_env();
         assert!(
             matches!(
                 result,
@@ -3694,13 +3701,18 @@ mod tests {
     }
 
     #[test]
-    fn test_t8_registered_native_multisig_rejects_malformed_owner_approval_as_bad_transaction() {
+    fn test_t8_registered_native_multisig_rejects_keychain_owner_approval_as_bad_transaction() {
         let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
         let account = config.account().unwrap();
+        let owner_approval = TempoSignature::Keychain(KeychainSignature::new(
+            Address::random(),
+            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        ))
+        .to_bytes();
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
-                vec![Bytes::from_static(&[0xff, 0x00])],
+                vec![owner_approval],
                 None,
             )),
             aa_calls: vec![Call {
@@ -3718,15 +3730,15 @@ mod tests {
 
         let result = test.validate_against_state_and_deduct_caller();
         let Err(EVMError::Transaction(err)) = result else {
-            panic!("malformed owner approval should fail validation");
+            panic!("keychain owner approval should fail validation");
         };
         assert!(
             matches!(
                 &err,
                 TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
-                    if reason.contains("invalid multisig owner signature")
+                    if reason.contains("keychain signatures cannot authorize")
             ),
-            "malformed owner approval should be classified as invalid transaction, got {err:?}"
+            "keychain owner approval should be classified as invalid transaction, got {err:?}"
         );
         assert!(err.is_bad_transaction());
     }
@@ -3896,32 +3908,18 @@ mod tests {
 
     #[test]
     fn native_multisig_authorization_rejects_oversized_owner_approval_before_decode() {
-        let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
-        let account = config.account().unwrap();
-        let signature = MultisigSignature::new(
-            account,
+        let signature = MultisigSignature::try_new(
+            Address::repeat_byte(0x11),
             vec![Bytes::from(vec![
                 0xaa;
                 MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
             ])],
             None,
         );
-        let multisig = NativeMultisig::new();
-
-        let result = multisig.verify_authorization(
-            B256::repeat_byte(0x42),
-            &signature,
-            NativeMultisigAuthConfig::Inline(&config),
-            |_| unreachable!("oversized owner approval should fail before nested config lookup"),
-            |_, _| unreachable!("oversized owner approval should fail before owner weight lookup"),
-        );
 
         assert!(
-            matches!(
-                result,
-                Err(NativeMultisigAuthError::InvalidTransaction(reason)) if reason.contains("too large")
-            ),
-            "oversized owner approval should be rejected before owner approval decode"
+            matches!(signature, Err("multisig owner signature too large")),
+            "oversized owner approval should be rejected before constructing a multisig signature"
         );
     }
 
@@ -6433,9 +6431,7 @@ mod tests {
         use super::*;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
-        use tempo_precompiles::{
-            ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::getTransactionKeyCall,
-        };
+        use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
         use tempo_primitives::transaction::{
             KeychainSignature, KeychainVersion, SignatureType,
             key_authorization::{KeyAuthorization, TokenLimit as PrimTokenLimit},
