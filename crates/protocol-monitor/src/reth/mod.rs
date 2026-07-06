@@ -6,6 +6,7 @@
 mod error;
 mod finality;
 mod finalized_loop;
+mod provider;
 
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ pub use finality::FinalizedWatermark;
 pub use finalized_loop::{
     FinalizedBlockSource, FinalizedLoop, FinalizedLoopConfig, FinishedHeightSink,
 };
+pub use provider::RethFinalizedBlockSource;
 
 /// ExEx identifier used by the protocol monitor.
 pub const EXEX_ID: &str = "protocol-monitor";

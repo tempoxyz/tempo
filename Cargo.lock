@@ -8058,6 +8058,8 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "reth-primitives-traits",
+ "reth-storage-api",
  "serde",
  "serde_json",
  "tempo-contracts",
