@@ -48,7 +48,7 @@ fn joins_from_snapshot() {
 
         // The validator that will donate its address to the snapshot syncing
         // validator.
-        let mut donor = {
+        let donor = {
             let idx = validators
                 .iter()
                 .position(|node| node.consensus_config().share.is_none())
@@ -176,7 +176,7 @@ fn can_restart_after_joining_from_snapshot() {
 
         // The validator that will donate its address to the snapshot syncing
         // validator.
-        let mut donor = {
+        let donor = {
             let idx = validators
                 .iter()
                 .position(|node| node.consensus_config().share.is_none())
