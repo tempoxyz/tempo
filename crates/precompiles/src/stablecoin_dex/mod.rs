@@ -1190,29 +1190,9 @@ impl StablecoinDEX {
         let order = self.orders[level.head].read()?;
 
         // Returns the total input spent to receive `amount_out`.
-        walk_resting_orders(
-            order,
-            amount_out,
-            bid,
-            step_exact_out,
-            |mut order, fill| match fill {
-                Fill::Partial(fill_amount) => {
-                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
-                    Ok(None)
-                }
-                Fill::Full => {
-                    let (_out, next) =
-                        self.fill_order(storage_credits, book_key, &mut order, level, taker)?;
-                    match next {
-                        Some((new_level, new_order)) => {
-                            level = new_level;
-                            Ok(Some(new_order))
-                        }
-                        None => Ok(None),
-                    }
-                }
-            },
-        )
+        walk_resting_orders(order, amount_out, bid, step_exact_out, |order, fill| {
+            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+        })
     }
 
     /// Fill orders with exact amount in
@@ -1228,29 +1208,40 @@ impl StablecoinDEX {
         let order = self.orders[level.head].read()?;
 
         // Returns the total output received for spending `amount_in`.
-        walk_resting_orders(
-            order,
-            amount_in,
-            bid,
-            step_exact_in,
-            |mut order, fill| match fill {
-                Fill::Partial(fill_amount) => {
-                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
-                    Ok(None)
-                }
-                Fill::Full => {
-                    let (_out, next) =
-                        self.fill_order(storage_credits, book_key, &mut order, level, taker)?;
-                    match next {
-                        Some((new_level, new_order)) => {
-                            level = new_level;
-                            Ok(Some(new_order))
-                        }
-                        None => Ok(None),
+        walk_resting_orders(order, amount_in, bid, step_exact_in, |order, fill| {
+            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+        })
+    }
+
+    /// Applies one order fill during swap execution and returns the next order to
+    /// fill, or `None` when this order terminates the trade. Shared by the
+    /// exact-in and exact-out swap walks so their settlement cannot diverge.
+    fn settle_fill(
+        &mut self,
+        storage_credits: &mut StorageCreditDeltas,
+        book_key: B256,
+        taker: Address,
+        level: &mut TickLevel,
+        mut order: Order,
+        fill: Fill,
+    ) -> Result<Option<Order>> {
+        match fill {
+            Fill::Partial(fill_amount) => {
+                self.partial_fill_order(&mut order, level, fill_amount, taker)?;
+                Ok(None)
+            }
+            Fill::Full => {
+                let (_out, next) =
+                    self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
+                match next {
+                    Some((new_level, new_order)) => {
+                        *level = new_level;
+                        Ok(Some(new_order))
                     }
+                    None => Ok(None),
                 }
-            },
-        )
+            }
+        }
     }
 
     /// Helper function to get best tick from orderbook
@@ -6573,6 +6564,43 @@ mod tests {
                 Ok(())
             })?;
         }
+        Ok(())
+    }
+
+    /// Liquidity-exhaustion parity (T8): a quote for more than the book holds and
+    /// the matching swap MUST both fail with `InsufficientLiquidity`, at the same
+    /// boundary. Exercises exact-in (bid) and exact-out (ask) over a fragmented
+    /// book, one unit past the total resting liquidity.
+    #[test]
+    fn test_quote_matches_swap_t8_exhaustion() -> eyre::Result<()> {
+        let book: &[(u128, i16)] = &[(100_000_005, 10), (100_000_007, 10)];
+        let total_base: u128 = book.iter().map(|(s, _)| *s).sum();
+        let expected: TempoPrecompileError = StablecoinDEXError::insufficient_liquidity().into();
+
+        // bids: taker SELLS more base than the book can absorb.
+        with_fragmented_book(TempoHardfork::T8, book, true, |dex, base, quote, taker| {
+            let over = total_base + 1;
+            let q = dex.quote_swap_exact_amount_in(base, quote, over);
+            let ex = dex.swap_exact_amount_in(taker, base, quote, over, 0);
+            assert!(q.is_err(), "quote must fail past liquidity");
+            assert!(ex.is_err(), "swap must fail past liquidity");
+            assert_eq!(q.unwrap_err(), expected, "quote error parity");
+            assert_eq!(ex.unwrap_err(), expected, "swap error parity");
+            Ok(())
+        })?;
+
+        // asks: taker BUYS more base (exact-out) than the book can supply.
+        with_fragmented_book(TempoHardfork::T8, book, false, |dex, base, quote, taker| {
+            let over = total_base + 1;
+            let q = dex.quote_swap_exact_amount_out(quote, base, over);
+            let ex = dex.swap_exact_amount_out(taker, quote, base, over, u128::MAX);
+            assert!(q.is_err(), "quote must fail past liquidity");
+            assert!(ex.is_err(), "swap must fail past liquidity");
+            assert_eq!(q.unwrap_err(), expected, "quote error parity");
+            assert_eq!(ex.unwrap_err(), expected, "swap error parity");
+            Ok(())
+        })?;
+
         Ok(())
     }
 }
