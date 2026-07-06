@@ -89,9 +89,7 @@ fn test_fee_manager_layout() {
 #[test]
 fn test_stablecoin_dex_layout() {
     use tempo_precompiles::stablecoin_dex::{
-        order::__packing_legacy_order::*,
-        orderbook::{__packing_orderbook::*, __packing_orderbook_state::*},
-        slots,
+        order::__packing_legacy_order::*, orderbook::__packing_orderbook::*, slots,
     };
 
     let sol_path = testdata("stablecoin_dex.sol");
@@ -131,27 +129,14 @@ fn test_stablecoin_dex_layout() {
         quote,
         bids,
         asks,
-        state,
+        best_bid_tick,
+        best_ask_tick,
+        book_key_index,
         bid_bitmap,
         ask_bitmap
     );
     if let Err(errors) = compare_struct_members(&solc_layout, "books", &rust_orderbook) {
         panic_layout_mismatch("Orderbook struct member layout", errors, &sol_path);
-    }
-
-    // Verify `OrderbookState` struct members
-    let orderbook_state_base_slot = slots::BOOKS + U256::from(4);
-    let rust_orderbook_state = struct_fields!(
-        orderbook_state_base_slot,
-        best_bid_tick,
-        best_ask_tick,
-        is_index_set,
-        index
-    );
-    if let Err(errors) =
-        compare_nested_struct_type(&solc_layout, "OrderbookState", &rust_orderbook_state)
-    {
-        panic_layout_mismatch("OrderbookState struct member layout", errors, &sol_path);
     }
 }
 
@@ -300,9 +285,7 @@ fn export_all_storage_constants() {
     // Stablecoin DEX
     {
         use tempo_precompiles::stablecoin_dex::{
-            order::__packing_legacy_order::*,
-            orderbook::{__packing_orderbook::*, __packing_orderbook_state::*},
-            slots,
+            order::__packing_legacy_order::*, orderbook::__packing_orderbook::*, slots,
         };
 
         let fields = layout_fields!(books, orders, balances, next_order_id, book_keys);
@@ -330,18 +313,11 @@ fn export_all_storage_constants() {
             quote,
             bids,
             asks,
-            state,
-            bid_bitmap,
-            ask_bitmap
-        );
-
-        let orderbook_state_base_slot = slots::BOOKS + U256::from(4);
-        let orderbook_state_struct = struct_fields!(
-            orderbook_state_base_slot,
             best_bid_tick,
             best_ask_tick,
-            is_index_set,
-            index
+            book_key_index,
+            bid_bitmap,
+            ask_bitmap
         );
 
         all_constants.insert(
@@ -350,8 +326,7 @@ fn export_all_storage_constants() {
                 "fields": fields.iter().map(field_to_json).collect::<Vec<_>>(),
                 "structs": {
                     "orders": order_struct.iter().map(field_to_json).collect::<Vec<_>>(),
-                    "books": orderbook_struct.iter().map(field_to_json).collect::<Vec<_>>(),
-                    "OrderbookState": orderbook_state_struct.iter().map(field_to_json).collect::<Vec<_>>()
+                    "books": orderbook_struct.iter().map(field_to_json).collect::<Vec<_>>()
                 }
             }),
         );
