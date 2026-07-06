@@ -7,12 +7,16 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub mod block_view;
-pub mod common;
 pub mod coverage;
+pub mod entity;
+pub mod evidence;
+pub mod facts;
 pub mod findings;
 pub mod invariants;
+pub mod normalize;
 pub mod processor;
 pub mod reports;
+pub mod state_view;
 
 #[cfg(feature = "activity")]
 pub mod activity;

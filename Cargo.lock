@@ -8054,6 +8054,16 @@ dependencies = [
 [[package]]
 name = "protocol-monitor"
 version = "1.10.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "serde",
+ "serde_json",
+ "tempo-contracts",
+ "tempo-hardfork",
+ "tempo-primitives",
+]
 
 [[package]]
 name = "pyroscope"

@@ -23,3 +23,11 @@ reth = ["store"]
 activity = []
 
 [dependencies]
+alloy-consensus = { workspace = true, features = ["serde"] }
+alloy-eips = { workspace = true, features = ["serde"] }
+alloy-primitives = { workspace = true, features = ["serde"] }
+tempo-contracts = { workspace = true, default-features = false, features = ["serde"] }
+tempo-hardfork = { workspace = true, features = ["serde"] }
+tempo-primitives = { workspace = true, default-features = false, features = ["std", "serde"] }
+serde.workspace = true
+serde_json.workspace = true
