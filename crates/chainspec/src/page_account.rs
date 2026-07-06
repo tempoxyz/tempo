@@ -3,7 +3,26 @@ use alloc::sync::Arc;
 use alloy_primitives::{Address, address};
 use tempo_primitives::TempoAddressExt;
 
-const PAGE_STORAGE_DEX_ADDRESS: Address = address!("0xdec0000000000000000000000000000000000000");
+/// Fixed system precompile addresses committed via page storage.
+///
+/// Mirrors `tempo_contracts::precompiles::SYSTEM_PRECOMPILES` (kept in sync by a test) so
+/// this crate stays free of the contracts/sol-codegen dependency. Precompiles not yet
+/// activated by their own hardfork have no storage, so listing them here is harmless.
+const PAGE_STORAGE_SYSTEM_PRECOMPILES: &[Address] = &[
+    address!("0x403C000000000000000000000000000000000000"), // TIP403 registry
+    address!("0xfeec000000000000000000000000000000000000"), // tip fee manager
+    address!("0xdec0000000000000000000000000000000000000"), // stablecoin DEX
+    address!("0x4E4F4E4345000000000000000000000000000000"), // nonce manager
+    address!("0xAAAAAAAA00000000000000000000000000000000"), // account keychain
+    address!("0xCCCCCCCC00000000000000000000000000000000"), // validator config
+    address!("0xCCCCCCCC00000000000000000000000000000001"), // validator config v2
+    address!("0x20FC000000000000000000000000000000000000"), // TIP20 factory
+    address!("0xFDC0000000000000000000000000000000000000"), // address registry
+    address!("0x5165300000000000000000000000000000000000"), // signature verifier
+    address!("0x4D50500000000000000000000000000000000000"), // TIP20 channel reserve
+    address!("0xB10C000000000000000000000000000000000000"), // receive policy guard
+    address!("0x1060000000000000000000000000000000000000"), // storage credits
+];
 
 /// Hardfork-gated page-account predicate used by the page-state commitment layer.
 #[derive(Clone, Debug)]
@@ -21,7 +40,8 @@ impl PageAccountPredicate {
     }
 
     pub fn is_page_account(&self, timestamp: u64, address: &Address) -> bool {
-        self.is_active(timestamp) && (*address == PAGE_STORAGE_DEX_ADDRESS || address.is_tip20())
+        self.is_active(timestamp)
+            && (address.is_tip20() || PAGE_STORAGE_SYSTEM_PRECOMPILES.contains(address))
     }
 }
 
@@ -29,19 +49,20 @@ impl PageAccountPredicate {
 mod tests {
     use super::*;
     use crate::spec::DEV;
-    use tempo_primitives::address::TIP20_TOKEN_PREFIX;
 
     #[test]
-    fn predicate_is_hardfork_gated() {
+    fn predicate_accepts_system_precompiles() {
         let predicate = PageAccountPredicate::new(DEV.clone());
-        assert!(predicate.is_page_account(0, &PAGE_STORAGE_DEX_ADDRESS));
+        for address in PAGE_STORAGE_SYSTEM_PRECOMPILES {
+            assert!(predicate.is_page_account(0, address));
+        }
     }
 
     #[test]
     fn predicate_accepts_tip20_prefix() {
         let predicate = PageAccountPredicate::new(DEV.clone());
         let mut bytes = [0u8; 20];
-        bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
+        bytes[..12].copy_from_slice(&<Address as TempoAddressExt>::TIP20_PREFIX);
         bytes[19] = 1;
         assert!(predicate.is_page_account(0, &Address::from(bytes)));
     }
@@ -50,5 +71,20 @@ mod tests {
     fn predicate_rejects_non_page_accounts() {
         let predicate = PageAccountPredicate::new(DEV.clone());
         assert!(!predicate.is_page_account(0, &Address::repeat_byte(0x55)));
+    }
+
+    #[test]
+    fn system_precompile_list_matches_contracts() {
+        let mut ours: alloc::vec::Vec<_> = PAGE_STORAGE_SYSTEM_PRECOMPILES.to_vec();
+        let mut theirs: alloc::vec::Vec<_> = tempo_contracts::precompiles::SYSTEM_PRECOMPILES
+            .iter()
+            .map(|(address, _)| *address)
+            .collect();
+        ours.sort_unstable();
+        theirs.sort_unstable();
+        assert_eq!(
+            ours, theirs,
+            "PAGE_STORAGE_SYSTEM_PRECOMPILES is out of sync with SYSTEM_PRECOMPILES"
+        );
     }
 }

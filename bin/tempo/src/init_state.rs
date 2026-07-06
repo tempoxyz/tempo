@@ -4,7 +4,7 @@
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
@@ -14,12 +14,11 @@ use std::{
 };
 
 use alloy_primitives::{
-    B256, U256, keccak256,
-    map::{AddressMap, Entry},
+    Address, B256, U256, keccak256,
+    map::{AddressMap, B256Map, Entry},
 };
 use clap::Parser;
 use eyre::{Context as _, ensure};
-use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
     cursor::{DbCursorRO, DbDupCursorRW},
@@ -36,9 +35,19 @@ use reth_provider::{
     StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader, StorageSettingsCache,
     TrieWriter,
 };
-use reth_trie::{IntermediateStateRootState, StateRootProgress};
-use reth_trie_db::DatabaseStateRoot;
-use tempo_chainspec::spec::TempoChainSpecParser;
+use reth_trie::{
+    HashedPostState, HashedStorage, IntermediateStateRootState, StateRootProgress,
+    hashed_cursor::HashedPostStateCursorFactory,
+};
+use tempo_chainspec::{
+    PageAccountPredicate,
+    spec::{TempoChainSpec, TempoChainSpecParser},
+};
+use tempo_page_state::{
+    MdbxPageStore, MemoryPageStore, Page, PageIndex, PageSmt, PageStateUpdates, Watermark,
+    page::page_offset,
+    sentinel::{root_to_storage_value, sentinel_slot_hashed},
+};
 use tracing::info;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -69,23 +78,23 @@ pub struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoCha
     state: PathBuf,
 }
 
-impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>>
-    InitFromBinaryDump<C>
-{
+impl InitFromBinaryDump<TempoChainSpecParser> {
     /// Execute the init-from-binary-dump command.
     pub(crate) async fn execute<N>(self, runtime: Runtime) -> eyre::Result<()>
     where
-        N: CliNodeTypes<ChainSpec = C::ChainSpec>,
+        N: CliNodeTypes<ChainSpec = TempoChainSpec>,
     {
         info!(target: "tempo::cli", "Tempo init-from-binary-dump starting");
 
-        let etl_dir = self
+        let data_dir = self
             .env
             .datadir
             .clone()
             .resolve_datadir(self.env.chain.chain())
             .data_dir()
-            .join("etl");
+            .to_path_buf();
+        let etl_dir = data_dir.join("etl");
+        let page_state_dir = data_dir.join("page-state");
         let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
 
@@ -98,6 +107,12 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "init-from-binary-dump must be run on a freshly initialized database at block 0, \
              but found block {last_block}"
         );
+
+        // Page-account seeding is keyed off the genesis timestamp: when T9 page storage is
+        // active at genesis, page accounts commit sentinel-only storage tries from block 0.
+        let genesis_timestamp = self.env.chain.genesis().timestamp;
+        let page_predicate = PageAccountPredicate::new(self.env.chain.clone());
+        let page_storage_active = page_predicate.is_active(genesis_timestamp);
 
         info!(target: "tempo::cli", path = %self.state.display(), "Loading binary state dump");
 
@@ -112,12 +127,27 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
         let mut genesis_storage_keys = HashSet::new();
 
+        // The dump is applied on top of the genesis state, so a dump entry colliding with a
+        // genesis slot must win everywhere the value is materialized. These sets identify the
+        // overridden genesis rows so the hashed-storage merge and the page feed can skip them
+        // instead of leaving the winner to ETL duplicate ordering.
+        let mut overwritten_genesis_hashed: HashSet<Vec<u8>> = HashSet::new();
+        let mut overwritten_genesis_plain: HashSet<Vec<u8>> = HashSet::new();
+
         // ETL collectors: accumulate entries sorted, spill to disk when full
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
         let mut storage_changeset_collector: Collector<Vec<u8>, CompactU256> =
             Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
         let mut storage_history_collector: Collector<Vec<u8>, CompactU256> =
+            Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
+
+        // Plain (address, slot, value) entries for page accounts, used to seed the page-state
+        // sidecar and compute per-account page roots. Sources: every dump entry for a page
+        // account plus genesis alloc storage (fed after the dump loop so dump overrides are
+        // known). Plain slots are required here — page indices cannot be recovered from hashed
+        // storage keys.
+        let mut page_collector: Collector<Vec<u8>, CompactU256> =
             Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
 
         for (index, entry) in provider_rw.storage_changeset(0)? {
@@ -241,13 +271,29 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 let compact_value = CompactU256::from(value);
 
                 let raw_key = raw_storage_key(address, slot);
-                if !genesis_storage_keys.contains(&raw_key) {
+                if genesis_storage_keys.contains(&raw_key) {
+                    // Dump overrides genesis: remember the overridden row so its genesis
+                    // value is skipped in the hashed-storage merge and the page feed.
+                    let mut hashed = Vec::with_capacity(64);
+                    hashed.extend_from_slice(keccak256(address).as_slice());
+                    hashed.extend_from_slice(keccak256(slot).as_slice());
+                    overwritten_genesis_hashed.insert(hashed);
+                    overwritten_genesis_plain.insert(raw_key);
+                } else {
                     storage_changeset_collector
                         .insert(raw_key.clone(), CompactU256::from(U256::ZERO))
                         .wrap_err("storage changeset ETL insert failed")?;
                     storage_history_collector
                         .insert(raw_key, CompactU256::from(U256::ZERO))
                         .wrap_err("storage history ETL insert failed")?;
+                }
+
+                if page_storage_active
+                    && page_predicate.is_page_account(genesis_timestamp, &address)
+                {
+                    page_collector
+                        .insert(raw_storage_key(address, slot), CompactU256::from(value))
+                        .wrap_err("page ETL insert failed")?;
                 }
 
                 // Queue raw data for parallel hashing
@@ -279,6 +325,31 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             .join()
             .map_err(|_| eyre::eyre!("hash worker panicked"))??;
 
+        // Collect genesis-alloc storage for page accounts, honoring dump overrides.
+        if page_storage_active {
+            for (address, account) in &self.env.chain.genesis().alloc {
+                if !page_predicate.is_page_account(genesis_timestamp, address) {
+                    continue;
+                }
+                let Some(storage) = &account.storage else {
+                    continue;
+                };
+                for (slot, value) in storage {
+                    if value.is_zero()
+                        || overwritten_genesis_plain.contains(&raw_storage_key(*address, *slot))
+                    {
+                        continue;
+                    }
+                    page_collector
+                        .insert(
+                            raw_storage_key(*address, *slot),
+                            CompactU256::from(U256::from_be_bytes(value.0)),
+                        )
+                        .wrap_err("page ETL insert of genesis storage failed")?;
+                }
+            }
+        }
+
         info!(
             target: "tempo::cli",
             total_blocks,
@@ -297,6 +368,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 let mut key = Vec::with_capacity(64);
                 key.extend_from_slice(hashed_address.as_slice());
                 key.extend_from_slice(entry.key.as_slice());
+                // Dump overrides genesis for colliding slots.
+                if overwritten_genesis_hashed.contains(&key) {
+                    continue;
+                }
                 hashed_collector
                     .insert(key, CompactU256::from(entry.value))
                     .wrap_err("ETL insert of genesis hashed storage failed")?;
@@ -371,6 +446,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             .join()
             .map_err(|_| eyre::eyre!("storage history worker panicked"))??;
 
+        // Seed the page-state sidecar and collect per-account page roots for the trie overlay.
+        let page_roots = if page_storage_active {
+            seed_page_state(
+                &page_state_dir,
+                self.env.chain.genesis_hash(),
+                &mut page_collector,
+            )?
+        } else {
+            AddressMap::default()
+        };
+
         info!(
             target: "tempo::cli",
             addresses = accounts_seen.len(),
@@ -386,22 +472,44 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut resume: Option<IntermediateStateRootState> = None;
         let mut trie_writes = 0usize;
 
+        // Page accounts commit a sentinel-only storage trie: the overlay marks their storage
+        // wiped — hiding every raw HashedStorages row from the trie walker — and exposes a
+        // single sentinel slot holding the page root. Execution reads are unaffected because
+        // HashedStorages keeps all raw rows; only the commitment input is filtered.
+        let trie_overlay = {
+            let mut overlay = HashedPostState::default();
+            for (address, root) in &page_roots {
+                overlay.storages.insert(
+                    keccak256(address),
+                    HashedStorage {
+                        wiped: true,
+                        storage: B256Map::from_iter([(
+                            sentinel_slot_hashed(),
+                            root_to_storage_value(*root),
+                        )]),
+                    },
+                );
+            }
+            overlay.into_sorted()
+        };
+
         // Incrementally compute the merkle root over all hashed accounts/storages.
         let state_root = {
             use reth_trie_db::{
                 DatabaseHashedCursorFactory, DatabaseTrieCursorFactory, PackedKeyAdapter,
             };
-            type DbStateRoot<'a, TX> = reth_trie::StateRoot<
-                DatabaseTrieCursorFactory<&'a TX, PackedKeyAdapter>,
-                DatabaseHashedCursorFactory<&'a TX>,
-            >;
 
             // Compute state root in chunks, flushing trie nodes to disk between iterations.
             loop {
-                match DbStateRoot::<_>::from_tx(provider_rw.tx_ref())
-                    .with_intermediate_state(resume)
-                    .root_with_progress()?
-                {
+                let calculator = reth_trie::StateRoot::new(
+                    DatabaseTrieCursorFactory::<_, PackedKeyAdapter>::new(provider_rw.tx_ref()),
+                    HashedPostStateCursorFactory::new(
+                        DatabaseHashedCursorFactory::new(provider_rw.tx_ref()),
+                        &trie_overlay,
+                    ),
+                )
+                .with_intermediate_state(resume);
+                match calculator.root_with_progress()? {
                     StateRootProgress::Progress(state, _, updates) => {
                         trie_writes += provider_rw.write_trie_updates(updates)?;
                         info!(
@@ -509,6 +617,95 @@ where
     )?;
     batch.commit()?;
 
+    Ok(())
+}
+
+/// Builds the page-state sidecar from sorted plain `(address, slot, value)` entries and
+/// returns each seeded account's page root.
+///
+/// Whole accounts are assembled in memory before the SMT build, so peak memory scales with
+/// the largest page account in the dump (pages plus tree nodes).
+fn seed_page_state(
+    path: &std::path::Path,
+    genesis_hash: B256,
+    collector: &mut Collector<Vec<u8>, CompactU256>,
+) -> eyre::Result<AddressMap<B256>> {
+    // The sidecar is rebuilt from scratch alongside the fresh datadir this command requires.
+    if path.exists() {
+        std::fs::remove_dir_all(path).wrap_err("failed to clear existing page-state dir")?;
+    }
+    let store = MdbxPageStore::open(path)?;
+    let watermark = Watermark {
+        block_number: 0,
+        block_hash: genesis_hash,
+    };
+
+    let start = Instant::now();
+    let mut roots = AddressMap::default();
+    let mut current: Option<Address> = None;
+    let mut pages: BTreeMap<PageIndex, Option<Page>> = BTreeMap::new();
+
+    let total = collector.len();
+    load_storage_etl(collector, total, "page-state pages", |address, slot, value| {
+        if value.is_zero() {
+            return Ok(());
+        }
+        if current != Some(address) {
+            if let Some(previous) = current.replace(address) {
+                flush_page_account(&store, watermark, previous, &mut pages, &mut roots)?;
+            }
+        }
+        let slot = U256::from_be_bytes(slot.0);
+        let offset = page_offset(slot);
+        pages
+            .entry(PageIndex::of_slot(slot))
+            .or_insert_with(|| Some(Page::default()))
+            .as_mut()
+            .expect("seeded pages are always Some")
+            .set_word(offset, value);
+        Ok(())
+    })?;
+    if let Some(address) = current {
+        flush_page_account(&store, watermark, address, &mut pages, &mut roots)?;
+    }
+
+    info!(
+        target: "tempo::cli",
+        accounts = roots.len(),
+        elapsed = ?start.elapsed(),
+        "Page-state sidecar seeded"
+    );
+    Ok(roots)
+}
+
+/// Builds one account's page SMT from its assembled pages and commits it to the sidecar.
+fn flush_page_account(
+    store: &MdbxPageStore,
+    watermark: Watermark,
+    address: Address,
+    pages: &mut BTreeMap<PageIndex, Option<Page>>,
+    roots: &mut AddressMap<B256>,
+) -> eyre::Result<()> {
+    if pages.is_empty() {
+        return Ok(());
+    }
+    let pages = std::mem::take(pages);
+    let scratch = MemoryPageStore::default();
+    let updates = PageSmt::new(&scratch, address).update(&pages)?;
+    info!(
+        target: "tempo::cli",
+        %address,
+        pages = pages.len(),
+        root = %updates.new_root,
+        "Seeded page account"
+    );
+    roots.insert(address, updates.new_root);
+    store.commit_genesis(
+        watermark,
+        &PageStateUpdates {
+            accounts: BTreeMap::from([(address, updates)]),
+        },
+    )?;
     Ok(())
 }
 

@@ -43,17 +43,41 @@ impl MdbxPageStore {
         block: Watermark,
         updates: &PageStateUpdates,
     ) -> Result<(), PageStoreError> {
+        self.commit_inner(block, updates, true)
+    }
+
+    /// Commits genesis-seeded page state without per-page changelog rows.
+    ///
+    /// Changelog rows exist to identify pages written after a watermark during recovery;
+    /// the genesis baseline is re-creatable only via `init-from-binary-dump`, so recording
+    /// millions of block-0 keys would only bloat the sidecar.
+    pub fn commit_genesis(
+        &self,
+        block: Watermark,
+        updates: &PageStateUpdates,
+    ) -> Result<(), PageStoreError> {
+        self.commit_inner(block, updates, false)
+    }
+
+    fn commit_inner(
+        &self,
+        block: Watermark,
+        updates: &PageStateUpdates,
+        write_changelog: bool,
+    ) -> Result<(), PageStoreError> {
         let tx = self.db.tx_mut().map_err(to_store_error)?;
         for (&address, account) in &updates.accounts {
             tx.put::<tables::PageRoots>(address, account.new_root.as_slice().to_vec())
                 .map_err(to_store_error)?;
 
             for (&index, page) in &account.pages {
-                tx.put::<tables::PageChangeLog>(
-                    ChangeLogDbKey::new(block.block_number, address, index),
-                    Vec::new(),
-                )
-                .map_err(to_store_error)?;
+                if write_changelog {
+                    tx.put::<tables::PageChangeLog>(
+                        ChangeLogDbKey::new(block.block_number, address, index),
+                        Vec::new(),
+                    )
+                    .map_err(to_store_error)?;
+                }
 
                 let key = PageDbKey::new(address, index);
                 match page {

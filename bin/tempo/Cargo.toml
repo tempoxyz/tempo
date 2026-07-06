@@ -31,6 +31,7 @@ tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true
 tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
+tempo-page-state.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
