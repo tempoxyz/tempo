@@ -35,8 +35,7 @@ use revm::{
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, NATIVE_MULTISIG_ADDRESS,
-    TIPFeeAMMError,
+    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
@@ -1013,11 +1012,7 @@ where
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
         result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        let clear_native_multisig_config_cache = evm.tx().targets_address(NATIVE_MULTISIG_ADDRESS);
         evm.clear();
-        if clear_native_multisig_config_cache {
-            evm.native_multisig_cache.clear_configs();
-        }
 
         MainnetHandler::default()
             .execution_result(evm, result, result_gas)
@@ -1091,7 +1086,6 @@ where
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
-        let multisig_cache = &mut evm.native_multisig_cache;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = fee_manager
@@ -1129,12 +1123,6 @@ where
             let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
             let is_rpc_simulation =
                 tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
-            // RPC simulations (e.g. `eth_estimateGas` retries) reuse one EVM and discard
-            // journal state between transacts, so markers/configs seeded by a discarded
-            // execution must not leak into this validation. Re-read from state instead.
-            if is_rpc_simulation {
-                multisig_cache.clear();
-            }
             let caller_account_info = if multisig_signature.is_some() {
                 // Native multisig validation needs code/delegation and nonce facts, but K1 and
                 // keychain transactions only need the account marker check below.
@@ -1159,13 +1147,13 @@ where
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
-                    let caller_is_multisig = multisig_cache
-                        .is_multisig_account(&multisig_precompile, tx.caller())
+                    let caller_is_multisig = multisig_precompile
+                        .is_multisig_account(tx.caller())
                         .map_err(map_native_multisig_error::<DB>)?;
 
                     if tx.has_fee_payer_signature()
-                        && multisig_cache
-                            .is_multisig_account(&multisig_precompile, fee_payer)
+                        && multisig_precompile
+                            .is_multisig_account(fee_payer)
                             .map_err(map_native_multisig_error::<DB>)?
                     {
                         return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
@@ -1176,8 +1164,8 @@ where
 
                     let mut validate_authorization_authority =
                         |authority| -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-                            if multisig_cache
-                                .is_multisig_account(&multisig_precompile, authority)
+                            if multisig_precompile
+                                .is_multisig_account(authority)
                                 .map_err(map_native_multisig_error::<DB>)?
                             {
                                 return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
@@ -1260,18 +1248,14 @@ where
                     }
 
                     if caller_is_multisig {
-                        let threshold = multisig_cache
-                            .load_registered_threshold(
-                                &multisig_precompile,
-                                multisig_signature.account(),
-                            )
+                        let threshold = multisig_precompile
+                            .load_registered_threshold(multisig_signature.account())
+                            .map_err(NativeMultisigAuthError::from)
                             .map_err(map_native_multisig_error::<DB>)?;
                         if is_rpc_simulation {
-                            let config = multisig_cache
-                                .load_registered_config(
-                                    &multisig_precompile,
-                                    multisig_signature.account(),
-                                )
+                            let config = multisig_precompile
+                                .load_registered_config(multisig_signature.account())
+                                .map_err(NativeMultisigAuthError::from)
                                 .map_err(map_native_multisig_error::<DB>)?;
                             config
                                 .validate_rpc_mock_signatures(multisig_signature.signature_count())
@@ -1290,8 +1274,9 @@ where
                                         threshold,
                                     },
                                     |acc| {
-                                        multisig_cache
-                                            .load_registered_threshold(&multisig_precompile, acc)
+                                        multisig_precompile
+                                            .load_registered_threshold(acc)
+                                            .map_err(NativeMultisigAuthError::from)
                                     },
                                     |account, owner| {
                                         multisig_precompile
@@ -1340,8 +1325,9 @@ where
                                     multisig_signature,
                                     NativeMultisigAuthConfig::Inline(init_config),
                                     |acc| {
-                                        multisig_cache
-                                            .load_registered_threshold(&multisig_precompile, acc)
+                                        multisig_precompile
+                                            .load_registered_threshold(acc)
+                                            .map_err(NativeMultisigAuthError::from)
                                     },
                                     |account, owner| {
                                         multisig_precompile
@@ -1824,7 +1810,6 @@ where
                         .map_err(map_native_multisig_error::<DB>)
                 },
             )?;
-            multisig_cache.insert_config(account, config);
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
@@ -3516,50 +3501,6 @@ mod tests {
 
         test.validate_against_state_and_deduct_caller()
             .expect("RPC simulation should accept mock native multisig signatures");
-        assert_eq!(
-            test.evm.native_multisig_cache.get_config(&account),
-            Some(&config),
-            "registered multisig validation should cache the validated config"
-        );
-    }
-
-    #[test]
-    fn test_t8_rpc_simulation_bootstrap_ignores_stale_marker_cache() {
-        let config = native_multisig_config();
-        let account = config.account().unwrap();
-        let aa_env = TempoBatchCallEnv {
-            signature: TempoSignature::Multisig(MultisigSignature::new(
-                account,
-                vec![Bytes::from_static(&[0xaa; 65])],
-                Some(config.clone()),
-            )),
-            aa_calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            ..Default::default()
-        };
-        let mut test = TestHandlerEvm::aa(TempoHardfork::T8, aa_env, |tx_env| {
-            tx_env.inner.caller = account;
-            tx_env.inner.kind = TxKind::Call(Address::random());
-            tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
-        });
-        // A discarded estimate iteration executed this bootstrap and seeded the
-        // cache via `insert_config`; canonical state has no registered account.
-        test.evm
-            .native_multisig_cache
-            .insert_config(account, config.clone());
-
-        test.validate_against_state_and_deduct_caller()
-            .expect("bootstrap simulation must not trust markers from discarded executions");
-        // The stale entry is cleared on entry; this pass then re-seeds the
-        // transient bootstrapped-account guard for its own user calls.
-        assert_eq!(
-            test.evm.native_multisig_cache.get_config(&account),
-            Some(&config),
-            "bootstrap pre-execution should re-seed the guard"
-        );
     }
 
     #[test]

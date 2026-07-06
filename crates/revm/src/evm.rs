@@ -10,14 +10,9 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{
-    native_multisig::{NativeMultisig, NativeMultisigAuthError},
-    storage::StorageActions,
-    storage_credits::NonCreditableSlots,
-};
-use tempo_primitives::transaction::InitMultisig;
+use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -64,13 +59,6 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Internal protocol fee hooks.
     pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
-    /// Block-scoped cache for native multisig account markers and validated configs.
-    ///
-    /// Markers are cached so repeated transactions from the same accounts do not repeatedly read
-    /// the native multisig marker storage slot. Config values are inserted only after the native
-    /// multisig storage path has loaded and validated them. Configs are cleared when a transaction
-    /// directly touches the native multisig precompile because updates mutate account-scoped config.
-    pub(crate) native_multisig_cache: NativeMultisigCache,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -120,7 +108,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check,
             actions,
             non_creditable_slots,
-            native_multisig_cache,
             ..
         } = self;
 
@@ -135,7 +122,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
-            native_multisig_cache,
         }
     }
 
@@ -165,7 +151,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
-            native_multisig_cache: NativeMultisigCache::default(),
         }
     }
 
@@ -236,11 +221,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.fee_token = None;
         self.key_expiry = None;
         self.non_creditable_slots.borrow_mut().clear();
-    }
-
-    /// Clears block-scoped execution caches.
-    pub fn clear_block_caches(&mut self) {
-        self.native_multisig_cache.clear();
     }
 }
 
@@ -330,110 +310,6 @@ where
         &mut Self::Inspector,
     ) {
         self.inner.all_mut_inspector()
-    }
-}
-
-/// Block-scoped native multisig lookup cache.
-///
-/// Account markers, thresholds, and validated configs are cached separately so config invalidation
-/// can clear threshold/config data while retaining marker hits. This avoids repeatedly reading
-/// marker storage after a transaction touches the native multisig precompile, while also avoiding a
-/// full marker-cache scan when configs must be invalidated.
-///
-/// The whole cache is cleared when the EVM moves to a new block. Thresholds/configs are cleared,
-/// while marker bits are retained, after transactions that call the native multisig precompile
-/// because config updates can mutate account-scoped configs but do not clear the multisig account
-/// marker.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct NativeMultisigCache {
-    markers: HashMap<Address, bool>,
-    thresholds: HashMap<Address, u8>,
-    configs: HashMap<Address, InitMultisig>,
-}
-
-impl NativeMultisigCache {
-    /// Clears all cached markers and configs.
-    pub(crate) fn clear(&mut self) {
-        self.markers.clear();
-        self.thresholds.clear();
-        self.configs.clear();
-    }
-
-    /// Clears cached configs while preserving cached account markers.
-    pub(crate) fn clear_configs(&mut self) {
-        self.thresholds.clear();
-        self.configs.clear();
-    }
-
-    /// Inserts a validated native multisig config and marks the account as multisig.
-    pub(crate) fn insert_config(&mut self, account: Address, config: InitMultisig) {
-        self.markers.insert(account, true);
-        self.thresholds.insert(account, config.threshold);
-        self.configs.insert(account, config);
-    }
-
-    /// Returns whether `account` is marked as a native multisig account, loading on cache miss.
-    pub(crate) fn is_multisig_account(
-        &mut self,
-        multisig: &NativeMultisig,
-        account: Address,
-    ) -> Result<bool, NativeMultisigAuthError> {
-        if let Some(is_multisig) = self.markers.get(&account) {
-            return Ok(*is_multisig);
-        }
-
-        let threshold = multisig.load_registered_threshold_if_present(account)?;
-        let is_multisig = threshold.is_some();
-        self.markers.insert(account, is_multisig);
-        if let Some(threshold) = threshold {
-            self.thresholds.insert(account, threshold);
-        }
-        Ok(is_multisig)
-    }
-
-    /// Loads and caches the validated registered native multisig config for `account`.
-    pub(crate) fn load_registered_config(
-        &mut self,
-        multisig: &NativeMultisig,
-        account: Address,
-    ) -> Result<InitMultisig, NativeMultisigAuthError> {
-        if let Some(config) = self.configs.get(&account) {
-            return Ok(config.clone());
-        }
-
-        let config = multisig.load_registered_config(account)?;
-        self.insert_config(account, config.clone());
-        Ok(config)
-    }
-
-    /// Loads and caches the registered native multisig threshold for `account`.
-    pub(crate) fn load_registered_threshold(
-        &mut self,
-        multisig: &NativeMultisig,
-        account: Address,
-    ) -> Result<u8, NativeMultisigAuthError> {
-        if let Some(threshold) = self.thresholds.get(&account) {
-            return Ok(*threshold);
-        }
-        if let Some(config) = self.configs.get(&account) {
-            self.thresholds.insert(account, config.threshold);
-            return Ok(config.threshold);
-        }
-
-        let threshold = multisig.load_registered_threshold(account)?;
-        self.markers.insert(account, true);
-        self.thresholds.insert(account, threshold);
-        Ok(threshold)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn get_config(&self, account: &Address) -> Option<&InitMultisig> {
-        self.configs.get(account)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.markers.is_empty() && self.thresholds.is_empty() && self.configs.is_empty()
     }
 }
 

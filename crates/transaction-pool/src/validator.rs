@@ -369,9 +369,6 @@ where
                 // key authorisation) while keeping loaded accounts and storage warm for the
                 // rest of the batch.
                 evm.ctx_mut().journal_mut().discard_tx();
-                // Native multisig caches may include speculative bootstrap entries written by
-                // the rolled-back transaction, so clear them before validating the next one.
-                evm.clear_block_caches();
                 outcome
             })
             .collect()
