@@ -76,6 +76,8 @@ pub struct FlatShadow {
     blocks_since_persist: u64,
     /// A streamed block application is in progress (chunks applied, no entry yet).
     in_flight: bool,
+    /// Engine phase nanos accumulated since the last commit_entry (profiling builds).
+    prof_acc: [u64; 8],
 }
 
 /// Retained rollback window (candidate rebuilds and reorgs deeper than this fail loudly).
@@ -109,7 +111,7 @@ impl FlatShadow {
                 .open(format!("{path}.timings"))?,
         );
         tracing::info!(target: "flatmpt", root = %hex(root), n_ops, path, "flat MPT initialized from genesis alloc");
-        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false, prof_acc: [0; 8] })
     }
 
     /// Golden-restore init (billion-slot scale): copy a prebuilt dump-only
@@ -139,7 +141,7 @@ impl FlatShadow {
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
         );
-        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false, prof_acc: [0; 8] })
     }
 
     /// Bloat-mode init: genesis alloc + state-bloat dump.
@@ -258,7 +260,7 @@ impl FlatShadow {
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
         );
-        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false })
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false, prof_acc: [0; 8] })
     }
 
     /// State root after applying `ops` on the state whose root is `parent_root`.
@@ -301,10 +303,14 @@ impl FlatShadow {
 
         let n_ops = ops.len();
         let t = Instant::now();
+        mpt_flat_poc::prof::reset();
         let (root, inverse) = self
             .db
             .apply_block(ops.clone())
             .map_err(|e| anyhow::anyhow!("apply: {e:#}"))?;
+        for (i, (n, _)) in mpt_flat_poc::prof::snapshot().iter().enumerate() {
+            self.prof_acc[i] += n;
+        }
         let apply_us = t.elapsed().as_micros() as u64;
         debug_assert_eq!(root, self.db.root());
 
@@ -363,12 +369,17 @@ impl FlatShadow {
     ) -> anyhow::Result<B256> {
         let root = self.db.root();
         let number = parent_number + 1;
+        let p = &self.prof_acc;
         serde_json::to_writer(
             &mut self.timings,
             &serde_json::json!({
                 "block": number, "n_ops": n_ops, "apply_us": apply_us, "chunks": chunks,
+                "keccak_ms": p[0] / 1_000_000, "ser_ms": p[1] / 1_000_000,
+                "deser_ms": p[2] / 1_000_000, "read_ms": p[3] / 1_000_000,
+                "write_ms": p[4] / 1_000_000, "flush_ms": p[5] / 1_000_000,
             }),
         )?;
+        self.prof_acc = [0; 8];
         self.timings.write_all(b"\n")?;
         self.timings.flush()?;
 
@@ -405,10 +416,14 @@ impl FlatShadow {
         ops: Vec<(Key, StateOp)>,
     ) -> anyhow::Result<Vec<(Key, StateOp)>> {
         anyhow::ensure!(self.in_flight, "stream chunk without begin_stream");
+        mpt_flat_poc::prof::reset();
         let (_root, inverse) = self
             .db
             .apply_block(ops)
             .map_err(|e| anyhow::anyhow!("stream chunk apply: {e:#}"))?;
+        for (i, (n, _)) in mpt_flat_poc::prof::snapshot().iter().enumerate() {
+            self.prof_acc[i] += n;
+        }
         Ok(inverse)
     }
 

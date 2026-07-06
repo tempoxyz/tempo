@@ -14,7 +14,7 @@ keywords.workspace = true
 publish = false
 
 [dependencies]
-mpt-flat-poc = { path = "/home/ubuntu/repos/mpt-flat-poc-reth" }
+mpt-flat-poc = { path = "/home/ubuntu/repos/mpt-flat-poc-reth", features = ["profiling"] }
 alloy-primitives.workspace = true
 alloy-genesis.workspace = true
 revm.workspace = true
