@@ -207,9 +207,10 @@ impl Orderbook {
     pub fn new_with_id(base: Address, quote: Address, id: u32) -> Self {
         Self {
             state: OrderbookState {
+                best_bid_tick: i16::MIN,
+                best_ask_tick: i16::MAX,
                 is_index_set: true,
                 index: id,
-                ..Default::default()
             },
             ..Self::new(base, quote)
         }
