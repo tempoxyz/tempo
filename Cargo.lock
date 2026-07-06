@@ -13370,6 +13370,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "bitflags 2.11.1",
  "codspeed-criterion-compat",
  "commonware-codec",
  "commonware-cryptography",
