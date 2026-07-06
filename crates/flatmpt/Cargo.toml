@@ -17,6 +17,7 @@ publish = false
 mpt-flat-poc = { path = "/home/ubuntu/repos/mpt-flat-poc-reth", features = ["profiling"] }
 alloy-primitives.workspace = true
 alloy-genesis.workspace = true
+alloy-rlp.workspace = true
 revm.workspace = true
 parking_lot.workspace = true
 serde_json = { workspace = true, features = ["std"] }

@@ -13242,6 +13242,7 @@ version = "1.10.0"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
+ "alloy-rlp",
  "anyhow",
  "mpt-flat-poc",
  "parking_lot",
@@ -13347,8 +13348,10 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "anyhow",
  "crossbeam-channel",
  "metrics",
+ "parking_lot",
  "proptest",
  "reth-basic-payload-builder",
  "reth-chainspec",

@@ -5,6 +5,7 @@
 
 mod budget;
 mod encode;
+mod flat_reads;
 mod metrics;
 mod prewarming;
 
@@ -403,6 +404,20 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        if flat_reads::flat_reads_enabled() {
+            let chain_spec = self.provider.chain_spec();
+            if let Some(shadow) = tempo_flatmpt::shadow(|| {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            }) {
+                state_provider = Box::new(flat_reads::FlatReadProvider {
+                    inner: state_provider,
+                    shadow,
+                });
+            }
+        }
         if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
@@ -1073,7 +1088,7 @@ where
             .expect("flat mode is on");
             let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
             let root = shadow
-                .lock()
+                .write()
                 .root_for(parent_header.number(), parent_header.state_root(), ops)
                 .map_err(|e| PayloadBuilderError::Other(e.into()))?;
             Some(root)

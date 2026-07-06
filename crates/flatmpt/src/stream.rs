@@ -15,7 +15,7 @@
 use crate::{FlatShadow, mode, FlatMode};
 use alloy_primitives::{keccak256, B256, U256};
 use mpt_flat_poc::{Key, StateOp};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::mpsc;
 
@@ -36,7 +36,7 @@ struct AcctAcc {
 }
 
 struct Worker {
-    shadow: &'static Mutex<FlatShadow>,
+    shadow: &'static RwLock<FlatShadow>,
     acc: HashMap<alloy_primitives::Address, AcctAcc>,
     pending_slot_ops: usize,
     /// Inverses of chunks applied so far, in apply order.
@@ -130,7 +130,7 @@ impl Worker {
         ops.sort_by(|a, b| a.0.cmp(&b.0)); // stable: per-account sequences preserved
         self.streamed_ops += ops.len();
         let t = std::time::Instant::now();
-        let inverse = self.shadow.lock().apply_stream_chunk(ops)?;
+        let inverse = self.shadow.write().apply_stream_chunk(ops)?;
         self.chunk_apply_us += t.elapsed().as_micros() as u64;
         self.inverses.push(inverse);
         Ok(())
@@ -148,7 +148,7 @@ struct StreamOutcome {
 pub struct FlatStream {
     tx: Option<mpsc::SyncSender<revm::state::EvmState>>,
     done_rx: mpsc::Receiver<anyhow::Result<StreamOutcome>>,
-    shadow: &'static Mutex<FlatShadow>,
+    shadow: &'static RwLock<FlatShadow>,
     parent_number: u64,
     parent_root: B256,
     finished: bool,
@@ -158,11 +158,11 @@ impl FlatStream {
     /// Prepare the shared shadow at `parent` (rolling back a previous candidate
     /// if needed) and spawn the streaming worker.
     pub fn begin(
-        shadow: &'static Mutex<FlatShadow>,
+        shadow: &'static RwLock<FlatShadow>,
         parent_number: u64,
         parent_root: B256,
     ) -> anyhow::Result<Self> {
-        shadow.lock().begin_stream(parent_number, parent_root)?;
+        shadow.write().begin_stream(parent_number, parent_root)?;
         let (tx, rx) = mpsc::sync_channel::<revm::state::EvmState>(1024);
         let (done_tx, done_rx) = mpsc::channel();
         std::thread::Builder::new()
@@ -214,7 +214,7 @@ impl FlatStream {
             .recv()
             .map_err(|_| anyhow::anyhow!("flatmpt stream worker died"))??;
         self.finished = true;
-        self.shadow.lock().finish_stream(
+        self.shadow.write().finish_stream(
             self.parent_number,
             self.parent_root,
             canonical_ops,
@@ -234,7 +234,7 @@ impl Drop for FlatStream {
         // Cancelled/failed build: unwind whatever chunks were applied.
         drop(self.tx.take());
         if let Ok(Ok(outcome)) = self.done_rx.recv() {
-            if let Err(e) = self.shadow.lock().abort_stream(outcome.inverses) {
+            if let Err(e) = self.shadow.write().abort_stream(outcome.inverses) {
                 panic!("flatmpt stream abort failed to roll back: {e:#}");
             }
         } else {

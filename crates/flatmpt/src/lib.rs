@@ -22,8 +22,9 @@ mod stream;
 pub use stream::{stream_check, stream_enabled, FlatStream};
 
 use alloy_primitives::{keccak256, B256, U256};
+use alloy_rlp::Decodable as _;
 use mpt_flat_poc::{hex, FlatMpt, Key, StateOp};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::io::Write as _;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -363,6 +364,43 @@ impl FlatShadow {
         self.commit_entry(parent_number, parent_root, fingerprint, vec![inverse], n_ops, 0, apply_us)
     }
 
+    /// Point-read an account by address: (nonce, balance, code_hash).
+    /// `&self` — runs concurrently with other readers under the RwLock; the
+    /// first-touch argument makes reads-during-streaming safe (any key the
+    /// executor asks the provider for is untouched so far this block, so the
+    /// flat state holds the parent value for it).
+    pub fn read_account(&self, address: &[u8; 20]) -> anyhow::Result<Option<(u64, U256, [u8; 32])>> {
+        let key: Key = keccak256(address).0;
+        let Some(rlp) = self.db.get_value(&key).map_err(|e| anyhow::anyhow!("{e:#}"))? else {
+            return Ok(None);
+        };
+        // RLP([nonce, balance, storage_root, code_hash])
+        let mut buf = rlp.as_slice();
+        let header = alloy_rlp::Header::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        anyhow::ensure!(header.list, "account leaf is not a list");
+        let nonce = u64::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let balance = U256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let _storage_root = B256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let code_hash = B256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(Some((nonce, balance, code_hash.0)))
+    }
+
+    /// Point-read a storage slot (present value; `None`/zero absent).
+    pub fn read_slot(&self, address: &[u8; 20], slot: &[u8; 32]) -> anyhow::Result<Option<U256>> {
+        let account_key: Key = keccak256(address).0;
+        let slot_key: Key = keccak256(slot).0;
+        let Some(rlp) = self
+            .db
+            .get_storage(&account_key, &slot_key)
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?
+        else {
+            return Ok(None);
+        };
+        let mut buf = rlp.as_slice();
+        let value = U256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(Some(value))
+    }
+
     /// Roll the live state back until its root equals `parent_root`.
     fn unwind_to(&mut self, parent_root: B256) -> anyhow::Result<()> {
         // Bloat mode: `init-from-binary-dump` computes the post-dump state root
@@ -560,8 +598,8 @@ impl FlatShadow {
 /// the gate instead.
 pub fn shadow(
     genesis: impl FnOnce() -> (Vec<(Key, StateOp)>, B256),
-) -> Option<&'static Mutex<FlatShadow>> {
-    static SHADOW: OnceLock<Option<Mutex<FlatShadow>>> = OnceLock::new();
+) -> Option<&'static RwLock<FlatShadow>> {
+    static SHADOW: OnceLock<Option<RwLock<FlatShadow>>> = OnceLock::new();
     SHADOW
         .get_or_init(|| {
             if mode() == FlatMode::Off {
@@ -576,7 +614,7 @@ pub fn shadow(
                 (None, Some(dump)) => FlatShadow::init_with_bloat(&path, ops, &dump),
                 (None, None) => FlatShadow::init(&path, ops, root),
             };
-            Some(Mutex::new(shadow.expect("flat MPT genesis init failed")))
+            Some(RwLock::new(shadow.expect("flat MPT genesis init failed")))
         })
         .as_ref()
 }
