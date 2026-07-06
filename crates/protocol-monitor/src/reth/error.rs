@@ -1,0 +1,40 @@
+use crate::{processor::ProcessorError, store::StoreError};
+
+pub type AdapterResult<T> = Result<T, AdapterError>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdapterError {
+    Halt(String),
+    Retry(String),
+    Ignore(String),
+}
+
+impl AdapterError {
+    pub const fn is_halt(&self) -> bool {
+        matches!(self, Self::Halt(_))
+    }
+
+    pub const fn is_retry(&self) -> bool {
+        matches!(self, Self::Retry(_))
+    }
+}
+
+impl From<StoreError> for AdapterError {
+    fn from(value: StoreError) -> Self {
+        match value {
+            StoreError::Poisoned | StoreError::NotFound(_) => Self::Retry(format!("{value:?}")),
+            StoreError::IncompatibleSchema { .. }
+            | StoreError::MigrationBlocked(_)
+            | StoreError::Continuity(_)
+            | StoreError::InvalidCommit(_)
+            | StoreError::IdempotencyMismatch(_)
+            | StoreError::UnknownInvariant(_) => Self::Halt(format!("{value:?}")),
+        }
+    }
+}
+
+impl From<ProcessorError> for AdapterError {
+    fn from(value: ProcessorError) -> Self {
+        Self::Halt(format!("{value:?}"))
+    }
+}
