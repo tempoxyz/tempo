@@ -62,11 +62,49 @@ struct Entry {
     parent_root: [u8; 32],
     /// Root after applying `ops`.
     root: [u8; 32],
-    /// The applied ops, key-stable-sorted (memo fingerprint).
-    ops: Vec<(Key, StateOp)>,
+    /// keccak of the canonical (key-sorted) op list — the memo fingerprint.
+    /// Storing the hash instead of the ops keeps the retained window's heap
+    /// bounded (full vectors cost ~11 MB per 90k-op block).
+    ops_hash: [u8; 32],
     /// Inverse diffs to roll this entry back: one per applied chunk, in apply
     /// order (a non-streamed block has exactly one).
     inverse: Vec<Vec<(Key, StateOp)>>,
+}
+
+/// Canonical fingerprint of a key-sorted op list.
+fn ops_fingerprint(ops: &[(Key, StateOp)]) -> [u8; 32] {
+    let mut h = alloy_primitives::Keccak256::new();
+    for (key, op) in ops {
+        h.update(key);
+        h.update(&bincode_op(op));
+    }
+    h.finalize().0
+}
+
+/// Stable byte encoding of one op for fingerprinting.
+fn bincode_op(op: &StateOp) -> Vec<u8> {
+    match op {
+        StateOp::SetAccount { nonce, balance, code_hash } => {
+            let mut v = vec![0u8];
+            v.extend_from_slice(&nonce.to_be_bytes());
+            v.extend_from_slice(&balance.to_be_bytes::<32>());
+            v.extend_from_slice(code_hash);
+            v
+        }
+        StateOp::DeleteAccount => vec![1u8],
+        StateOp::WipeStorage => vec![2u8],
+        StateOp::SetStorage { slot, value } => {
+            let mut v = vec![3u8];
+            v.extend_from_slice(slot);
+            v.extend_from_slice(value);
+            v
+        }
+        StateOp::DeleteStorage { slot } => {
+            let mut v = vec![4u8];
+            v.extend_from_slice(slot);
+            v
+        }
+    }
 }
 
 pub struct FlatShadow {
@@ -80,8 +118,15 @@ pub struct FlatShadow {
     prof_acc: [u64; 8],
 }
 
-/// Retained rollback window (candidate rebuilds and reorgs deeper than this fail loudly).
-const WINDOW: usize = 128;
+/// Retained rollback window (candidate rebuilds and reorgs deeper than this
+/// fail loudly). Env `TEMPO_FLATMPT_WINDOW` overrides; the window's heap is
+/// dominated by inverse diffs (~11 MB per full block).
+fn window() -> usize {
+    static W: OnceLock<usize> = OnceLock::new();
+    *W.get_or_init(|| {
+        std::env::var("TEMPO_FLATMPT_WINDOW").ok().and_then(|s| s.parse().ok()).unwrap_or(32)
+    })
+}
 /// Persist the flat file every this many applied blocks.
 const PERSIST_EVERY: u64 = 128;
 
@@ -281,13 +326,14 @@ impl FlatShadow {
         ops.sort_by(|a, b| a.0.cmp(&b.0));
 
         // Memo: the validator re-deriving the block the builder just applied.
+        let fingerprint = ops_fingerprint(&ops);
         if let Some(e) = self
             .entries
             .iter()
             .rev()
             .find(|e| e.number == parent_number + 1 && e.parent_root == parent_root.0)
         {
-            if e.ops == ops {
+            if e.ops_hash == fingerprint {
                 return Ok(B256::from(e.root));
             }
             // Same parent, different payload: a rebuilt candidate. Fall through —
@@ -314,7 +360,7 @@ impl FlatShadow {
         let apply_us = t.elapsed().as_micros() as u64;
         debug_assert_eq!(root, self.db.root());
 
-        self.commit_entry(parent_number, parent_root, ops, vec![inverse], n_ops, 0, apply_us)
+        self.commit_entry(parent_number, parent_root, fingerprint, vec![inverse], n_ops, 0, apply_us)
     }
 
     /// Roll the live state back until its root equals `parent_root`.
@@ -361,7 +407,7 @@ impl FlatShadow {
         &mut self,
         parent_number: u64,
         parent_root: B256,
-        ops: Vec<(Key, StateOp)>,
+        ops_hash: [u8; 32],
         inverse: Vec<Vec<(Key, StateOp)>>,
         n_ops: usize,
         chunks: usize,
@@ -383,8 +429,8 @@ impl FlatShadow {
         self.timings.write_all(b"\n")?;
         self.timings.flush()?;
 
-        self.entries.push(Entry { number, parent_root: parent_root.0, root, ops, inverse });
-        if self.entries.len() > WINDOW {
+        self.entries.push(Entry { number, parent_root: parent_root.0, root, ops_hash, inverse });
+        if self.entries.len() > window() {
             self.entries.remove(0);
         }
 
@@ -444,6 +490,7 @@ impl FlatShadow {
         anyhow::ensure!(self.in_flight, "finish_stream without begin_stream");
         self.in_flight = false;
         canonical_ops.sort_by(|a, b| a.0.cmp(&b.0));
+        let fingerprint = ops_fingerprint(&canonical_ops);
 
         if stream_check() {
             // Re-derive the root from the canonical ops and require equality —
@@ -468,7 +515,7 @@ impl FlatShadow {
             return self.commit_entry(
                 parent_number,
                 parent_root,
-                canonical_ops,
+                fingerprint,
                 vec![canon_inverse],
                 streamed_ops,
                 chunks,
@@ -476,10 +523,11 @@ impl FlatShadow {
             );
         }
 
+        drop(canonical_ops);
         self.commit_entry(
             parent_number,
             parent_root,
-            canonical_ops,
+            fingerprint,
             inverses,
             streamed_ops,
             chunks,
