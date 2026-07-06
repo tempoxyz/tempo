@@ -308,11 +308,7 @@ pub struct Args {
     pub finalized_blocks_retention: u64,
 
     /// Require startup to use a consensus finalized certificate archive.
-    ///
-    /// When disabled, startup falls back to the execution layer's finalized
-    /// watermark for compatibility with snapshots that do not include
-    /// consensus finalization state.
-    #[arg(long = "consensus.strict-startup", default_value_t = false)]
+    #[arg(long = "consensus.strict-startup", default_value_t = true)]
     pub strict_startup: bool,
 
     /// Deprecated compatibility flag. Ignored because the legacy immutable
@@ -520,6 +516,12 @@ mod tests {
     #[test]
     fn strict_startup_flag_parses() {
         let cli = parse(&["--dev", "--consensus.strict-startup"]);
+        assert!(cli.consensus.strict_startup);
+    }
+
+    #[test]
+    fn strict_startup_defaults_to_true() {
+        let cli = parse(&["--dev"]);
         assert!(cli.consensus.strict_startup);
     }
 

@@ -19,7 +19,7 @@ pub(crate) mod marshal {
     };
     use commonware_storage::archive::{Archive as _, Identifier, immutable};
     use commonware_utils::acknowledgement::Exact;
-    use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
+    use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
     use rand_08::{CryptoRng, Rng};
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
@@ -72,7 +72,7 @@ pub(crate) mod marshal {
         pub finalized_blocks_retention: u64,
 
         /// Require startup to use the consensus finalization archive as its
-        /// finalized floor instead of falling back to the execution layer.
+        /// finalized floor.
         pub strict_startup: bool,
 
         /// Epoch length / boundary configuration.
@@ -100,9 +100,7 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Finalized tip selected at startup. In strict mode this comes from
-        /// the archive or genesis; otherwise it is the highest available value
-        /// from the archive and execution layer.
+        /// Finalized tip selected at startup from the archive or genesis.
         pub finalized_tip: (Height, Digest),
     }
 
@@ -130,6 +128,8 @@ pub(crate) mod marshal {
         TContext:
             Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
+        ensure!(config.strict_startup, "strict startup is required");
+
         let finalizations_by_height = storage::init_finalizations_archive(
             context,
             &config.partition_prefix,
@@ -141,18 +141,12 @@ pub(crate) mod marshal {
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
-        } = establish_finalization_range(
-            &finalizations_by_height,
-            &execution_node,
-            config.strict_startup,
-        )
-        .await?;
+        } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
         info!(
             floor_height = %finalized_floor.0,
             floor_digest = %finalized_floor.1,
             tip_height = %finalized_tip.0,
             tip_digest = %finalized_tip.1,
-            strict_startup = config.strict_startup,
             "selected finalized startup range"
         );
 
@@ -232,7 +226,6 @@ pub(crate) mod marshal {
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         execution_node: &TempoFullNode,
-        strict_startup: bool,
     ) -> eyre::Result<FinalizationRange>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -242,35 +235,19 @@ pub(crate) mod marshal {
             .wrap_err("failed to establish finalized archive bounds")?;
         let execution_finalized = execution_finalized_point(execution_node);
 
-        match (strict_startup, archive_range) {
-            (true, Some((floor, tip))) => Ok(FinalizationRange { floor, tip }),
-            (true, None) if execution_finalized.0.is_zero() => Ok(FinalizationRange {
+        match archive_range {
+            Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
+            None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
                 tip: execution_finalized,
             }),
-            (true, None) => Err(eyre!(
+            None => Err(eyre!(
                 "strict consensus startup requires a finalized certificate archive unless the \
                     execution layer is empty, but no finalized certificate was found and execution \
                     finalized block is `{}` at height `{}`",
                 execution_finalized.1,
                 execution_finalized.0,
             )),
-            (false, Some((archive_floor, archive_tip))) => Ok(FinalizationRange {
-                floor: if archive_floor.0 >= execution_finalized.0 {
-                    archive_floor
-                } else {
-                    execution_finalized
-                },
-                tip: if archive_tip.0 >= execution_finalized.0 {
-                    archive_tip
-                } else {
-                    execution_finalized
-                },
-            }),
-            (false, None) => Ok(FinalizationRange {
-                floor: execution_finalized,
-                tip: execution_finalized,
-            }),
         }
     }
 

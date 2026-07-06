@@ -88,11 +88,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub finalized_blocks_retention: u64,
 
     /// Require startup to use the consensus finalization archive as the
-    /// finalized floor. If the archive is empty this will reject pre-populated
+    /// finalized floor. If the archive is empty this rejects pre-populated
     /// execution layers.
-    ///
-    /// This setting is in preparation for consensus-enriched snapshots and will
-    /// eventually become the default once tempo has fully migrated.
     pub strict_startup: bool,
 }
 
