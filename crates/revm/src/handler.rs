@@ -1128,8 +1128,6 @@ where
             let is_rpc_simulation =
                 tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
             let caller_account_info = if multisig_signature.is_some() {
-                // Native multisig validation needs code/delegation and nonce facts, but K1 and
-                // keychain transactions only need the account marker check below.
                 Some(
                     journal
                         .load_account_with_code(tx.caller())?
@@ -1140,7 +1138,6 @@ where
             } else {
                 None
             };
-
             StorageCtx::enter_precompile(
                 journal,
                 block,
@@ -1226,11 +1223,13 @@ where
                     let caller_account_info = caller_account_info
                         .as_ref()
                         .expect("loaded for native multisig signatures");
-                    let account_has_code_or_delegation = !caller_account_info.is_empty_code_hash()
-                        || caller_account_info
-                            .code
-                            .as_ref()
-                            .is_some_and(|code| code.eip7702_address().is_some());
+                    if !caller_account_info.is_empty_code_hash() {
+                        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
+                            reason: "native multisig account cannot have code or EIP-7702 delegation"
+                                .to_string(),
+                        }
+                        .into());
+                    }
 
                     if caller_is_multisig {
                         multisig_signature.validate_registered_shape().map_err(|reason| {
@@ -1238,13 +1237,6 @@ where
                                 reason: reason.to_string(),
                             }
                         })?;
-                    }
-                    if account_has_code_or_delegation {
-                        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                            reason: "native multisig account cannot have code or EIP-7702 delegation"
-                                .to_string(),
-                        }
-                        .into());
                     }
 
                     if caller_is_multisig {
