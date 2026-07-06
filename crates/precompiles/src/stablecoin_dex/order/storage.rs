@@ -61,6 +61,31 @@ impl TryFrom<U256> for OrderVersion {
     }
 }
 
+struct OrderFlags;
+
+impl OrderFlags {
+    const IS_BID: u8 = 1 << 0;
+    const IS_FLIP: u8 = 1 << 1;
+
+    /// Packs logical order flags into a metadata byte.
+    #[inline]
+    fn pack(is_bid: bool, is_flip: bool) -> u8 {
+        (u8::from(is_bid) * Self::IS_BID) | (u8::from(is_flip) * Self::IS_FLIP)
+    }
+
+    /// Returns whether the metadata marks the order as a bid (`true`) or ask (`false`).
+    #[inline]
+    fn is_bid(metadata: u8) -> bool {
+        metadata & Self::IS_BID != 0
+    }
+
+    /// Returns whether the metadata marks the order as a flip order.
+    #[inline]
+    fn is_flip(metadata: u8) -> bool {
+        metadata & Self::IS_FLIP != 0
+    }
+}
+
 /// Compact TIP-1062 physical order layout.
 ///
 /// V1 omits `order_id` by synthesizing it from the `orders` mapping key.
@@ -188,31 +213,6 @@ impl V2Order {
             is_flip: OrderFlags::is_flip(self.metadata),
             flip_tick: self.flip_tick,
         }
-    }
-}
-
-struct OrderFlags;
-
-impl OrderFlags {
-    const IS_BID: u8 = 1 << 0;
-    const IS_FLIP: u8 = 1 << 1;
-
-    /// Packs logical order flags into a metadata byte.
-    #[inline]
-    fn pack(is_bid: bool, is_flip: bool) -> u8 {
-        (u8::from(is_bid) * Self::IS_BID) | (u8::from(is_flip) * Self::IS_FLIP)
-    }
-
-    /// Returns whether the metadata marks the order as a bid (`true`) or ask (`false`).
-    #[inline]
-    fn is_bid(metadata: u8) -> bool {
-        metadata & Self::IS_BID != 0
-    }
-
-    /// Returns whether the metadata marks the order as a flip order.
-    #[inline]
-    fn is_flip(metadata: u8) -> bool {
-        metadata & Self::IS_FLIP != 0
     }
 }
 
@@ -928,7 +928,7 @@ mod tests {
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)
     }
 
-    fn store_physical_order(
+    fn store_versioned_order(
         exchange: &mut StablecoinDEX,
         version: OrderVersion,
         order: Order,
@@ -941,7 +941,11 @@ mod tests {
                 V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
             }
             OrderVersion::V2 => {
-                ensure_book_index(exchange, order.book_key)?;
+                if !exchange.book_key_index(order.book_key)?.0 {
+                    let index = exchange.book_keys.len()? as u32;
+                    exchange.book_keys.push(order.book_key)?;
+                    exchange.set_book_index(index)?;
+                }
                 let (_, book_index) = exchange.book_key_index(order.book_key)?;
                 let handler = &exchange.orders[order.order_id()];
                 let mut storage = handler.clone();
@@ -1907,17 +1911,7 @@ mod tests {
         index: usize,
         order: Order,
     ) -> StorageResult<()> {
-        store_physical_order(exchange, layout.version_at(index, mixed_offset), order)
-    }
-
-    fn ensure_book_index(exchange: &mut StablecoinDEX, book_key: B256) -> StorageResult<()> {
-        if exchange.book_key_index(book_key)?.0 {
-            return Ok(());
-        }
-
-        let index = exchange.book_keys.len()? as u32;
-        exchange.book_keys.push(book_key)?;
-        exchange.set_book_index(index)
+        store_versioned_order(exchange, layout.version_at(index, mixed_offset), order)
     }
 
     fn assert_order_versions(
