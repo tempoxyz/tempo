@@ -146,6 +146,7 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
+bitflags = "2.11.1"
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "8bbc5e6" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "8bbc5e6", default-features = false }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "8bbc5e6" }
