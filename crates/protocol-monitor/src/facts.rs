@@ -187,8 +187,8 @@ pub struct OrderedLog {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecodedEventKind {
-    TIP20Transfer(ITIP20::Transfer),
-    Unknown { topic0: B256 },
+    Tip20Transfer(ITIP20::Transfer),
+    Unknown { topic0: Option<B256> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

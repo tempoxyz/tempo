@@ -25,7 +25,7 @@ pub enum EntityKind {
 
 /// Stable monitor-owned key identifying the subject of a check, dirty-set row, finding, or evidence.
 ///
-/// String keys are a Phase B representation. Phase C store schemas may replace these with typed
+/// String keys are the initial representation. Store schemas may replace these with typed
 /// encodings while preserving the same entity semantics.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityKey {
