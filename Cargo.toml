@@ -13,6 +13,7 @@ publish = false
 [workspace]
 members = [
   "bin/tempo",
+  "bin/tempo-protocol-monitor",
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
@@ -141,6 +142,7 @@ tempo-payload-types = { path = "crates/payload/types", default-features = false 
 tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
+protocol-monitor = { path = "crates/protocol-monitor", default-features = false }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }

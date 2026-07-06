@@ -8052,6 +8052,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "protocol-monitor"
+version = "1.10.1"
+
+[[package]]
 name = "pyroscope"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13454,6 +13458,13 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-contracts",
  "tracing-subscriber 0.3.23",
+]
+
+[[package]]
+name = "tempo-protocol-monitor"
+version = "1.10.1"
+dependencies = [
+ "protocol-monitor",
 ]
 
 [[package]]
