@@ -37,7 +37,6 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
-use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -1382,8 +1381,6 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            // Capture validator token to report the swap pair on liquidity errors.
-            let mut validator_token = Address::default();
             let result = StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 block,
@@ -1391,8 +1388,6 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    validator_token =
-                        TipFeeManager::new().get_validator_token(block.beneficiary())?;
                     fee_manager.collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
@@ -1413,12 +1408,23 @@ where
                 return Err(match err {
                     TempoPrecompileError::TIPFeeAMMError(
                         TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => FeePaymentError::InsufficientAmmLiquidity {
-                        user_token: fee_token,
-                        validator_token,
-                        fee: gas_balance_spending,
-                    }
-                    .into(),
+                    ) => match fee_manager.get_validator_token(
+                        journal,
+                        block.beneficiary(),
+                        cfg.spec,
+                        StorageActions::disabled(),
+                    ) {
+                        Ok(validator_token) => FeePaymentError::InsufficientAmmLiquidityForPair {
+                            user_token: fee_token,
+                            validator_token,
+                            fee: gas_balance_spending,
+                        }
+                        .into(),
+                        Err(_) => FeePaymentError::InsufficientAmmLiquidity {
+                            fee: gas_balance_spending,
+                        }
+                        .into(),
+                    },
 
                     TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
                         InsufficientBalance { available, .. },
@@ -2534,7 +2540,7 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use crate::{
-        TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
+        ProtocolFeeManager, TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
         tx::TempoBatchCallEnv,
     };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -2551,9 +2557,10 @@ mod tests {
         primitives::hardfork::SpecId,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
+        tip_fee_manager::TipFeeManager,
     };
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
@@ -2643,10 +2650,73 @@ mod tests {
                 .validate_against_state_and_deduct_caller(&mut self.evm, &mut Default::default())
         }
 
+        fn with_fee_manager<F>(self, fee_manager: F) -> Self
+        where
+            F: ProtocolFeeManager<CacheDB<EmptyDB>> + 'static,
+        {
+            let Self { evm, handler } = self;
+            Self {
+                evm: evm.with_fee_manager(fee_manager),
+                handler,
+            }
+        }
+
         fn execute(&mut self, init_gas: &InitialAndFloorGas) -> FrameResult {
             self.handler
                 .execution(&mut self.evm, init_gas)
                 .expect("execution should return a frame result")
+        }
+    }
+
+    #[derive(Debug)]
+    struct ValidatorTokenLookupFailsFeeManager;
+
+    impl<DB: Database> ProtocolFeeManager<DB> for ValidatorTokenLookupFailsFeeManager {
+        fn get_fee_token(
+            &self,
+            _journal: &mut Journal<DB>,
+            tx: &TempoTxEnv,
+            _fee_payer: Address,
+            _spec: TempoHardfork,
+            _actions: StorageActions,
+        ) -> tempo_precompiles::error::Result<Address> {
+            Ok(tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN))
+        }
+
+        fn get_validator_token(
+            &self,
+            _journal: &mut Journal<DB>,
+            _beneficiary: Address,
+            _spec: TempoHardfork,
+            _actions: StorageActions,
+        ) -> tempo_precompiles::error::Result<Address> {
+            Err(TempoPrecompileError::Fatal(
+                "injected validator token lookup failure".to_string(),
+            ))
+        }
+
+        fn collect_fee_pre_tx(
+            &self,
+            _fee_payer: Address,
+            _user_token: Address,
+            _max_amount: U256,
+            _beneficiary: Address,
+            _skip_liquidity_check: bool,
+        ) -> tempo_precompiles::error::Result<Address> {
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InsufficientLiquidity(ITIPFeeAMM::InsufficientLiquidity {}),
+            ))
+        }
+
+        fn collect_fee_post_tx(
+            &self,
+            _fee_payer: Address,
+            _actual_spending: U256,
+            _refund_amount: U256,
+            _fee_token: Address,
+            _beneficiary: Address,
+        ) -> tempo_precompiles::error::Result<U256> {
+            Ok(U256::ZERO)
         }
     }
 
@@ -2745,6 +2815,115 @@ mod tests {
             ),
             "Should reject paused fee token with FeeTokenPaused error"
         );
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() -> eyre::Result<()>
+    {
+        use tempo_contracts::precompiles::IFeeManager;
+
+        let admin = Address::random();
+        let fee_payer = Address::random();
+        let validator = Address::random();
+        let gas_limit = 1_000;
+        let gas_price = 1_000_000_000_000_u128;
+        let fee = calc_gas_balance_spending(gas_limit, gas_price);
+
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T5, |tx_env| {
+            tx_env.inner.caller = fee_payer;
+            tx_env.inner.gas_limit = gas_limit;
+            tx_env.inner.gas_price = gas_price;
+            tx_env.inner.gas_priority_fee = Some(gas_price);
+        });
+        test.evm.inner.ctx.block.beneficiary = validator;
+
+        let (user_token, validator_token) =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                    .with_issuer(admin)
+                    .with_mint(fee_payer, fee)
+                    .with_approval(fee_payer, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                    .apply()?;
+
+                let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                    .with_issuer(admin)
+                    .apply()?;
+
+                TipFeeManager::new().set_validator_token(
+                    validator,
+                    IFeeManager::setValidatorTokenCall {
+                        token: validator_token.address(),
+                    },
+                    Address::random(),
+                )?;
+
+                Ok::<_, TempoPrecompileError>((user_token.address(), validator_token.address()))
+            })?;
+
+        test.evm.inner.ctx.tx.fee_token = Some(user_token);
+
+        let result = test.validate_against_state_and_deduct_caller();
+
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                    FeePaymentError::InsufficientAmmLiquidityForPair {
+                        user_token: reported_user_token,
+                        validator_token: reported_validator_token,
+                        fee: reported_fee,
+                    }
+                ))) if reported_user_token == user_token
+                    && reported_validator_token == validator_token
+                    && reported_fee == fee
+            ),
+            "expected pair-aware insufficient liquidity error, got: {result:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx_insufficient_liquidity_falls_back_when_pair_lookup_fails()
+    -> eyre::Result<()> {
+        let admin = Address::random();
+        let fee_payer = Address::random();
+        let gas_limit = 1_000;
+        let gas_price = 1_000_000_000_000_u128;
+        let fee = calc_gas_balance_spending(gas_limit, gas_price);
+
+        let mut test = TestHandlerEvm::tx(TempoHardfork::T5, |tx_env| {
+            tx_env.inner.caller = fee_payer;
+            tx_env.inner.gas_limit = gas_limit;
+            tx_env.inner.gas_price = gas_price;
+            tx_env.inner.gas_priority_fee = Some(gas_price);
+        })
+        .with_fee_manager(ValidatorTokenLookupFailsFeeManager);
+
+        let user_token =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                TIP20Setup::create("UserToken", "UTK", admin)
+                    .with_issuer(admin)
+                    .with_mint(fee_payer, fee)
+                    .apply()
+                    .map(|token| token.address())
+            })?;
+
+        test.evm.inner.ctx.tx.fee_token = Some(user_token);
+
+        let result = test.validate_against_state_and_deduct_caller();
+
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
+                    FeePaymentError::InsufficientAmmLiquidity { fee: reported_fee }
+                ))) if reported_fee == fee
+            ),
+            "expected generic insufficient liquidity error when pair lookup fails, got: {result:?}"
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -2889,68 +3068,6 @@ mod tests {
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
-    }
-
-    /// A cross-token fee swap with no pool must fail with `InsufficientLiquidity`,
-    /// and the validator token captured for the error must match what was set.
-    #[test]
-    fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair() -> eyre::Result<()> {
-        use tempo_contracts::precompiles::IFeeManager;
-        use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
-        let validator = Address::random();
-
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            // Minted + approved so the pre-tx transfer reaches the route check.
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
-                .with_mint(user, U256::from(10_000))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            // Different token with no pool: no route can be planned.
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .apply()?;
-
-            // Stored under `sender`; `beneficiary` must differ (same-block guard).
-            TipFeeManager::new().set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: validator_token.address(),
-                },
-                Address::random(),
-            )?;
-
-            // The token the handler captures for the error.
-            let captured_validator_token = TipFeeManager::new().get_validator_token(validator)?;
-            assert_eq!(captured_validator_token, validator_token.address());
-
-            let err = TipFeeManager::new()
-                .collect_fee_pre_tx(user, user_token.address(), U256::from(1_000), validator, false)
-                .expect_err("fee swap must fail with insufficient liquidity");
-            assert!(matches!(
-                err,
-                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_))
-            ));
-
-            // The message built from the captured pair must name it.
-            let msg = FeePaymentError::InsufficientAmmLiquidity {
-                user_token: user_token.address(),
-                validator_token: captured_validator_token,
-                fee: U256::from(1_000),
-            }
-            .to_string();
-            assert!(
-                msg.contains(&format!("{} -> {}", user_token.address(), validator_token.address())),
-                "error message must name the swap pair, got: {msg}"
-            );
-
-            Ok(())
-        })
     }
 
     #[test]

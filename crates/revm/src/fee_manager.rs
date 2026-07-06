@@ -21,6 +21,19 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         journal.get_fee_token(tx, fee_payer, spec, actions)
     }
 
+    /// Resolves the validator token used to receive protocol fees.
+    fn get_validator_token(
+        &self,
+        journal: &mut Journal<DB>,
+        beneficiary: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> TempoResult<Address> {
+        journal.with_read_only_storage_ctx(spec, actions, || {
+            TipFeeManager::new().get_validator_token(beneficiary)
+        })
+    }
+
     /// Collects the maximum possible fee before transaction execution.
     fn collect_fee_pre_tx(
         &self,
