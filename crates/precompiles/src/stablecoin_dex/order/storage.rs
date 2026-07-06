@@ -1918,7 +1918,7 @@ mod tests {
 
         let index = exchange.book_keys.len()? as u32;
         exchange.book_keys.push(book_key)?;
-        exchange.set_index_for_key(book_key, index)
+        exchange.set_book_index(index)
     }
 
     fn assert_order_versions(

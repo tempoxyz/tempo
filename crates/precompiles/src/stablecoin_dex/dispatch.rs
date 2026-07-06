@@ -86,9 +86,9 @@ impl Precompile for StablecoinDEX {
                     #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
                     #[schedule(since = T8)]
-                    setIndexForKey(call) => mutate_void(call, msg_sender, |_, c| {
+                    setBookIndex(call) => mutate_void(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
-                        self.set_index_for_key(c.bookKey, c.index)
+                        self.set_book_index(c.index)
                     }),
                 }
             }

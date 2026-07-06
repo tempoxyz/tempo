@@ -77,7 +77,7 @@ crate::sol! {
         function books(bytes32 pairKey) external view returns (Orderbook memory);
         function bookIndexForKey(bytes32 bookKey) external view returns (bool set, uint32 index);
         function bookKeyForIndex(uint32 index) external view returns (bytes32 bookKey);
-        function setIndexForKey(bytes32 bookKey, uint32 index) external;
+        function setBookIndex(uint32 index) external;
         function storageCredits(address user) external view returns (uint64 credits);
 
         // Constants (exposed as view functions)
@@ -119,6 +119,5 @@ crate::sol! {
         error InvalidBaseToken();
         error OrderNotStale();
         error IndexAlreadySet();
-        error InvalidBookIndex();
     }
 }

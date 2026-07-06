@@ -525,18 +525,14 @@ impl StablecoinDEX {
     }
 
     /// Persists the `book_keys` vector index for an existing orderbook.
-    pub fn set_index_for_key(&mut self, book_key: B256, index: u32) -> Result<()> {
-        if book_key != self.book_key_for_index(index)? {
-            return Err(StablecoinDEXError::invalid_book_index().into());
-        }
-
+    pub fn set_book_index(&mut self, index: u32) -> Result<()> {
+        let book_key = self.book_key_for_index(index)?;
         let mut state = self.book_state(book_key)?;
         if state.is_index_set {
-            return if index == state.index {
-                Ok(())
-            } else {
-                Err(StablecoinDEXError::index_already_set().into())
-            };
+            if index == state.index {
+                return Ok(());
+            }
+            return Err(StablecoinDEXError::index_already_set().into());
         }
 
         state.index = index;
