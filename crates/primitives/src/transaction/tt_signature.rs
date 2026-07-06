@@ -613,7 +613,6 @@ impl TempoSignature {
         // PrimitiveSignature. The exact 65-byte secp256k1 path remains untyped for
         // backwards compatibility.
         if data.len() > 1
-            && data.len() != SECP256K1_SIGNATURE_LENGTH
             && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
         {
             let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
@@ -1080,6 +1079,10 @@ mod tests {
         let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
         let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
         (signing_key, pub_key_x, pub_key_y)
+    }
+
+    fn valid_multisig_owner_signature_bytes() -> Bytes {
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
     }
 
     /// Sign a message hash with P256, normalize s, return (r, s)
@@ -1974,8 +1977,8 @@ mod tests {
     #[test]
     fn test_signature_type_is_none_for_multisig() {
         let signature = TempoSignature::Multisig(MultisigSignature::new(
-            Address::ZERO,
-            vec![Bytes::from(vec![0xff])],
+            Address::repeat_byte(0x11),
+            vec![valid_multisig_owner_signature_bytes()],
             None,
         ));
 
@@ -1998,7 +2001,7 @@ mod tests {
         let inner_hash = B256::repeat_byte(0x24);
         let signature = TempoSignature::Multisig(MultisigSignature::new(
             account,
-            vec![Bytes::from(vec![0xff])],
+            vec![valid_multisig_owner_signature_bytes()],
             Some(config.clone()),
         ));
 
@@ -2010,7 +2013,7 @@ mod tests {
             multisig_signature
                 .verify_with_trusted_config(digest, &config)
                 .is_err(),
-            "stateful multisig authorization should still reject the invalid owner signature"
+            "stateful multisig authorization should still reject a non-owner signature"
         );
     }
 

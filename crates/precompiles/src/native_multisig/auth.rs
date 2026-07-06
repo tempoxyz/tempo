@@ -130,13 +130,7 @@ impl NativeMultisig {
         let digest = signature.digest(inner_digest);
         let mut weight_accumulator = MultisigWeightAccumulator::new(config.threshold());
 
-        for (signature_index, signature_bytes) in signature.signatures().iter().enumerate() {
-            let owner_approval = TempoSignature::from_bytes(signature_bytes).map_err(|reason| {
-                NativeMultisigAuthError::invalid_transaction(format!(
-                    "invalid multisig owner signature: {reason}"
-                ))
-            })?;
-
+        for (signature_index, owner_approval) in signature.signatures().iter().enumerate() {
             let (owner, nested_signature) = match owner_approval {
                 TempoSignature::Primitive(primitive) => {
                     let owner = primitive.recover_signer(&digest).map_err(|_| {
@@ -184,7 +178,7 @@ impl NativeMultisig {
                 account_path.push(owner);
                 self.verify_authorization_inner(
                     digest,
-                    &nested_signature,
+                    nested_signature,
                     NativeMultisigAuthConfig::Registered {
                         account: owner,
                         threshold,
