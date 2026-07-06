@@ -613,7 +613,6 @@ impl TempoSignature {
         // PrimitiveSignature. The exact 65-byte secp256k1 path remains untyped for
         // backwards compatibility.
         if data.len() > 1
-            && data.len() != SECP256K1_SIGNATURE_LENGTH
             && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
         {
             let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
