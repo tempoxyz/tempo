@@ -68,14 +68,14 @@ async fn consensus_subscribe_and_query_finalization() {
             .unwrap();
 
         match event {
-            Event::Notarized { block, .. } => {
+            Event::Notarized { block, .. } if !saw_notarized => {
                 let height = block.block.inner.number;
                 assert!(height >= notarized_height);
 
                 notarized_height = height;
                 saw_notarized = true;
             }
-            Event::Finalized { block, .. } => {
+            Event::Finalized { block, .. } if !saw_finalized => {
                 let height = block.block.inner.number;
                 assert!(height >= finalized_height);
 
@@ -89,7 +89,7 @@ async fn consensus_subscribe_and_query_finalization() {
                 finalized_height = height;
                 saw_finalized = true;
             }
-            Event::Nullified { .. } => {}
+            _ => {}
         }
     }
 
