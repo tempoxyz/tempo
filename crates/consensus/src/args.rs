@@ -307,10 +307,6 @@ pub struct Args {
     )]
     pub finalized_blocks_retention: u64,
 
-    /// Require startup to use a consensus finalized certificate archive.
-    #[arg(long = "consensus.strict-startup", default_value_t = true)]
-    pub strict_startup: bool,
-
     /// Deprecated compatibility flag. Ignored because the legacy immutable
     /// finalized blocks archive has been removed.
     #[arg(
@@ -511,18 +507,6 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
-    }
-
-    #[test]
-    fn strict_startup_flag_parses() {
-        let cli = parse(&["--dev", "--consensus.strict-startup"]);
-        assert!(cli.consensus.strict_startup);
-    }
-
-    #[test]
-    fn strict_startup_defaults_to_true() {
-        let cli = parse(&["--dev"]);
-        assert!(cli.consensus.strict_startup);
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

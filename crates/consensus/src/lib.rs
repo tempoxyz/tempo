@@ -27,7 +27,7 @@ use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
 use commonware_utils::NZUsize;
-use eyre::{OptionExt, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -51,8 +51,6 @@ pub async fn run_consensus_stack(
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
-    ensure!(config.strict_startup, "strict startup is required");
-
     let share = config
         .signing_share
         .as_ref()
@@ -176,8 +174,6 @@ pub async fn run_follow_stack(
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
-    ensure!(config.strict_startup, "strict startup is required");
-
     let chain_spec = execution_node.chain_spec();
 
     let epoch_length = chain_spec
