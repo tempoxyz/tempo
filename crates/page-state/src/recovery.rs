@@ -69,10 +69,10 @@ where
     let mut report = RecoveryReport::default();
 
     if watermark.is_none() {
-        for address in sorted_addresses(source.page_accounts()?) {
-            rebuild_full_account(store, source, address, &mut updates, &mut report)?;
-        }
-        return Ok((updates, report));
+        return Err(PageStateError::Recovery(
+            "page-state sidecar is missing; re-run init-from-binary-dump to seed page roots"
+                .to_string(),
+        ));
     }
 
     let watermark = watermark.expect("watermark checked above");
@@ -152,13 +152,6 @@ where
         .is_none_or(|expected| expected == root))
 }
 
-fn sorted_addresses(addresses: Vec<Address>) -> Vec<Address> {
-    let mut addresses = addresses;
-    addresses.sort_unstable();
-    addresses.dedup();
-    addresses
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,37 +217,20 @@ mod tests {
     }
 
     #[test]
-    fn full_recovery_builds_from_plain_pages() {
-        let address = address!("0x20c0000000000000000000000000000000000001");
-        let index = PageIndex::new(U256::ZERO);
-        let page = Page::from_iter([(3, U256::from(42))]);
-        let expected = root_from_pages(address, [(index, page.clone())]);
+    fn missing_sidecar_recovery_requires_seeded_page_store() {
         let source = TestRecoverySource {
             tip: Watermark {
                 block_number: 12,
                 block_hash: B256::repeat_byte(12),
             },
-            pages: [(address, [(index, page.clone())].into())].into(),
-            sentinels: [(address, expected)].into(),
             ..Default::default()
         };
         let store = MemoryPageStore::default();
 
-        let (updates, report) =
-            recover_from_plain_state(&store, &source, source.best_block().unwrap(), None, [])
-                .unwrap();
+        let err = recover_from_plain_state(&store, &source, source.best_block().unwrap(), None, [])
+            .unwrap_err();
 
-        let mut recovered = store;
-        recovered.apply(&updates);
-        assert_eq!(recovered.page(address, index).unwrap(), Some(page));
-        assert_eq!(recovered.root(address).unwrap(), Some(expected));
-        assert_eq!(
-            report,
-            RecoveryReport {
-                pages_rebuilt: 1,
-                accounts_rebuilt_full: 1,
-            }
-        );
+        assert!(err.to_string().contains("page-state sidecar is missing"));
     }
 
     #[test]

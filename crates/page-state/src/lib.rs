@@ -16,7 +16,7 @@ pub mod store;
 pub mod updates;
 
 pub use db::{MdbxPageStore, Watermark};
-pub use manager::{PageStateError, PageStateManager};
+pub use manager::{PageBlockOutput, PageStateError, PageStateManager};
 pub use page::{PAGE_DOMAIN, PAGE_INDEX_BITS, PAGE_SIZE_BYTES, PAGE_SIZE_WORDS, Page, PageIndex};
 pub use recovery::{
     PageStateRecoverySource, RecoveryPageKey, RecoveryReport, recover_from_plain_state,

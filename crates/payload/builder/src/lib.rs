@@ -1034,7 +1034,7 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let mut hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
+        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
             .and_then(|handle| handle.try_take_hashed_state_rx())
             .map(|rx| rx.recv())
@@ -1044,23 +1044,28 @@ where
             finish_provider.hashed_post_state(&db.bundle_state)
         };
 
-        let page_state_updates = if page_storage_active {
+        let page_block_output = if page_storage_active {
             let manager = self.page_state_manager.as_ref().ok_or_else(|| {
                 PayloadBuilderError::other(std::io::Error::other(
                     "T9 page storage is active but no page-state manager is installed",
                 ))
             })?;
-            let updates = manager
+            let output = manager
                 .process_block(
                     attributes.timestamp,
                     parent_header.hash(),
-                    &mut db.bundle_state,
-                    &mut hashed_state,
+                    &db.bundle_state,
+                    &hashed_state,
                 )
                 .map_err(PayloadBuilderError::other)?;
-            Some(updates)
+            Some(output)
         } else {
             None
+        };
+        let (page_state_updates, page_trie_input) = if let Some(output) = page_block_output {
+            (Some(output.updates), Some(output.trie_input))
+        } else {
+            (None, None)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1116,8 +1121,9 @@ where
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
+            let trie_input = page_trie_input.unwrap_or_else(|| hashed_state.clone());
             let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
+                .state_root_with_updates(trie_input)
                 .map_err(BlockExecutionError::other)?;
 
             (state_root, Arc::new(trie_updates))

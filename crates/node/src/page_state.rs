@@ -195,27 +195,31 @@ where
         output: Arc<BlockExecutionOutput<<TempoPrimitives as NodePrimitives>::Receipt>>,
         hashed_state: &reth_engine_tree::tree::payload_validator::LazyHashedPostState,
     ) -> ProviderResult<StateRootJobOutcome> {
-        let mut bundle = output.state.clone();
-        let mut hashed_state = hashed_state.get().as_ref().clone();
+        let hashed_state = hashed_state.get();
         let updates = self
             .manager
             .process_block(
                 self.timestamp,
                 block.parent_hash(),
-                &mut bundle,
-                &mut hashed_state,
+                &output.state,
+                hashed_state.as_ref(),
             )
             .map_err(ProviderError::other)?;
 
         let provider = self.provider_builder.clone().build()?;
-        let (state_root, trie_updates) = provider.state_root_with_updates(hashed_state.clone())?;
+        let (state_root, trie_updates) = provider.state_root_with_updates(updates.trie_input)?;
         if state_root == block.state_root() {
             self.manager
-                .insert_block(block.hash(), block.number(), block.parent_hash(), updates)
+                .insert_block(
+                    block.hash(),
+                    block.number(),
+                    block.parent_hash(),
+                    updates.updates,
+                )
                 .map_err(ProviderError::other)?;
         }
 
         Ok(StateRootJobOutcome::new(state_root, Arc::new(trie_updates))
-            .with_hashed_state(Some(Arc::new(hashed_state))))
+            .with_hashed_state(Some(hashed_state.clone())))
     }
 }

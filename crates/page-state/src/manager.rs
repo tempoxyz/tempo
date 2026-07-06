@@ -2,13 +2,13 @@ use crate::{
     db::{MdbxPageStore, Watermark},
     page::{PageIndex, page_offset},
     recovery::{PageStateRecoverySource, recover_from_plain_state},
-    sentinel::{self, root_to_storage_value},
+    sentinel,
     smt::{PageSmt, empty_page_root},
     store::{MemoryPageStore, OverlayPageStore, PageStoreError, PageStoreRead},
     updates::PageStateUpdates,
 };
-use alloy_primitives::{Address, B256, U256};
-use reth_revm::db::{BundleState, states::StorageSlot};
+use alloy_primitives::{Address, B256, U256, keccak256, map::B256Set};
+use reth_revm::db::BundleState;
 use reth_trie::HashedPostState;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -24,6 +24,12 @@ pub enum PageStateError {
     Store(#[from] PageStoreError),
     #[error("page-state recovery error: {0}")]
     Recovery(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageBlockOutput {
+    pub updates: PageStateUpdates,
+    pub trie_input: HashedPostState,
 }
 
 #[derive(Clone)]
@@ -125,11 +131,14 @@ impl PageStateManager {
         &self,
         timestamp: u64,
         parent_hash: B256,
-        bundle: &mut BundleState,
-        hashed_state: &mut HashedPostState,
-    ) -> Result<PageStateUpdates, PageStateError> {
+        bundle: &BundleState,
+        hashed_state: &HashedPostState,
+    ) -> Result<PageBlockOutput, PageStateError> {
         let Some(predicate) = &self.predicate else {
-            return Ok(PageStateUpdates::default());
+            return Ok(PageBlockOutput {
+                updates: PageStateUpdates::default(),
+                trie_input: hashed_state.clone(),
+            });
         };
 
         let mut dirty_words = BTreeMap::<Address, BTreeMap<PageIndex, BTreeMap<u8, U256>>>::new();
@@ -151,13 +160,15 @@ impl PageStateManager {
         }
 
         if dirty_words.is_empty() {
-            return Ok(PageStateUpdates::default());
+            return Ok(PageBlockOutput {
+                updates: PageStateUpdates::default(),
+                trie_input: hashed_state.clone(),
+            });
         }
 
         let store = self.store_at(parent_hash);
         let mut updates = PageStateUpdates::default();
         for (address, account_words) in dirty_words {
-            let old_root = store.root(address)?.unwrap_or_else(empty_page_root);
             let mut dirty_pages = BTreeMap::new();
             for (index, words) in account_words {
                 let mut page = store.page(address, index)?.unwrap_or_default();
@@ -168,12 +179,14 @@ impl PageStateManager {
             }
 
             let account_updates = PageSmt::new(&store, address).update(&dirty_pages)?;
-            insert_sentinel_plain_storage(bundle, address, old_root, account_updates.new_root);
             updates.accounts.insert(address, account_updates);
         }
 
-        sentinel::apply(hashed_state, &updates, |_| false);
-        Ok(updates)
+        let trie_input = build_trie_input(hashed_state, &updates);
+        Ok(PageBlockOutput {
+            updates,
+            trie_input,
+        })
     }
 
     pub fn insert_block(
@@ -280,21 +293,25 @@ impl PageStateManager {
     }
 }
 
-fn insert_sentinel_plain_storage(
-    bundle: &mut BundleState,
-    address: Address,
-    old_root: B256,
-    new_root: B256,
-) {
-    if let Some(account) = bundle.state.get_mut(&address) {
-        account.storage.insert(
-            U256::from_be_bytes(sentinel::sentinel_slot().0),
-            StorageSlot::new_changed(
-                root_to_storage_value(old_root),
-                root_to_storage_value(new_root),
-            ),
-        );
+fn build_trie_input(hashed_state: &HashedPostState, updates: &PageStateUpdates) -> HashedPostState {
+    if updates.accounts.is_empty() {
+        return hashed_state.clone();
     }
+
+    let page_accounts = updates.accounts.keys().map(keccak256).collect::<B256Set>();
+    let mut trie_input = HashedPostState {
+        accounts: hashed_state.accounts.clone(),
+        storages: hashed_state
+            .storages
+            .iter()
+            .filter_map(|(&hashed_address, storage)| {
+                (!page_accounts.contains(&hashed_address))
+                    .then(|| (hashed_address, storage.clone()))
+            })
+            .collect(),
+    };
+    sentinel::apply(&mut trie_input, updates);
+    trie_input
 }
 
 #[cfg(test)]
@@ -329,25 +346,30 @@ mod tests {
     #[test]
     fn process_block_rewrites_page_account_to_sentinel() {
         let address = address!("0x20c0000000000000000000000000000000000001");
-        let mut bundle = bundle_with_storage(address, [(U256::from(7), U256::from(42))]);
-        let mut hashed_state =
+        let bundle = bundle_with_storage(address, [(U256::from(7), U256::from(42))]);
+        let hashed_state =
             HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state.iter());
+        let original_hashed = hashed_state.clone();
         let manager = PageStateManager::new_ephemeral(
             MemoryPageStore::default(),
             PageAccountPredicate::new(DEV.clone()),
         );
 
-        let updates = manager
-            .process_block(0, B256::ZERO, &mut bundle, &mut hashed_state)
+        let output = manager
+            .process_block(0, B256::ZERO, &bundle, &hashed_state)
             .unwrap();
 
-        assert_eq!(updates.accounts.len(), 1);
+        assert_eq!(output.updates.accounts.len(), 1);
+        assert_eq!(hashed_state, original_hashed);
         let hashed_address = alloy_primitives::keccak256(address);
-        let storage = hashed_state.storages.get(&hashed_address).unwrap();
+        let original_storage = hashed_state.storages.get(&hashed_address).unwrap();
+        assert!(original_storage.storage.len() > 1 || !original_storage.wiped);
+        let storage = output.trie_input.storages.get(&hashed_address).unwrap();
+        assert!(storage.wiped);
         assert_eq!(storage.storage.len(), 1);
         assert!(storage.storage.contains_key(&sentinel_slot_hashed()));
         assert!(
-            bundle.state[&address]
+            !bundle.state[&address]
                 .storage
                 .contains_key(&U256::from_be_bytes(sentinel::sentinel_slot().0))
         );
@@ -356,20 +378,21 @@ mod tests {
     #[test]
     fn process_block_leaves_non_page_account_storage_untouched() {
         let address = address!("0x1111111111111111111111111111111111111111");
-        let mut bundle = bundle_with_storage(address, [(U256::from(7), U256::from(42))]);
+        let bundle = bundle_with_storage(address, [(U256::from(7), U256::from(42))]);
         let original_hashed =
             HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state.iter());
-        let mut hashed_state = original_hashed.clone();
+        let hashed_state = original_hashed.clone();
         let manager = PageStateManager::new_ephemeral(
             MemoryPageStore::default(),
             PageAccountPredicate::new(DEV.clone()),
         );
 
-        let updates = manager
-            .process_block(0, B256::ZERO, &mut bundle, &mut hashed_state)
+        let output = manager
+            .process_block(0, B256::ZERO, &bundle, &hashed_state)
             .unwrap();
 
-        assert!(updates.is_empty());
+        assert!(output.updates.is_empty());
         assert_eq!(hashed_state, original_hashed);
+        assert_eq!(output.trie_input, original_hashed);
     }
 }

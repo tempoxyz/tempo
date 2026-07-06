@@ -1,5 +1,5 @@
 use crate::updates::PageStateUpdates;
-use alloy_primitives::{Address, B256, U256, keccak256, map::B256Map};
+use alloy_primitives::{B256, U256, keccak256, map::B256Map};
 use reth_trie::{HashedPostState, HashedStorage};
 use std::sync::LazyLock;
 
@@ -20,17 +20,13 @@ pub fn root_to_storage_value(root: B256) -> U256 {
     U256::from_be_bytes(bytes)
 }
 
-pub fn apply(
-    hashed_state: &mut HashedPostState,
-    updates: &PageStateUpdates,
-    wiped: impl Fn(&Address) -> bool,
-) {
+pub fn apply(hashed_state: &mut HashedPostState, updates: &PageStateUpdates) {
     for (address, account) in &updates.accounts {
         let hashed_address = keccak256(address);
         hashed_state.storages.insert(
             hashed_address,
             HashedStorage {
-                wiped: wiped(address),
+                wiped: true,
                 storage: B256Map::from_iter([(
                     sentinel_slot_hashed(),
                     root_to_storage_value(account.new_root),
