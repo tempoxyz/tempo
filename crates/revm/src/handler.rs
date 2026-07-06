@@ -1239,13 +1239,6 @@ where
                             }
                         })?;
                     }
-                    if tempo_tx_env.key_authorization.is_some() {
-                        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                            reason: "native multisig transactions cannot carry key_authorization"
-                                .to_string(),
-                        }
-                        .into());
-                    }
                     if account_has_code_or_delegation {
                         return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
                             reason: "native multisig account cannot have code or EIP-7702 delegation"
