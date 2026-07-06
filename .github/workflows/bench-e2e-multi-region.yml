@@ -290,7 +290,7 @@ jobs:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
           GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 
