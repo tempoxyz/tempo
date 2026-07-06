@@ -18,6 +18,7 @@ use tracing::info;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers,
+    consensus_snapshot::write_consensus_snapshot,
     metrics::{
         MetricsExt, wait_for_height_with_interval, wait_for_metrics,
         wait_for_metrics_with_interval, wait_for_participants, wait_for_participants_with_interval,
@@ -47,7 +48,7 @@ fn joins_from_snapshot() {
 
         // The validator that will donate its address to the snapshot syncing
         // validator.
-        let donor = {
+        let mut donor = {
             let idx = validators
                 .iter()
                 .position(|node| node.consensus_config().share.is_none())
@@ -108,25 +109,27 @@ fn joins_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
-        receiver.stop().await;
         let last_epoch_before_stop = context
             .to_metrics()
             .for_scope(&receiver)
             .latest_consensus_epoch()
             .expect("validator had no entry for latest epoch");
+        let execution_provider = receiver.execution_provider();
+        receiver.stop().await;
         info!(%last_epoch_before_stop, "stopped the original validator");
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
-        receiver.uid = donor.uid;
-        receiver.private_key = donor.private_key;
-        {
-            let peer_manager = receiver.consensus_config.peer_manager.clone();
-            receiver.consensus_config = donor.consensus_config;
-            receiver.consensus_config.peer_manager = peer_manager;
-        }
-        receiver.network_address = donor.network_address;
-        receiver.chain_address = donor.chain_address;
+        let target_partition_prefix = donor.consensus_config.partition_prefix.clone();
+        write_consensus_snapshot(
+            &context,
+            &receiver,
+            execution_provider,
+            &target_partition_prefix,
+        )
+        .await;
+        donor.consensus_config.strict_startup = true;
+        receiver.adopt_identity_from(donor);
         receiver.start(&context).await;
         connect_execution_to_peers(&receiver, &validators).await;
 
@@ -142,11 +145,13 @@ fn joins_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&receiver).latest_consensus_epoch() {
-                assert!(epoch > 0, "validator should never boot into genesis epoch");
-            }
-
-            metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+            // Since the snapshot does not include secret material, there's an epoch's
+            // worth of downtime before the replacement enters/participates.
+            metrics
+                .for_scope(&receiver)
+                .latest_consensus_epoch()
+                .is_some_and(|epoch| epoch > 0)
+                && metrics.consensus_at_epoch(last_epoch_before_stop + 2) == 4
         })
         .await;
     });
@@ -172,7 +177,7 @@ fn can_restart_after_joining_from_snapshot() {
 
         // The validator that will donate its address to the snapshot syncing
         // validator.
-        let donor = {
+        let mut donor = {
             let idx = validators
                 .iter()
                 .position(|node| node.consensus_config().share.is_none())
@@ -233,13 +238,13 @@ fn can_restart_after_joining_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
-        receiver.stop().await;
-
         let last_epoch_before_stop = context
             .to_metrics()
             .for_scope(&receiver)
             .latest_consensus_epoch()
             .expect("validator had no entry for latest epoch");
+        let execution_provider = receiver.execution_provider();
+        receiver.stop().await;
 
         info!(
             %last_epoch_before_stop,
@@ -249,15 +254,16 @@ fn can_restart_after_joining_from_snapshot() {
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
-        receiver.uid = donor.uid;
-        receiver.private_key = donor.private_key;
-        {
-            let peer_manager = receiver.consensus_config.peer_manager.clone();
-            receiver.consensus_config = donor.consensus_config;
-            receiver.consensus_config.peer_manager = peer_manager;
-        }
-        receiver.network_address = donor.network_address;
-        receiver.chain_address = donor.chain_address;
+        let target_partition_prefix = donor.consensus_config.partition_prefix.clone();
+        write_consensus_snapshot(
+            &context,
+            &receiver,
+            execution_provider,
+            &target_partition_prefix,
+        )
+        .await;
+        donor.consensus_config.strict_startup = true;
+        receiver.adopt_identity_from(donor);
         receiver.start(&context).await;
         connect_execution_to_peers(&receiver, &validators).await;
 
@@ -273,11 +279,13 @@ fn can_restart_after_joining_from_snapshot() {
                 validator catching up; there is likely a bug",
             );
 
-            if let Some(epoch) = metrics.for_scope(&receiver).latest_consensus_epoch() {
-                assert!(epoch > 0, "validator should never boot into genesis epoch");
-            }
-
-            metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+            // Since the snapshot does not include secret material, there's an epoch's
+            // worth of downtime before the replacement enters/participates.
+            metrics
+                .for_scope(&receiver)
+                .latest_consensus_epoch()
+                .is_some_and(|epoch| epoch > 0)
+                && metrics.consensus_at_epoch(last_epoch_before_stop + 2) == 4
         })
         .await;
 

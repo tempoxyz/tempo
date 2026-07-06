@@ -9,6 +9,7 @@ use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
+    Heightable as _,
     marshal::Update,
     types::{Epocher, FixedEpocher, Height},
 };
@@ -27,6 +28,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
+    consensus::Digest,
     utils::public_key_to_b256,
     validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
 };
@@ -50,7 +52,8 @@ where
     oracle: TPeerManager,
     execution_node: Arc<TempoFullNode>,
     epoch_strategy: FixedEpocher,
-    last_finalized_height: Height,
+    finalized_floor: Height,
+    latest_observed_finalized_tip: (Height, Digest),
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
@@ -71,7 +74,8 @@ where
             oracle,
             execution_node,
             epoch_strategy,
-            last_finalized_height,
+            finalized_floor,
+            finalized_tip,
         }: super::Config<TPeerManager>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> Self {
@@ -88,7 +92,8 @@ where
             oracle,
             execution_node,
             epoch_strategy,
-            last_finalized_height,
+            finalized_floor,
+            latest_observed_finalized_tip: finalized_tip,
             mailbox,
             peers,
             last_tracked_peer_set: None,
@@ -144,25 +149,31 @@ where
                 let _ = response.send(receiver);
             }
             Message::Finalized(update) => match *update {
-                Update::Block(_, ack) => {
+                Update::Block(block, ack) => {
+                    self.observe_finalized_tip((block.height(), block.digest()));
                     let _ = self.refresh_peers().await;
                     ack.acknowledge();
                     self.reset_peer_update_timer();
                 }
-                Update::Tip { .. } => {}
+                Update::Tip(_, height, digest) => {
+                    self.observe_finalized_tip((height, digest));
+                    let _ = self.refresh_peers().await;
+                    self.reset_peer_update_timer();
+                }
             },
         }
         Ok(())
     }
 
-    /// Reads the peers given the latest finalized state.
-    /// and finalized state.
+    /// Reads peers from the latest finalized state allowed by consensus.
     #[instrument(skip_all, err)]
     async fn refresh_peers(&mut self) -> eyre::Result<()> {
         // Always take whatever is higher: the last finalized height as per
         // consensus layer (greater than 0 only on restarts with populated
         // consensus state), or the highest finalized block number from the
-        // execution layer.
+        // execution layer. Cap the result by the latest consensus-observed
+        // finalized tip so EL-derived reads cannot move ahead of the
+        // consensus startup/archive view.
         //
         // This works even if the execution layer was replaced with a snapshot.
         //
@@ -176,8 +187,9 @@ where
             .provider
             .finalized_block_number()
             .wrap_err("unable to read highest finalized block from execution layer")?
-            .unwrap_or(self.last_finalized_height.get())
-            .max(self.last_finalized_height.get());
+            .unwrap_or(self.finalized_floor.get())
+            .max(self.finalized_floor.get())
+            .min(self.latest_observed_finalized_tip.0.get());
 
         // Short circuit - no need to read the same state if there is no new data.
         if self
@@ -248,6 +260,12 @@ where
             .await;
 
         Ok(())
+    }
+
+    fn observe_finalized_tip(&mut self, tip: (Height, Digest)) {
+        if tip.0 >= self.latest_observed_finalized_tip.0 {
+            self.latest_observed_finalized_tip = tip;
+        }
     }
 
     async fn track_or_overwrite(&mut self, height: u64, peers: Peers) {

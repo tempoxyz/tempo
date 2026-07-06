@@ -77,6 +77,7 @@ pub fn apply_refund<DB: Database, I>(
         evm.actions.record(StorageAction::Sstore(
             STORAGE_CREDITS_ADDRESS,
             key,
+            old_word,
             new_word,
         ));
     }

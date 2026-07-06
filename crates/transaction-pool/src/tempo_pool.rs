@@ -1265,18 +1265,17 @@ pub(crate) fn exceeds_spending_limit(
             StorageActions::disabled(),
             || -> TempoPrecompileResult<bool> {
                 let keychain = AccountKeychain::new();
-                if !keychain.keys[subject.account][subject.key_id]
-                    .read()?
-                    .enforce_limits
-                {
+                let key = keychain.keys[subject.account][subject.key_id].read()?;
+                if !key.enforce_limits {
                     return Ok(false);
                 }
 
-                let remaining = keychain.effective_remaining_limit(
+                let remaining = keychain.effective_remaining_limit_with_key(
                     subject.account,
                     subject.key_id,
                     subject.fee_token,
                     current_timestamp,
+                    &key,
                 )?;
                 Ok(fee_token_cost > remaining)
             },

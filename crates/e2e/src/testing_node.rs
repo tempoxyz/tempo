@@ -173,6 +173,17 @@ where
         &mut self.consensus_config
     }
 
+    pub fn adopt_identity_from(&mut self, identity_source: Self) {
+        let peer_manager = self.consensus_config.peer_manager.clone();
+
+        self.uid = identity_source.uid;
+        self.private_key = identity_source.private_key;
+        self.consensus_config = identity_source.consensus_config;
+        self.consensus_config.peer_manager = peer_manager;
+        self.network_address = identity_source.network_address;
+        self.chain_address = identity_source.chain_address;
+    }
+
     /// Get a reference to the oracle.
     pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
         &self.oracle

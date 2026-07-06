@@ -37,6 +37,7 @@ use rand_core::CryptoRngCore;
 use reth_node_metrics::recorder::PrometheusRecorder;
 use tempo_consensus::{consensus, feed::FeedStateHandle};
 
+pub mod consensus_snapshot;
 pub mod execution_runtime;
 pub mod metrics;
 pub use execution_runtime::ExecutionNodeConfig;
@@ -310,6 +311,7 @@ pub async fn setup_validators(
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
+            strict_startup: true,
         };
 
         nodes.push(TestingNode::new(

@@ -101,6 +101,13 @@ jobs:
         run: cargo doc --workspace --all-features --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
+      - name: Exclude rustdocs from indexing
+        if: github.ref_name == 'main' && github.event_name == 'push'
+        run: |
+          {
+            echo "User-agent: *"
+            echo "Disallow: /"
+          } > target/doc/robots.txt
       - name: Setup Pages
         if: github.ref_name == 'main' && github.event_name == 'push'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

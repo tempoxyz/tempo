@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use commonware_consensus::types::FixedEpocher;
+use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PrivateKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
@@ -50,6 +50,10 @@ pub(crate) struct Config {
     /// The mailbox to the marshal actor. Used to determine if an epoch
     /// can be started at startup.
     pub(crate) marshal: crate::alias::marshal::Mailbox,
+
+    /// The finalized floor reported by marshal at startup. Used to choose the
+    /// boundary block that seeds the initial DKG state.
+    pub(crate) last_finalized_height: Height,
 
     /// The partition prefix to use when persisting ceremony metadata during
     /// rounds.

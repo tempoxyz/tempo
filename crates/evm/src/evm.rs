@@ -181,6 +181,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.actions().take()
     }
 
+    /// Clears the recorded storage actions without releasing the backing allocation.
+    pub fn clear_actions(&mut self) {
+        self.inner.actions().clear();
+    }
+
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.inner.actions().replace(actions)
@@ -343,7 +348,7 @@ mod tests {
         },
         tip403_registry::slots as tip403_registry_slots,
     };
-    use tempo_primitives::transaction::Call;
+    use tempo_primitives::{TempoAddressExt, transaction::Call};
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
@@ -504,26 +509,30 @@ mod tests {
     #[derive(Default)]
     struct StorageState {
         reconstructed: BTreeMap<(Address, U256), U256>,
-        original_values: BTreeMap<(Address, U256), U256>,
         first_loads: BTreeMap<(Address, U256), U256>,
     }
 
     impl StorageState {
-        fn get_or_init_storage(&mut self, key: (Address, U256)) -> U256 {
+        fn apply_sload_value(
+            &mut self,
+            key: (Address, U256),
+            value: U256,
+            action: &str,
+            hardfork: TempoHardfork,
+        ) -> U256 {
             match self.reconstructed.get(&key) {
-                Some(current) => *current,
-                None => {
+                Some(current) => {
                     let (address, slot) = key;
-
-                    let original = *self
-                        .original_values
-                        .get(&key)
-                        .unwrap_or_else(|| panic!("No prior SLOAD for {address:?}:{slot:?}",));
-
-                    self.first_loads.insert(key, original);
-                    self.reconstructed.insert(key, original);
-
-                    original
+                    assert_eq!(
+                        *current, value,
+                        "{action} SLOAD value must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
+                    );
+                    *current
+                }
+                None => {
+                    self.first_loads.insert(key, value);
+                    self.reconstructed.insert(key, value);
+                    value
                 }
             }
         }
@@ -535,67 +544,75 @@ mod tests {
         hardfork: TempoHardfork,
     ) {
         let mut storage_state = StorageState::default();
-        for (address, account) in state {
-            for (slot, storage_slot) in &account.storage {
-                storage_state
-                    .original_values
-                    .insert((*address, *slot), storage_slot.original_value());
-            }
-        }
 
         for action in actions {
             match *action {
                 StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
-                    match storage_state.reconstructed.get(&key) {
-                        Some(previous) => assert_eq!(
-                            *previous, value,
-                            "SLOAD must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
-                        ),
-                        None => {
-                            storage_state.first_loads.insert(key, value);
-                            storage_state.reconstructed.insert(key, value);
-                        }
-                    }
+                    storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
                 }
-                StorageAction::Sstore(address, slot, value) => {
+                StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
-                    assert!(
-                        storage_state.reconstructed.contains_key(&key),
-                        "SSTORE without prior SLOAD for {address:?}:{slot:?} on {hardfork:?}",
-                    );
+                    storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::Sinc(address, slot, delta) => {
+                StorageAction::Sinc(address, slot, sload_value, delta) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "SINC", hardfork);
                     let value = current.checked_add(delta).unwrap_or_else(|| {
                         panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::Sdec(address, slot, delta) => {
+                StorageAction::Sdec(address, slot, sload_value, delta) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "SDEC", hardfork);
                     let value = current.checked_sub(delta).unwrap_or_else(|| {
                         panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
-                    let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
+                    let key = (action.address(), slot);
+                    let current =
+                        storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
                     let mut pool = Pool::decode_from_slot(current);
                     pool.apply_swap(
                         amount_in,
                         compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
                     )
                     .unwrap_or_else(|err| {
-                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
+                        panic!(
+                            "FeeAmmSwap invalid for {:?}:{slot:?} on {hardfork:?}: {err}",
+                            action.address()
+                        )
                     });
                     storage_state
                         .reconstructed
                         .insert(key, pool.encode_to_slot().unwrap());
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    slot,
+                    sload_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    let key = (action.address(), slot);
+                    let current = storage_state.apply_sload_value(
+                        key,
+                        sload_value,
+                        "FeeAmmLiquidityCheck",
+                        hardfork,
+                    );
+                    let pool = Pool::decode_from_slot(current);
+                    assert_eq!(
+                        pool.has_enough_reserve_validator_token(amount_out),
+                        has_enough_liquidity,
+                        "FeeAmmLiquidityCheck mismatch for {:?}:{slot:?} on {hardfork:?}",
+                        action.address(),
+                    );
                 }
             }
         }
@@ -631,6 +648,7 @@ mod tests {
     struct StorageActionSnapshotLabels {
         addresses: BTreeMap<Address, &'static str>,
         slots: BTreeMap<(Address, U256), &'static str>,
+        tip20_slots: BTreeMap<U256, &'static str>,
     }
 
     fn snapshot_storage_actions(
@@ -647,32 +665,44 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sstore(address, slot, value) => {
+                StorageAction::Sstore(address, slot, sload_value, value) => {
                     format!(
-                        "Sstore({}, {}, {value})",
+                        "Sstore({}, {}, {sload_value}, {value})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sinc(address, slot, delta) => {
+                StorageAction::Sinc(address, slot, sload_value, delta) => {
                     format!(
-                        "Sinc({}, {}, {delta})",
+                        "Sinc({}, {}, {sload_value}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sdec(address, slot, delta) => {
+                StorageAction::Sdec(address, slot, sload_value, delta) => {
                     format!(
-                        "Sdec({}, {}, {delta})",
+                        "Sdec({}, {}, {sload_value}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
                     format!(
-                        "FeeAmmSwap({}, {}, {amount_in})",
-                        labels.address(address),
-                        labels.slot(address, slot),
+                        "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
+                    )
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    slot,
+                    slot_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    format!(
+                        "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
                     )
                 }
             })
@@ -689,11 +719,14 @@ mod tests {
         }
 
         fn slot(&self, address: Address, slot: U256) -> String {
-            self.slots
-                .get(&(address, slot))
-                .copied()
-                .map(str::to_string)
-                .unwrap_or_else(|| slot.to_string())
+            if address.is_tip20() {
+                self.tip20_slots.get(&slot)
+            } else {
+                self.slots.get(&(address, slot))
+            }
+            .copied()
+            .map(str::to_string)
+            .unwrap_or_else(|| slot.to_string())
         }
     }
 
@@ -712,6 +745,8 @@ mod tests {
             let transfer_amount = U256::from(100);
             let gas_limit = 1_000_000;
             let gas_price = 1_000_000_000u64;
+            let amm_liquidity_reserve = 500_000u128;
+            let amm_liquidity = U256::from(amm_liquidity_reserve);
 
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(*hardfork);
@@ -732,7 +767,7 @@ mod tests {
                 },
             );
 
-            let fee_token =
+            let (fee_token, two_hop_fee_token) =
                 StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                     TIP20Setup::path_usd(sender)
                         .with_issuer(sender)
@@ -743,6 +778,12 @@ mod tests {
                         .with_issuer(sender)
                         .with_mint(sender, starting_balance)
                         .with_mint(recipient, starting_balance)
+                        .apply()?;
+                    let two_hop_fee_token = TIP20Setup::create("TwoHopFeeToken", "2HOP", sender)
+                        .with_salt(B256::repeat_byte(0x01))
+                        .quote_token(fee_token.address())
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
                         .apply()?;
 
                     let mut fee_manager = TipFeeManager::new();
@@ -756,13 +797,28 @@ mod tests {
                         sender,
                         fee_token.address(),
                         PATH_USD_ADDRESS,
-                        U256::from(500_000),
+                        amm_liquidity,
                         sender,
                     )?;
+                    let two_hop_first_pool_id =
+                        PoolKey::new(two_hop_fee_token.address(), fee_token.address()).get_id();
+                    let two_hop_first_pool_slot =
+                        U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                            .mapping_slot(fee_manager_slots::POOLS);
+                    StorageCtx.sstore(
+                        TIP_FEE_MANAGER_ADDRESS,
+                        two_hop_first_pool_slot,
+                        Pool {
+                            reserve_user_token: 0,
+                            reserve_validator_token: amm_liquidity_reserve,
+                        }
+                        .encode_to_slot()?,
+                    )?;
 
-                    Ok::<Address, tempo_precompiles::error::TempoPrecompileError>(
+                    Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
                         fee_token.address(),
-                    )
+                        two_hop_fee_token.address(),
+                    ))
                 })
                 .expect("TIP20 setup should succeed");
             let setup_state = evm.ctx_mut().journaled_state.finalize();
@@ -772,15 +828,10 @@ mod tests {
             assert_eq!(evm.take_actions(), Some(vec![]));
 
             let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
-            let sender_fee_token_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
             let fee_manager_balance_slot =
-                TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
-            let fee_manager_fee_token_balance_slot =
                 TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
             let recipient_balance_slot = recipient.mapping_slot(tip20_slots::BALANCES);
             let sender_reward_info_slot = sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
-            let sender_fee_token_reward_info_slot =
-                sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
             let recipient_reward_info_slot = recipient.mapping_slot(tip20_slots::USER_REWARD_INFO);
             let validator_token_slot =
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
@@ -792,6 +843,15 @@ mod tests {
                 U256::from_be_bytes::<32>(pool_id.into()).mapping_slot(fee_manager_slots::POOLS);
             let pending_pool_reservation_slot = U256::from_be_bytes::<32>(pool_id.into())
                 .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
+            let two_hop_direct_pool_id = PoolKey::new(two_hop_fee_token, PATH_USD_ADDRESS).get_id();
+            let two_hop_direct_pool_slot = U256::from_be_bytes::<32>(two_hop_direct_pool_id.into())
+                .mapping_slot(fee_manager_slots::POOLS);
+            let two_hop_first_pool_id = PoolKey::new(two_hop_fee_token, fee_token).get_id();
+            let two_hop_first_pool_slot = U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                .mapping_slot(fee_manager_slots::POOLS);
+            let two_hop_first_pending_pool_reservation_slot =
+                U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                    .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
             let receive_policy_config_slot =
                 recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             let nonce_key = U256::from(42);
@@ -803,43 +863,42 @@ mod tests {
                 addresses: BTreeMap::from([
                     (PATH_USD_ADDRESS, "PATH_USD"),
                     (fee_token, "FEE_TOKEN"),
+                    (two_hop_fee_token, "TWO_HOP_FEE_TOKEN"),
                     (TIP_FEE_MANAGER_ADDRESS, "TIP_FEE_MANAGER"),
                     (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
                     (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
                     (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
                 ]),
                 slots: BTreeMap::from([
-                    ((PATH_USD_ADDRESS, tip20_slots::CURRENCY), "currency"),
-                    ((PATH_USD_ADDRESS, tip20_slots::TRANSFER_POLICY_ID), "transferPolicyId"),
-                    ((PATH_USD_ADDRESS, tip20_slots::PAUSED), "paused"),
-                    ((PATH_USD_ADDRESS, tip20_slots::GLOBAL_REWARD_PER_TOKEN), "globalRewardPerToken"),
-                    ((PATH_USD_ADDRESS, sender_balance_slot), "balances[sender]"),
-                    ((PATH_USD_ADDRESS, fee_manager_balance_slot), "balances[FeeManager]"),
-                    ((PATH_USD_ADDRESS, recipient_balance_slot), "balances[recipient]"),
-                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[sender].rewardRecipient"),
-                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[sender].rewardPerToken"),
-                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[sender].rewardBalance"),
-                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[recipient].rewardRecipient"),
-                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[recipient].rewardPerToken"),
-                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[recipient].rewardBalance"),
-                    ((fee_token, tip20_slots::CURRENCY), "currency"),
-                    ((fee_token, tip20_slots::TRANSFER_POLICY_ID), "transferPolicyId"),
-                    ((fee_token, tip20_slots::PAUSED), "paused"),
-                    ((fee_token, tip20_slots::GLOBAL_REWARD_PER_TOKEN), "globalRewardPerToken"),
-                    ((fee_token, sender_fee_token_balance_slot), "balances[sender]"),
-                    ((fee_token, fee_manager_fee_token_balance_slot), "balances[FeeManager]"),
-                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[sender].rewardRecipient"),
-                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[sender].rewardPerToken"),
-                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[sender].rewardBalance"),
                     ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),
                     ((TIP_FEE_MANAGER_ADDRESS, user_token_slot), "userTokens[sender]"),
                     ((TIP_FEE_MANAGER_ADDRESS, collected_fees_slot), "collectedFees[beneficiary][PATH_USD]"),
                     ((TIP_FEE_MANAGER_ADDRESS, pool_slot), "pools[FEE_TOKEN][PATH_USD]"),
                     ((TIP_FEE_MANAGER_ADDRESS, pending_pool_reservation_slot), "pendingFeeSwapReservation[FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_direct_pool_slot), "pools[TWO_HOP_FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pool_slot), "pools[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pending_pool_reservation_slot), "pendingFeeSwapReservation[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
                     ((TIP403_REGISTRY_ADDRESS, receive_policy_config_slot), "receivePolicies[recipient]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(two_hop_fee_token)), "storageCredits[TWO_HOP_FEE_TOKEN]"),
                     ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
+                ]),
+                tip20_slots: BTreeMap::from([
+                    (tip20_slots::CURRENCY, "currency"),
+                    (tip20_slots::QUOTE_TOKEN, "quoteToken"),
+                    (tip20_slots::TRANSFER_POLICY_ID, "transferPolicyId"),
+                    (tip20_slots::PAUSED, "paused"),
+                    (tip20_slots::GLOBAL_REWARD_PER_TOKEN, "globalRewardPerToken"),
+                    (sender_balance_slot, "balances[sender]"),
+                    (fee_manager_balance_slot, "balances[FeeManager]"),
+                    (recipient_balance_slot, "balances[recipient]"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[sender].rewardRecipient"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[sender].rewardPerToken"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[sender].rewardBalance"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[recipient].rewardRecipient"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[recipient].rewardPerToken"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[recipient].rewardBalance"),
                 ]),
             };
 
@@ -848,7 +907,8 @@ mod tests {
                                 to: Address,
                                 amount: U256,
                                 nonce: u64,
-                                nonce_key: U256|
+                                nonce_key: U256,
+                                fee_token: Address|
              -> eyre::Result<Vec<String>> {
                 let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
                 let tx = TempoTxEnv {
@@ -892,37 +952,118 @@ mod tests {
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (
-                    "first_transfer",
-                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, U256::ZERO)
-                        .unwrap(),
+                    "direct_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
                 // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
                 // and fee balances are no longer zero.
                 (
-                    "second_transfer",
-                    run_transfer(&mut evm, sender, recipient, transfer_amount, 1, U256::ZERO)
-                        .unwrap(),
+                    "direct_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
-                // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
+                // Same as second transfer, but different fee token that requires a two-hop path.
                 (
-                    "2d_nonce_transfer",
-                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, nonce_key)
-                        .unwrap(),
+                    "twohop_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        2,
+                        U256::ZERO,
+                        two_hop_fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // Same as third transfer.
+                (
+                    "twohop_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        3,
+                        U256::ZERO,
+                        two_hop_fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // TIP-20 transfer with a 2D nonce.
+                (
+                    "2d_nonce_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        nonce_key,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "2d_nonce_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        nonce_key,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
                 // Clear sender balance, minting a storage credit for PATH_USD.
-                ("clear_balance", {
+                ("clear_balance_transfer", {
                     let sender_balance = evm
                         .db()
                         .storage_ref(PATH_USD_ADDRESS, sender_balance_slot)
                         .expect("sender balance slot should be available");
-                    run_transfer(&mut evm, sender, recipient, sender_balance, 2, U256::ZERO)
-                        .unwrap()
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        sender_balance,
+                        4,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap()
                 }),
                 // Recreate sender balance, consuming the PATH_USD storage credit through an SSTORE.
                 (
-                    "recreate_balance",
-                    run_transfer(&mut evm, recipient, sender, transfer_amount, 0, U256::ZERO)
-                        .unwrap(),
+                    "recreate_balance_transfer",
+                    run_transfer(
+                        &mut evm,
+                        recipient,
+                        sender,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
             ]);
             insta::assert_yaml_snapshot!(
