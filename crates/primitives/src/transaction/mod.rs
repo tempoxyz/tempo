@@ -23,8 +23,8 @@ pub use key_authorization::{
 pub use multisig::{
     InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
     MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD,
-    MULTISIG_SIGNATURE_DOMAIN, MultisigConfigError, MultisigOwner, MultisigQuorumError,
-    MultisigSignature, MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG,
+    MULTISIG_SIGNATURE_DOMAIN, MultisigAddress, MultisigConfigError, MultisigOwner,
+    MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG,
     is_valid_multisig_account, multisig_digest, multisig_signature_count_for_threshold,
     verify_ordered_owner_weights,
 };
