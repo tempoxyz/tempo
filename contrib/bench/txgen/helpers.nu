@@ -353,7 +353,7 @@ def txgen-run-preset-pipeline [
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
-    $env.TXGEN_ACCOUNTS = ($accounts | into string)
+    $env.TXGEN_ACCOUNTS = ($env.TXGEN_ACCOUNTS_OVERRIDE? | default ($accounts | into string))
     let spec_path = ($preset_path | path expand)
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }

@@ -141,7 +141,8 @@ def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
+    let signable_args = if ($env.BLOAT_SIGNABLE? | is-empty) { [] } else { ["--signable-count" $env.BLOAT_SIGNABLE] }
+    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args ...$signable_args]
 }
 
 # Load the bloat file into a single node's database
