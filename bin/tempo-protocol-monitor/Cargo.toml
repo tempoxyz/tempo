@@ -17,4 +17,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+eyre.workspace = true
 protocol-monitor = { workspace = true, features = ["reth"] }
+tempo = { path = "../tempo", features = ["exex-overrides"] }

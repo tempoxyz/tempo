@@ -8058,6 +8058,9 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "futures",
+ "reth-exex",
+ "reth-node-api",
  "reth-primitives-traits",
  "reth-storage-api",
  "serde",
@@ -8065,6 +8068,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-hardfork",
  "tempo-primitives",
+ "tokio",
 ]
 
 [[package]]
@@ -12899,6 +12903,7 @@ dependencies = [
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-etl",
+ "reth-exex",
  "reth-metrics",
  "reth-network-api",
  "reth-network-peers",
@@ -13476,7 +13481,9 @@ dependencies = [
 name = "tempo-protocol-monitor"
 version = "1.10.1"
 dependencies = [
+ "eyre",
  "protocol-monitor",
+ "tempo",
 ]
 
 [[package]]

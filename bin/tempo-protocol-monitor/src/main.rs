@@ -1,3 +1,17 @@
-fn main() {
-    println!("tempo-protocol-monitor: Reth adapter not wired yet");
+fn main() -> eyre::Result<()> {
+    tempo::tempo_main_with(tempo::TempoOverrides::new().install_exex(
+        protocol_monitor::reth::EXEX_ID,
+        |ctx| async move {
+            // TODO: Replace the in-memory backend with the durable monitor-owned store before
+            // using this binary for production proof claims. This keeps the ExEx wiring buildable
+            // while the durable backend is implemented behind the same store trait.
+            let store = protocol_monitor::store::InMemoryMonitorStore::new();
+            let config = protocol_monitor::reth::ProtocolMonitorExExConfig::default();
+            Ok(async move {
+                protocol_monitor::reth::run_protocol_monitor_exex(ctx, store, config)
+                    .await
+                    .map_err(|err| eyre::eyre!("protocol monitor ExEx failed: {err:?}"))
+            })
+        },
+    ))
 }

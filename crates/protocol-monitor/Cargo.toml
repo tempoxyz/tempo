@@ -19,7 +19,17 @@ workspace = true
 [features]
 default = []
 store = []
-reth = ["store", "tempo-primitives/reth", "dep:reth-primitives-traits", "dep:reth-storage-api"]
+reth = [
+    "store",
+    "tempo-primitives/reth",
+    "tempo-primitives/reth-codec",
+    "dep:futures",
+    "dep:reth-exex",
+    "dep:reth-node-api",
+    "dep:reth-primitives-traits",
+    "dep:reth-storage-api",
+    "dep:tokio",
+]
 activity = []
 
 [dependencies]
@@ -31,5 +41,9 @@ tempo-hardfork = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, default-features = false, features = ["std", "serde"] }
 serde.workspace = true
 serde_json.workspace = true
+futures = { workspace = true, optional = true }
+reth-exex = { workspace = true, optional = true }
+reth-node-api = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-storage-api = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
