@@ -239,7 +239,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
             return;
         };
-        let _ = self.build_time_multiplier.fetch_update(
+        let _ = self.build_time_multiplier.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(decay_build_time_multiplier(current, observed)),
