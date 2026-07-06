@@ -246,6 +246,7 @@ pub fn initial_metadata() -> Vec<InvariantMetadata> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn metadata(
     id: &'static str,
     statement: &str,

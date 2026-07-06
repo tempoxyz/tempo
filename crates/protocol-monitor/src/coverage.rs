@@ -86,6 +86,7 @@ pub struct CheckError {
 ///
 /// Passing outcomes are only constructible from `CompleteCoverage`; degraded,
 /// partial, inconclusive, or missing input must be represented explicitly.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckOutcome {
     Pass(CompleteCoverage),
