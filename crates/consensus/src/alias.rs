@@ -19,7 +19,7 @@ pub(crate) mod marshal {
     };
     use commonware_storage::archive::{Archive as _, Identifier, immutable};
     use commonware_utils::acknowledgement::Exact;
-    use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
+    use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
     use rand_08::{CryptoRng, Rng};
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
@@ -70,10 +70,6 @@ pub(crate) mod marshal {
         /// Number of recently finalized blocks retained in the prunable
         /// archive. Older blocks are served from reth via [`Hybrid`].
         pub finalized_blocks_retention: u64,
-
-        /// Require startup to use the consensus finalization archive as its
-        /// finalized floor.
-        pub strict_startup: bool,
 
         /// Epoch length / boundary configuration.
         pub epoch_strategy: FixedEpocher,
@@ -128,8 +124,6 @@ pub(crate) mod marshal {
         TContext:
             Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
-        ensure!(config.strict_startup, "strict startup is required");
-
         let finalizations_by_height = storage::init_finalizations_archive(
             context,
             &config.partition_prefix,

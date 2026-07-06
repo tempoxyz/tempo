@@ -86,11 +86,6 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
-
-    /// Require startup to use the consensus finalization archive as the
-    /// finalized floor. If the archive is empty this rejects pre-populated
-    /// execution layers.
-    pub strict_startup: bool,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -164,7 +159,6 @@ where
                 ),
                 max_pending_acks: MAX_PENDING_ACKS,
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },

@@ -27,7 +27,7 @@ use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
 use commonware_utils::NZUsize;
-use eyre::{OptionExt, WrapErr as _, eyre};
+use eyre::{OptionExt, WrapErr as _, ensure, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -51,6 +51,8 @@ pub async fn run_consensus_stack(
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
+    ensure!(config.strict_startup, "strict startup is required");
+
     let share = config
         .signing_share
         .as_ref()
@@ -132,7 +134,6 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
-        strict_startup: config.strict_startup,
     }
     .try_init(context.child("engine"))
     .await
@@ -175,6 +176,8 @@ pub async fn run_follow_stack(
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
+    ensure!(config.strict_startup, "strict startup is required");
+
     let chain_spec = execution_node.chain_spec();
 
     let epoch_length = chain_spec
@@ -210,7 +213,6 @@ pub async fn run_follow_stack(
         mailbox_size: NZUsize!(config.mailbox_size),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
-        strict_startup: config.strict_startup,
     };
 
     let ret = config

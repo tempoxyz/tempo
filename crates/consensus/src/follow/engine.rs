@@ -71,10 +71,6 @@ pub struct Config<TUpstream> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
-
-    /// Require startup to use the consensus finalization archive as the
-    /// finalized floor.
-    pub strict_startup: bool,
 }
 
 impl<TUpstream> Config<TUpstream> {
@@ -120,7 +116,6 @@ impl<TUpstream> Config<TUpstream> {
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
                 max_pending_acks: NZUsize!(1),
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },

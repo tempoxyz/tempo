@@ -128,7 +128,6 @@ fn joins_from_snapshot() {
             &target_partition_prefix,
         )
         .await;
-        donor.consensus_config.strict_startup = true;
         receiver.adopt_identity_from(donor);
         receiver.start(&context).await;
         connect_execution_to_peers(&receiver, &validators).await;
@@ -262,7 +261,6 @@ fn can_restart_after_joining_from_snapshot() {
             &target_partition_prefix,
         )
         .await;
-        donor.consensus_config.strict_startup = true;
         receiver.adopt_identity_from(donor);
         receiver.start(&context).await;
         connect_execution_to_peers(&receiver, &validators).await;
