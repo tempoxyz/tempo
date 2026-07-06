@@ -45,7 +45,7 @@ pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
     let observed = observed.min(u128::from(u64::MAX)) as u64;
 
     let _ =
-        MARSHAL_PERSIST_NS_PER_BYTE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        MARSHAL_PERSIST_NS_PER_BYTE.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(if current == 0 || observed >= current {
                 observed
             } else {
