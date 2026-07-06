@@ -1,0 +1,58 @@
+# tip20 with cold recipients: senders are the funded signable pool, but every
+# transfer's recipient is drawn from the state-bloat fast-derived address range
+# (byte-identical derivation to `generate-state-bloat`), so recipient balance
+# slots are uniform over the bloated state instead of recycling the sender
+# pool's ~32k hot slots. With a state-bloat larger than RAM this is the
+# cold-working-set regime the plain tip20 preset cannot reach.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+address_pools:
+  bloat_recipients:
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      # Fast-derived bloat owners start at signable_count (default 10000);
+      # override the end to the per-token slot count of the active bloat.
+      range:
+        - 10000
+        - ${TXGEN_COLD_RANGE_END}
+
+artifacts:
+  ERC20: ../erc20.abi.json
+
+templates:
+  tip20_transfer_cold:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 5
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transfer
+      args:
+        - address_pool:
+            pool: bloat_recipients
+            select: random
+        - 1
+
+mix:
+  - template: tip20_transfer_cold
+    weight: 100
