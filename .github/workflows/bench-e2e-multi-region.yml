@@ -1,9 +1,6 @@
 name: bench-e2e-multi-region
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/bench-e2e-multi-region.yml
   workflow_dispatch:
     inputs:
       baseline:
