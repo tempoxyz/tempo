@@ -364,13 +364,17 @@ impl Worker {
         }
 
         // Drain storage updates and pre-reveal account paths (needed both for
-        // old storage roots and for the account leaf writes below).
+        // old storage roots and for the account leaf writes below). No
+        // up-front flat-at-parent wait: with a warm pool most blocks need no
+        // proof fetches at all, and gating the hot path on the background
+        // follower here turns a transient apply lag into a cadence spiral
+        // (run34: wait_parent 61→1610ms while proof_ms stayed 0). The fetch
+        // path inside reveal_pass waits iff a proof is actually needed.
         let t_wait = Instant::now();
-        self.wait_for_parent()?;
-        self.stats.wait_parent_ms = t_wait.elapsed().as_millis() as u64;
         if !self.reveal_pass(true)? {
             anyhow::bail!("finish reveal pass deferred despite wait");
         }
+        self.stats.wait_parent_ms = t_wait.elapsed().as_millis() as u64;
 
         // Promote: encode every changed account leaf with its storage root.
         for (acct, account) in pending_accounts {
