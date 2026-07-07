@@ -12890,7 +12890,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -12933,7 +12933,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -13035,7 +13035,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -13200,7 +13200,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-hardfork"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -13384,7 +13384,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
