@@ -6,7 +6,10 @@ use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
     Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
-    stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
+    stablecoin_dex::{
+        StablecoinDEX,
+        orderbook::{BookId, compute_book_key},
+    },
     view,
 };
 
@@ -82,7 +85,10 @@ impl Precompile for StablecoinDEX {
                     storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
 
                     #[schedule(since = T8)]
-                    bookIndexForKey(call) => view(call, |c| Ok(self.book_key_index(c.bookKey)?.into())),
+                    bookIndexForKey(call) => view(call, |c| {
+                        let index = self.book_key_index(c.bookKey)?;
+                        Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
+                    }),
                     #[schedule(since = T8)]
                     bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
                     #[schedule(since = T8)]
