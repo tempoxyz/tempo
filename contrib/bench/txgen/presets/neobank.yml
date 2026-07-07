@@ -272,7 +272,7 @@ sequences:
                 - "0x20c0000000000000000000000000000000000000"
                 - { var: amount }
       - name: pathusd_to_neobank_vault
-      template: neobank_vault_deposit
+        template: neobank_vault_deposit
         with:
           from: { var: user.ref }
           calls:
