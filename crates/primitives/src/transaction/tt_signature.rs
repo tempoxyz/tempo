@@ -101,7 +101,7 @@ pub struct WebAuthnSignature {
 #[expect(clippy::type_complexity)]
 fn split_p256_signature_fields(
     sig_data: &[u8; P256_SIGNATURE_LENGTH],
-) -> Result<(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool), &'static str> {
+) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
     let (r, sig_data) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
@@ -114,12 +114,12 @@ fn split_p256_signature_fields(
     let (pub_key_y, pre_hash) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
-    let pre_hash = match pre_hash[0] {
-        0 => false,
-        1 => true,
-        _ => return Err("Invalid P256 pre_hash flag"),
-    };
-    Ok((r, s, pub_key_x, pub_key_y, pre_hash))
+    // Any nonzero flag byte decodes as pre_hash=true. This lenient decoding matches the behavior
+    // of the deployed SignatureVerifier precompile and payment-lane classifier, which decode
+    // verbatim on-chain calldata; rejecting noncanonical flag bytes here would be STF-breaking.
+    // Noncanonical bytes cannot malleate transaction hashes because signatures are re-encoded
+    // canonically (`to_bytes` emits `0x01` for true) before hashing.
+    (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
 }
 
 /// Primitive signature types that can be used standalone or within a Keychain signature.
@@ -177,7 +177,7 @@ impl PrimitiveSignature {
                 let sig_data: &[u8; P256_SIGNATURE_LENGTH] = sig_data
                     .try_into()
                     .map_err(|_| "Invalid P256 signature length")?;
-                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data)?;
+                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data);
                 Ok(Self::P256(P256SignatureWithPreHash {
                     r: B256::from_slice(r),
                     s: B256::from_slice(s),
@@ -1527,20 +1527,23 @@ mod tests {
     }
 
     #[test]
-    fn test_p256_from_bytes_rejects_noncanonical_prehash_flag() {
+    fn test_p256_from_bytes_canonicalizes_prehash_flag() {
+        // Decoding is lenient (any nonzero flag byte means pre_hash=true), matching the deployed
+        // network, and re-encoding is canonical, so noncanonical flag bytes cannot malleate hashes.
         let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
         sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
 
         sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 0;
-        assert!(TempoSignature::from_bytes(&sig_bytes).is_ok());
-
-        sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 1;
-        assert!(TempoSignature::from_bytes(&sig_bytes).is_ok());
+        let decoded = TempoSignature::from_bytes(&sig_bytes).expect("flag 0 decodes");
+        assert_eq!(decoded.to_bytes(), Bytes::from(sig_bytes.clone()));
 
         sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 2;
+        let decoded = TempoSignature::from_bytes(&sig_bytes).expect("noncanonical flag decodes");
+        let reencoded = decoded.to_bytes();
         assert_eq!(
-            TempoSignature::from_bytes(&sig_bytes).unwrap_err(),
-            "Invalid P256 pre_hash flag"
+            reencoded[reencoded.len() - 1],
+            1,
+            "noncanonical pre_hash flag re-encodes to the canonical 0x01"
         );
     }
 

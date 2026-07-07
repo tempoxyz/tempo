@@ -1309,7 +1309,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_noncanonical_p256_owner_prehash_flag() {
+    fn noncanonical_p256_owner_prehash_flag_canonicalizes() {
+        // A P256 owner approval carrying a noncanonical pre_hash flag byte decodes to the same
+        // signature and re-encodes with the canonical flag, so it cannot malleate the transaction
+        // hash even though the raw wire byte differs. This structural canonicalization replaces the
+        // (STF-breaking) strict-flag rejection that was previously attempted at decode time.
         let (signer, pub_key_x, pub_key_y, owner) = generate_p256_keypair();
         let config = sorted_secp_config(&[(owner, 1)], 1);
         let account = config.account().unwrap();
@@ -1322,18 +1326,17 @@ mod tests {
             1,
             "test setup should use canonical pre_hash=true encoding"
         );
-        assert!(
-            config
-                .verify_owner_signatures(digest, core::slice::from_ref(&canonical_signature))
-                .is_ok()
-        );
 
         let mut noncanonical_signature = canonical_signature.to_vec();
         let flag_index = noncanonical_signature.len() - 1;
         noncanonical_signature[flag_index] = 2;
+
+        let decoded = TempoSignature::from_bytes(&noncanonical_signature)
+            .expect("noncanonical pre_hash flag decodes leniently");
         assert_eq!(
-            config.verify_owner_signatures(digest, &[Bytes::from(noncanonical_signature)]),
-            Err("invalid multisig owner signature")
+            decoded.to_bytes(),
+            canonical_signature,
+            "noncanonical owner approval re-encodes to the canonical signature bytes"
         );
     }
 
