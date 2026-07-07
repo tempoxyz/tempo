@@ -22,11 +22,14 @@ impl AdapterError {
 impl From<StoreError> for AdapterError {
     fn from(value: StoreError) -> Self {
         match value {
-            StoreError::Poisoned | StoreError::NotFound(_) => Self::Retry(format!("{value:?}")),
+            StoreError::Poisoned | StoreError::NotFound(_) | StoreError::Database(_) => {
+                Self::Retry(format!("{value:?}"))
+            }
             StoreError::IncompatibleSchema { .. }
             | StoreError::MigrationBlocked(_)
             | StoreError::Continuity(_)
             | StoreError::InvalidCommit(_)
+            | StoreError::Codec(_)
             | StoreError::IdempotencyMismatch(_)
             | StoreError::UnknownInvariant(_) => Self::Halt(format!("{value:?}")),
         }

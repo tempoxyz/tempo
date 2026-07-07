@@ -12,9 +12,8 @@ use crate::{
     entity::DirtyEntity,
     facts::{BlockFacts, BlockNumHash, OrderedLog, ReceiptFacts, TxFacts},
     findings::{FindingTransition, MonitorHealthSignal},
+    store::{FinalizedBlockRecord, OutboxEvent},
 };
-
-use super::{FinalizedBlockRecord, OutboxEvent};
 
 /// Update to a feature state-cache table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

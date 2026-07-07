@@ -22,14 +22,17 @@ pub enum StoreError {
     MigrationBlocked(MigrationStatus),
     Continuity(String),
     InvalidCommit(String),
+    Database(String),
+    Codec(String),
     IdempotencyMismatch(String),
     UnknownInvariant(InvariantId),
     NotFound(String),
 }
 
 /// First-commit policy for an empty monitor store.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BootstrapPolicy {
+    #[default]
     GenesisOnly,
     StartAt(BlockNumHash),
     AnyFirstFinalizedBlock,
@@ -104,6 +107,10 @@ pub enum TableId {
     CheckCoverage,
     FindingState,
     ReportOutbox,
+    StateCacheUpdates,
+    KeysetUpdates,
+    AggregateUpdates,
+    HistoryUpdates,
 }
 
 impl TableId {
@@ -125,6 +132,10 @@ impl TableId {
             Self::CheckCoverage => "check_coverage",
             Self::FindingState => "finding_state",
             Self::ReportOutbox => "report_outbox",
+            Self::StateCacheUpdates => "state_cache_updates",
+            Self::KeysetUpdates => "keyset_updates",
+            Self::AggregateUpdates => "aggregate_updates",
+            Self::HistoryUpdates => "history_updates",
         }
     }
 
@@ -145,6 +156,10 @@ impl TableId {
             Self::CheckResults | Self::CheckCoverage | Self::FindingState | Self::ReportOutbox => {
                 TableCategory::Result
             }
+            Self::StateCacheUpdates => TableCategory::Feature(FeatureTableKind::StateCache),
+            Self::KeysetUpdates => TableCategory::Feature(FeatureTableKind::KeysetIndex),
+            Self::AggregateUpdates => TableCategory::Feature(FeatureTableKind::Aggregate),
+            Self::HistoryUpdates => TableCategory::Feature(FeatureTableKind::HistoryState),
         }
     }
 }
@@ -182,6 +197,10 @@ pub fn schema_v0_tables() -> Vec<TableMetadata> {
         CheckCoverage,
         FindingState,
         ReportOutbox,
+        StateCacheUpdates,
+        KeysetUpdates,
+        AggregateUpdates,
+        HistoryUpdates,
     ]
     .into_iter()
     .map(|table| TableMetadata {

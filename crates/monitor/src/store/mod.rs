@@ -7,14 +7,17 @@
 
 mod codecs;
 mod commit;
+mod mdbx;
 mod memory;
 mod rows;
 mod schema;
+mod validation;
 
 #[cfg(test)]
 mod tests;
 
 pub use commit::*;
+pub use mdbx::{MdbxMonitorStore, MdbxMonitorStoreConfig};
 pub use memory::InMemoryMonitorStore;
 pub use rows::*;
 pub use schema::*;
