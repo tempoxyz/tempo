@@ -12,6 +12,7 @@ pub mod orderbook;
 
 pub use order::Order;
 use order::OrderMapping;
+use orderbook::BookId;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
     quote_to_base, tick_to_price, validate_tick_spacing,
@@ -127,10 +128,10 @@ impl StablecoinDEX {
     }
 
     /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
-    fn rewrite_order(&mut self, order: Order, book_id: u32) -> Result<u64> {
+    fn rewrite_order(&mut self, order: Order, id: BookId) -> Result<u64> {
         StorageCredits::new()
             .track_minted_credits(self.address, || {
-                self.orders[order.order_id()].write_in_book(order, book_id)
+                self.orders[order.order_id()].write_in_book(order, id)
             })
             .map(|(_, credits)| credits)
     }
@@ -166,15 +167,11 @@ impl StablecoinDEX {
     ///
     /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
     /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
-    fn write_order_spending_dex_storage_credits(
-        &mut self,
-        order: Order,
-        book_id: u32,
-    ) -> Result<()> {
+    fn write_order_spending_dex_storage_credits(&mut self, order: Order, id: BookId) -> Result<()> {
         let user = order.maker();
         let user_credits = self.dex_storage_credits[user].read()?;
         if user_credits == 0 {
-            return self.orders[order.order_id()].write_in_book(order, book_id);
+            return self.orders[order.order_id()].write_in_book(order, id);
         }
 
         // Clear the user's bookkeeping slot before writing the order record. This makes the
@@ -183,7 +180,7 @@ impl StablecoinDEX {
 
         let mut storage_credits = StorageCredits::new();
         let (_, delta) = storage_credits.with_budget(self.address, user_credits, || {
-            self.orders[order.order_id()].write_in_book(order, book_id)
+            self.orders[order.order_id()].write_in_book(order, id)
         })?;
         let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
@@ -519,8 +516,7 @@ impl StablecoinDEX {
 
     /// Returns whether `book_key` has a persisted index and its zero-based `book_keys` index.
     pub(crate) fn book_key_index(&self, book_key: B256) -> Result<(bool, u32)> {
-        let id = self.books[book_key].book_id.read()?;
-        Ok((id != 0, id.saturating_sub(1)))
+        self.books[book_key].read().map(|book| book.id().index())
     }
 
     /// Resolves a book key by index from the append-only `book_keys` vector.
@@ -542,8 +538,9 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::index_already_set().into());
         }
 
-        let id = index + 1;
-        self.books[book_key].book_id.write(id)
+        self.books[book_key]
+            .book_id
+            .write(*BookId::from_index(index))
     }
 
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
@@ -706,7 +703,7 @@ impl StablecoinDEX {
     /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
-        let book_id = orderbook.book_id;
+        let book_id = orderbook.id();
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
