@@ -136,7 +136,7 @@ impl TempoNodeArgs {
     /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         if self.builder_parallel {
-            warn!("parallel builder is still in development and should not be used");
+            warn!("Parallel block builder is still in development and should not be used");
         }
 
         TempoPayloadBuilderBuilder {
