@@ -17,7 +17,7 @@ use super::{__packing_legacy_order, LegacyOrder, ORDER_VERSION_V1, ORDER_VERSION
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     error::{Result as StorageResult, TempoPrecompileError},
-    stablecoin_dex::{self, StablecoinDEX},
+    stablecoin_dex::{self, StablecoinDEX, orderbook::BookId},
     storage::{
         Handler, HandlerCache, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx,
         StorageKey, StorageOps, packing,
@@ -315,15 +315,13 @@ impl OrderHandler {
         }
     }
 
-    /// Writes this order using a known one-based owning book ID, skipping index resolution.
-    /// WARN: `book_id` must be the 1-based book ID. This function handles normalization.
-    pub(crate) fn write_in_book(&mut self, value: Order, book_id: u32) -> StorageResult<()> {
+    /// Writes this order using a known owning book ID, skipping index resolution.
+    pub(crate) fn write_in_book(&mut self, value: Order, book_id: BookId) -> StorageResult<()> {
         self.write_with_book_id(value, Some(book_id))
     }
 
     /// Writes this order, skipping V2 index resolution when a book ID is provided.
-    /// WARN: `known_id` must be the 1-based book ID. This function handles normalization.
-    fn write_with_book_id(&mut self, value: Order, known_id: Option<u32>) -> StorageResult<()> {
+    fn write_with_book_id(&mut self, value: Order, known_id: Option<BookId>) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
 
         if !StorageCtx.spec().is_t8() {
@@ -336,10 +334,10 @@ impl OrderHandler {
             OrderVersion::V2 => V2Order::SLOTS,
         };
 
-        // If known, use the one-based orderbook id. Otherwise resolve it from storage.
+        // If known, use the book ID. Otherwise resolve it from storage.
         let (is_index_set, book_index) = match known_id {
             None => StablecoinDEX::new().book_key_index(value.book_key)?,
-            Some(id) => (id != 0, id.saturating_sub(1)),
+            Some(id) => id.index(),
         };
 
         let new_slots = if is_index_set {

@@ -6,6 +6,7 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
+use std::ops::Deref;
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
@@ -102,6 +103,37 @@ pub struct TickLevel {
     pub total_liquidity: u128,
 }
 
+/// 1-based ID assigned to an orderbook's `book_keys` vector index; zero means unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BookId(u32);
+
+impl BookId {
+    pub(crate) const UNSET: Self = Self(0);
+
+    pub(crate) fn from_index(index: u32) -> Self {
+        Self(index + 1)
+    }
+
+    /// Returns whether this ID is set and its zero-based `book_keys` vector index.
+    pub(crate) fn index(self) -> (bool, u32) {
+        (self.0 != 0, self.0.saturating_sub(1))
+    }
+}
+
+impl From<u32> for BookId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl Deref for BookId {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
@@ -178,7 +210,7 @@ impl Orderbook {
             quote,
             best_bid_tick: i16::MIN,
             best_ask_tick: i16::MAX,
-            book_id: 0,
+            book_id: *BookId::UNSET,
             bids: Mapping::default(),
             asks: Mapping::default(),
             bid_bitmap: Mapping::default(),
@@ -187,13 +219,17 @@ impl Orderbook {
     }
 
     /// Creates a new orderbook with its zero-based `book_keys` vector index.
-    /// WARN: This function stores the virtual 1-based book ID, not the provided index.
     pub fn new_with_index(base: Address, quote: Address, index: u32) -> Self {
-        let id = index + 1;
+        let id = BookId::from_index(index);
         Self {
-            book_id: id,
+            book_id: *id,
             ..Self::new(base, quote)
         }
+    }
+
+    /// Returns this orderbook's 1-based book ID.
+    pub(crate) fn id(&self) -> BookId {
+        BookId::from(self.book_id)
     }
 
     /// Returns true if this orderbook is initialized
