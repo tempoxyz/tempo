@@ -569,7 +569,12 @@ mod tests {
         assert_eq!(multisig_sig.init(), None);
         assert_eq!(multisig_sig.account(), account);
         assert_eq!(multisig_sig.signature_count(), 2);
-        assert!(multisig_sig.signatures().iter().all(|sig| sig.len() > 65));
+        assert!(
+            multisig_sig
+                .signatures()
+                .iter()
+                .all(|sig| sig.encoded_length() > 65)
+        );
     }
 
     #[test]
