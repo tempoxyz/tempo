@@ -42,7 +42,7 @@ pub use args::{Args, PositiveDuration};
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
-const PARTITION_PREFIX: &str = "engine";
+pub const PARTITION_PREFIX: &str = "engine";
 
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
@@ -131,6 +131,7 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
+        strict_startup: config.strict_startup,
     }
     .try_init(context.with_label("engine"))
     .await
@@ -208,6 +209,7 @@ pub async fn run_follow_stack(
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
+        strict_startup: config.strict_startup,
     };
 
     let ret = config

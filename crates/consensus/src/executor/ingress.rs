@@ -1,9 +1,6 @@
 use commonware_consensus::{Reporter, marshal::Update, types::Height};
 use eyre::WrapErr as _;
-use futures::{
-    SinkExt as _,
-    channel::{mpsc, oneshot},
-};
+use futures::channel::{mpsc, oneshot};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
 
@@ -128,8 +125,7 @@ impl Reporter for Mailbox {
 
     async fn report(&mut self, update: Self::Activity) {
         self.inner
-            .send(Message::in_current_span(update))
-            .await
+            .unbounded_send(Message::in_current_span(update))
             .expect("actor is present and ready to receive broadcasts");
     }
 }

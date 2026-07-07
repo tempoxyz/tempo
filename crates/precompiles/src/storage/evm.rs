@@ -5,6 +5,7 @@ use crate::{
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
+use bitflags::bitflags;
 use revm::{
     context::{CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
@@ -194,7 +195,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         address: Address,
         key: U256,
         value: U256,
-        action: StorageAction,
+        action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
@@ -205,7 +206,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         };
 
         let result = self.sstore_journal(address, key, value, skip_cold_load)?;
-        self.actions.record(action);
+        self.actions.record(action(&result.data));
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -266,11 +267,15 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
-        self.actions
-            .record_always(StorageAction::Sstore(address, key, value));
-        Ok(val)
+        self.actions.record_always(StorageAction::Sstore(
+            address,
+            key,
+            val.data.present_value,
+            value,
+        ));
+        Ok(val.into())
     }
 
     #[inline]
@@ -377,8 +382,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let action = StorageAction::Sstore(address, key, value);
-        self.sstore_inner(address, key, value, action)
+        self.sstore_inner(address, key, value, |result| {
+            StorageAction::Sstore(address, key, result.present_value, value)
+        })
     }
 
     #[inline]
@@ -398,12 +404,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let sstore_action = if current == U256::ZERO && value != U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, delta)
+            StorageAction::Sstore(address, key, current, value)
         } else {
-            StorageAction::Sinc(address, key, delta)
+            StorageAction::Sinc(address, key, current, delta)
         };
 
-        self.sstore_inner(address, key, value, sstore_action)
+        self.sstore_inner(address, key, value, |_| sstore_action)
     }
 
     #[inline]
@@ -423,12 +429,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let sstore_action = if current != U256::ZERO && value == U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, value)
+            StorageAction::Sstore(address, key, current, value)
         } else {
-            StorageAction::Sdec(address, key, delta)
+            StorageAction::Sdec(address, key, current, delta)
         };
 
-        self.sstore_inner(address, key, value, sstore_action)
+        self.sstore_inner(address, key, value, |_| sstore_action)
     }
 
     #[inline]
@@ -588,6 +594,108 @@ impl EvmPrecompileStorageProvider<'_> {
     }
 }
 
+bitflags! {
+    /// SSTORE transition flags that drive gas/refund accounting.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SstoreTransitionFlags: u8 {
+        /// The slot's transaction-start value is zero.
+        const ORIGINAL_ZERO = 1 << 0;
+        /// The slot's pre-SSTORE value is zero.
+        const PRESENT_ZERO = 1 << 1;
+        /// The slot's post-SSTORE value is zero.
+        const NEW_ZERO = 1 << 2;
+        /// The slot's transaction-start value equals its pre-SSTORE value.
+        const ORIGINAL_EQ_PRESENT = 1 << 3;
+        /// The slot's transaction-start value equals its post-SSTORE value.
+        const ORIGINAL_EQ_NEW = 1 << 4;
+        /// The slot's pre-SSTORE current value equals its post-SSTORE value.
+        const PRESENT_EQ_NEW = 1 << 5;
+    }
+}
+
+impl SstoreTransitionFlags {
+    /// Computes the SSTORE transition flags from the values that drive gas/refund accounting.
+    pub fn from_values(original: U256, present: U256, new: U256) -> Self {
+        let mut flags = Self::empty();
+
+        if original.is_zero() {
+            flags |= Self::ORIGINAL_ZERO;
+        }
+        if present.is_zero() {
+            flags |= Self::PRESENT_ZERO;
+        }
+        if new.is_zero() {
+            flags |= Self::NEW_ZERO;
+        }
+        if original == present {
+            flags |= Self::ORIGINAL_EQ_PRESENT;
+        }
+        if original == new {
+            flags |= Self::ORIGINAL_EQ_NEW;
+        }
+        if present == new {
+            flags |= Self::PRESENT_EQ_NEW;
+        }
+
+        flags
+    }
+
+    /// Returns whether the write changes slot occupancy.
+    pub fn crosses_zero_boundary(&self) -> bool {
+        self.contains(Self::PRESENT_ZERO) != self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write creates an occupied slot.
+    pub fn is_zero_to_nonzero(&self) -> bool {
+        self.contains(Self::PRESENT_ZERO) && !self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write clears an occupied slot.
+    pub fn is_nonzero_to_zero(&self) -> bool {
+        !self.contains(Self::PRESENT_ZERO) && self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write changes the present value.
+    pub fn changes_present(&self) -> bool {
+        !self.contains(Self::PRESENT_EQ_NEW)
+    }
+
+    /// Returns whether this slot is still clean before the write.
+    ///
+    /// In EVM SSTORE terminology, "clean" means the transaction has not changed
+    /// the slot yet, so the transaction-start value (`original`) still equals
+    /// the current pre-write value (`present`).
+    pub fn is_original_eq_present(&self) -> bool {
+        self.contains(Self::ORIGINAL_EQ_PRESENT)
+    }
+
+    /// Returns whether the warm clean-update SSTORE cost applies.
+    ///
+    /// This is the `present != new && original == present` case: the write
+    /// changes a slot for the first time in the transaction. Dirty writes
+    /// (`original != present`) use different SSTORE accounting and do not pay
+    /// this clean-update charge again.
+    pub fn charges_clean_update(&self) -> bool {
+        self.changes_present() && self.is_original_eq_present()
+    }
+}
+
+impl From<&StateLoad<SStoreResult>> for SstoreTransitionFlags {
+    fn from(result: &StateLoad<SStoreResult>) -> Self {
+        Self::from_values(
+            result.data.original_value,
+            result.data.present_value,
+            result.data.new_value,
+        )
+    }
+}
+
+impl From<StateLoad<SStoreResult>> for SstoreTransitionFlags {
+    fn from(result: StateLoad<SStoreResult>) -> Self {
+        Self::from(&result)
+    }
+}
+
 /// Deducts gas from the remaining gas and returns an error if insufficient.
 #[inline]
 pub fn deduct_gas(
@@ -725,13 +833,13 @@ mod tests {
         assert_eq!(
             provider.take_actions(),
             Some(vec![
-                StorageAction::Sstore(addr, k1, v1),
-                StorageAction::Sstore(addr, k2, v2),
+                StorageAction::Sstore(addr, k1, U256::ZERO, v1),
+                StorageAction::Sstore(addr, k2, U256::ZERO, v2),
                 StorageAction::Sload(addr, k1, v1),
-                StorageAction::Sstore(addr, k1, v1_new),
+                StorageAction::Sstore(addr, k1, v1, v1_new),
                 StorageAction::Sload(addr, k2, v2),
-                StorageAction::Sinc(addr, k1, U256::from(4)),
-                StorageAction::Sdec(addr, k2, U256::from(5)),
+                StorageAction::Sinc(addr, k1, v1_new, U256::from(4)),
+                StorageAction::Sdec(addr, k2, v2, U256::from(5)),
             ])
         );
 

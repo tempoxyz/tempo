@@ -16,7 +16,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true

@@ -93,6 +93,24 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+fn split_p256_signature_fields(
+    sig_data: &[u8; P256_SIGNATURE_LENGTH],
+) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
+    let (r, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (s, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (pub_key_x, sig_data) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    let (pub_key_y, pre_hash) = sig_data
+        .split_first_chunk::<32>()
+        .expect("P256 signature length checked");
+    (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
+}
+
 /// Primitive signature types that can be used standalone or within a Keychain signature.
 /// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
 /// It does NOT support Keychain signatures to prevent recursion.
@@ -141,20 +159,20 @@ impl PrimitiveSignature {
             return Err("Signature data too short: expected type identifier + signature data");
         }
 
-        let type_id = data[0];
-        let sig_data = &data[1..];
+        let (&type_id, sig_data) = data.split_first().expect("signature data length checked");
 
         match type_id {
             SIGNATURE_TYPE_P256 => {
-                if sig_data.len() != P256_SIGNATURE_LENGTH {
-                    return Err("Invalid P256 signature length");
-                }
+                let sig_data: &[u8; P256_SIGNATURE_LENGTH] = sig_data
+                    .try_into()
+                    .map_err(|_| "Invalid P256 signature length")?;
+                let (r, s, pub_key_x, pub_key_y, pre_hash) = split_p256_signature_fields(sig_data);
                 Ok(Self::P256(P256SignatureWithPreHash {
-                    r: B256::from_slice(&sig_data[0..32]),
-                    s: B256::from_slice(&sig_data[32..64]),
-                    pub_key_x: B256::from_slice(&sig_data[64..96]),
-                    pub_key_y: B256::from_slice(&sig_data[96..128]),
-                    pre_hash: sig_data[128] != 0,
+                    r: B256::from_slice(r),
+                    s: B256::from_slice(s),
+                    pub_key_x: B256::from_slice(pub_key_x),
+                    pub_key_y: B256::from_slice(pub_key_y),
+                    pre_hash,
                 }))
             }
             SIGNATURE_TYPE_WEBAUTHN => {
@@ -162,12 +180,22 @@ impl PrimitiveSignature {
                 if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
                     return Err("Invalid WebAuthn signature length");
                 }
+                let (webauthn_data, sig_data) = sig_data.split_at(len - 128);
+                let (r, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
+                let (s, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
+                let (pub_key_x, pub_key_y) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
                 Ok(Self::WebAuthn(WebAuthnSignature {
-                    r: B256::from_slice(&sig_data[len - 128..len - 96]),
-                    s: B256::from_slice(&sig_data[len - 96..len - 64]),
-                    pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
-                    pub_key_y: B256::from_slice(&sig_data[len - 32..]),
-                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+                    r: B256::from_slice(r),
+                    s: B256::from_slice(s),
+                    pub_key_x: B256::from_slice(pub_key_x),
+                    pub_key_y: B256::from_slice(pub_key_y),
+                    webauthn_data: Bytes::copy_from_slice(webauthn_data),
                 }))
             }
 
@@ -759,7 +787,10 @@ impl From<Signature> for TempoSignature {
 
 /// Derives a P256 address from public key coordinates
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
+    let mut encoded_key = [0u8; 64];
+    encoded_key[..32].copy_from_slice(pub_key_x.as_slice());
+    encoded_key[32..].copy_from_slice(pub_key_y.as_slice());
+    let hash = keccak256(encoded_key);
 
     // Take last 20 bytes as address
     Address::from_slice(&hash[12..])

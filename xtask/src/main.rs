@@ -6,6 +6,7 @@ use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
     generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
+    identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -22,6 +23,7 @@ mod generate_shadowfork;
 mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
+mod identity_transitions;
 mod shadowfork;
 
 #[tokio::main]
@@ -30,6 +32,10 @@ async fn main() -> eyre::Result<()> {
     match args.action {
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
+        Action::GetIdentityTransitions(args) => args
+            .run()
+            .await
+            .wrap_err("failed to get identity transitions"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -68,6 +74,7 @@ struct Args {
 enum Action {
     CheckAbi(CheckAbi),
     GetDkgOutcome(GetDkgOutcome),
+    GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),

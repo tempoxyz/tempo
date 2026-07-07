@@ -237,12 +237,8 @@ fn store_bytes_like<S: StorageOps>(
 
         // Store data in chunks at keccak256(base_slot) + i
         let slot_start = data_slot.unwrap_or_else(|| calc_data_slot(base_slot));
-        let chunks = calc_chunks(new_len);
-        for i in 0..chunks {
+        for (i, chunk) in bytes.chunks(32).enumerate() {
             let slot = slot_start + U256::from(i);
-            let chunk_start = i * 32;
-            let chunk_end = (chunk_start + 32).min(new_len);
-            let chunk = &bytes[chunk_start..chunk_end];
 
             // Pad chunk to 32 bytes if it's the last chunk
             let mut chunk_bytes = [0u8; 32];
