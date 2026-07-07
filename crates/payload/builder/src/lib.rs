@@ -1099,6 +1099,9 @@ where
                             finish_rounds = stats.finish_rounds,
                             account_targets = stats.account_targets,
                             storage_targets = stats.storage_targets,
+                            pool_hit = stats.pool_hit,
+                            trie_mem_mb = stats.trie_mem_mb,
+                            hook_dropped = stats.hook_dropped,
                             follower_queue = tempo_flatmpt::follower(shadow).depth(),
                             "sparse commitment"
                         );

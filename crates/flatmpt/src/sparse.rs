@@ -83,6 +83,32 @@ pub struct SparseStats {
     pub wait_parent_ms: u64,
     /// Total finish() latency: the commitment's cost on the slot's hot path.
     pub finish_ms: u64,
+    /// Whether this block reused the pooled trie from the previous block.
+    pub pool_hit: bool,
+    /// Pooled trie memory after finish (MB), 0 if dropped.
+    pub trie_mem_mb: u64,
+    /// Prewarm batches dropped because the hook channel was full.
+    pub hook_dropped: u64,
+}
+
+/// The revealed sparse trie carried across blocks, tagged with the state root
+/// it represents. The next block's worker consumes it iff building on that
+/// exact root; at steady state the hot set is already revealed and proof
+/// targets collapse to newly-touched keys. A cancelled build (worker dropped
+/// mid-block) discards it — reveals may be half-applied. The follower's
+/// per-block root cross-check remains the loud gate against any staleness.
+static TRIE_POOL: parking_lot::Mutex<Option<(B256, SparseStateTrie)>> =
+    parking_lot::Mutex::new(None);
+
+/// Drop the pooled trie once it outgrows this (`TEMPO_FLATMPT_SPARSE_MEM_MB`).
+fn trie_mem_cap() -> usize {
+    static MB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MB.get_or_init(|| {
+        std::env::var("TEMPO_FLATMPT_SPARSE_MEM_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096)
+    }) * 1024 * 1024
 }
 
 enum Msg {
@@ -95,36 +121,60 @@ enum Msg {
 pub struct SparseWorker {
     tx: Option<mpsc::SyncSender<Msg>>,
     result_rx: mpsc::Receiver<anyhow::Result<(B256, SparseStats)>>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl SparseWorker {
     /// Spawn the commitment worker for a block whose parent state root is
     /// `parent_root`. Read-only against the shared shadow.
     pub fn begin(shadow: &'static RwLock<FlatShadow>, parent_root: B256) -> Self {
-        let (tx, rx) = mpsc::sync_channel::<Msg>(1024);
+        let (tx, rx) = mpsc::sync_channel::<Msg>(65_536);
         let (result_tx, result_rx) = mpsc::channel();
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let dropped_w = dropped.clone();
         std::thread::Builder::new()
             .name("flatmpt-sparse".into())
             .spawn(move || {
                 let mut w = Worker::new(shadow, parent_root);
                 let mut finished = false;
-                for msg in rx {
-                    match msg {
-                        Msg::State(state) => w.on_state(state),
-                        Msg::Finish(ops) => {
-                            let _ = result_tx.send(w.finish(ops));
-                            finished = true;
-                            break;
+                // Drain-then-pass: accumulate everything queued before deciding
+                // to run a (multi-hundred-ms) proof pass, so passes cover big
+                // batches and the channel rarely fills while one runs.
+                'outer: while let Ok(first) = rx.recv() {
+                    let mut msg = Some(first);
+                    loop {
+                        match msg.take() {
+                            Some(Msg::State(state)) => w.on_state(state),
+                            Some(Msg::Finish(ops)) => {
+                                w.stats.hook_dropped =
+                                    dropped_w.load(std::sync::atomic::Ordering::Relaxed);
+                                let _ = result_tx.send(w.finish(ops));
+                                finished = true;
+                                break 'outer;
+                            }
+                            None => break,
+                        }
+                        msg = rx.try_recv().ok();
+                    }
+                    if w.fresh >= PASS_TARGETS {
+                        w.fresh = 0;
+                        match w.reveal_pass(false) {
+                            Ok(true) => w.stats.exec_passes += 1,
+                            Ok(false) => w.stats.deferred_passes += 1,
+                            Err(e) => {
+                                tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "sparse exec pass failed");
+                            }
                         }
                     }
                 }
                 if !finished {
-                    // Channel closed without Finish: cancelled build.
+                    // Channel closed without Finish: cancelled build. The
+                    // consumed pooled trie (if any) stays discarded.
                     tracing::debug!(target: "flatmpt", "sparse worker dropped (cancelled build)");
                 }
             })
             .expect("spawn flatmpt-sparse");
-        Self { tx: Some(tx), result_rx }
+        Self { tx: Some(tx), result_rx, dropped }
     }
 
     /// State hook for the executor (prewarming only — final values come from
@@ -133,8 +183,11 @@ impl SparseWorker {
     /// execution — a missed prewarm only means the finish drain fetches it.
     pub fn hook(&self) -> impl revm::OnStateHook {
         let tx = self.tx.as_ref().expect("worker active").clone();
+        let dropped = self.dropped.clone();
         move |state: revm::state::EvmState| {
-            let _ = tx.try_send(Msg::State(state));
+            if tx.try_send(Msg::State(state)).is_err() {
+                dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 
@@ -167,16 +220,40 @@ struct Worker {
 
 impl Worker {
     fn new(shadow: &'static RwLock<FlatShadow>, parent_root: B256) -> Self {
+        // Reuse the previous block's revealed trie when stacking directly on
+        // its root — the steady-state case. Anything else (first block,
+        // rebuild candidate, post-cancel) starts blind.
+        let (trie, pool_hit) = match TRIE_POOL.lock().take() {
+            Some((root, trie)) if root == parent_root => (trie, true),
+            _ => (SparseStateTrie::new(), false),
+        };
+        let mut stats = SparseStats::default();
+        stats.pool_hit = pool_hit;
         Self {
             shadow,
             parent_root,
-            trie: SparseStateTrie::new(),
+            trie,
             account_updates: B256Map::default(),
             storage_updates: B256Map::default(),
             fetched_accounts: B256Map::default(),
             fetched_storage: B256Map::default(),
             fresh: 0,
-            stats: SparseStats::default(),
+            stats,
+        }
+    }
+
+    /// Return the trie to the pool as representing `root`, unless it has
+    /// outgrown the memory cap.
+    fn pool_put(&mut self, root: B256) {
+        let mem = self.trie.memory_size();
+        if mem <= trie_mem_cap() {
+            self.stats.trie_mem_mb = (mem >> 20) as u64;
+            let trie = std::mem::take(&mut self.trie);
+            *TRIE_POOL.lock() = Some((root, trie));
+        } else {
+            self.stats.trie_mem_mb = 0;
+            tracing::info!(target: "flatmpt", mem_mb = mem >> 20, "pooled sparse trie over cap; dropping");
+            *TRIE_POOL.lock() = None;
         }
     }
 
@@ -217,18 +294,6 @@ impl Worker {
                 }
             }
         }
-        if self.fresh >= PASS_TARGETS {
-            self.fresh = 0;
-            match self.reveal_pass(false) {
-                Ok(true) => self.stats.exec_passes += 1,
-                Ok(false) => self.stats.deferred_passes += 1,
-                Err(e) => {
-                    // Non-fatal during execution: the finish drain retries and
-                    // is the actual correctness gate.
-                    tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "sparse exec pass failed");
-                }
-            }
-        }
     }
 
     /// The authoritative finish: apply the bundle's net changes, drain all
@@ -236,7 +301,9 @@ impl Worker {
     fn finish(&mut self, ops: Vec<(Key, StateOp)>) -> anyhow::Result<(B256, SparseStats)> {
         let t_finish = Instant::now();
         if ops.is_empty() {
-            return Ok((self.parent_root, self.stats));
+            let parent = self.parent_root;
+            self.pool_put(parent);
+            return Ok((parent, self.stats));
         }
 
         // Net-change maps from the ops (ordered; SetAccount precedes its slot
@@ -344,6 +411,7 @@ impl Worker {
             .trie
             .root()
             .map_err(|e| anyhow::anyhow!("sparse root: {e}"))?;
+        self.pool_put(root);
         self.stats.finish_ms = t_finish.elapsed().as_millis() as u64;
         Ok((root, self.stats))
     }
