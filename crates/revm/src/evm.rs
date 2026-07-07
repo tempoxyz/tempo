@@ -1383,7 +1383,9 @@ mod tests {
         // Verify the inner signature is WebAuthn
         assert!(matches!(
             keychain_sig.signature,
-            PrimitiveSignature::WebAuthn(_)
+            tempo_primitives::transaction::KeychainInnerSignature::Primitive(
+                PrimitiveSignature::WebAuthn(_)
+            )
         ));
 
         // Verify key_id recovery works correctly using the transaction signature hash

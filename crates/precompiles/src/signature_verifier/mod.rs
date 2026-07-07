@@ -1,12 +1,17 @@
 pub mod dispatch;
 
-use crate::{SIGNATURE_VERIFIER_ADDRESS, account_keychain::AccountKeychain, error::Result};
+use crate::{
+    SIGNATURE_VERIFIER_ADDRESS,
+    account_keychain::AccountKeychain,
+    error::Result,
+    native_multisig::{NativeMultisig, NativeMultisigAuthError, auth::NativeMultisigAuthConfig},
+};
 use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
     SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+    tt_signature::{KeychainInnerSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 
 /// Gas cost for secp256k1 signature verification.
@@ -36,6 +41,7 @@ impl SignatureVerifier {
             SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
             SignatureType::P256 => P256_VERIFY_GAS,
             SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+            SignatureType::Multisig => return Err(SignatureVerifierError::invalid_format().into()),
         };
         self.storage.deduct_gas(verify_gas)?;
 
@@ -83,8 +89,42 @@ impl SignatureVerifier {
             return Err(SignatureVerifierError::invalid_format().into());
         }
 
-        let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let key_id = self.recover(signing_hash, keychain_sig.signature.to_bytes())?;
+        let key_id = keychain_sig
+            .key_id(&hash)
+            .map_err(|_| SignatureVerifierError::invalid_signature())?;
+
+        // A native multisig access key must additionally satisfy its current owner threshold —
+        // key_id recovery alone only yields the claimed account. Verify the quorum against the
+        // account's stored config over the keychain signing hash, same as transaction validation.
+        if let KeychainInnerSignature::Multisig(multisig_signature) = &keychain_sig.signature {
+            self.storage.deduct_gas(
+                (multisig_signature.signature_count() as u64).saturating_mul(P256_VERIFY_GAS),
+            )?;
+            let multisig = NativeMultisig::new();
+            let threshold = multisig.load_registered_threshold(key_id)?;
+            let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
+            multisig
+                .verify_authorization(
+                    signing_hash,
+                    multisig_signature,
+                    NativeMultisigAuthConfig::Registered {
+                        account: key_id,
+                        threshold,
+                    },
+                    |acc| {
+                        multisig
+                            .load_registered_threshold(acc)
+                            .map_err(NativeMultisigAuthError::from)
+                    },
+                    |acc, owner| {
+                        multisig
+                            .read_owner_weight(acc, owner)
+                            .map_err(NativeMultisigAuthError::from)
+                    },
+                )
+                .map_err(|_| SignatureVerifierError::invalid_signature())?;
+        }
+
         Ok((keychain_sig.user_address, key_id))
     }
 }

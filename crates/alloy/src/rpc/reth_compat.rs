@@ -302,20 +302,38 @@ fn create_mock_tempo_sig(
     caller_addr: alloy_primitives::Address,
     is_t1c: bool,
 ) -> TempoSignature {
-    use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
+    use tempo_primitives::transaction::{
+        MultisigSignature,
+        tt_signature::{KeychainSignature, TempoSignature},
+    };
 
-    let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
+    let primitive_sig = create_mock_primitive_signature(key_type, key_data.cloned());
+    let multisig_sig = || {
+        MultisigSignature::new(
+            key_id.unwrap_or(caller_addr),
+            vec![primitive_sig.to_bytes()],
+            None,
+        )
+    };
 
     if key_id.is_some() {
         // For Keychain signatures, the root_key_address is the caller (account owner).
         let keychain_sig = if is_t1c {
-            KeychainSignature::new(caller_addr, inner_sig)
+            match key_type {
+                SignatureType::Multisig => KeychainSignature::new(caller_addr, multisig_sig()),
+                _ => KeychainSignature::new(caller_addr, primitive_sig),
+            }
         } else {
-            KeychainSignature::new_v1(caller_addr, inner_sig)
+            match key_type {
+                SignatureType::Multisig => KeychainSignature::new_v1(caller_addr, multisig_sig()),
+                _ => KeychainSignature::new_v1(caller_addr, primitive_sig),
+            }
         };
         TempoSignature::Keychain(keychain_sig)
+    } else if matches!(key_type, SignatureType::Multisig) {
+        TempoSignature::Multisig(multisig_sig())
     } else {
-        TempoSignature::Primitive(inner_sig)
+        TempoSignature::Primitive(primitive_sig)
     }
 }
 
@@ -402,6 +420,11 @@ fn create_mock_primitive_signature(
                 pub_key_y: alloy_primitives::B256::ZERO,
             })
         }
+        SignatureType::Multisig => PrimitiveSignature::Secp256k1(Signature::new(
+            alloy_primitives::U256::ZERO,
+            alloy_primitives::U256::ZERO,
+            false,
+        )),
     }
 }
 

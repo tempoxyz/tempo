@@ -1472,6 +1472,46 @@ where
                                 reason: format!("{e:?}"),
                             })?;
 
+                        if let tempo_primitives::transaction::KeychainInnerSignature::Multisig(
+                            multisig_signature,
+                        ) = &keychain_sig.signature
+                        {
+                            // A native multisig access key authorizes the keychain action with its
+                            // current owner threshold (TIP-1061). `access_key_addr` is the recovered
+                            // multisig account, so verify the quorum against that account's stored
+                            // config over the keychain signing hash.
+                            let multisig = NativeMultisig::new();
+                            let threshold = multisig
+                                .load_registered_threshold(access_key_addr)
+                                .map_err(NativeMultisigAuthError::from)
+                                .map_err(map_native_multisig_error::<DB>)?;
+                            let signing_hash =
+                                tempo_primitives::transaction::KeychainSignature::signing_hash(
+                                    tempo_tx_env.signature_hash,
+                                    *user_address,
+                                );
+                            multisig
+                                .verify_authorization(
+                                    signing_hash,
+                                    multisig_signature,
+                                    NativeMultisigAuthConfig::Registered {
+                                        account: access_key_addr,
+                                        threshold,
+                                    },
+                                    |acc| {
+                                        multisig
+                                            .load_registered_threshold(acc)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
+                                    |acc, owner| {
+                                        multisig
+                                            .read_owner_weight(acc, owner)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
+                                )
+                                .map_err(map_native_multisig_error::<DB>)?;
+                        }
+
                         // T6 adds admin delegation: a keychain signer may authorize a different
                         // child key only if the acting transaction key is itself an active admin key.
                         if key_auth.is_some() && !key.is_admin {
@@ -1701,6 +1741,7 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Multisig => PrecompileSignatureType::Multisig,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)

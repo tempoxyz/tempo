@@ -411,6 +411,91 @@ pub enum KeychainVersionError {
     V2BeforeActivation,
 }
 
+/// Signature variants that can authenticate a keychain access key.
+///
+/// This intentionally excludes nested keychain signatures.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub enum KeychainInnerSignature {
+    Primitive(PrimitiveSignature),
+    Multisig(MultisigSignature),
+}
+
+impl From<PrimitiveSignature> for KeychainInnerSignature {
+    fn from(signature: PrimitiveSignature) -> Self {
+        Self::Primitive(signature)
+    }
+}
+
+impl From<MultisigSignature> for KeychainInnerSignature {
+    fn from(signature: MultisigSignature) -> Self {
+        Self::Multisig(signature)
+    }
+}
+
+impl KeychainInnerSignature {
+    fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() > 1 && data[0] == SIGNATURE_TYPE_MULTISIG {
+            let mut sig_data = &data[1..];
+            // A keychain access key is itself a top-level multisig authorization node (depth 1), so
+            // its nested owner approvals are bounded exactly like a transaction multisig signature.
+            return match MultisigSignature::decode_with_depth(&mut sig_data, 1) {
+                Ok(signature) if sig_data.is_empty() => Ok(Self::Multisig(signature)),
+                _ => Err("Invalid Multisig signature RLP"),
+            };
+        }
+
+        PrimitiveSignature::from_bytes(data).map(Self::Primitive)
+    }
+
+    fn to_bytes(&self) -> Bytes {
+        match self {
+            Self::Primitive(signature) => signature.to_bytes(),
+            Self::Multisig(signature) => {
+                let mut bytes = Vec::with_capacity(1 + signature.length());
+                bytes.push(SIGNATURE_TYPE_MULTISIG);
+                signature.encode(&mut bytes);
+                Bytes::from(bytes)
+            }
+        }
+    }
+
+    fn encoded_length(&self) -> usize {
+        match self {
+            Self::Primitive(signature) => signature.encoded_length(),
+            Self::Multisig(signature) => 1 + signature.length(),
+        }
+    }
+
+    pub fn signature_type(&self) -> SignatureType {
+        match self {
+            Self::Primitive(signature) => signature.signature_type(),
+            Self::Multisig(_) => SignatureType::Multisig,
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::Primitive(signature) => signature.size(),
+            Self::Multisig(signature) => 1 + signature.size(),
+        }
+    }
+
+    fn recover_signer(
+        &self,
+        sig_hash: &B256,
+    ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        match self {
+            Self::Primitive(signature) => signature.recover_signer(sig_hash),
+            Self::Multisig(signature) => signature
+                .recover_account()
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new()),
+        }
+    }
+}
+
 /// Keychain signature wrapping another signature with a user address.
 /// This allows an access key to sign on behalf of a root account.
 ///
@@ -430,8 +515,8 @@ pub enum KeychainVersionError {
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
-    /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
-    pub signature: PrimitiveSignature,
+    /// The actual signature from the access key (primitive or native multisig, but NOT another Keychain).
+    pub signature: KeychainInnerSignature,
     /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
     #[cfg_attr(feature = "serde", serde(default))]
     pub version: KeychainVersion,
@@ -454,10 +539,10 @@ impl KeychainSignature {
     /// Create a new V2 KeychainSignature (recommended).
     ///
     /// V2 signatures include the user_address in the signature hash.
-    pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
+    pub fn new(user_address: Address, signature: impl Into<KeychainInnerSignature>) -> Self {
         Self {
             user_address,
-            signature,
+            signature: signature.into(),
             version: KeychainVersion::V2,
             cached_key_id: OnceLock::new(),
         }
@@ -467,10 +552,10 @@ impl KeychainSignature {
     ///
     /// V1 signatures do NOT include the user_address in the signature hash
     /// and are deprecated at the T1C hardfork.
-    pub fn new_v1(user_address: Address, signature: PrimitiveSignature) -> Self {
+    pub fn new_v1(user_address: Address, signature: impl Into<KeychainInnerSignature>) -> Self {
         Self {
             user_address,
-            signature,
+            signature: signature.into(),
             version: KeychainVersion::V1,
             cached_key_id: OnceLock::new(),
         }
@@ -639,9 +724,8 @@ impl TempoSignature {
             let user_address = Address::from_slice(&sig_data[0..20]);
             let inner_sig_bytes = &sig_data[20..];
 
-            // Parse inner signature using PrimitiveSignature (which doesn't support Keychain)
-            // This automatically prevents recursive keychain signatures at compile time
-            let inner_signature = PrimitiveSignature::from_bytes(inner_sig_bytes)?;
+            // Parse inner signature without allowing recursive keychain signatures.
+            let inner_signature = KeychainInnerSignature::from_bytes(inner_sig_bytes)?;
 
             return Ok(Self::Keychain(KeychainSignature {
                 user_address,

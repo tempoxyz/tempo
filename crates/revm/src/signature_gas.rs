@@ -5,7 +5,8 @@ use revm::{
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_precompiles::ECRECOVER_GAS;
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, PrimitiveSignature, TempoSignature,
+    InitMultisig, KeychainInnerSignature, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature,
+    PrimitiveSignature, TempoSignature,
 };
 
 /// Additional gas for P256 signature verification
@@ -101,6 +102,23 @@ fn native_multisig_signature_verification_gas(
     }
 }
 
+/// Gas for verifying a keychain access key's inner signature (primitive or native multisig).
+///
+/// TIP-1061 requires a native multisig access key's authorization cost to be metered in addition to
+/// normal AccountKeychain key validation, so multisig inners are charged the full owner-approval
+/// schedule (as a top-level node).
+#[inline]
+fn keychain_inner_signature_verification_gas(signature: &KeychainInnerSignature) -> u64 {
+    match signature {
+        KeychainInnerSignature::Primitive(primitive) => {
+            primitive_signature_verification_gas(primitive)
+        }
+        KeychainInnerSignature::Multisig(multisig) => {
+            native_multisig_signature_verification_gas(multisig, true, 1)
+        }
+    }
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For Keychain signatures, adds key validation overhead to the inner signature cost
@@ -110,7 +128,8 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+            keychain_inner_signature_verification_gas(&keychain_sig.signature)
+                + KEYCHAIN_VALIDATION_GAS
         }
         TempoSignature::Multisig(multisig_sig) => {
             native_multisig_signature_verification_gas(multisig_sig, true, 1)
