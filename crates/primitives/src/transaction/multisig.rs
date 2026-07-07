@@ -496,6 +496,12 @@ impl MultisigSignature {
         address: MultisigAddress,
         signatures: Vec<TempoSignature>,
     ) -> Result<Self, &'static str> {
+        // Guarantee the init config is valid at construction (decode/serde) time so that every
+        // constructed `MultisigSignature` upholds the invariant `MultisigAddress::account()` relies
+        // on. Without this, an invalid init config reaches the infallible `account()` and panics.
+        if let MultisigAddress::Init(init) = &address {
+            init.account().map_err(MultisigConfigError::as_str)?;
+        }
         let signature = Self {
             address,
             signatures,
@@ -1338,6 +1344,33 @@ mod tests {
         );
 
         assert_eq!(signature, Err("multisig init does not derive account"));
+    }
+
+    #[test]
+    fn multisig_signature_decode_rejects_invalid_init_config() {
+        // A bootstrap-shaped signature whose init config is structurally valid RLP but
+        // semantically invalid (empty owners / zero threshold) must be rejected at decode time
+        // instead of reaching the infallible `MultisigAddress::account()` and panicking.
+        let invalid_init = InitMultisig {
+            salt: B256::ZERO,
+            threshold: 0,
+            owners: Vec::new(),
+        };
+        let encoded = encoded_multisig_with_init_config(
+            &invalid_init,
+            vec![valid_owner_signature_bytes().to_vec()],
+        );
+
+        let mut input = encoded.as_slice();
+        assert!(
+            MultisigSignature::decode(&mut input).is_err(),
+            "decode must reject a semantically invalid init config without panicking"
+        );
+
+        // The same payload reaches the decoder through the 0x05-prefixed signature form.
+        let mut tempo_encoded = vec![SIGNATURE_TYPE_MULTISIG];
+        tempo_encoded.extend(encoded);
+        assert!(TempoSignature::from_bytes(&tempo_encoded).is_err());
     }
 
     #[test]
