@@ -516,7 +516,9 @@ impl StablecoinDEX {
 
     /// Returns whether `book_key` has a persisted index and its zero-based `book_keys` index.
     pub(crate) fn book_key_index(&self, book_key: B256) -> Result<(bool, u32)> {
-        self.books[book_key].read().map(|book| book.id().index())
+        self.books[book_key]
+            .read()
+            .and_then(|book| book.id().index())
     }
 
     /// Resolves a book key by index from the append-only `book_keys` vector.

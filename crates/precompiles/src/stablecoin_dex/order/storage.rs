@@ -337,7 +337,7 @@ impl OrderHandler {
         // If known, use the book ID. Otherwise resolve it from storage.
         let (is_index_set, book_index) = match known_id {
             None => StablecoinDEX::new().book_key_index(value.book_key)?,
-            Some(id) => id.index(),
+            Some(id) => id.index()?,
         };
 
         let new_slots = if is_index_set {

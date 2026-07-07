@@ -115,8 +115,13 @@ impl BookId {
     }
 
     /// Returns whether this ID is set and its zero-based `book_keys` vector index.
-    pub(crate) fn index(self) -> (bool, u32) {
-        (self.0 != 0, self.0.saturating_sub(1))
+    pub(crate) fn index(self) -> Result<(bool, u32)> {
+        Ok((
+            self.0 != 0,
+            self.0
+                .checked_sub(1)
+                .ok_or_else(StablecoinDEXError::pair_does_not_exist)?,
+        ))
     }
 }
 
