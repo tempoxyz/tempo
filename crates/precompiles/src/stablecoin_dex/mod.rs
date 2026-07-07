@@ -22,7 +22,9 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     error::{Result, TempoPrecompileError},
-    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
+    stablecoin_dex::orderbook::{
+        Fill, MAX_PRICE, MIN_PRICE, compute_book_key, walk_resting_orders,
+    },
     storage::{Handler, Mapping},
     storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
@@ -54,61 +56,6 @@ pub struct StablecoinDEX {
     next_order_id: u128,
     book_keys: Vec<B256>,
     dex_storage_credits: Mapping<Address, u64>,
-}
-
-/// How the current resting order is consumed by [`walk_resting_orders`].
-enum Fill {
-    /// The order terminates the trade; `u128` is the base amount filled.
-    Partial(u128),
-    /// The order is fully consumed and the walk continues to the next order.
-    Full,
-}
-
-/// Walks resting orders starting at `order`, applying the pure per-order
-/// arithmetic `step` and delegating settlement and advancement to `settle`,
-/// until `amount` (input for exact-in, output for exact-out) is exhausted.
-/// Returns the running total (output for exact-in, input for exact-out).
-///
-/// This is the single traversal shared by swap execution and quotes: the swap
-/// passes a mutating `settle` that fills orders and returns the next one, while
-/// the quote passes a read-only `settle` that only advances the cursor, so both
-/// price a trade identically.
-fn walk_resting_orders(
-    mut order: Order,
-    mut amount: u128,
-    bid: bool,
-    step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
-    mut settle: impl FnMut(Order, Fill) -> Result<Option<Order>>,
-) -> Result<u128> {
-    let mut total: u128 = 0;
-
-    while amount > 0 {
-        let remaining = order.remaining();
-        let s = step(amount, remaining, order.tick(), bid)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        total = total
-            .checked_add(s.accumulate)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        if s.fill_amount < remaining {
-            // Partial fill terminates the trade.
-            settle(order, Fill::Partial(s.fill_amount))?;
-            break;
-        }
-
-        match settle(order, Fill::Full)? {
-            Some(next) => order = next,
-            None => {
-                if s.next_amount > 0 {
-                    return Err(StablecoinDEXError::insufficient_liquidity().into());
-                }
-                break;
-            }
-        }
-        amount = s.next_amount;
-    }
-
-    Ok(total)
 }
 
 impl StablecoinDEX {
@@ -1182,15 +1129,15 @@ impl StablecoinDEX {
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
-        bid: bool,
+        is_bid: bool,
         amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.head].read()?;
 
         // Returns the total input spent to receive `amount_out`.
-        walk_resting_orders(order, amount_out, bid, step_exact_out, |order, fill| {
+        walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
             self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
         })
     }
@@ -1200,15 +1147,15 @@ impl StablecoinDEX {
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
-        bid: bool,
+        is_bid: bool,
         amount_in: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.head].read()?;
 
         // Returns the total output received for spending `amount_in`.
-        walk_resting_orders(order, amount_in, bid, step_exact_in, |order, fill| {
+        walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
             self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
         })
     }
@@ -1475,38 +1422,36 @@ impl StablecoinDEX {
     /// historical determinism.
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
         if self.storage.spec().is_t8() {
-            self.quote_exact_out_per_order(book_key, amount_out, is_bid)
+            self.quote_per_order(book_key, amount_out, is_bid, step_exact_out)
         } else {
             self.quote_exact_out_per_tick(book_key, amount_out, is_bid)
         }
     }
 
-    /// Per-order quote that walks the book like [`Self::fill_orders_exact_out`] but
-    /// without mutating state, sharing [`step_exact_out`] so the quoted input
-    /// equals the executed input.
-    fn quote_exact_out_per_order(
+    /// Per-order quote that walks the book like swap execution but without
+    /// mutating state, sharing the same `step` arithmetic so quoted amounts equal
+    /// executed amounts.
+    fn quote_per_order(
         &self,
         book_key: B256,
-        amount_out: u128,
-        bid: bool,
+        amount: u128,
+        is_bid: bool,
+        step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
     ) -> Result<u128> {
-        let level = self.get_best_price_level(book_key, bid)?;
+        let level = self.get_best_price_level(book_key, is_bid)?;
         let order = self.orders[level.head].read()?;
 
-        // Read-only walk: accumulate input via `step_exact_out`, advancing the
-        // cursor without settling, so the quoted input equals the executed input.
-        walk_resting_orders(
-            order,
-            amount_out,
-            bid,
-            step_exact_out,
-            |order, fill| match fill {
-                Fill::Partial(_) => Ok(None),
-                Fill::Full => self.next_order_after(book_key, &order, bid),
-            },
-        )
+        // Read-only walk: advance the cursor without settling, so the quote uses
+        // the same per-order arithmetic and traversal as execution.
+        walk_resting_orders(order, amount, is_bid, step, |order, fill| match fill {
+            Fill::Partial(_) => Ok(None),
+            Fill::Full => self.next_order_after(book_key, &order, is_bid),
+        })
     }
 
+    /// Legacy pre-T8 exact-output quote. It walks by tick-level aggregate
+    /// liquidity and rounds once per tick, so it is intentionally unused after T8
+    /// where quotes must match order-by-order execution.
     fn quote_exact_out_per_tick(
         &self,
         book_key: B256,
@@ -1739,33 +1684,15 @@ impl StablecoinDEX {
     /// historical determinism.
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
         if self.storage.spec().is_t8() {
-            self.quote_exact_in_per_order(book_key, amount_in, is_bid)
+            self.quote_per_order(book_key, amount_in, is_bid, step_exact_in)
         } else {
             self.quote_exact_in_per_tick(book_key, amount_in, is_bid)
         }
     }
 
-    /// Per-order quote that walks the book like [`Self::fill_orders_exact_in`] but
-    /// without mutating state, sharing [`step_exact_in`] so the quoted output
-    /// equals the executed output.
-    fn quote_exact_in_per_order(&self, book_key: B256, amount_in: u128, bid: bool) -> Result<u128> {
-        let level = self.get_best_price_level(book_key, bid)?;
-        let order = self.orders[level.head].read()?;
-
-        // Read-only walk: accumulate output via `step_exact_in`, advancing the
-        // cursor without settling, so the quoted output equals the executed output.
-        walk_resting_orders(
-            order,
-            amount_in,
-            bid,
-            step_exact_in,
-            |order, fill| match fill {
-                Fill::Partial(_) => Ok(None),
-                Fill::Full => self.next_order_after(book_key, &order, bid),
-            },
-        )
-    }
-
+    /// Legacy pre-T8 exact-input quote. It walks by tick-level aggregate
+    /// liquidity and rounds once per tick, so it is intentionally unused after T8
+    /// where quotes must match order-by-order execution.
     fn quote_exact_in_per_tick(
         &self,
         book_key: B256,
@@ -6713,7 +6640,7 @@ mod tests {
             let total_base: u128 = book.iter().map(|(s, _)| *s).sum();
             let partial = book[0].0 + book.get(1).map(|(s, _)| *s).unwrap_or(0) / 2;
 
-            // bids: taker SELLS base (quote_exact_in_per_order, bid)
+            // bids: taker SELLS base (quote_per_order, bid)
             for amount_in in [total_base, partial] {
                 with_fragmented_book(TempoHardfork::T8, book, true, |dex, base, quote, taker| {
                     let q = dex.quote_swap_exact_amount_in(base, quote, amount_in)?;
@@ -6726,7 +6653,7 @@ mod tests {
                 })?;
             }
 
-            // asks: taker BUYS base exact-out (quote_exact_out_per_order, ask)
+            // asks: taker BUYS base exact-out (quote_per_order, ask)
             for amount_out in [total_base, partial] {
                 with_fragmented_book(TempoHardfork::T8, book, false, |dex, base, quote, taker| {
                     let q = dex.quote_swap_exact_amount_out(quote, base, amount_out)?;
@@ -6740,7 +6667,7 @@ mod tests {
                 })?;
             }
 
-            // asks: taker BUYS base exact-in (quote_exact_in_per_order, ask)
+            // asks: taker BUYS base exact-in (quote_per_order, ask)
             with_fragmented_book(TempoHardfork::T8, book, false, |dex, base, quote, taker| {
                 // Quote (T8-exact) the input needed to buy all base, then spend it.
                 let amount_in = dex.quote_swap_exact_amount_out(quote, base, total_base)?;
@@ -6750,7 +6677,7 @@ mod tests {
                 Ok(())
             })?;
 
-            // bids: taker SELLS base exact-out for quote (quote_exact_out_per_order, bid)
+            // bids: taker SELLS base exact-out for quote (quote_per_order, bid)
             with_fragmented_book(TempoHardfork::T8, book, true, |dex, base, quote, taker| {
                 // Target a quote output achievable with roughly half the base liquidity.
                 let amount_out = dex.quote_swap_exact_amount_in(base, quote, total_base / 2)?;

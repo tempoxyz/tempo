@@ -1,8 +1,8 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
 use crate::{
-    error::Result,
-    stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
+    error::{Result, TempoPrecompileError},
+    stablecoin_dex::{IStablecoinDEX, Order, TICK_SPACING},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
@@ -41,6 +41,61 @@ pub struct OrderStep {
     /// Input (exact-in) or output (exact-out) left after fully consuming this
     /// order. Only meaningful on a full fill.
     pub next_amount: u128,
+}
+
+/// How the current resting order is consumed by [`walk_resting_orders`].
+pub(crate) enum Fill {
+    /// The order terminates the trade; `u128` is the base amount filled.
+    Partial(u128),
+    /// The order is fully consumed and the walk continues to the next order.
+    Full,
+}
+
+/// Walks resting orders starting at `order`, applying the pure per-order
+/// arithmetic `step` and delegating settlement and advancement to `settle`,
+/// until `amount` (input for exact-in, output for exact-out) is exhausted.
+/// Returns the running total (output for exact-in, input for exact-out).
+///
+/// This is the single traversal shared by swap execution and quotes: the swap
+/// passes a mutating `settle` that fills orders and returns the next one, while
+/// the quote passes a read-only `settle` that only advances the cursor, so both
+/// price a trade identically.
+pub(crate) fn walk_resting_orders(
+    mut order: Order,
+    mut amount: u128,
+    is_bid: bool,
+    step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
+    mut settle: impl FnMut(Order, Fill) -> Result<Option<Order>>,
+) -> Result<u128> {
+    let mut total: u128 = 0;
+
+    while amount > 0 {
+        let remaining = order.remaining();
+        let s = step(amount, remaining, order.tick(), is_bid)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        total = total
+            .checked_add(s.accumulate)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        if s.fill_amount < remaining {
+            // Partial fill terminates the trade.
+            settle(order, Fill::Partial(s.fill_amount))?;
+            break;
+        }
+
+        match settle(order, Fill::Full)? {
+            Some(next) => order = next,
+            None => {
+                if s.next_amount > 0 {
+                    return Err(StablecoinDEXError::insufficient_liquidity().into());
+                }
+                break;
+            }
+        }
+        amount = s.next_amount;
+    }
+
+    Ok(total)
 }
 
 /// Convert base token amount to quote token amount at a given tick.
@@ -105,8 +160,8 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
 ///
 /// Shared by the swap settlement (`partial_fill_order`/`fill_order`) and the
 /// per-order quote so both compute the taker output identically.
-pub fn taker_output(fill_amount: u128, tick: i16, bid: bool) -> Option<u128> {
-    if bid {
+pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> {
+    if is_bid {
         base_to_quote(fill_amount, tick, RoundingDirection::Down)
     } else {
         Some(fill_amount)
@@ -116,8 +171,13 @@ pub fn taker_output(fill_amount: u128, tick: i16, bid: bool) -> Option<u128> {
 /// Per-order arithmetic for an exact-input trade. Pure: depends only on the
 /// order's `remaining`, `tick`, and side. The caller compares `fill_amount`
 /// against `remaining` to decide whether the order is partially or fully consumed.
-pub fn step_exact_in(amount_in: u128, remaining: u128, tick: i16, bid: bool) -> Option<OrderStep> {
-    let fill_amount = if bid {
+pub fn step_exact_in(
+    amount_in: u128,
+    remaining: u128,
+    tick: i16,
+    is_bid: bool,
+) -> Option<OrderStep> {
+    let fill_amount = if is_bid {
         // Selling base: input is base, fill in base.
         amount_in.min(remaining)
     } else {
@@ -125,9 +185,9 @@ pub fn step_exact_in(amount_in: u128, remaining: u128, tick: i16, bid: bool) -> 
         quote_to_base(amount_in, tick, RoundingDirection::Down)?.min(remaining)
     };
 
-    let accumulate = taker_output(fill_amount, tick, bid)?;
+    let accumulate = taker_output(fill_amount, tick, is_bid)?;
 
-    let next_amount = if bid {
+    let next_amount = if is_bid {
         amount_in.saturating_sub(remaining)
     } else {
         let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
@@ -153,9 +213,9 @@ pub fn step_exact_out(
     amount_out: u128,
     remaining: u128,
     tick: i16,
-    bid: bool,
+    is_bid: bool,
 ) -> Option<OrderStep> {
-    let (fill_amount, accumulate) = if bid {
+    let (fill_amount, accumulate) = if is_bid {
         // Receiving quote: round up the base needed to cover the exact output.
         let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
         let fill_amount = base_needed.min(remaining);
@@ -170,13 +230,13 @@ pub fn step_exact_out(
     // The trade carries over only when demand strictly exceeds this order: for a
     // bid that is the base needed to cover the output, for an ask the output
     // itself. The carried amount is the output still owed after this full fill.
-    let demand = if bid {
+    let demand = if is_bid {
         quote_to_base(amount_out, tick, RoundingDirection::Up)?
     } else {
         amount_out
     };
     let next_amount = if demand > remaining {
-        let amount_out_received = taker_output(remaining, tick, bid)?;
+        let amount_out_received = taker_output(remaining, tick, is_bid)?;
         amount_out.checked_sub(amount_out_received)?
     } else {
         0
