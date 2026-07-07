@@ -1236,6 +1236,23 @@ impl AccountKeychain {
             .map(|(remaining, _)| remaining)
     }
 
+    /// Computes the effective remaining limit using an already-loaded key.
+    pub fn effective_remaining_limit_with_key(
+        &self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        current_timestamp: u64,
+        key: &AuthorizedKey,
+    ) -> Result<U256> {
+        if key_id.is_zero() && self.storage.spec().is_t3() {
+            return Ok(U256::ZERO);
+        }
+
+        self.effective_limit_state_with_key(account, key_id, token, current_timestamp, key)
+            .map(|(remaining, _)| remaining)
+    }
+
     /// Computes the effective remaining limit and period end at `current_timestamp`
     /// without mutating storage.
     fn effective_limit_state(
@@ -1251,6 +1268,17 @@ impl AccountKeychain {
 
         let key = self.keys[account][key_id].read()?;
 
+        self.effective_limit_state_with_key(account, key_id, token, current_timestamp, &key)
+    }
+
+    fn effective_limit_state_with_key(
+        &self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        current_timestamp: u64,
+        key: &AuthorizedKey,
+    ) -> Result<(U256, u64)> {
         // T2+: return zero if key doesn't exist or has been revoked
         if key.is_revoked || key.expiry == 0 {
             return Ok((U256::ZERO, 0));
@@ -4564,6 +4592,57 @@ mod tests {
                 token,
             })?;
             assert_eq!(remaining, U256::from(90));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_effective_remaining_limit_with_key_matches_storage_loaded() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(1_000u64));
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 60,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(40))?;
+
+            let key = keychain.keys[account][key_id].read()?;
+            assert_eq!(
+                keychain.effective_remaining_limit(account, key_id, token, 1_030)?,
+                keychain.effective_remaining_limit_with_key(account, key_id, token, 1_030, &key)?
+            );
+            assert_eq!(
+                keychain.effective_remaining_limit(account, key_id, token, 1_070)?,
+                keychain.effective_remaining_limit_with_key(account, key_id, token, 1_070, &key)?
+            );
+
             Ok(())
         })
     }
