@@ -19,7 +19,11 @@
 //! of the same block is a memo hit rather than a second application.
 
 pub mod cursors;
+pub mod follower;
+mod sparse;
 mod stream;
+pub use follower::{follower, Follower};
+pub use sparse::{sparse_enabled, SparseStats, SparseWorker};
 pub use stream::{stream_enabled, FlatStream};
 
 use alloy_primitives::{keccak256, B256, U256};
@@ -74,7 +78,7 @@ struct Entry {
 }
 
 /// Canonical fingerprint of a key-sorted op list.
-fn ops_fingerprint(ops: &[(Key, StateOp)]) -> [u8; 32] {
+pub(crate) fn ops_fingerprint(ops: &[(Key, StateOp)]) -> [u8; 32] {
     let mut h = alloy_primitives::Keccak256::new();
     for (key, op) in ops {
         h.update(key);
@@ -306,6 +310,27 @@ impl FlatShadow {
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
         );
         Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, prof_acc: [0; 8] })
+    }
+
+    /// The live flat trie (read-only walks; callers hold the shadow's lock).
+    pub fn db(&self) -> &FlatMpt {
+        &self.db
+    }
+
+    /// Root of the live flat state.
+    pub fn current_root(&self) -> B256 {
+        B256::from(self.db.root())
+    }
+
+    /// True when the live flat state is the given parent. The bloat/golden
+    /// exception mirrors `unwind_to`'s anchor escape: at block 1 the genesis
+    /// header still carries the pre-dump root, and the post-dump live state
+    /// IS the real parent state.
+    pub fn at_parent(&self, parent_root: B256) -> bool {
+        self.db.root() == parent_root.0
+            || (self.entries.is_empty()
+                && (std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
+                    || std::env::var_os("TEMPO_FLATMPT_GOLDEN").is_some()))
     }
 
     /// State root after applying `ops` on the state whose root is `parent_root`.

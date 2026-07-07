@@ -19,6 +19,7 @@ alloy-primitives.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
 reth-trie.workspace = true
+reth-trie-sparse.workspace = true
 reth-db-api.workspace = true
 reth-primitives-traits.workspace = true
 revm.workspace = true

@@ -429,20 +429,27 @@ where
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
 
-        // Flat-MPT streaming (root mode): apply state changes to the flat engine
-        // concurrently with execution; payload-finish only pays for the residual
-        // chunk. Declared before the executor so a cancelled build drops the
-        // hook (inside the executor) before the stream's rollback guard runs.
-        let flat_stream = if tempo_flatmpt::stream_enabled() {
+        // Flat-MPT commitment workers (root mode). Preferred: the sparse-trie
+        // overlay — reth's SparseStateTrie pre-reveals trie paths during
+        // execution via multiproofs over the flat cursors, computes the root
+        // at finish, and the flat store is only written by the background
+        // follower. Fallback: the prefetch stream ahead of an inline apply.
+        let flat_shadow = if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Off {
             let chain_spec = self.provider.chain_spec();
-            let shadow = tempo_flatmpt::shadow(|| {
+            tempo_flatmpt::shadow(|| {
                 (
                     tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
                     chain_spec.inner.genesis_header().state_root(),
                 )
             })
-            .expect("flat root mode is on");
-            Some(tempo_flatmpt::FlatStream::begin(shadow))
+        } else {
+            None
+        };
+        let flat_sparse = (tempo_flatmpt::sparse_enabled())
+            .then(|| flat_shadow.map(|s| tempo_flatmpt::SparseWorker::begin(s, parent_header.state_root())))
+            .flatten();
+        let flat_stream = if tempo_flatmpt::stream_enabled() && flat_sparse.is_none() {
+            flat_shadow.map(tempo_flatmpt::FlatStream::begin)
         } else {
             None
         };
@@ -571,10 +578,14 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        let root_hook: Option<Box<dyn OnStateHook>> = match (&trie_handle, &flat_stream) {
-            (Some(handle), _) => Some(Box::new(handle.state_hook())),
-            (None, Some(stream)) => Some(Box::new(stream.hook())),
-            (None, None) => None,
+        let root_hook: Option<Box<dyn OnStateHook>> = if let Some(handle) = &trie_handle {
+            Some(Box::new(handle.state_hook()))
+        } else if let Some(worker) = &flat_sparse {
+            Some(Box::new(worker.hook()))
+        } else if let Some(stream) = &flat_stream {
+            Some(Box::new(stream.hook()))
+        } else {
+            None
         };
         let bal_task_handle = if self.enable_bal {
             let bal_task_handle = self.spawn_bal_task(root_hook);
@@ -1065,23 +1076,61 @@ where
             let (prefetched_ops, passes) = stream.finish();
             debug!(target: "flatmpt", prefetched_ops, passes, "prefetch joined");
         }
-        let flat_root = if tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Off {
-            None
-        } else {
-            let chain_spec = self.provider.chain_spec();
-            let shadow = tempo_flatmpt::shadow(|| {
-                (
-                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
-                    chain_spec.inner.genesis_header().state_root(),
-                )
-            })
-            .expect("flat mode is on");
+        let flat_root = if let Some(shadow) = flat_shadow {
             let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
-            let root = shadow
-                .write()
-                .root_for(parent_header.number(), parent_header.state_root(), ops)
-                .map_err(|e| PayloadBuilderError::Other(e.into()))?;
+            // Sparse overlay: root from the sparse trie (read-only against the
+            // flat store), apply queued to the background follower which
+            // cross-checks the flat engine's root against ours. Any sparse
+            // failure falls back to the inline apply below.
+            let sparse_root = flat_sparse.and_then(|worker| {
+                match worker.finish(ops.clone()) {
+                    Ok((root, stats)) => {
+                        info!(
+                            target: "flatmpt",
+                            block = parent_header.number() + 1,
+                            n_ops = ops.len(),
+                            %root,
+                            finish_ms = stats.finish_ms,
+                            wait_parent_ms = stats.wait_parent_ms,
+                            proof_ms = stats.proof_ms,
+                            reveal_ms = stats.reveal_ms,
+                            exec_passes = stats.exec_passes,
+                            deferred_passes = stats.deferred_passes,
+                            finish_rounds = stats.finish_rounds,
+                            account_targets = stats.account_targets,
+                            storage_targets = stats.storage_targets,
+                            follower_queue = tempo_flatmpt::follower(shadow).depth(),
+                            "sparse commitment"
+                        );
+                        tempo_flatmpt::follower(shadow).queue_apply(
+                            parent_header.number(),
+                            parent_header.state_root(),
+                            ops.clone(),
+                            root,
+                        );
+                        Some(root)
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "flatmpt",
+                            block = parent_header.number() + 1,
+                            err = %format!("{e:#}"),
+                            "sparse commitment failed; falling back to inline flat apply"
+                        );
+                        None
+                    }
+                }
+            });
+            let root = match sparse_root {
+                Some(root) => root,
+                None => shadow
+                    .write()
+                    .root_for(parent_header.number(), parent_header.state_root(), ops)
+                    .map_err(|e| PayloadBuilderError::Other(e.into()))?,
+            };
             Some(root)
+        } else {
+            None
         };
         let flat_is_root =
             flat_root.is_some() && tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root;

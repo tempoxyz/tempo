@@ -411,9 +411,19 @@ where
                 )
             })
             .expect("flat root mode is on");
-            let ops = tempo_flatmpt::bundle_to_ops(&input.output.state);
+            let mut ops = tempo_flatmpt::bundle_to_ops(&input.output.state);
+            // A block whose sparse commitment this process already produced
+            // (and whose flat apply is queued on the follower) validates
+            // without waiting behind the apply's write lock; the follower's
+            // root cross-check is the loud gate for those.
+            if let Some(root) = tempo_flatmpt::follower::pending_root(
+                input.parent_block.state_root(),
+                &mut ops,
+            ) {
+                return Ok((root, reth_trie_common::updates::TrieUpdates::default()));
+            }
             let root = shadow
-                .lock()
+                .write()
                 .root_for(
                     input.parent_block.number(),
                     input.parent_block.state_root(),

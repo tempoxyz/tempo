@@ -19,6 +19,7 @@ fn db_err(e: anyhow::Error) -> DatabaseError {
 
 /// Factory over a borrowed flat trie (callers hold the shadow's read lock for
 /// the factory's lifetime; the walks themselves are read-only).
+#[derive(Clone, Copy)]
 pub struct FlatHashedCursorFactory<'m> {
     pub mpt: &'m FlatMpt,
 }
@@ -290,6 +291,7 @@ fn to_compact(e: TrieNodeEntry) -> (Nibbles, BranchNodeCompact) {
     (path, node)
 }
 
+#[derive(Clone, Copy)]
 pub struct FlatTrieCursorFactory<'m> {
     pub mpt: &'m FlatMpt,
 }
