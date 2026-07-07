@@ -100,6 +100,20 @@ pub struct SparseStats {
 static TRIE_POOL: parking_lot::Mutex<Option<(B256, SparseStateTrie)>> =
     parking_lot::Mutex::new(None);
 
+/// Parallelism for chunked proof fetches (`TEMPO_FLATMPT_PROOF_THREADS`).
+fn proof_threads() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("TEMPO_FLATMPT_PROOF_THREADS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map(|n| n.get() * 3 / 2).unwrap_or(48)
+            })
+            .clamp(1, 128)
+    })
+}
+
 /// Drop the pooled trie once it outgrows this (`TEMPO_FLATMPT_SPARSE_MEM_MB`).
 fn trie_mem_cap() -> usize {
     static MB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -530,11 +544,12 @@ impl Worker {
                 flat.sort_unstable_by(|a, b| {
                     a.0.cmp(&b.0).then_with(|| a.1.key_nibbles.cmp(&b.1.key_nibbles))
                 });
-                let threads = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(8)
-                    .clamp(1, 12);
-                let chunk_size = flat.len().div_ceil(threads).max(2_048);
+                // The fetch is IO-latency-bound (sync preads): scaling is
+                // near-linear well past the core count (measured 12.7k→49.6k
+                // targets/s cold from 12→48 threads on a 32-core box), so
+                // oversubscribe. `TEMPO_FLATMPT_PROOF_THREADS` overrides.
+                let threads = proof_threads();
+                let chunk_size = flat.len().div_ceil(threads).max(256);
                 let mut chunks: Vec<MultiProofTargetsV2> = Vec::new();
                 {
                     let mut t = MultiProofTargetsV2::default();
@@ -966,6 +981,96 @@ mod stall_tests {
             );
             parent = sparse_root;
             parent_number += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod proofbench {
+    use super::tests::*;
+    use super::*;
+    use reth_trie::Nibbles;
+
+    #[test]
+    #[ignore]
+    fn proofbench_probe() {
+        let path = std::env::var("PROOFBENCH_FLAT").expect("set PROOFBENCH_FLAT");
+        let mpt = mpt_flat_poc::FlatMpt::open(&path).expect("open bench flat");
+        eprintln!("root: 0x{}", mpt_flat_poc::hex(mpt.root()));
+        let mut c = mpt.account_cursor();
+        let mut k = [0u8; 32];
+        let mut n = 0u64;
+        while let Some(e) = c.seek(&k).unwrap() {
+            n += 1;
+            if n <= 3 { eprintln!("acct[{n}]: 0x{}", mpt_flat_poc::hex(e.key)); }
+            if n >= 100_000 { break; }
+            k = e.key; 
+            // advance
+            let mut carry = 1u16;
+            for b in k.iter_mut().rev() { let v = *b as u16 + carry; *b = v as u8; carry = v >> 8; if carry == 0 { break; } }
+        }
+        eprintln!("accounts seen (cap 100k): {n}");
+    }
+
+    /// Cold proof-fetch thread sweep over a 1B flat (env PROOFBENCH_FLAT
+    /// points at a scratch COPY — FlatMpt::open takes write access).
+    /// Run: PROOFBENCH_FLAT=/mnt2/proofbench.flat cargo test -p tempo-flatmpt \
+    ///        --release cold_proof_thread_sweep -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn cold_proof_thread_sweep() {
+        let path = std::env::var("PROOFBENCH_FLAT").expect("set PROOFBENCH_FLAT");
+        let mpt = mpt_flat_poc::FlatMpt::open(&path).expect("open bench flat");
+        const K: usize = 8_192;
+        for (round, threads) in [12usize, 24, 32, 48, 12].into_iter().enumerate() {
+            // Fresh pseudo-random account targets per round (cold: 1B keyspace
+            // >> page cache; exclusion proofs exercise the same record-read
+            // path as storage targets in a giant contract).
+            // The 1B bloat state = 4 giant contracts holding the slots; cold
+            // targets are random storage keys in one of them (matches the
+            // tip20cold leg's shape).
+            let contract: B256 =
+                "0x2698635f2d1ac2fffe298dd19560c4be0519bb8894fb4008b21668355dc7b6f1"
+                    .parse()
+                    .unwrap();
+            let mut keys: Vec<B256> = (0..K)
+                .map(|i| B256::from(keccak256(format!("proofbench-{round}-{i}"))))
+                .collect();
+            keys.sort_unstable();
+            let chunk_size = K.div_ceil(threads);
+            let t = Instant::now();
+            let n_nodes: usize = std::thread::scope(|s| {
+                let handles: Vec<_> = keys
+                    .chunks(chunk_size)
+                    .map(|slice| {
+                        let mpt = &mpt;
+                        s.spawn(move || {
+                            let mut t = MultiProofTargetsV2::default();
+                            t.storage_targets.insert(
+                                contract,
+                                slice.iter().map(|k| ProofV2Target::new(*k)).collect(),
+                            );
+                            Proof::new(
+                                crate::cursors::FlatTrieCursorFactory { mpt },
+                                crate::cursors::FlatHashedCursorFactory { mpt },
+                            )
+                            .multiproof_v2(t)
+                            .map(|p| p.storage_proofs.values().map(|v| v.len()).sum::<usize>())
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("chunk panicked").expect("proof failed"))
+                    .sum()
+            });
+            let ms = t.elapsed().as_millis().max(1);
+            eprintln!(
+                "threads={threads:2} {K} targets in {ms:6} ms -> {:6} targets/s ({} nodes)",
+                K as u128 * 1000 / ms,
+                n_nodes
+            );
+            let _ = Nibbles::default();
         }
     }
 }
