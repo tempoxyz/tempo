@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.10.1"
+version = "1.10.2"
 edition = "2024"
 rust-version = "1.95.0"
 authors = ["Tempo Contributors"]
@@ -325,8 +325,8 @@ age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 
 # build deps
-vergen = "9.1.0"
-vergen-git2 = "9.1.0"
+vergen = { version = "9.1.0", features = ["build", "cargo", "emit_and_set"] }
+vergen-git2 = { version = "9.1.0", features = ["build"] }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }

@@ -931,7 +931,8 @@ where
 
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
+            .and_then(|handle| handle.try_take_hashed_state_rx())
+            .map(|rx| rx.recv())
         {
             hashed_state
         } else {
@@ -1186,6 +1187,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates,
+            changed_paths: None,
         };
 
         let payload = TempoBuiltPayload::new(

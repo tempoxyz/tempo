@@ -1121,7 +1121,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "406bc1183f6843e0aba09f7b3365e828b597213d60793ba5cb41befc863e3a78"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -2435,7 +2435,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2589,6 +2589,39 @@ dependencies = [
  "libc",
  "once_cell",
  "serde",
+]
+
+[[package]]
+name = "camino"
+version = "1.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f2d30e4173c4026932d51d31d6b0613b1fd3014bf3f9f8943d4ba139c437ba0"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "cargo-platform"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd0061da739915fae12ea00e16397555ed4371a6bb285431aab930f61b0aa4ba"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
+name = "cargo_metadata"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef987d17b0a113becdd19d3d0022d04d7ef41f9efe4f3fb63ac44ba61df3ade9"
+dependencies = [
+ "camino",
+ "cargo-platform",
+ "semver 1.0.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3714,12 +3747,36 @@ dependencies = [
 
 [[package]]
 name = "darling"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
+dependencies = [
+ "darling_core 0.20.11",
+ "darling_macro 0.20.11",
+]
+
+[[package]]
+name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
 dependencies = [
- "darling_core",
- "darling_macro",
+ "darling_core 0.23.0",
+ "darling_macro 0.23.0",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3738,11 +3795,22 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
+dependencies = [
+ "darling_core 0.20.11",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "darling_macro"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
- "darling_core",
+ "darling_core 0.23.0",
  "quote",
  "syn 2.0.117",
 ]
@@ -3865,6 +3933,37 @@ checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
 dependencies = [
  "proc-macro2",
  "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_builder"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "507dfb09ea8b7fa618fcf76e953f4f5e192547945816d5358edffe39f6f94947"
+dependencies = [
+ "derive_builder_macro",
+]
+
+[[package]]
+name = "derive_builder_core"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_builder_macro"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
+dependencies = [
+ "derive_builder_core",
  "syn 2.0.117",
 ]
 
@@ -4267,7 +4366,7 @@ version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf022360bdbe9456eda5f35718a50476d5b2a0d51a97ed4eae27420737a6fba"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -4793,6 +4892,19 @@ name = "gimli"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+
+[[package]]
+name = "git2"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b"
+dependencies = [
+ "bitflags 2.11.1",
+ "libc",
+ "libgit2-sys",
+ "log",
+ "url",
+]
 
 [[package]]
 name = "git2"
@@ -5724,7 +5836,7 @@ version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5eb2d60ef19920a3a9193c3e371f726ec1dafc045dac788d0fb3704272458971"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "indoc",
  "proc-macro2",
  "quote",
@@ -10168,8 +10280,8 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "url",
- "vergen",
- "vergen-git2",
+ "vergen 10.0.1",
+ "vergen-git2 10.0.1",
 ]
 
 [[package]]
@@ -12156,6 +12268,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "semver-parser"
@@ -12286,7 +12402,7 @@ version = "3.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b90c488738ecb4fb0262f41f43bc40efc5868d9fb744319ddf5f5317f417bfac"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -12803,11 +12919,10 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
- "alloy-genesis",
  "alloy-network",
  "alloy-primitives",
  "alloy-provider",
@@ -12890,7 +13005,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.10.0"
+version = "1.8.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -12933,11 +13048,12 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.10.0"
+version = "1.8.2"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-genesis",
+ "alloy-hardforks",
  "alloy-primitives",
  "commonware-codec",
  "commonware-cryptography",
@@ -12950,19 +13066,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-dkg-onchain-artifacts",
- "tempo-hardfork",
  "tempo-primitives",
 ]
 
 [[package]]
 name = "tempo-consensus"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "age",
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-rpc-client",
  "alloy-rpc-types-engine",
  "axum",
  "bytes",
@@ -13000,6 +13114,7 @@ dependencies = [
  "reth-revm",
  "serde_json",
  "tempfile",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-dkg-onchain-artifacts",
@@ -13013,12 +13128,11 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber 0.3.23",
- "url",
 ]
 
 [[package]]
 name = "tempo-consensus-config"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "age",
  "commonware-codec",
@@ -13035,20 +13149,19 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.10.0"
+version = "1.8.1"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
  "alloy-provider",
  "alloy-sol-types",
  "serde",
- "tempo-hardfork",
  "tokio",
 ]
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -13062,7 +13175,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -13113,7 +13226,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13129,8 +13242,6 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",
- "eyre",
- "indexmap 2.14.0",
  "insta",
  "rayon",
  "reth-chainspec",
@@ -13160,7 +13271,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-ext"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "clap",
  "dirs-next",
@@ -13179,7 +13290,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "eyre",
  "indenter",
@@ -13187,7 +13298,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "async-trait",
@@ -13199,20 +13310,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-hardfork"
-version = "1.10.0"
-dependencies = [
- "alloy-eips",
- "alloy-evm",
- "alloy-hardforks",
- "paste",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "tempo-node"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -13276,13 +13375,13 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "url",
- "vergen",
- "vergen-git2",
+ "vergen 9.1.0",
+ "vergen-git2 9.1.0",
 ]
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -13320,7 +13419,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -13340,21 +13439,19 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "alloy-evm",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
- "bitflags 2.11.1",
  "codspeed-criterion-compat",
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",
  "eyre",
  "p256",
- "paste",
  "proptest",
  "rand 0.8.6",
  "revm",
@@ -13374,7 +13471,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -13384,7 +13481,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.10.0"
+version = "1.8.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13423,7 +13520,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13456,7 +13553,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "clap",
@@ -13481,7 +13578,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "eyre",
  "jiff",
@@ -13490,7 +13587,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13500,7 +13597,6 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "dashmap",
- "derive_more",
  "futures",
  "itertools 0.14.0",
  "metrics",
@@ -13533,7 +13629,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -13545,7 +13641,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -14307,7 +14403,7 @@ version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8840ad4d852e325d3afa7fde8a50b2412f89dce47d7eb291c0cc7f87cd040f38"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -14590,6 +14686,21 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vergen"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b849a1f6d8639e8de261e81ee0fc881e3e3620db1af9f2e0da015d4382ceaf75"
+dependencies = [
+ "anyhow",
+ "cargo_metadata",
+ "derive_builder",
+ "regex",
+ "rustversion",
+ "time",
+ "vergen-lib 9.1.0",
+]
+
+[[package]]
+name = "vergen"
 version = "10.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5574dd2f922b1a46a06a4b1dc11193a4012108fd54cf725e1816cb8183d8778"
@@ -14598,7 +14709,22 @@ dependencies = [
  "bon",
  "rustversion",
  "time",
- "vergen-lib",
+ "vergen-lib 10.0.1",
+]
+
+[[package]]
+name = "vergen-git2"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d51ab55ddf1188c8d679f349775362b0fa9e90bd7a4ac69838b2a087623f0d57"
+dependencies = [
+ "anyhow",
+ "derive_builder",
+ "git2 0.20.4",
+ "rustversion",
+ "time",
+ "vergen 9.1.0",
+ "vergen-lib 9.1.0",
 ]
 
 [[package]]
@@ -14609,11 +14735,22 @@ checksum = "410e2f72acce10471037150cd9c585ee7b54560f348bf70cd5fc8e87d3433e45"
 dependencies = [
  "anyhow",
  "bon",
- "git2",
+ "git2 0.21.0",
  "rustversion",
  "time",
- "vergen",
- "vergen-lib",
+ "vergen 10.0.1",
+ "vergen-lib 10.0.1",
+]
+
+[[package]]
+name = "vergen-lib"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b34a29ba7e9c59e62f229ae1932fb1b8fb8a6fdcc99215a641913f5f5a59a569"
+dependencies = [
+ "anyhow",
+ "derive_builder",
+ "rustversion",
 ]
 
 [[package]]
