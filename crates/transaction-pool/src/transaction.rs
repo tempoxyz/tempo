@@ -33,7 +33,10 @@ use tempo_precompiles::{
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{MultisigSignature, TempoSignature, calc_gas_balance_spending},
+};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
@@ -210,13 +213,32 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns the native multisig account authorizing this transaction, if it carries a
-    /// `TempoSignature::Multisig` outer signature.
+    /// Returns every native multisig account whose stored config this transaction's authorization
+    /// depends on: the outer `TempoSignature::Multisig` account plus every nested multisig owner
+    /// account in its approval tree.
     ///
-    /// For a native multisig transaction the sender equals the multisig account, so this is used to
-    /// evict pooled transactions after the account's owner set or threshold is rotated on-chain.
-    pub fn multisig_account(&self) -> Option<Address> {
-        Some(self.inner().as_aa()?.signature().as_multisig()?.account())
+    /// The stateful verifier recurses into nested multisig owners and reloads their
+    /// threshold/owner weights, so a config rotation of the outer account *or any nested owner*
+    /// can invalidate an already-pooled transaction. All of them must be matched against on-chain
+    /// config changes when deciding eviction. Recursion is bounded by `MAX_MULTISIG_NESTING_DEPTH`,
+    /// which is enforced at decode time.
+    pub fn multisig_accounts(&self) -> Vec<Address> {
+        fn collect(sig: &MultisigSignature, out: &mut Vec<Address>) {
+            out.push(sig.account());
+            for approval in sig.signatures() {
+                if let TempoSignature::Multisig(nested) = approval {
+                    collect(nested, out);
+                }
+            }
+        }
+
+        let mut accounts = Vec::new();
+        if let Some(aa_tx) = self.inner().as_aa()
+            && let Some(multisig) = aa_tx.signature().as_multisig()
+        {
+            collect(multisig, &mut accounts);
+        }
+        accounts
     }
 
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.

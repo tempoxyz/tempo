@@ -473,14 +473,16 @@ where
             }
 
             // Check 7: Native multisig owner-set / threshold rotations
-            // A native-multisig-signed transaction is verified against the account's current stored
-            // config, so once that config is rotated (or initialized) on-chain the pooled
-            // transaction may no longer meet quorum and must be re-validated.
+            // A native-multisig-signed transaction is verified against the current stored config of
+            // its outer account and of every nested multisig owner, so once any of those configs is
+            // rotated (or initialized) on-chain the pooled transaction may no longer meet quorum and
+            // must be re-validated.
             if !updates.multisig_config_changes.is_empty()
                 && tx
                     .transaction
-                    .multisig_account()
-                    .is_some_and(|account| updates.multisig_config_changes.contains(&account))
+                    .multisig_accounts()
+                    .iter()
+                    .any(|account| updates.multisig_config_changes.contains(account))
             {
                 to_remove.push(*tx.hash());
                 multisig_config_count += 1;
@@ -1737,6 +1739,27 @@ mod tests {
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates.multisig_config_changes.insert(account);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn evicts_multisig_transaction_when_nested_owner_config_rotates() {
+        let parent = Address::random();
+        let child = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(parent).build_multisig_nested(parent, child);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(parent, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        // Rotating the NESTED owner's config must evict the parent transaction, since the parent's
+        // authorization depends on the nested account's current threshold/owner weights.
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(child);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
