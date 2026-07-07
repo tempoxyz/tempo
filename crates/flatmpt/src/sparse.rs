@@ -31,7 +31,13 @@ use alloy_primitives::{keccak256, B256};
 use alloy_rlp::{Decodable as _, Encodable as _};
 use mpt_flat_poc::{Key, StateOp};
 use parking_lot::RwLock;
-use reth_trie::{proof::Proof, MultiProofTargets, MultiProofTargetsV2, ProofV2Target, TrieAccount, EMPTY_ROOT_HASH};
+use reth_trie::hashed_cursor::HashedPostStateCursorFactory;
+use reth_trie::trie_cursor::InMemoryTrieCursorFactory;
+use reth_trie::updates::{TrieUpdates, TrieUpdatesSorted};
+use reth_trie::{
+    proof::Proof, HashedPostState, HashedPostStateSorted, HashedStorage, MultiProofTargets,
+    MultiProofTargetsV2, ProofV2Target, TrieAccount, EMPTY_ROOT_HASH,
+};
 use reth_trie_sparse::{LeafUpdate, SparseStateTrie};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -99,6 +105,122 @@ pub struct SparseStats {
 /// per-block root cross-check remains the loud gate against any staleness.
 static TRIE_POOL: parking_lot::Mutex<Option<(B256, SparseStateTrie)>> =
     parking_lot::Mutex::new(None);
+
+/// One committed-but-not-yet-applied block's effect on the trie, kept so
+/// proof fetches for descendants can run against flat-at-an-older-root plus
+/// this overlay stack instead of waiting for the background follower
+/// (reth's engine-tree pattern). Pushed at sparse finish, pruned as the
+/// follower advances; a rebuilt candidate truncates its abandoned sibling.
+struct OverlayBlock {
+    parent_root: B256,
+    root: B256,
+    trie: TrieUpdatesSorted,
+    post: HashedPostState,
+}
+
+static OVERLAYS: parking_lot::Mutex<std::collections::VecDeque<OverlayBlock>> =
+    parking_lot::Mutex::new(std::collections::VecDeque::new());
+
+/// Bound on tracked un-applied blocks; beyond this the oldest is dropped and
+/// fetches for deep descendants degrade to waiting for the follower.
+const OVERLAY_CAP: usize = 8;
+
+fn push_overlay(o: OverlayBlock) {
+    let mut q = OVERLAYS.lock();
+    // A candidate rebuilding on the same parent supersedes the abandoned one
+    // (and anything stacked on it).
+    if let Some(i) = q.iter().position(|e| e.parent_root == o.parent_root) {
+        q.truncate(i);
+    }
+    q.push_back(o);
+    while q.len() > OVERLAY_CAP {
+        q.pop_front();
+    }
+}
+
+/// Merged overlays covering `flat_root` → `parent_root`, if a complete chain
+/// is tracked. `None` with equal roots means "no overlay needed".
+fn overlay_chain(
+    flat_root: B256,
+    parent_root: B256,
+) -> Option<(std::sync::Arc<TrieUpdatesSorted>, std::sync::Arc<HashedPostStateSorted>)> {
+    if flat_root == parent_root {
+        return None;
+    }
+    let q = OVERLAYS.lock();
+    let mut trie = TrieUpdates::default();
+    let mut post = HashedPostState::default();
+    let mut at = flat_root;
+    let mut found = false;
+    for o in q.iter() {
+        if o.parent_root != at {
+            continue;
+        }
+        trie.extend_from_sorted(&o.trie);
+        post.extend(o.post.clone());
+        at = o.root;
+        if at == parent_root {
+            found = true;
+            break;
+        }
+    }
+    found.then(|| (std::sync::Arc::new(trie.into_sorted()), std::sync::Arc::new(post.into_sorted())))
+}
+
+/// Drop overlays the follower has caught up past.
+pub(crate) fn prune_overlays(flat_root: B256) {
+    let mut q = OVERLAYS.lock();
+    while let Some(front) = q.front() {
+        if front.parent_root == flat_root {
+            break;
+        }
+        q.pop_front();
+    }
+}
+
+/// Map a block's net ops to the `HashedPostState` overlay reth's cursors
+/// understand (keys are already hashed in flat-MPT ops).
+fn ops_to_post_state(ops: &[(Key, StateOp)]) -> HashedPostState {
+    let mut post = HashedPostState::default();
+    for (key, op) in ops {
+        let acct = B256::from(*key);
+        match op {
+            StateOp::SetAccount { nonce, balance, code_hash } => {
+                post.accounts.insert(
+                    acct,
+                    Some(reth_primitives_traits::Account {
+                        nonce: *nonce,
+                        balance: *balance,
+                        bytecode_hash: Some(B256::from(*code_hash)),
+                    }),
+                );
+            }
+            StateOp::DeleteAccount => {
+                post.accounts.insert(acct, None);
+                post.storages.insert(acct, HashedStorage::new(true));
+            }
+            StateOp::WipeStorage => {
+                post.storages.insert(acct, HashedStorage::new(true));
+            }
+            StateOp::SetStorage { slot, value } => {
+                let v = alloy_primitives::U256::decode(&mut value.as_slice()).unwrap_or_default();
+                post.storages
+                    .entry(acct)
+                    .or_insert_with(|| HashedStorage::new(false))
+                    .storage
+                    .insert(B256::from(*slot), v);
+            }
+            StateOp::DeleteStorage { slot } => {
+                post.storages
+                    .entry(acct)
+                    .or_insert_with(|| HashedStorage::new(false))
+                    .storage
+                    .insert(B256::from(*slot), alloy_primitives::U256::ZERO);
+            }
+        }
+    }
+    post
+}
 
 /// Parallelism for chunked proof fetches (`TEMPO_FLATMPT_PROOF_THREADS`).
 fn proof_threads() -> usize {
@@ -237,10 +359,13 @@ impl Worker {
         // Reuse the previous block's revealed trie when stacking directly on
         // its root — the steady-state case. Anything else (first block,
         // rebuild candidate, post-cancel) starts blind.
-        let (trie, pool_hit) = match TRIE_POOL.lock().take() {
+        let (mut trie, pool_hit) = match TRIE_POOL.lock().take() {
             Some((root, trie)) if root == parent_root => (trie, true),
             _ => (SparseStateTrie::new(), false),
         };
+        // Retain branch-node updates: finish() publishes them as the block's
+        // overlay so descendants' proofs need not wait for the flat apply.
+        trie.set_updates(true);
         let mut stats = SparseStats::default();
         stats.pool_hit = pool_hit;
         Self {
@@ -319,6 +444,7 @@ impl Worker {
             self.pool_put(parent);
             return Ok((parent, self.stats));
         }
+        let overlay_post = ops_to_post_state(&ops);
 
         // Net-change maps from the ops (ordered; SetAccount precedes its slot
         // ops, DeleteAccount precedes a recreate's SetAccount).
@@ -425,10 +551,16 @@ impl Worker {
         if !self.reveal_pass(true)? {
             anyhow::bail!("final reveal pass deferred despite wait");
         }
-        let root = self
+        let (root, trie_updates) = self
             .trie
-            .root()
+            .root_with_updates()
             .map_err(|e| anyhow::anyhow!("sparse root: {e}"))?;
+        push_overlay(OverlayBlock {
+            parent_root: self.parent_root,
+            root,
+            trie: trie_updates.into_sorted(),
+            post: overlay_post,
+        });
         self.pool_put(root);
         self.stats.finish_ms = t_finish.elapsed().as_millis() as u64;
         Ok((root, self.stats))
@@ -524,14 +656,24 @@ impl Worker {
             let n_storage = storage_targets.values().map(|p| p.len()).sum::<usize>() as u64;
             let proofs = {
                 let guard = self.shadow.read();
-                if !guard.at_parent(self.parent_root) {
+                // Fast path: flat is at the parent. Otherwise proofs run
+                // against flat-at-its-current-root plus the overlay stack of
+                // the intervening un-applied blocks; only an unknown lineage
+                // (deep lag, rebuild race) still waits for the follower.
+                let overlay = if guard.at_parent(self.parent_root) {
+                    None
+                } else if let Some(chain) =
+                    overlay_chain(guard.current_root(), self.parent_root)
+                {
+                    Some(chain)
+                } else {
                     if !must_complete {
                         return Ok(false);
                     }
                     drop(guard);
                     self.wait_for_parent()?;
                     continue;
-                }
+                };
 
                 // Balanced, path-sorted chunks: contiguous key ranges keep
                 // each chunk's walk inside a narrow subtree span.
@@ -569,16 +711,28 @@ impl Worker {
                 }
 
                 let db = &guard.db;
+                let overlay = &overlay;
                 std::thread::scope(|s| {
                     let handles: Vec<_> = chunks
                         .into_iter()
                         .map(|t| {
-                            s.spawn(move || {
-                                Proof::new(
+                            s.spawn(move || match overlay {
+                                None => Proof::new(
                                     FlatTrieCursorFactory { mpt: db },
                                     FlatHashedCursorFactory { mpt: db },
                                 )
-                                .multiproof_v2(t)
+                                .multiproof_v2(t),
+                                Some((tu, hps)) => Proof::new(
+                                    InMemoryTrieCursorFactory::new(
+                                        FlatTrieCursorFactory { mpt: db },
+                                        tu,
+                                    ),
+                                    HashedPostStateCursorFactory::new(
+                                        FlatHashedCursorFactory { mpt: db },
+                                        hps,
+                                    ),
+                                )
+                                .multiproof_v2(t),
                             })
                         })
                         .collect();
@@ -1072,5 +1226,66 @@ mod proofbench {
             );
             let _ = Nibbles::default();
         }
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::tests::*;
+    use super::*;
+    use crate::FlatShadow;
+    use mpt_flat_poc::FlatMpt;
+
+    /// THE overlay gate: the follower lags (flat stays at genesis) while two
+    /// blocks are committed on top of it — proofs for block 2 (and 3) must be
+    /// served by flat@genesis + the overlay stack, and the roots must match
+    /// an oracle that applies the same blocks for real.
+    #[test]
+    fn sparse_commits_ahead_of_lagging_follower() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overlay.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = (0..200u8).map(|i| set_acct(i, 1)).collect();
+        for sl in 0..600u16 {
+            genesis.push(set_slot(2, sl, 1 + sl as u64));
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        // Three stacked blocks; the shadow is NEVER advanced (lagging
+        // follower), so blocks 2 and 3 exercise the overlay path.
+        let mut parent = g;
+        for round in 0..3u64 {
+            let mut ops: Vec<(Key, StateOp)> = vec![
+                set_acct(5, 10 + round),
+                set_acct((210 + round) as u8, 1), // new account each round
+                set_acct(2, 5 + round),
+            ];
+            for sl in 0..40u16 {
+                ops.push(set_slot(2, sl * 9 + round as u16, 7_000 + round));
+            }
+            for sl in 0..10u16 {
+                ops.push(del_slot(2, 13 + sl * 31 + round as u16));
+            }
+            let mut w = Worker::new(shadow, parent);
+            let (sparse_root, _) = w
+                .finish(ops.clone())
+                .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
+            let (oracle_root, _) = oracle.apply_block({
+                let mut o = ops.clone();
+                o.sort_by(|a, b| a.0.cmp(&b.0));
+                o
+            }).unwrap();
+            assert_eq!(sparse_root, B256::from(oracle_root), "round {round}");
+            assert_ne!(parent, sparse_root);
+            parent = sparse_root;
+        }
+        // The shadow really did lag the whole time.
+        assert_eq!(shadow.read().current_root(), g);
     }
 }

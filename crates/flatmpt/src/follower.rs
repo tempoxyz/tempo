@@ -120,6 +120,7 @@ fn run(
                 let queued = depth.fetch_sub(1, Ordering::SeqCst) - 1;
                 match res {
                     Ok(root) if root == expected_root => {
+                        crate::sparse::prune_overlays(root);
                         tracing::info!(
                             target: "flatmpt",
                             block = parent_number + 1,
