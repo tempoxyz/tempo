@@ -8,4 +8,4 @@ tempo-revm: minor
 tempo-node: minor
 ---
 
-Added native multisig account support, including a new multisig precompile, signature-carried `InitMultisig` bootstrap configs, and `MultisigSignature` validation across the EVM, transaction pool, and RPC layers. Native 1-of-1 secp256k1 multisigs now pay a 2,100 gas authorization surcharge over equivalent primitive secp256k1 transactions.
+Added native multisig account support, including a new multisig precompile, signature-carried `InitMultisig` bootstrap configs, and `MultisigSignature` validation across the EVM, transaction pool, and RPC layers. Native 1-of-1 secp256k1 multisigs now pay a 4,200 gas authorization surcharge (2,100 validation + 2,100 owner-weight lookup) over equivalent primitive secp256k1 transactions.
