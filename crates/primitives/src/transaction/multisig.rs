@@ -337,25 +337,6 @@ impl InitMultisig {
             .ok()
             .map(|idx| self.owners[idx].weight)
     }
-    /// Decodes, verifies, and weight-accounts primitive owner approvals.
-    ///
-    /// This helper does not validate nested multisig owner approvals because that requires state
-    /// access to load each nested account config.
-    pub fn verify_owner_signatures(
-        &self,
-        digest: B256,
-        signatures: &[Bytes],
-    ) -> Result<u8, &'static str> {
-        self.validate().map_err(MultisigConfigError::as_str)?;
-        let signatures = signatures
-            .iter()
-            .cloned()
-            .map(decode_multisig_owner_signature)
-            .collect::<Result<Vec<_>, _>>()?;
-        let owners = recover_multisig_owner_addresses(digest, &signatures)?;
-        verify_recovered_multisig_owners(&owners, self)
-    }
-
     /// Returns a heuristic for the in-memory size of the config.
     pub fn size(&self) -> usize {
         size_of::<Self>() + self.owners.capacity() * size_of::<MultisigOwner>()
@@ -427,8 +408,6 @@ pub struct MultisigSignature {
     signatures: Vec<TempoSignature>,
     /// Cached multisig digest for the transaction hash this signature approved.
     cached_digest: OnceLock<(B256, Address, B256)>,
-    /// Cached primitive recovered owner addresses for the digest this multisig signature approved.
-    cached_recovered_owners: OnceLock<(B256, Vec<Address>)>,
 }
 
 #[cfg(feature = "serde")]
@@ -506,7 +485,6 @@ impl MultisigSignature {
             address,
             signatures,
             cached_digest: OnceLock::new(),
-            cached_recovered_owners: OnceLock::new(),
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -596,52 +574,6 @@ impl MultisigSignature {
         }
 
         digest
-    }
-
-    /// Recovers primitive owner addresses for the provided multisig digest and caches them on first
-    /// use.
-    ///
-    /// This is a primitive-only helper. Full protocol validation of nested multisig owner
-    /// approvals must be performed by the stateful native multisig verifier.
-    pub fn with_recovered_owners<R>(
-        &self,
-        digest: B256,
-        f: impl FnOnce(&[Address]) -> Result<R, &'static str>,
-    ) -> Result<R, &'static str> {
-        if let Some((cached_digest, owners)) = self.cached_recovered_owners.get()
-            && *cached_digest == digest
-        {
-            return f(owners);
-        }
-
-        let owners = recover_multisig_owner_addresses(digest, &self.signatures)?;
-        if self.cached_recovered_owners.get().is_none() {
-            #[allow(clippy::useless_conversion)]
-            let _ = self
-                .cached_recovered_owners
-                .set((digest, owners.clone()).into());
-        }
-        if let Some((cached_digest, cached_owners)) = self.cached_recovered_owners.get()
-            && *cached_digest == digest
-        {
-            return f(cached_owners);
-        }
-
-        f(&owners)
-    }
-
-    /// Verifies primitive owner approvals against a config already validated by trusted storage.
-    ///
-    /// This helper does not validate nested multisig owner approvals because that requires state
-    /// access to load each nested account config.
-    pub fn verify_with_trusted_config(
-        &self,
-        digest: B256,
-        config: &InitMultisig,
-    ) -> Result<u8, &'static str> {
-        self.with_recovered_owners(digest, |owners| {
-            verify_recovered_multisig_owners(owners, config)
-        })
     }
 
     /// Returns a heuristic for the in-memory size of the signature.
@@ -847,47 +779,6 @@ pub fn multisig_signature_count_for_threshold(
     Err(MultisigQuorumError::WeightBelowThreshold)
 }
 
-/// Verifies recovered owner order, membership, and accumulated weight for a validated config.
-pub fn verify_ordered_owner_weights(
-    owners: &[Address],
-    config: &InitMultisig,
-) -> Result<u8, MultisigQuorumError> {
-    let mut accumulator = MultisigWeightAccumulator::new(config.threshold);
-    for &owner in owners {
-        let weight = config
-            .owners
-            .binary_search_by_key(&owner, |entry| entry.owner)
-            .map(|idx| config.owners[idx].weight)
-            .map_err(|_| MultisigQuorumError::SignerNotOwner)?;
-        accumulator.record_owner(owner, weight)?;
-    }
-    accumulator.finish()
-}
-
-fn recover_multisig_owner_addresses(
-    digest: B256,
-    signatures: &[TempoSignature],
-) -> Result<Vec<Address>, &'static str> {
-    if signatures.is_empty() {
-        return Err("multisig signatures cannot be empty");
-    }
-    if signatures.len() > MAX_MULTISIG_SIGNATURES {
-        return Err("too many multisig signatures");
-    }
-
-    let mut owners = Vec::with_capacity(signatures.len());
-    for signature in signatures {
-        let TempoSignature::Primitive(signature) = signature else {
-            return Err("invalid multisig owner signature");
-        };
-        let owner = signature
-            .recover_signer(&digest)
-            .map_err(|_| "invalid multisig owner signature")?;
-        owners.push(owner);
-    }
-    Ok(owners)
-}
-
 fn decode_multisig_owner_signature(signature: Bytes) -> Result<TempoSignature, &'static str> {
     if signature.is_empty() {
         return Err("multisig owner signature cannot be empty");
@@ -896,13 +787,6 @@ fn decode_multisig_owner_signature(signature: Bytes) -> Result<TempoSignature, &
         return Err("multisig owner signature too large");
     }
     TempoSignature::from_bytes(&signature).map_err(|_| "invalid multisig owner signature")
-}
-
-fn verify_recovered_multisig_owners(
-    owners: &[Address],
-    config: &InitMultisig,
-) -> Result<u8, &'static str> {
-    verify_ordered_owner_weights(owners, config).map_err(MultisigQuorumError::as_str)
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -1190,20 +1074,30 @@ mod tests {
         let owner_c = indexed_owner(3);
         let config = sorted_secp_config(&[(owner_a, 1), (owner_b, 3), (owner_c, 2)], 4);
 
+        // Reproduce the weight-accounting the native multisig verifier performs: look up each
+        // recovered owner's configured weight and feed it to the shared accumulator in order.
+        let ordered_weights = |owners: &[Address]| -> Result<u8, MultisigQuorumError> {
+            let mut accumulator = MultisigWeightAccumulator::new(config.threshold);
+            for &owner in owners {
+                let weight = config
+                    .owner_weight(owner)
+                    .ok_or(MultisigQuorumError::SignerNotOwner)?;
+                accumulator.record_owner(owner, weight)?;
+            }
+            accumulator.finish()
+        };
+
+        assert_eq!(ordered_weights(&[owner_a, owner_b]), Ok(4));
         assert_eq!(
-            verify_ordered_owner_weights(&[owner_a, owner_b], &config),
-            Ok(4)
-        );
-        assert_eq!(
-            verify_ordered_owner_weights(&[owner_b], &config),
+            ordered_weights(&[owner_b]),
             Err(MultisigQuorumError::WeightBelowThreshold)
         );
         assert_eq!(
-            verify_ordered_owner_weights(&[owner_b, owner_a], &config),
+            ordered_weights(&[owner_b, owner_a]),
             Err(MultisigQuorumError::SignersNotAscending)
         );
         assert_eq!(
-            verify_ordered_owner_weights(&[indexed_owner(4)], &config),
+            ordered_weights(&[indexed_owner(4)]),
             Err(MultisigQuorumError::SignerNotOwner)
         );
 
@@ -1263,18 +1157,14 @@ mod tests {
 
         let inner_digest = B256::repeat_byte(0x42);
         let digest_a = multisig_digest(inner_digest, account_a);
-        let signature = sign_hash(&signer, &digest_a).to_bytes();
+        let digest_b = multisig_digest(inner_digest, account_b);
+        assert_ne!(digest_a, digest_b, "digest is domain-separated by account");
 
-        assert!(
-            config_a
-                .verify_owner_signatures(digest_a, core::slice::from_ref(&signature))
-                .is_ok()
-        );
-        assert!(
-            config_b
-                .verify_owner_signatures(multisig_digest(inner_digest, account_b), &[signature],)
-                .is_err()
-        );
+        // An owner approval recovers the owner only against the account it was signed for; replaying
+        // it against another account's digest recovers a different address that is not an owner.
+        let signature = sign_hash(&signer, &digest_a);
+        assert_eq!(signature.recover_signer(&digest_a).unwrap(), owner);
+        assert_ne!(signature.recover_signer(&digest_b).unwrap(), owner);
     }
 
     #[test]
@@ -1286,26 +1176,29 @@ mod tests {
         let digest = multisig_digest(B256::repeat_byte(0x42), account);
 
         let mut signed = [
-            (owner_a, sign_hash(&signer_a, &digest).to_bytes()),
-            (owner_b, sign_hash(&signer_b, &digest).to_bytes()),
+            (owner_a, sign_hash(&signer_a, &digest)),
+            (owner_b, sign_hash(&signer_b, &digest)),
         ];
         signed.sort_by_key(|(owner, _)| *owner);
-        let signatures = signed
-            .into_iter()
-            .map(|(_, signature)| signature)
-            .collect::<Vec<_>>();
 
-        assert_eq!(
-            config.verify_owner_signatures(digest, &signatures).unwrap(),
-            2
-        );
+        // Feed the recovered owners through the shared accumulator, as the verifier does.
+        let quorum_weight = |approvals: &[&TempoSignature]| -> Result<u8, MultisigQuorumError> {
+            let mut accumulator = MultisigWeightAccumulator::new(config.threshold);
+            for approval in approvals {
+                let owner = approval.recover_signer(&digest).unwrap();
+                let weight = config
+                    .owner_weight(owner)
+                    .ok_or(MultisigQuorumError::SignerNotOwner)?;
+                accumulator.record_owner(owner, weight)?;
+            }
+            accumulator.finish()
+        };
 
-        let one_signature = vec![signatures[0].clone()];
-        assert!(
-            config
-                .verify_owner_signatures(digest, &one_signature)
-                .is_err()
-        );
+        let both = [&signed[0].1, &signed[1].1];
+        assert_eq!(quorum_weight(&both), Ok(2));
+
+        // A single owner falls short of the threshold of 2.
+        assert!(quorum_weight(&[&signed[0].1]).is_err());
     }
 
     #[test]

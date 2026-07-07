@@ -26,7 +26,6 @@ pub use multisig::{
     MULTISIG_SIGNATURE_DOMAIN, MultisigAddress, MultisigConfigError, MultisigOwner,
     MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG,
     is_valid_multisig_account, multisig_digest, multisig_signature_count_for_threshold,
-    verify_ordered_owner_weights,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,

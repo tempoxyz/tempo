@@ -2032,16 +2032,10 @@ mod tests {
             Some(config.clone()),
         ));
 
+        // recover_signer returns the claimed account after stateless shape checks only; it does
+        // not verify owner approvals. Stateful owner-threshold verification is exercised by the
+        // native multisig precompile tests.
         assert_eq!(signature.recover_signer(&inner_hash).unwrap(), account);
-
-        let multisig_signature = signature.as_multisig().unwrap();
-        let digest = multisig_signature.digest(inner_hash);
-        assert!(
-            multisig_signature
-                .verify_with_trusted_config(digest, &config)
-                .is_err(),
-            "stateful multisig authorization should still reject a non-owner signature"
-        );
     }
 
     #[test]
