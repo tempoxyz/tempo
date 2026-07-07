@@ -10,32 +10,11 @@
 use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS,
     IReceivePolicyGuard::{TransferBlocked, burnBlockedReceiptCall, claimCall},
     ITIP403Registry::setReceivePolicyCall,
-    NONCE_PRECOMPILE_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, transaction::Call};
-
-/// Well-known Tempo system precompiles that cannot be recovery authorities.
-pub const SYSTEM_PRECOMPILE_RECOVERY_AUTHORITIES: &[Address] = &[
-    ACCOUNT_KEYCHAIN_ADDRESS,
-    ADDRESS_REGISTRY_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS,
-    RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS,
-    STORAGE_CREDITS_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
-];
 
 /// Type-safe recovery authority selector for TIP-1028 receive policies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +97,9 @@ pub fn set_receive_policy_for_receiver(
 pub fn is_invalid_recovery_authority(authority: Address) -> bool {
     authority.is_virtual()
         || authority.is_tip20()
-        || SYSTEM_PRECOMPILE_RECOVERY_AUTHORITIES.contains(&authority)
+        || SYSTEM_PRECOMPILES
+            .iter()
+            .any(|&(precompile, _)| precompile == authority)
 }
 
 /// Validate a raw receive-policy recovery authority.
@@ -268,18 +249,15 @@ mod tests {
     fn typed_receive_policy_rejects_unclaimable_authorities() {
         let receiver = address!("0x1111111111111111111111111111111111111111");
 
-        for authority in SYSTEM_PRECOMPILE_RECOVERY_AUTHORITIES {
+        for &(authority, _) in SYSTEM_PRECOMPILES {
             let err = set_receive_policy_for_receiver(
                 7,
                 9,
                 receiver,
-                RecoveryAuthority::ThirdParty(*authority),
+                RecoveryAuthority::ThirdParty(authority),
             )
             .expect_err("system precompile must be rejected");
-            assert_eq!(
-                err,
-                ReceivePolicyError::InvalidRecoveryAuthority(*authority)
-            );
+            assert_eq!(err, ReceivePolicyError::InvalidRecoveryAuthority(authority));
         }
 
         let tip20 = address!("0x20c0000000000000000000000000000000000001");
