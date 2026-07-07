@@ -1029,7 +1029,13 @@ where
                                 .map_err(NativeMultisigAuthError::from)
                                 .map_err(map_native_multisig_error::<DB>)?
                             {
-                                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                                // Whether an authority is a native multisig account is read from
+                                // storage, so this rejection depends on chain state and can flip
+                                // after signing/relay. Classify it as a state-dependent validation
+                                // failure (not a bad transaction) so honest relays are not penalized.
+                                // The deterministic payload-only checks in validate_env stay
+                                // NativeMultisigInvalidTransaction.
+                                return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
                                     reason: format!(
                                         "native multisig account {authority} cannot be used as an authorization-list authority"
                                     ),
@@ -3124,10 +3130,10 @@ mod tests {
             matches!(
                 result,
                 Err(EVMError::Transaction(
-                    TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
                 )) if reason.contains("authorization-list authority")
             ),
-            "native multisig authorization-list authority should be rejected"
+            "native multisig authorization-list authority should be rejected (state-dependent)"
         );
     }
 
@@ -3148,10 +3154,10 @@ mod tests {
             matches!(
                 result,
                 Err(EVMError::Transaction(
-                    TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+                    TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
                 )) if reason.contains("authorization-list authority")
             ),
-            "native multisig standard authorization-list authority should be rejected"
+            "native multisig standard authorization-list authority should be rejected (state-dependent)"
         );
     }
 
