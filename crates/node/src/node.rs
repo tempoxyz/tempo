@@ -86,7 +86,7 @@ pub struct TempoNodeArgs {
     pub builder_enable_prewarming: bool,
 
     /// Enable speculative parallel payload builder.
-    #[arg(long = "builder.parallel", default_value_t = false)]
+    #[arg(long = "builder.parallel", default_value_t = false, hide = true)]
     pub builder_parallel: bool,
 
     /// Disable sharing the execution cache with the payload builder.
