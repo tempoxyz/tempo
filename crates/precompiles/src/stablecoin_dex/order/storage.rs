@@ -335,12 +335,12 @@ impl OrderHandler {
         };
 
         // If known, use the book ID. Otherwise resolve it from storage.
-        let (is_index_set, book_index) = match known_id {
+        let book_index = match known_id {
             None => StablecoinDEX::new().book_key_index(value.book_key)?,
-            Some(id) => id.index()?,
+            Some(id) => id.index(),
         };
 
-        let new_slots = if is_index_set {
+        let new_slots = if let Some(book_index) = book_index {
             V2Order::new(value, book_index).store(self, self.base_slot, LayoutCtx::FULL)?;
             V2Order::SLOTS
         } else {
@@ -500,8 +500,8 @@ mod tests {
     use super::*;
     use crate::{
         stablecoin_dex::{
-            IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX,
-            orderbook::{RoundingDirection, base_to_quote},
+            IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX, StablecoinDEXError,
+            orderbook::{Orderbook, RoundingDirection, base_to_quote},
         },
         storage::{ContractStorage, Handler, StorageCtx, hashmap::HashMapStorageProvider},
         storage_credits::StorageCredits,
@@ -514,6 +514,8 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
+    const TEST_BASE: Address = address!("0x2222222222222222222222222222222222222222");
+    const TEST_QUOTE: Address = address!("0x3333333333333333333333333333333333333333");
     const TEST_BOOK_KEY: B256 =
         b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
 
@@ -969,12 +971,7 @@ mod tests {
                 V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
             }
             OrderVersion::V2 => {
-                if !exchange.book_key_index(order.book_key)?.0 {
-                    let index = exchange.book_keys.len()? as u32;
-                    exchange.book_keys.push(order.book_key)?;
-                    exchange.set_book_index(index)?;
-                }
-                let (_, book_index) = exchange.book_key_index(order.book_key)?;
+                let book_index = ensure_test_book_index(exchange, order.book_key)?;
                 let handler = &exchange.orders[order.order_id()];
                 let mut storage = handler.clone();
                 V2Order::new(order, book_index).store(
@@ -983,6 +980,26 @@ mod tests {
                     LayoutCtx::FULL,
                 )
             }
+        }
+    }
+
+    fn ensure_test_book_index(exchange: &mut StablecoinDEX, book_key: B256) -> StorageResult<u32> {
+        match exchange.book_key_index(book_key) {
+            Ok(Some(index)) => Ok(index),
+            Ok(None) => {
+                let index = exchange.book_keys.len()? as u32;
+                exchange.book_keys.push(book_key)?;
+                exchange.set_book_index(index)?;
+                Ok(index)
+            }
+            Err(TempoPrecompileError::StablecoinDEX(StablecoinDEXError::PairDoesNotExist(_))) => {
+                let index = exchange.book_keys.len()? as u32;
+                exchange.books[book_key]
+                    .write(Orderbook::new_with_index(TEST_BASE, TEST_QUOTE, index))?;
+                exchange.book_keys.push(book_key)?;
+                Ok(index)
+            }
+            Err(err) => Err(err),
         }
     }
 

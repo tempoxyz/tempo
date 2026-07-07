@@ -514,11 +514,13 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
-    /// Returns whether `book_key` has a persisted index and its zero-based `book_keys` index.
-    pub(crate) fn book_key_index(&self, book_key: B256) -> Result<(bool, u32)> {
-        self.books[book_key]
-            .read()
-            .and_then(|book| book.id().index())
+    /// Returns the zero-based `book_keys` index persisted for `book_key`, if one is set.
+    pub(crate) fn book_key_index(&self, book_key: B256) -> Result<Option<u32>> {
+        let book = self.books[book_key].read()?;
+        if !book.is_initialized() {
+            return Err(StablecoinDEXError::pair_does_not_exist().into());
+        }
+        Ok(book.id().index())
     }
 
     /// Resolves a book key by index from the append-only `book_keys` vector.
@@ -532,8 +534,7 @@ impl StablecoinDEX {
     /// Persists the `book_keys` vector index for an existing orderbook.
     pub fn set_book_index(&mut self, index: u32) -> Result<()> {
         let book_key = self.book_key_for_index(index)?;
-        let (is_index_set, current_index) = self.book_key_index(book_key)?;
-        if is_index_set {
+        if let Some(current_index) = self.book_key_index(book_key)? {
             if index == current_index {
                 return Ok(());
             }
@@ -1914,11 +1915,38 @@ mod tests {
 
             exchange.create_pair(base)?;
 
-            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+            assert_eq!(exchange.book_key_index(book_key)?, Some(0));
             assert_eq!(exchange.book_key_for_index(0)?, book_key);
 
             exchange.set_book_index(0)?;
-            assert_eq!(exchange.book_key_index(book_key)?, (true, 0));
+            assert_eq!(exchange.book_key_index(book_key)?, Some(0));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_book_index_rejects_uninitialized_book_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let book_key = B256::random();
+            exchange.book_keys.push(book_key)?;
+
+            assert!(matches!(
+                exchange.book_key_index(book_key),
+                Err(TempoPrecompileError::StablecoinDEX(
+                    StablecoinDEXError::PairDoesNotExist(_)
+                ))
+            ));
+            assert!(matches!(
+                exchange.set_book_index(0),
+                Err(TempoPrecompileError::StablecoinDEX(
+                    StablecoinDEXError::PairDoesNotExist(_)
+                ))
+            ));
 
             Ok(())
         })
