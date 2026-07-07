@@ -34,7 +34,7 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
-use reth_tracing::tracing::{debug, info};
+use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
     TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
@@ -86,7 +86,7 @@ pub struct TempoNodeArgs {
     pub builder_enable_prewarming: bool,
 
     /// Enable speculative parallel payload builder.
-    #[arg(long = "builder.parallel", default_value_t = false)]
+    #[arg(long = "builder.parallel", default_value_t = false, hide = true)]
     pub builder_parallel: bool,
 
     /// Disable sharing the execution cache with the payload builder.
@@ -135,6 +135,10 @@ impl TempoNodeArgs {
 
     /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
+        if self.builder_parallel {
+            warn!("Parallel block builder is still in development and should not be used");
+        }
+
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: !self.builder_disable_prewarming,

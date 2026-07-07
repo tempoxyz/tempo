@@ -12,9 +12,52 @@ use alloy_sol_types::{SolCall, SolEvent};
 use tempo_contracts::precompiles::{
     IReceivePolicyGuard::{TransferBlocked, burnBlockedReceiptCall, claimCall},
     ITIP403Registry::setReceivePolicyCall,
-    RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
 };
-use tempo_primitives::transaction::Call;
+use tempo_primitives::{TempoAddressExt, transaction::Call};
+
+/// Type-safe recovery authority selector for TIP-1028 receive policies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryAuthority {
+    /// Encode originator recovery as the TIP-1028 `address(0)` sentinel.
+    Originator,
+    /// Encode receiver recovery as the receiver account itself.
+    Receiver,
+    /// Encode an explicit third-party recovery authority.
+    ThirdParty(Address),
+}
+
+/// Receive-policy call-builder error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceivePolicyError {
+    /// The encoded recovery authority cannot ever pass `ReceivePolicyGuard.claim()`.
+    InvalidRecoveryAuthority(Address),
+}
+
+impl core::fmt::Display for ReceivePolicyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidRecoveryAuthority(address) => {
+                write!(f, "invalid receive-policy recovery authority: {address}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReceivePolicyError {}
+
+impl RecoveryAuthority {
+    /// Encode this typed authority to the raw address expected by the TIP-403 registry.
+    pub fn encode(self, receiver: Address) -> Result<Address, ReceivePolicyError> {
+        let authority = match self {
+            Self::Originator => Address::ZERO,
+            Self::Receiver => receiver,
+            Self::ThirdParty(authority) => authority,
+        };
+        validate_recovery_authority(authority)?;
+        Ok(authority)
+    }
+}
 
 /// Build a `setReceivePolicy(uint64,uint64,address)` call on the TIP-403 registry.
 ///
@@ -31,6 +74,40 @@ pub fn set_receive_policy(
         tokenFilterId: token_filter_id,
         recoveryAuthority: recovery_authority,
     })
+}
+
+/// Build a validated `setReceivePolicy(uint64,uint64,address)` call from a typed authority.
+///
+/// Use this helper instead of passing raw sentinel addresses in new integrations.
+pub fn set_receive_policy_for_receiver(
+    sender_policy_id: u64,
+    token_filter_id: u64,
+    receiver: Address,
+    recovery_authority: RecoveryAuthority,
+) -> Result<Call, ReceivePolicyError> {
+    let recovery_authority = recovery_authority.encode(receiver)?;
+    Ok(set_receive_policy(
+        sender_policy_id,
+        token_filter_id,
+        recovery_authority,
+    ))
+}
+
+/// Return whether `authority` is invalid for receive-policy recovery.
+pub fn is_invalid_recovery_authority(authority: Address) -> bool {
+    authority.is_virtual()
+        || authority.is_tip20()
+        || SYSTEM_PRECOMPILES
+            .iter()
+            .any(|&(precompile, _)| precompile == authority)
+}
+
+/// Validate a raw receive-policy recovery authority.
+pub fn validate_recovery_authority(authority: Address) -> Result<(), ReceivePolicyError> {
+    if authority != Address::ZERO && is_invalid_recovery_authority(authority) {
+        return Err(ReceivePolicyError::InvalidRecoveryAuthority(authority));
+    }
+    Ok(())
 }
 
 /// Build a `claim(address,bytes)` call on the ReceivePolicyGuard to release blocked funds.
@@ -135,6 +212,75 @@ mod tests {
         assert_eq!(decoded.senderPolicyId, 7);
         assert_eq!(decoded.tokenFilterId, 9);
         assert_eq!(decoded.recoveryAuthority, recovery);
+    }
+
+    #[test]
+    fn typed_receive_policy_encodes_recovery_authority() {
+        let receiver = address!("0x1111111111111111111111111111111111111111");
+
+        let originator =
+            set_receive_policy_for_receiver(7, 9, receiver, RecoveryAuthority::Originator)
+                .expect("originator recovery is valid");
+        let decoded =
+            setReceivePolicyCall::abi_decode(&originator.input).expect("decode setReceivePolicy");
+        assert_eq!(decoded.recoveryAuthority, Address::ZERO);
+
+        let receiver_recovery =
+            set_receive_policy_for_receiver(7, 9, receiver, RecoveryAuthority::Receiver)
+                .expect("receiver recovery is valid");
+        let decoded = setReceivePolicyCall::abi_decode(&receiver_recovery.input)
+            .expect("decode setReceivePolicy");
+        assert_eq!(decoded.recoveryAuthority, receiver);
+
+        let third_party = address!("0x2222222222222222222222222222222222222222");
+        let third_party_recovery = set_receive_policy_for_receiver(
+            7,
+            9,
+            receiver,
+            RecoveryAuthority::ThirdParty(third_party),
+        )
+        .expect("third-party recovery is valid");
+        let decoded = setReceivePolicyCall::abi_decode(&third_party_recovery.input)
+            .expect("decode setReceivePolicy");
+        assert_eq!(decoded.recoveryAuthority, third_party);
+    }
+
+    #[test]
+    fn typed_receive_policy_rejects_unclaimable_authorities() {
+        let receiver = address!("0x1111111111111111111111111111111111111111");
+
+        for &(authority, _) in SYSTEM_PRECOMPILES {
+            let err = set_receive_policy_for_receiver(
+                7,
+                9,
+                receiver,
+                RecoveryAuthority::ThirdParty(authority),
+            )
+            .expect_err("system precompile must be rejected");
+            assert_eq!(err, ReceivePolicyError::InvalidRecoveryAuthority(authority));
+        }
+
+        let tip20 = address!("0x20c0000000000000000000000000000000000001");
+        let err =
+            set_receive_policy_for_receiver(7, 9, receiver, RecoveryAuthority::ThirdParty(tip20))
+                .expect_err("TIP-20 authority must be rejected");
+        assert_eq!(err, ReceivePolicyError::InvalidRecoveryAuthority(tip20));
+
+        let virtual_address = Address::new_virtual(
+            tempo_primitives::MasterId::from([0x12, 0x34, 0x56, 0x78]),
+            tempo_primitives::UserTag::from([0xab, 0xcd, 0xef, 0x01, 0x23, 0x45]),
+        );
+        let err = set_receive_policy_for_receiver(
+            7,
+            9,
+            receiver,
+            RecoveryAuthority::ThirdParty(virtual_address),
+        )
+        .expect_err("virtual authority must be rejected");
+        assert_eq!(
+            err,
+            ReceivePolicyError::InvalidRecoveryAuthority(virtual_address)
+        );
     }
 
     #[test]
