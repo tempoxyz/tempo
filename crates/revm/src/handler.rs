@@ -1022,7 +1022,7 @@ where
                         .into());
                     }
 
-                    let validate_authorization_authority =
+                    let ensure_authority_not_multisig =
                         |authority| -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
                             if multisig_precompile
                                 .is_multisig_account(authority)
@@ -1048,13 +1048,13 @@ where
                     if let Some(tempo_tx_env) = tempo_tx_env {
                         for auth in &tempo_tx_env.tempo_authorization_list {
                             if let Some(authority) = auth.authority() {
-                                validate_authorization_authority(authority)?;
+                                ensure_authority_not_multisig(authority)?;
                             }
                         }
                     } else {
                         for auth in tx.authorization_list() {
                             if let Some(authority) = auth.authority() {
-                                validate_authorization_authority(authority)?;
+                                ensure_authority_not_multisig(authority)?;
                             }
                         }
                     }
