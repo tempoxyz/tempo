@@ -740,6 +740,12 @@ impl TempoSignature {
     /// that the signature is valid for the keychain. They also need to check the access key is authorized
     /// in the keychain precompile.
     /// We cannot check this here, as we don't have access to the keychain precompile.
+    ///
+    /// - Multisig: returns the derived/claimed native multisig account after stateless shape
+    ///   checks only. It does NOT verify owner approvals or that the owner-weight threshold is met.
+    ///   This is the same footgun as Keychain: callers must not treat a returned account as an
+    ///   authorized transaction. Owner-threshold verification is stateful and happens in the native
+    ///   multisig verifier (`NativeMultisig::verify_authorization`), which needs the stored config.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
