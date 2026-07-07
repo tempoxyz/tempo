@@ -225,6 +225,51 @@ impl TxBuilder {
         TempoPooledTransaction::new(recovered)
     }
 
+    /// Build an AA transaction with a native multisig outer signature for `account`.
+    ///
+    /// The sender equals `account`, matching how native multisig transactions execute.
+    pub(crate) fn build_multisig(self, account: Address) -> TempoPooledTransaction {
+        use tempo_primitives::transaction::MultisigSignature;
+
+        let calls = self.calls.unwrap_or_else(|| {
+            vec![Call {
+                to: self.kind,
+                value: self.value,
+                input: Default::default(),
+            }]
+        });
+
+        let tx = TempoTransaction {
+            chain_id: self.chain_id,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            max_fee_per_gas: self.max_fee_per_gas,
+            gas_limit: self.gas_limit,
+            calls,
+            nonce_key: self.nonce_key,
+            nonce: self.nonce,
+            fee_token: self.fee_token,
+            fee_payer_signature: None,
+            valid_after: self.valid_after,
+            valid_before: self.valid_before,
+            access_list: self.access_list,
+            tempo_authorization_list: self.authorization_list.unwrap_or_default(),
+            key_authorization: self.key_authorization,
+        };
+
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![owner_signature],
+            None,
+        ));
+        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let envelope: TempoTxEnvelope = aa_signed.into();
+
+        let recovered = Recovered::new_unchecked(envelope, account);
+        TempoPooledTransaction::new(recovered)
+    }
+
     /// Build an AA transaction with a V2 keychain signature.
     ///
     /// The `user_address` is the account that owns the keychain key,

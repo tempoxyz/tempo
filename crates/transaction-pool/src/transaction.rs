@@ -210,6 +210,15 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Returns the native multisig account authorizing this transaction, if it carries a
+    /// `TempoSignature::Multisig` outer signature.
+    ///
+    /// For a native multisig transaction the sender equals the multisig account, so this is used to
+    /// evict pooled transactions after the account's owner set or threshold is rotated on-chain.
+    pub fn multisig_account(&self) -> Option<Address> {
+        Some(self.inner().as_aa()?.signature().as_multisig()?.account())
+    }
+
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
     ///
     /// Used for revocation matching: if the access key that signed an inline authorization is
