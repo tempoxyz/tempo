@@ -292,6 +292,67 @@ impl OrderHandler {
         }
         OrderVersion::try_from(self.load(self.base_slot)?)
     }
+
+    /// Reads this order using a known owning book key, skipping V2 index resolution.
+    pub(crate) fn read_in_book(&self, book_key: B256) -> StorageResult<Order> {
+        self.read_with_book_key(Some(book_key))
+    }
+
+    /// Reads this order, skipping V2 index resolution when a book key is provided.
+    fn read_with_book_key(&self, known_book: Option<B256>) -> StorageResult<Order> {
+        match self.version()? {
+            OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
+            OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
+                .map(|res| res.into_order(self.order_id)),
+            OrderVersion::V2 => {
+                let order = V2Order::load(self, self.base_slot, LayoutCtx::FULL)?;
+                let book_key = match known_book {
+                    None => StablecoinDEX::new().book_key_for_index(order.book_index)?,
+                    Some(book_key) => book_key,
+                };
+                Ok(order.into_order(self.order_id, book_key))
+            }
+        }
+    }
+
+    /// Writes this order using a known one-based owning book ID, skipping index resolution.
+    pub(crate) fn write_in_book(&mut self, value: Order, book_id: u32) -> StorageResult<()> {
+        self.write_with_book_id(value, Some(book_id))
+    }
+
+    /// Writes this order, skipping V2 index resolution when a book ID is provided.
+    fn write_with_book_id(&mut self, value: Order, known_id: Option<u32>) -> StorageResult<()> {
+        debug_assert_eq!(value.order_id, self.order_id);
+
+        if !StorageCtx.spec().is_t8() {
+            return value.store(self, self.base_slot, LayoutCtx::FULL);
+        }
+
+        let old_slots = match self.version()? {
+            OrderVersion::Legacy => LegacyOrder::SLOTS,
+            OrderVersion::V1 => V1Order::SLOTS,
+            OrderVersion::V2 => V2Order::SLOTS,
+        };
+
+        // If known, use the one-based orderbook id. Otherwise resolve it from storage.
+        let (is_index_set, book_index) = match known_id {
+            None => StablecoinDEX::new().book_key_index(value.book_key)?,
+            Some(index) => (index != 0, index.saturating_sub(1)),
+        };
+
+        let new_slots = if is_index_set {
+            V2Order::new(value, book_index).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V2Order::SLOTS
+        } else {
+            V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V1Order::SLOTS
+        };
+
+        for offset in new_slots..old_slots {
+            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+        }
+        Ok(())
+    }
 }
 
 impl StorageOps for OrderHandler {
@@ -307,45 +368,12 @@ impl StorageOps for OrderHandler {
 impl Handler<Order> for OrderHandler {
     /// Reads the order using the cached or detected physical layout version.
     fn read(&self) -> StorageResult<Order> {
-        match self.version()? {
-            OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
-            OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
-                .map(|res| res.into_order(self.order_id)),
-            OrderVersion::V2 => {
-                let order = V2Order::load(self, self.base_slot, LayoutCtx::FULL)?;
-                let book_key = StablecoinDEX::new().book_key_for_index(order.book_index)?;
-                Ok(order.into_order(self.order_id, book_key))
-            }
-        }
+        self.read_with_book_key(None)
     }
 
-    /// Writes the order, migrating T8 records to V1 and updating the cached version.
+    /// Writes the order, migrating T8 records to V1/V2.
     fn write(&mut self, value: Order) -> StorageResult<()> {
-        debug_assert_eq!(value.order_id, self.order_id);
-
-        if !StorageCtx.spec().is_t8() {
-            return value.store(self, self.base_slot, LayoutCtx::FULL);
-        }
-
-        let old_slots = match self.version()? {
-            OrderVersion::Legacy => LegacyOrder::SLOTS,
-            OrderVersion::V1 => V1Order::SLOTS,
-            OrderVersion::V2 => V2Order::SLOTS,
-        };
-
-        let (is_index_set, book_key_index) = StablecoinDEX::new().book_key_index(value.book_key)?;
-        let new_slots = if is_index_set {
-            V2Order::new(value, book_key_index).store(self, self.base_slot, LayoutCtx::FULL)?;
-            V2Order::SLOTS
-        } else {
-            V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-            V1Order::SLOTS
-        };
-
-        for offset in new_slots..old_slots {
-            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-        }
-        Ok(())
+        self.write_with_book_id(value, None)
     }
 
     /// Deletes the physical slots for the cached or detected order layout.
