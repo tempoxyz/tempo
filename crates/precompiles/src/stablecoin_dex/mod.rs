@@ -11,6 +11,7 @@ pub mod order;
 pub mod orderbook;
 
 pub use order::Order;
+use order::OrderMapping;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
     quote_to_base, tick_to_price, validate_tick_spacing,
@@ -48,7 +49,7 @@ pub const TICK_SPACING: i16 = 10;
 #[contract(addr = STABLECOIN_DEX_ADDRESS)]
 pub struct StablecoinDEX {
     books: Mapping<B256, Orderbook>,
-    orders: Mapping<u128, Order>,
+    orders: OrderMapping,
     balances: Mapping<Address, Mapping<Address, u128>>,
     next_order_id: u128,
     book_keys: Vec<B256>,
@@ -125,6 +126,13 @@ impl StablecoinDEX {
             .map(|(_, credits)| credits)
     }
 
+    /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
+    fn rewrite_order(&mut self, order: Order) -> Result<u64> {
+        StorageCredits::new()
+            .track_minted_credits(self.address, || self.orders[order.order_id()].write(order))
+            .map(|(_, credits)| credits)
+    }
+
     /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
     fn unlink_neighbor_and_credit_maker(
         &mut self,
@@ -137,7 +145,7 @@ impl StablecoinDEX {
             return Ok(());
         }
 
-        let maker = self.orders[order_id].maker.read()?;
+        let maker = self.orders[order_id].maker()?.read()?;
         self.credit_dex_storage_slots(maker, credits)
     }
 
@@ -682,10 +690,14 @@ impl StablecoinDEX {
                     .write(order.tick())?;
             }
         } else {
-            // Update previous tail's next pointer
-            let mut prev_order = self.orders[prev_tail].read()?;
-            prev_order.next = order.order_id();
-            self.orders[prev_tail].write(prev_order)?;
+            // Update previous tail's next pointer.
+            if self.storage.spec().is_t8() {
+                self.orders[prev_tail].next()?.write(order.order_id())?;
+            } else {
+                let mut prev_order = self.orders[prev_tail].read()?;
+                prev_order.next = order.order_id();
+                self.orders[prev_tail].write(prev_order)?;
+            }
 
             // Set current order's prev pointer
             order.prev = prev_tail;
@@ -702,10 +714,16 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        if charge_credits && self.storage.spec().is_t7() {
-            self.write_order_spending_dex_storage_credits(order)
-        } else {
-            self.orders[order.order_id()].write(order)
+        match (charge_credits, self.storage.spec()) {
+            // User placements: T7+ can spend maker credits for new reusable order storage.
+            (true, spec) if spec.is_t7() => self.write_order_spending_dex_storage_credits(order),
+            // T8+ flip rewrites credit deleted order slots without spending maker credits.
+            (false, spec) if spec.is_t8() => {
+                let (maker, credits) = (order.maker(), self.rewrite_order(order)?);
+                self.credit_dex_storage_slots(maker, credits)
+            }
+            // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
+            _ => self.orders[order.order_id()].write(order),
         }
     }
 
@@ -902,6 +920,8 @@ impl StablecoinDEX {
 
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
+        debug_assert_eq!(order.order_id(), flipped.order_id());
+        debug_assert_eq!(order.book_key(), flipped.book_key());
         // In-place flips are taker-triggered, so don't spend maker credits.
         self.commit_order_to_book(flipped, false)?;
 
@@ -937,8 +957,9 @@ impl StablecoinDEX {
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
         self.orders[order.order_id()]
-            .remaining
+            .remaining()?
             .write(new_remaining)?;
+        order.remaining = new_remaining;
 
         // Calculate quote amount for this fill (used by both maker settlement and taker output)
         let quote_amount = base_to_quote(
@@ -1106,8 +1127,9 @@ impl StablecoinDEX {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            let (_, credits) = StorageCredits::new()
-                .track_minted_credits(self.address, || self.orders[order.next()].prev.delete())?;
+            let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
+                self.orders[order.next()].prev()?.delete()
+            })?;
 
             let new_liquidity = level
                 .total_liquidity
@@ -1346,7 +1368,7 @@ impl StablecoinDEX {
         // Update linked list
         if order.prev() != 0 {
             self.unlink_neighbor_and_credit_maker(order.prev(), |s| {
-                s.orders[order.prev()].next.write(order.next())
+                s.orders[order.prev()].next()?.write(order.next())
             })?;
         } else {
             level.head = order.next();
@@ -1354,7 +1376,7 @@ impl StablecoinDEX {
 
         if order.next() != 0 {
             self.unlink_neighbor_and_credit_maker(order.next(), |s| {
-                s.orders[order.next()].prev.write(order.prev())
+                s.orders[order.next()].prev()?.write(order.prev())
             })?;
         } else {
             level.tail = order.prev();
@@ -2201,12 +2223,15 @@ mod tests {
             let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
             let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
 
-            assert_eq!(exchange.orders[alice_order_id].next.read()?, bob_order_id);
+            assert_eq!(
+                exchange.orders[alice_order_id].next()?.read()?,
+                bob_order_id
+            );
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
             exchange.cancel(bob, bob_order_id)?;
 
-            assert_eq!(exchange.orders[alice_order_id].next.read()?, 0);
+            assert_eq!(exchange.orders[alice_order_id].next()?.read()?, 0);
             assert_eq!(exchange.storage_credits(alice)?, 1);
 
             Ok(())
