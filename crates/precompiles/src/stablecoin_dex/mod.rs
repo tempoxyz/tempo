@@ -733,9 +733,9 @@ impl StablecoinDEX {
             if self.storage.spec().is_t8() {
                 self.orders[prev_tail].next()?.write(order.order_id())?;
             } else {
-                let mut prev_order = self.orders[prev_tail].read()?;
+                let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
                 prev_order.next = order.order_id();
-                self.orders[prev_tail].write(prev_order)?;
+                self.orders[prev_tail].write_in_book(prev_order, book_key_index)?;
             }
 
             // Set current order's prev pointer

@@ -19,59 +19,59 @@ create_pair:
   storage_credits: n/a
   pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
 place_ask_wallet:
-  gas: 1590385
+  gas: 1590285
   storage_credits: "user2: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 6 -> 6"
 place_bid_append_same_level:
-  gas: 1096069
+  gas: 1095969
   storage_credits: "user16: 0 -> 0; user15: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 3 -> 3"
 place_bid_cross_user_after_cancel_credits:
-  gas: 1091169
+  gas: 1091069
   storage_credits: "user7: 0 -> 0; user6: 2 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 6 -> 6"
 place_bid_cross_user_after_fill_credits:
-  gas: 1091169
+  gas: 1091069
   storage_credits: "user7: 0 -> 0; user4: 2 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 12 -> 12"
 place_bid_reuse_cancel_credits:
-  gas: 849513
+  gas: 849413
   storage_credits: "user1: 2 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 4 -> 3"
 place_bid_reuse_predecessor_next_credit:
-  gas: 852569
+  gas: 852469
   storage_credits: "user9: 1 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 18 -> 18"
 place_bid_reuse_swap_credits:
-  gas: 602213
+  gas: 602113
   storage_credits: "user3: 2 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 10 -> 9"
 place_bid_wallet:
-  gas: 1837685
+  gas: 1837585
   storage_credits: "user1: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
 place_flip_bid_wallet:
-  gas: 1341143
+  gas: 1341043
   storage_credits: "user5: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 12 -> 12"
 swap_exact_in_full_ask_earn_credits:
-  gas: 385497
+  gas: 381097
   storage_credits: "user3: 0 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 7 -> 10"
 swap_exact_in_full_flip_bid:
-  gas: 885584
+  gas: 881084
   storage_credits: "user5: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 12 -> 16"
 swap_exact_in_full_head_bid_tracks_successor_prev:
-  gas: 387085
+  gas: 382685
   storage_credits: "user13: 0 -> 3; user14: 0 -> 1"
   pooled_storage_credits: "DEX TIP-1060: 18 -> 20"
 swap_exact_in_partial_ask_no_credits:
-  gas: 349585
+  gas: 345385
   storage_credits: "user2: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 6 -> 6"
 swap_exact_out_full_ask_earn_credits:
-  gas: 385677
+  gas: 381277
   storage_credits: "user4: 0 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 9 -> 12"
 withdraw_internal_balance:
