@@ -18,6 +18,7 @@
 //! rebuilds and short reorgs roll back cleanly, and the build→validate replay
 //! of the same block is a memo hit rather than a second application.
 
+pub mod cursors;
 mod stream;
 pub use stream::{stream_enabled, FlatStream};
 
