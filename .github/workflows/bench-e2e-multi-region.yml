@@ -175,7 +175,7 @@ jobs:
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
       BENCH_INPUT_BASELINE: ${{ inputs.baseline || '' }}
-      BENCH_INPUT_FEATURE: ${{ inputs.feature || (github.event_name == 'pull_request' && github.event.pull_request.head.sha) || '' }}
+      BENCH_INPUT_FEATURE: ${{ inputs.feature || '' }}
       BENCH_INPUT_BASELINE_HARDFORK: ${{ inputs['baseline-hardfork'] || '' }}
       BENCH_INPUT_FEATURE_HARDFORK: ${{ inputs['feature-hardfork'] || '' }}
       BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
