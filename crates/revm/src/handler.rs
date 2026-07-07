@@ -1076,12 +1076,11 @@ where
                     let Some(multisig_signature) = multisig_signature else {
                         return Ok(());
                     };
-                    let Some(tempo_tx_env) = tempo_tx_env else {
-                        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                            reason: "multisig signature requires AA transaction context".to_string(),
-                        }
-                        .into());
-                    };
+                    // `multisig_signature` is derived from `tempo_tx_env` (`aa.signature.as_multisig()`)
+                    // above, so it being Some implies `tempo_tx_env` is Some. This is an invariant,
+                    // not a reachable error path.
+                    let tempo_tx_env =
+                        tempo_tx_env.expect("multisig signature is derived from tempo_tx_env");
 
                     let caller_account_info = caller_account_info
                         .as_ref()
