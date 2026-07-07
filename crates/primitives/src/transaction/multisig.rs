@@ -43,6 +43,25 @@ pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE
 
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
+/// Canonical factory address used to anchor native multisig account derivation to CREATE2.
+pub const MULTISIG_RECOVERY_FACTORY: Address = Address::new([
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xe8, 0xb4, 0x7b, 0x3e, 0x21, 0x30, 0x21, 0x3b, 0x80, 0x22,
+    0x12, 0x43, 0x94, 0x97,
+]);
+
+/// Keccak256 hash of the canonical `TempoMultisigRecoveryWallet` EVM creation code.
+///
+/// Committed constant used in native multisig account derivation. It must equal
+/// `keccak256(TempoMultisigRecoveryWallet.creationCode)` from the canonical build (Solidity 0.8.34,
+/// optimizer enabled with 200 runs, via-IR, Cancun, `bytecode_hash = "none"`, `cbor_metadata =
+/// false`). Regenerate with `tips/verify/gen_recovery_init_code_hash.sh` after any change to
+/// `tips/verify/src/TempoMultisigRecovery.sol`; a mismatch means Tempo derives a different address
+/// than the recovery factory would deploy, making cross-chain recovery impossible.
+pub const MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH: B256 = B256::new([
+    0xc3, 0x66, 0x2d, 0x32, 0x91, 0x07, 0xe9, 0x81, 0x50, 0x1c, 0xe1, 0x41, 0x01, 0x4f, 0x6e, 0x1c,
+    0xf0, 0xfa, 0x3d, 0xd7, 0x63, 0xde, 0x02, 0x41, 0xc8, 0x0a, 0x01, 0xcd, 0x7f, 0x71, 0x0b, 0xb1,
+]);
+
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MultisigConfigError {
@@ -307,8 +326,24 @@ impl InitMultisig {
 
     /// Derives the native multisig account address for this initial config.
     pub fn account(&self) -> Result<Address, MultisigConfigError> {
-        self.validate()?;
+        let account_salt = self.account_salt()?;
 
+        let mut input = [0u8; 1 + 20 + 32 + 32];
+        input[0] = 0xff;
+        input[1..21].copy_from_slice(MULTISIG_RECOVERY_FACTORY.as_slice());
+        input[21..53].copy_from_slice(account_salt.as_slice());
+        input[53..85].copy_from_slice(MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH.as_slice());
+
+        let account = Address::from_slice(&keccak256(input)[12..]);
+        if account.is_zero() {
+            return Err(MultisigConfigError::DerivedAccountZero);
+        }
+        Ok(account)
+    }
+
+    /// Derives the CREATE2 salt used by cross-chain recovery wallets for this config.
+    pub fn account_salt(&self) -> Result<B256, MultisigConfigError> {
+        self.validate()?;
         let owner_count =
             u8::try_from(self.owners.len()).expect("validated multisig owner count fits in u8");
         let mut input = Vec::with_capacity(
@@ -323,11 +358,7 @@ impl InitMultisig {
             input.push(owner.weight);
         }
 
-        let account = Address::from_slice(&keccak256(input)[12..]);
-        if account.is_zero() {
-            return Err(MultisigConfigError::DerivedAccountZero);
-        }
-        Ok(account)
+        Ok(keccak256(input))
     }
 
     /// Returns the configured weight for an owner, if present.
@@ -1033,6 +1064,24 @@ mod tests {
             nonzero_salt.account().unwrap()
         );
         zero_salt.validate().expect("zero salt is valid");
+    }
+
+    #[test]
+    fn account_derivation_matches_create2_recovery_wallet() {
+        let owner = Address::from([0x11; 20]);
+        let config = sorted_secp_config(&[(owner, 1)], 1);
+        let account_salt = config.account_salt().unwrap();
+
+        let mut input = [0u8; 85];
+        input[0] = 0xff;
+        input[1..21].copy_from_slice(MULTISIG_RECOVERY_FACTORY.as_slice());
+        input[21..53].copy_from_slice(account_salt.as_slice());
+        input[53..85].copy_from_slice(MULTISIG_RECOVERY_WALLET_INIT_CODE_HASH.as_slice());
+
+        assert_eq!(
+            config.account().unwrap(),
+            Address::from_slice(&keccak256(input)[12..])
+        );
     }
 
     #[test]
