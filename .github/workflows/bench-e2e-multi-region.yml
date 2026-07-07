@@ -179,13 +179,13 @@ jobs:
       BENCH_INPUT_BASELINE_HARDFORK: ${{ inputs['baseline-hardfork'] || '' }}
       BENCH_INPUT_FEATURE_HARDFORK: ${{ inputs['feature-hardfork'] || '' }}
       BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
-      BENCH_INPUT_DURATION: ${{ inputs.duration || '90' }}
+      BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
-      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || '5' }}
+      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '5' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || 'us-east-1' }}
-      BENCH_INPUT_TPS: ${{ inputs.tps || '50000' }}
-      BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || '100' }}
+      BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
+      BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || (github.event_name == 'pull_request' && '100') || '1000' }}
+      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '100' }}
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
@@ -198,7 +198,7 @@ jobs:
       BENCH_INPUT_FORCE_BLOAT: ${{ github.event_name == 'workflow_dispatch' && (inputs['force-bloat'] == true || inputs['force-bloat'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
-      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || '3' }}
+      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
 
     steps:
       - name: Check org membership
