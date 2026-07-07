@@ -186,10 +186,11 @@ impl Orderbook {
         }
     }
 
-    /// Creates a new orderbook with its persisted `book_keys` index.
-    pub fn new_with_id(base: Address, quote: Address, id: u32) -> Self {
+    /// Creates a new orderbook with its zero-based `book_keys` vector index.
+    pub fn new_with_index(base: Address, quote: Address, index: u32) -> Self {
+        let id = index + 1;
         Self {
-            book_key_index: id + 1,
+            book_key_index: id,
             ..Self::new(base, quote)
         }
     }

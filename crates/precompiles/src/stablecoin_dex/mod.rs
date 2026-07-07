@@ -127,10 +127,10 @@ impl StablecoinDEX {
     }
 
     /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
-    fn rewrite_order(&mut self, order: Order, book_key_index: u32) -> Result<u64> {
+    fn rewrite_order(&mut self, order: Order, book_id: u32) -> Result<u64> {
         StorageCredits::new()
             .track_minted_credits(self.address, || {
-                self.orders[order.order_id()].write_in_book(order, book_key_index)
+                self.orders[order.order_id()].write_in_book(order, book_id)
             })
             .map(|(_, credits)| credits)
     }
@@ -519,8 +519,8 @@ impl StablecoinDEX {
 
     /// Returns whether `book_key` has a persisted index and its zero-based `book_keys` index.
     pub(crate) fn book_key_index(&self, book_key: B256) -> Result<(bool, u32)> {
-        let book_key_index = self.books[book_key].book_key_index.read()?;
-        Ok((book_key_index != 0, book_key_index.saturating_sub(1)))
+        let id = self.books[book_key].book_key_index.read()?;
+        Ok((id != 0, id.saturating_sub(1)))
     }
 
     /// Resolves a book key by index from the append-only `book_keys` vector.
@@ -534,15 +534,16 @@ impl StablecoinDEX {
     /// Persists the `book_keys` vector index for an existing orderbook.
     pub fn set_book_index(&mut self, index: u32) -> Result<()> {
         let book_key = self.book_key_for_index(index)?;
-        let (is_index_set, current_index) = self.book_key_index(book_key)?;
-        if is_index_set {
+        let (is_id_set, current_index) = self.book_key_index(book_key)?;
+        if is_id_set {
             if index == current_index {
                 return Ok(());
             }
             return Err(StablecoinDEXError::index_already_set().into());
         }
 
-        self.books[book_key].book_key_index.write(index + 1)
+        let id = index + 1;
+        self.books[book_key].book_key_index.write(id)
     }
 
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
@@ -597,7 +598,7 @@ impl StablecoinDEX {
         }
 
         let book = if self.storage.spec().is_t8() {
-            Orderbook::new_with_id(base, quote, self.book_keys.len()? as u32)
+            Orderbook::new_with_index(base, quote, self.book_keys.len()? as u32)
         } else {
             Orderbook::new(base, quote)
         };
@@ -705,7 +706,7 @@ impl StablecoinDEX {
     /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
-        let book_key_index = orderbook.book_key_index;
+        let book_id = orderbook.book_key_index;
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
@@ -735,7 +736,7 @@ impl StablecoinDEX {
             } else {
                 let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
                 prev_order.next = order.order_id();
-                self.orders[prev_tail].write_in_book(prev_order, book_key_index)?;
+                self.orders[prev_tail].write_in_book(prev_order, book_id)?;
             }
 
             // Set current order's prev pointer
@@ -756,15 +757,15 @@ impl StablecoinDEX {
         match (charge_credits, self.storage.spec()) {
             // User placements: T7+ can spend maker credits for new reusable order storage.
             (true, spec) if spec.is_t7() => {
-                self.write_order_spending_dex_storage_credits(order, book_key_index)
+                self.write_order_spending_dex_storage_credits(order, book_id)
             }
             // T8+ flip rewrites credit deleted order slots without spending maker credits.
             (false, spec) if spec.is_t8() => {
-                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_key_index)?);
+                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
                 self.credit_dex_storage_slots(maker, credits)
             }
             // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
-            _ => self.orders[order.order_id()].write_in_book(order, book_key_index),
+            _ => self.orders[order.order_id()].write_in_book(order, book_id),
         }
     }
 

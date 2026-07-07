@@ -322,7 +322,7 @@ impl OrderHandler {
     }
 
     /// Writes this order, skipping V2 index resolution when a book ID is provided.
-    /// WARN: `know_id` must be the 1-based book ID. This function handles normalization.
+    /// WARN: `known_id` must be the 1-based book ID. This function handles normalization.
     fn write_with_book_id(&mut self, value: Order, known_id: Option<u32>) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
 
@@ -337,12 +337,12 @@ impl OrderHandler {
         };
 
         // If known, use the one-based orderbook id. Otherwise resolve it from storage.
-        let (is_index_set, book_index) = match known_id {
+        let (is_id_set, book_index) = match known_id {
             None => StablecoinDEX::new().book_key_index(value.book_key)?,
-            Some(index) => (index != 0, index.saturating_sub(1)),
+            Some(id) => (id != 0, id.saturating_sub(1)),
         };
 
-        let new_slots = if is_index_set {
+        let new_slots = if is_id_set {
             V2Order::new(value, book_index).store(self, self.base_slot, LayoutCtx::FULL)?;
             V2Order::SLOTS
         } else {
