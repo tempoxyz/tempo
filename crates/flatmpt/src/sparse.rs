@@ -37,7 +37,12 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Newly touched keys that trigger a reveal pass during execution.
-const PASS_TARGETS: usize = 2_048;
+const PASS_TARGETS: usize = 8_192;
+
+/// How many times a reveal round may re-fetch already-fetched targets that
+/// are still blinded (a first proof can leave a deeper node or a collapse
+/// sibling unrevealed) before we give up and fall back.
+const STALL_RETRIES: u32 = 3;
 
 /// How long the finish path waits for the follower to bring the flat store to
 /// the block's parent before giving up (`TEMPO_FLATMPT_SPARSE_WAIT_MS`).
@@ -123,11 +128,13 @@ impl SparseWorker {
     }
 
     /// State hook for the executor (prewarming only — final values come from
-    /// the bundle passed to [`Self::finish`]).
+    /// the bundle passed to [`Self::finish`]). Lossy by design: if the worker
+    /// is busy in a proof pass, batches are dropped rather than backpressuring
+    /// execution — a missed prewarm only means the finish drain fetches it.
     pub fn hook(&self) -> impl revm::OnStateHook {
         let tx = self.tx.as_ref().expect("worker active").clone();
         move |state: revm::state::EvmState| {
-            let _ = tx.send(Msg::State(state));
+            let _ = tx.try_send(Msg::State(state));
         }
     }
 
@@ -345,7 +352,10 @@ impl Worker {
     /// retry until drained. Returns Ok(false) if deferred because the flat
     /// store isn't at the parent (only when `must_complete` is false).
     fn reveal_pass(&mut self, must_complete: bool) -> anyhow::Result<bool> {
+        let mut stall_rounds = 0u32;
         loop {
+            // Raw targets (unfiltered): a key that stays blinded after its
+            // first proof (deeper node, collapse sibling) must be re-fetched.
             let mut acct_targets: Vec<B256> = Vec::new();
             let mut storage_targets: Vec<(B256, B256)> = Vec::new();
 
@@ -354,25 +364,17 @@ impl Worker {
                     continue;
                 }
                 let trie = self.trie.get_or_create_storage_trie_mut(*acct);
-                let fetched = self.fetched_storage.entry(*acct).or_default();
                 trie.update_leaves(updates, |key, _min_len| {
-                    if !fetched.contains(&key) {
-                        storage_targets.push((*acct, key));
-                    }
+                    storage_targets.push((*acct, key));
                 })
                 .map_err(|e| anyhow::anyhow!("storage update_leaves: {e}"))?;
             }
-            {
-                let fetched = &self.fetched_accounts;
-                self.trie
-                    .trie_mut()
-                    .update_leaves(&mut self.account_updates, |key, _min_len| {
-                        if !fetched.contains(&key) {
-                            acct_targets.push(key);
-                        }
-                    })
-                    .map_err(|e| anyhow::anyhow!("account update_leaves: {e}"))?;
-            }
+            self.trie
+                .trie_mut()
+                .update_leaves(&mut self.account_updates, |key, _min_len| {
+                    acct_targets.push(key);
+                })
+                .map_err(|e| anyhow::anyhow!("account update_leaves: {e}"))?;
 
             let drained = self.account_updates.is_empty()
                 && self.storage_updates.values().all(|u| u.is_empty());
@@ -383,10 +385,34 @@ impl Worker {
             acct_targets.dedup();
             storage_targets.sort_unstable();
             storage_targets.dedup();
-            if acct_targets.is_empty() && storage_targets.is_empty() {
-                let pending: usize = self.account_updates.len()
-                    + self.storage_updates.values().map(|u| u.len()).sum::<usize>();
-                anyhow::bail!("sparse reveal stalled with {pending} pending updates");
+
+            let fresh = acct_targets.iter().any(|k| !self.fetched_accounts.contains(k))
+                || storage_targets.iter().any(|(a, k)| {
+                    !self.fetched_storage.get(a).is_some_and(|f| f.contains(k))
+                });
+            if fresh {
+                stall_rounds = 0;
+            } else {
+                stall_rounds += 1;
+                if acct_targets.is_empty() && storage_targets.is_empty() {
+                    let pending: usize = self.account_updates.len()
+                        + self.storage_updates.values().map(|u| u.len()).sum::<usize>();
+                    anyhow::bail!("sparse reveal stalled with {pending} pending updates and no targets");
+                }
+                if stall_rounds > STALL_RETRIES {
+                    anyhow::bail!(
+                        "sparse reveal stalled after {STALL_RETRIES} refetches; sample targets: {:?} / {:?}",
+                        acct_targets.first(),
+                        storage_targets.first(),
+                    );
+                }
+                tracing::info!(
+                    target: "flatmpt",
+                    round = stall_rounds,
+                    accounts = acct_targets.len(),
+                    slots = storage_targets.len(),
+                    "sparse reveal refetching still-blinded targets"
+                );
             }
 
             let mut targets = MultiProofTargets::default();
@@ -465,18 +491,18 @@ impl Worker {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::FlatShadow;
     use alloy_primitives::U256;
     use mpt_flat_poc::eth::{storage_value_rlp, EMPTY_CODE_HASH};
     use mpt_flat_poc::FlatMpt;
 
-    fn akey(b: u8) -> Key {
+    pub(super) fn akey(b: u8) -> Key {
         keccak256([b; 20]).0
     }
 
-    fn set_acct(b: u8, nonce: u64) -> (Key, StateOp) {
+    pub(super) fn set_acct(b: u8, nonce: u64) -> (Key, StateOp) {
         (
             akey(b),
             StateOp::SetAccount {
@@ -487,12 +513,12 @@ mod tests {
         )
     }
 
-    fn set_slot(b: u8, slot: u16, v: u64) -> (Key, StateOp) {
+    pub(super) fn set_slot(b: u8, slot: u16, v: u64) -> (Key, StateOp) {
         let slot_key = keccak256(U256::from(slot).to_be_bytes::<32>()).0;
         (akey(b), StateOp::SetStorage { slot: slot_key, value: storage_value_rlp(U256::from(v)) })
     }
 
-    fn del_slot(b: u8, slot: u16) -> (Key, StateOp) {
+    pub(super) fn del_slot(b: u8, slot: u16) -> (Key, StateOp) {
         let slot_key = keccak256(U256::from(slot).to_be_bytes::<32>()).0;
         (akey(b), StateOp::DeleteStorage { slot: slot_key })
     }
@@ -567,5 +593,68 @@ mod tests {
         let mut w3 = Worker::new(shadow, sparse2);
         let (sparse3, _) = w3.finish(Vec::new()).unwrap();
         assert_eq!(sparse3, sparse2);
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::tests::*;
+    use super::*;
+    use crate::FlatShadow;
+    use mpt_flat_poc::FlatMpt;
+
+    /// tip20-shaped churn: hundreds of accounts, slot updates + deletions +
+    /// inserts stacked over three blocks (the live-bench stall shape).
+    #[test]
+    fn sparse_survives_slot_churn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("churn.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = Vec::new();
+        for a in 0..250u8 {
+            genesis.push(set_acct(a, 1));
+            for s in 0..8u16 {
+                genesis.push(set_slot(a, s, 100 + s as u64));
+            }
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        drop(oracle);
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        let mut parent = g;
+        let mut parent_number = 0u64;
+        for round in 0..3u64 {
+            let mut ops: Vec<(Key, StateOp)> = Vec::new();
+            for a in 0..250u8 {
+                ops.push(set_acct(a, 2 + round));
+                // update 2, delete 2 (different ones per round), insert 2 new
+                for s in 0..2u16 {
+                    ops.push(set_slot(a, s, 1000 * (round + 1) + s as u64));
+                }
+                for s in 2..4u16 {
+                    ops.push(del_slot(a, s + 2 * round as u16));
+                }
+                for s in 0..2u16 {
+                    ops.push(set_slot(a, 50 + 10 * round as u16 + s, 7));
+                }
+            }
+            let mut w = Worker::new(shadow, parent);
+            let (sparse_root, stats) = w
+                .finish(ops.clone())
+                .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
+            let flat_root = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            assert_eq!(sparse_root, flat_root, "round {round}");
+            eprintln!(
+                "round {round}: acct_targets={} storage_targets={} rounds={}",
+                stats.account_targets, stats.storage_targets, stats.finish_rounds
+            );
+            parent = sparse_root;
+            parent_number += 1;
+        }
     }
 }
