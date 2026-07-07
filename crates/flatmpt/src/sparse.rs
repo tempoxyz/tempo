@@ -491,26 +491,20 @@ impl Worker {
                 );
             }
 
-            let mut targets = MultiProofTargetsV2::default();
-            for (key, min_len) in &acct_targets {
-                targets.account_targets.push(ProofV2Target::new(*key).with_min_len(*min_len));
-            }
-            for (acct, per) in &storage_targets {
-                let v: Vec<ProofV2Target> = per
-                    .iter()
-                    .map(|(k, m)| ProofV2Target::new(*k).with_min_len(*m))
-                    .collect();
-                targets.storage_targets.insert(*acct, v);
-            }
-
-            // Fetch under one read guard: the parent check and the proof walk
+            // Fetch under one read guard: the parent check and the proof walks
             // must see the same flat snapshot. Native V2 proofs — the v1→v2
             // conversion silently drops extension nodes with unrevealed
             // children, which permanently stalls exclusion-proof inserts.
+            //
+            // Proof generation is the dominant hot-path cost (a tempo block
+            // can carry 100k+ storage targets in one contract), so targets
+            // are split into path-contiguous chunks proved on parallel
+            // threads over the same snapshot — reth's proof-worker chunking,
+            // inlined. Reveal stays sequential (it is ~1% of proof time).
             let t_proof = Instant::now();
             let n_acct = acct_targets.len() as u64;
             let n_storage = storage_targets.values().map(|p| p.len()).sum::<usize>() as u64;
-            let proof = {
+            let proofs = {
                 let guard = self.shadow.read();
                 if !guard.at_parent(self.parent_root) {
                     if !must_complete {
@@ -520,19 +514,70 @@ impl Worker {
                     self.wait_for_parent()?;
                     continue;
                 }
-                Proof::new(
-                    FlatTrieCursorFactory { mpt: &guard.db },
-                    FlatHashedCursorFactory { mpt: &guard.db },
-                )
-                .multiproof_v2(targets)
+
+                // Balanced, path-sorted chunks: contiguous key ranges keep
+                // each chunk's walk inside a narrow subtree span.
+                let mut flat: Vec<(B256, ProofV2Target)> = Vec::with_capacity(n_storage as usize);
+                for (acct, per) in &storage_targets {
+                    for (k, m) in per {
+                        flat.push((*acct, ProofV2Target::new(*k).with_min_len(*m)));
+                    }
+                }
+                flat.sort_unstable_by(|a, b| {
+                    a.0.cmp(&b.0).then_with(|| a.1.key_nibbles.cmp(&b.1.key_nibbles))
+                });
+                let threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(8)
+                    .clamp(1, 12);
+                let chunk_size = flat.len().div_ceil(threads).max(2_048);
+                let mut chunks: Vec<MultiProofTargetsV2> = Vec::new();
+                {
+                    let mut t = MultiProofTargetsV2::default();
+                    for (key, min_len) in &acct_targets {
+                        t.account_targets.push(ProofV2Target::new(*key).with_min_len(*min_len));
+                    }
+                    if !t.account_targets.is_empty() {
+                        chunks.push(t);
+                    }
+                }
+                for slice in flat.chunks(chunk_size) {
+                    let mut t = MultiProofTargetsV2::default();
+                    for (acct, target) in slice {
+                        t.storage_targets.entry(*acct).or_default().push(target.clone());
+                    }
+                    chunks.push(t);
+                }
+
+                let db = &guard.db;
+                std::thread::scope(|s| {
+                    let handles: Vec<_> = chunks
+                        .into_iter()
+                        .map(|t| {
+                            s.spawn(move || {
+                                Proof::new(
+                                    FlatTrieCursorFactory { mpt: db },
+                                    FlatHashedCursorFactory { mpt: db },
+                                )
+                                .multiproof_v2(t)
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| h.join().expect("proof chunk thread panicked"))
+                        .collect::<Result<Vec<_>, _>>()
+                })
                 .map_err(|e| anyhow::anyhow!("multiproof_v2 over flat cursors: {e}"))?
             };
             self.stats.proof_ms += t_proof.elapsed().as_millis() as u64;
 
             let t_reveal = Instant::now();
-            self.trie
-                .reveal_decoded_multiproof_v2(proof)
-                .map_err(|e| anyhow::anyhow!("reveal_decoded_multiproof_v2: {e}"))?;
+            for proof in proofs {
+                self.trie
+                    .reveal_decoded_multiproof_v2(proof)
+                    .map_err(|e| anyhow::anyhow!("reveal_decoded_multiproof_v2: {e}"))?;
+            }
             self.stats.reveal_ms += t_reveal.elapsed().as_millis() as u64;
             self.stats.account_targets += n_acct;
             self.stats.storage_targets += n_storage;
