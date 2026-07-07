@@ -263,7 +263,7 @@
               {
                 "astId": 27,
                 "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
-                "label": "bookKeyIndex",
+                "label": "bookId",
                 "offset": 4,
                 "slot": "4",
                 "type": "t_uint32"

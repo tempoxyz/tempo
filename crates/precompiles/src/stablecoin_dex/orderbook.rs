@@ -160,8 +160,8 @@ pub struct Orderbook {
     pub(crate) best_bid_tick: i16,
     /// Best ask tick for lowest ask price.
     pub(crate) best_ask_tick: i16,
-    /// (+T8) 1-based index into `book_keys`; zero means unset.
-    pub(crate) book_key_index: u32,
+    /// (+T8) 1-based book ID; zero means unset.
+    pub(crate) book_id: u32,
     #[allow(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
     bid_bitmap: Mapping<i16, U256>,
@@ -178,7 +178,7 @@ impl Orderbook {
             quote,
             best_bid_tick: i16::MIN,
             best_ask_tick: i16::MAX,
-            book_key_index: 0,
+            book_id: 0,
             bids: Mapping::default(),
             asks: Mapping::default(),
             bid_bitmap: Mapping::default(),
@@ -187,10 +187,11 @@ impl Orderbook {
     }
 
     /// Creates a new orderbook with its zero-based `book_keys` vector index.
+    /// WARN: This function stores the virtual 1-based book ID, not the provided index.
     pub fn new_with_index(base: Address, quote: Address, index: u32) -> Self {
         let id = index + 1;
         Self {
-            book_key_index: id,
+            book_id: id,
             ..Self::new(base, quote)
         }
     }

@@ -337,12 +337,12 @@ impl OrderHandler {
         };
 
         // If known, use the one-based orderbook id. Otherwise resolve it from storage.
-        let (is_id_set, book_index) = match known_id {
+        let (is_index_set, book_index) = match known_id {
             None => StablecoinDEX::new().book_key_index(value.book_key)?,
             Some(id) => (id != 0, id.saturating_sub(1)),
         };
 
-        let new_slots = if is_id_set {
+        let new_slots = if is_index_set {
             V2Order::new(value, book_index).store(self, self.base_slot, LayoutCtx::FULL)?;
             V2Order::SLOTS
         } else {

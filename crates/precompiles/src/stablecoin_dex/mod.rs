@@ -519,7 +519,7 @@ impl StablecoinDEX {
 
     /// Returns whether `book_key` has a persisted index and its zero-based `book_keys` index.
     pub(crate) fn book_key_index(&self, book_key: B256) -> Result<(bool, u32)> {
-        let id = self.books[book_key].book_key_index.read()?;
+        let id = self.books[book_key].book_id.read()?;
         Ok((id != 0, id.saturating_sub(1)))
     }
 
@@ -534,8 +534,8 @@ impl StablecoinDEX {
     /// Persists the `book_keys` vector index for an existing orderbook.
     pub fn set_book_index(&mut self, index: u32) -> Result<()> {
         let book_key = self.book_key_for_index(index)?;
-        let (is_id_set, current_index) = self.book_key_index(book_key)?;
-        if is_id_set {
+        let (is_index_set, current_index) = self.book_key_index(book_key)?;
+        if is_index_set {
             if index == current_index {
                 return Ok(());
             }
@@ -543,7 +543,7 @@ impl StablecoinDEX {
         }
 
         let id = index + 1;
-        self.books[book_key].book_key_index.write(id)
+        self.books[book_key].book_id.write(id)
     }
 
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
@@ -706,7 +706,7 @@ impl StablecoinDEX {
     /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
-        let book_id = orderbook.book_key_index;
+        let book_id = orderbook.book_id;
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;

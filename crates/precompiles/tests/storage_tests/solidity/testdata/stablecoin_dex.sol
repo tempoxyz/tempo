@@ -20,7 +20,7 @@ contract StablecoinDEX {
         int16 bestBidTick;
         int16 bestAskTick;
         // Only applicable for T8 and above. One-based; zero means unset.
-        uint32 bookKeyIndex;
+        uint32 bookId;
         mapping(int16 => uint256) bidBitmap;
         mapping(int16 => uint256) askBitmap;
     }
