@@ -127,6 +127,25 @@ impl TempoPooledTransaction {
         }
     }
 
+    fn try_recover_with_encoded_length(
+        transaction: TempoTxEnvelope,
+        encoded_length: usize,
+    ) -> Result<Self, TempoTxEnvelope> {
+        let recovered = match &transaction {
+            TempoTxEnvelope::AA(tx) => tx.recover_signer_with_expiring_nonce_hash(),
+            _ => transaction.recover_signer().map(|signer| (signer, None)),
+        };
+        let Ok((signer, expiring_nonce_hash)) = recovered else {
+            return Err(transaction);
+        };
+
+        Ok(Self::new_with(
+            Recovered::new_unchecked(transaction, signer),
+            expiring_nonce_hash,
+            encoded_length,
+        ))
+    }
+
     /// Get the cost of the transaction in the fee token.
     #[inline]
     pub const fn fee_token_cost(&self) -> U256 {
@@ -756,6 +775,11 @@ impl PoolTransaction for TempoPooledTransaction {
         Self::new(tx)
     }
 
+    fn try_recover(transaction: Self::Pooled) -> Result<Self, Self::Pooled> {
+        let encoded_length = transaction.encode_2718_len();
+        Self::try_recover_with_encoded_length(transaction, encoded_length)
+    }
+
     fn recover_raw_transaction(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
         if data.is_empty() {
             return Err(RawPoolTransactionError::EmptyRawTransactionData);
@@ -765,23 +789,8 @@ impl PoolTransaction for TempoPooledTransaction {
         let transaction = Self::Pooled::decode_2718_exact(data)
             .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
 
-        let (signer, expiring_nonce_hash) = match &transaction {
-            TempoTxEnvelope::AA(tx) => tx
-                .recover_signer_with_expiring_nonce_hash()
-                .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
-            _ => (
-                transaction
-                    .recover_signer()
-                    .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
-                None,
-            ),
-        };
-
-        Ok(Self::new_with(
-            Recovered::new_unchecked(transaction, signer),
-            expiring_nonce_hash,
-            encoded_length,
-        ))
+        Self::try_recover_with_encoded_length(transaction, encoded_length)
+            .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)
     }
 
     fn hash(&self) -> &TxHash {
@@ -960,6 +969,15 @@ mod tests {
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
         (pooled, envelope, sender, encoded_length)
+    }
+
+    fn try_recover_pooled_transaction(
+        tx: TempoTransaction,
+    ) -> (TempoPooledTransaction, TempoTxEnvelope, Address) {
+        let (envelope, sender) = signed_aa_envelope(tx);
+        let pooled = <TempoPooledTransaction as PoolTransaction>::try_recover(envelope.clone())
+            .expect("pooled transaction recovery failed");
+        (pooled, envelope, sender)
     }
 
     #[test]
@@ -1365,6 +1383,39 @@ mod tests {
             prop_assert_eq!(pooled.encoded_length(), encoded_length);
             prop_assert_eq!(pooled.expiring_nonce_hash, None);
             prop_assert_eq!(pooled.expiring_nonce_hash(), via_new.expiring_nonce_hash());
+            prop_assert_eq!(pooled.hash(), via_new.hash());
+            prop_assert_eq!(pooled.sender(), via_new.sender());
+        }
+
+        #[test]
+        fn proptest_try_recover_precomputes_expiring_nonce_hash(
+            mut tx in arb_sized::<TempoTransaction>(TEMPO_TRANSACTION_ARBITRARY_SIZE)
+        ) {
+            tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+            let (pooled, envelope, sender) = try_recover_pooled_transaction(tx);
+            let expected = envelope.as_aa().unwrap().expiring_nonce_hash(sender);
+            let via_new = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+
+            prop_assert!(pooled.is_expiring_nonce());
+            prop_assert_eq!(pooled.expiring_nonce_hash, Some(expected));
+            prop_assert_eq!(pooled.expiring_nonce_hash(), via_new.expiring_nonce_hash());
+            prop_assert_eq!(pooled.encoded_length(), via_new.encoded_length());
+            prop_assert_eq!(pooled.hash(), via_new.hash());
+            prop_assert_eq!(pooled.sender(), via_new.sender());
+        }
+
+        #[test]
+        fn proptest_try_recover_matches_new_for_non_expiring_aa(
+            mut tx in arb_sized::<TempoTransaction>(TEMPO_TRANSACTION_ARBITRARY_SIZE)
+        ) {
+            tx.nonce_key = U256::ZERO;
+            let (pooled, envelope, sender) = try_recover_pooled_transaction(tx);
+            let via_new = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+
+            prop_assert!(!pooled.is_expiring_nonce());
+            prop_assert_eq!(pooled.expiring_nonce_hash, None);
+            prop_assert_eq!(pooled.expiring_nonce_hash(), via_new.expiring_nonce_hash());
+            prop_assert_eq!(pooled.encoded_length(), via_new.encoded_length());
             prop_assert_eq!(pooled.hash(), via_new.hash());
             prop_assert_eq!(pooled.sender(), via_new.sender());
         }
