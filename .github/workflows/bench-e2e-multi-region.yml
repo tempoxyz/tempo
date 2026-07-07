@@ -285,7 +285,48 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/configure_aws_s3_transfer.sh"
 
+      - name: Fetch Tempo binaries
+        id: fetch_tempo_binaries
+        continue-on-error: true
+        run: |
+          "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --stage fetch-tempo-binaries \
+            --benchmark-id "$BENCHMARK_ID" \
+            --results-dir "$BENCH_RESULTS_DIR" \
+            --baseline "$BENCH_INPUT_BASELINE" \
+            --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
+            --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
+            --preset "$BENCH_INPUT_PRESET" \
+            --duration "$BENCH_INPUT_DURATION" \
+            --bloat "$BENCH_INPUT_BLOAT" \
+            --tps "$BENCH_INPUT_TPS" \
+            --accounts "$BENCH_INPUT_ACCOUNTS" \
+            --max-concurrent-requests "$BENCH_INPUT_MAX_CONCURRENT_REQUESTS" \
+            --txgen-ref "$BENCH_INPUT_TXGEN_REF" \
+            --token-count "$BENCH_INPUT_TOKEN_COUNT" \
+            --profiling "$BENCH_INPUT_PROFILING" \
+            --otlp "$BENCH_INPUT_OTLP" \
+            --valscope "$BENCH_INPUT_VALSCOPE" \
+            --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
+            --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
+            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
+            --no-cache "$BENCH_INPUT_NO_CACHE" \
+            --no-slack "true" \
+            --bench-args "$BENCH_INPUT_BENCH_ARGS" \
+            --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
+            --regions "${{ steps.regions.outputs.regions }}" \
+            --instance-type c6id.8xlarge \
+            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --logs-push-url "${{ secrets.BENCH_LOGS_PUSH_URL }}" \
+            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
+
       - name: Install txgen
+        if: steps.fetch_tempo_binaries.outcome == 'success'
         env:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
@@ -294,13 +335,9 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 
-      - name: Prepare era_invalidate cache
-        run: |
-          "$BENCH_REPO_DIR/scripts/prepare_era_invalidate_cache.sh" \
-            --regions "${{ steps.regions.outputs.regions }}"
-
       - name: Generate initial validator state
         id: generate_initial_validator_state
+        if: steps.fetch_tempo_binaries.outcome == 'success'
         continue-on-error: true
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
@@ -468,6 +505,7 @@ jobs:
         env:
           BENCH_ACTOR: ${{ github.actor }}
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_FETCH_BINARIES_OUTCOME: ${{ steps.fetch_tempo_binaries.outcome }}
           BENCH_GENERATE_OUTCOME: ${{ steps.generate_initial_validator_state.outcome }}
           BENCH_INITIALIZE_OUTCOME: ${{ steps.initialize_validator_state.outcome }}
           BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
@@ -484,6 +522,7 @@ jobs:
             }
 
             const lifecycleOutcomes = [
+              process.env.BENCH_FETCH_BINARIES_OUTCOME,
               process.env.BENCH_GENERATE_OUTCOME,
               process.env.BENCH_INITIALIZE_OUTCOME,
               process.env.BENCHMARK_OUTCOME,
@@ -524,5 +563,5 @@ jobs:
             --state-dir "$RUNNER_TEMP/terraform-destroy"
 
       - name: Check benchmark result
-        if: always() && (steps.generate_initial_validator_state.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
+        if: always() && (steps.fetch_tempo_binaries.outcome == 'failure' || steps.generate_initial_validator_state.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
         run: exit 1
