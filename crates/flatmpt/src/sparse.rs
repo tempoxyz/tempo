@@ -31,7 +31,7 @@ use alloy_primitives::{keccak256, B256};
 use alloy_rlp::{Decodable as _, Encodable as _};
 use mpt_flat_poc::{Key, StateOp};
 use parking_lot::RwLock;
-use reth_trie::{proof::Proof, MultiProofTargets, TrieAccount, EMPTY_ROOT_HASH};
+use reth_trie::{proof::Proof, MultiProofTargets, MultiProofTargetsV2, ProofV2Target, TrieAccount, EMPTY_ROOT_HASH};
 use reth_trie_sparse::{LeafUpdate, SparseStateTrie};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -156,9 +156,10 @@ struct Worker {
     trie: SparseStateTrie,
     account_updates: B256Map<LeafUpdate>,
     storage_updates: B256Map<B256Map<LeafUpdate>>,
-    /// Proof targets already fetched (dedup across reveal rounds).
-    fetched_accounts: B256Set,
-    fetched_storage: B256Map<B256Set>,
+    /// Proof targets already fetched → smallest min_len fetched (a request
+    /// with a smaller min_len than previously fetched must be re-fetched).
+    fetched_accounts: B256Map<u8>,
+    fetched_storage: B256Map<B256Map<u8>>,
     /// Keys touched since the last reveal pass (pass trigger).
     fresh: usize,
     stats: SparseStats,
@@ -172,7 +173,7 @@ impl Worker {
             trie: SparseStateTrie::new(),
             account_updates: B256Map::default(),
             storage_updates: B256Map::default(),
-            fetched_accounts: B256Set::default(),
+            fetched_accounts: B256Map::default(),
             fetched_storage: B256Map::default(),
             fresh: 0,
             stats: SparseStats::default(),
@@ -187,7 +188,7 @@ impl Worker {
                 continue;
             }
             let acct = keccak256(address.as_slice());
-            if !self.fetched_accounts.contains(&acct)
+            if !self.fetched_accounts.contains_key(&acct)
                 && !self.account_updates.contains_key(&acct)
             {
                 self.account_updates.insert(acct, LeafUpdate::Touched);
@@ -202,7 +203,7 @@ impl Worker {
                 }
                 let slot_key = keccak256(slot.to_be_bytes::<32>());
                 let fetched =
-                    self.fetched_storage.get(&acct).is_some_and(|f| f.contains(&slot_key));
+                    self.fetched_storage.get(&acct).is_some_and(|f| f.contains_key(&slot_key));
                 let pending = self
                     .storage_updates
                     .get(&acct)
@@ -354,25 +355,29 @@ impl Worker {
     fn reveal_pass(&mut self, must_complete: bool) -> anyhow::Result<bool> {
         let mut stall_rounds = 0u32;
         loop {
-            // Raw targets (unfiltered): a key that stays blinded after its
-            // first proof (deeper node, collapse sibling) must be re-fetched.
-            let mut acct_targets: Vec<B256> = Vec::new();
-            let mut storage_targets: Vec<(B256, B256)> = Vec::new();
+            // Raw targets with the trie's requested min_len. A key already
+            // fetched at min_len M is fresh again iff re-requested with a
+            // smaller min_len (deeper structure got exposed) — reth's own
+            // dedup rule.
+            let mut acct_targets: B256Map<u8> = B256Map::default();
+            let mut storage_targets: B256Map<B256Map<u8>> = B256Map::default();
 
             for (acct, updates) in self.storage_updates.iter_mut() {
                 if updates.is_empty() {
                     continue;
                 }
                 let trie = self.trie.get_or_create_storage_trie_mut(*acct);
-                trie.update_leaves(updates, |key, _min_len| {
-                    storage_targets.push((*acct, key));
+                let per = storage_targets.entry(*acct).or_default();
+                trie.update_leaves(updates, |key, min_len| {
+                    per.entry(key).and_modify(|m| *m = (*m).min(min_len)).or_insert(min_len);
                 })
                 .map_err(|e| anyhow::anyhow!("storage update_leaves: {e}"))?;
             }
+            storage_targets.retain(|_, per| !per.is_empty());
             self.trie
                 .trie_mut()
-                .update_leaves(&mut self.account_updates, |key, _min_len| {
-                    acct_targets.push(key);
+                .update_leaves(&mut self.account_updates, |key, min_len| {
+                    acct_targets.entry(key).and_modify(|m| *m = (*m).min(min_len)).or_insert(min_len);
                 })
                 .map_err(|e| anyhow::anyhow!("account update_leaves: {e}"))?;
 
@@ -381,14 +386,17 @@ impl Worker {
             if drained {
                 return Ok(true);
             }
-            acct_targets.sort_unstable();
-            acct_targets.dedup();
-            storage_targets.sort_unstable();
-            storage_targets.dedup();
 
-            let fresh = acct_targets.iter().any(|k| !self.fetched_accounts.contains(k))
-                || storage_targets.iter().any(|(a, k)| {
-                    !self.fetched_storage.get(a).is_some_and(|f| f.contains(k))
+            let fresh = acct_targets
+                .iter()
+                .any(|(k, m)| self.fetched_accounts.get(k).is_none_or(|prev| *m < *prev))
+                || storage_targets.iter().any(|(a, per)| {
+                    per.iter().any(|(k, m)| {
+                        self.fetched_storage
+                            .get(a)
+                            .and_then(|f| f.get(k))
+                            .is_none_or(|prev| *m < *prev)
+                    })
                 });
             if fresh {
                 stall_rounds = 0;
@@ -402,30 +410,38 @@ impl Worker {
                 if stall_rounds > STALL_RETRIES {
                     anyhow::bail!(
                         "sparse reveal stalled after {STALL_RETRIES} refetches; sample targets: {:?} / {:?}",
-                        acct_targets.first(),
-                        storage_targets.first(),
+                        acct_targets.iter().next(),
+                        storage_targets.iter().find_map(|(a, per)| per.iter().next().map(|(k, m)| (*a, *k, *m))),
                     );
                 }
                 tracing::info!(
                     target: "flatmpt",
                     round = stall_rounds,
                     accounts = acct_targets.len(),
-                    slots = storage_targets.len(),
+                    slots = storage_targets.values().map(|p| p.len()).sum::<usize>(),
                     "sparse reveal refetching still-blinded targets"
                 );
             }
 
-            let mut targets = MultiProofTargets::default();
-            for key in &acct_targets {
-                targets.entry(*key).or_default();
+            let mut targets = MultiProofTargetsV2::default();
+            for (key, min_len) in &acct_targets {
+                targets.account_targets.push(ProofV2Target::new(*key).with_min_len(*min_len));
             }
-            for (acct, key) in &storage_targets {
-                targets.entry(*acct).or_default().insert(*key);
+            for (acct, per) in &storage_targets {
+                let v: Vec<ProofV2Target> = per
+                    .iter()
+                    .map(|(k, m)| ProofV2Target::new(*k).with_min_len(*m))
+                    .collect();
+                targets.storage_targets.insert(*acct, v);
             }
 
             // Fetch under one read guard: the parent check and the proof walk
-            // must see the same flat snapshot.
+            // must see the same flat snapshot. Native V2 proofs — the v1→v2
+            // conversion silently drops extension nodes with unrevealed
+            // children, which permanently stalls exclusion-proof inserts.
             let t_proof = Instant::now();
+            let n_acct = acct_targets.len() as u64;
+            let n_storage = storage_targets.values().map(|p| p.len()).sum::<usize>() as u64;
             let proof = {
                 let guard = self.shadow.read();
                 if !guard.at_parent(self.parent_root) {
@@ -440,23 +456,29 @@ impl Worker {
                     FlatTrieCursorFactory { mpt: &guard.db },
                     FlatHashedCursorFactory { mpt: &guard.db },
                 )
-                .multiproof(targets)
-                .map_err(|e| anyhow::anyhow!("multiproof over flat cursors: {e}"))?
+                .multiproof_v2(targets)
+                .map_err(|e| anyhow::anyhow!("multiproof_v2 over flat cursors: {e}"))?
             };
             self.stats.proof_ms += t_proof.elapsed().as_millis() as u64;
 
             let t_reveal = Instant::now();
             self.trie
-                .reveal_multiproof(proof)
-                .map_err(|e| anyhow::anyhow!("reveal_multiproof: {e}"))?;
+                .reveal_decoded_multiproof_v2(proof)
+                .map_err(|e| anyhow::anyhow!("reveal_decoded_multiproof_v2: {e}"))?;
             self.stats.reveal_ms += t_reveal.elapsed().as_millis() as u64;
-            self.stats.account_targets += acct_targets.len() as u64;
-            self.stats.storage_targets += storage_targets.len() as u64;
-            for key in acct_targets {
-                self.fetched_accounts.insert(key);
+            self.stats.account_targets += n_acct;
+            self.stats.storage_targets += n_storage;
+            for (key, min_len) in acct_targets {
+                self.fetched_accounts
+                    .entry(key)
+                    .and_modify(|m| *m = (*m).min(min_len))
+                    .or_insert(min_len);
             }
-            for (acct, key) in storage_targets {
-                self.fetched_storage.entry(acct).or_default().insert(key);
+            for (acct, per) in storage_targets {
+                let f = self.fetched_storage.entry(acct).or_default();
+                for (k, m) in per {
+                    f.entry(k).and_modify(|prev| *prev = (*prev).min(m)).or_insert(m);
+                }
             }
             if must_complete {
                 self.stats.finish_rounds += 1;
@@ -602,6 +624,178 @@ mod stall_tests {
     use super::*;
     use crate::FlatShadow;
     use mpt_flat_poc::FlatMpt;
+
+    /// TEMP diagnostic: dump the storage proof for a stalled slot.
+    #[test]
+    fn diag_promoted_storage_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diag.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = vec![set_acct(200, 1)];
+        for s in 0..50_000u16 {
+            genesis.push(set_slot(200, s, 5 + s as u64));
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        drop(oracle);
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        let acct = B256::from(akey(200));
+        // a NONEXISTENT slot (exclusion proof — the stalling insert shape)
+        let slot_key = B256::from(keccak256(alloy_primitives::U256::from(60_000u64).to_be_bytes::<32>()));
+
+        let guard = shadow.read();
+        let tf = crate::cursors::FlatTrieCursorFactory { mpt: guard.db() };
+        let hf = crate::cursors::FlatHashedCursorFactory { mpt: guard.db() };
+        let mut targets = MultiProofTargets::default();
+        let mut slot_keys: Vec<B256> = (0..100u64)
+            .map(|i| B256::from(keccak256(alloy_primitives::U256::from(50_000 + i).to_be_bytes::<32>())))
+            .collect();
+        slot_keys.push(slot_key);
+        for k in &slot_keys {
+            targets.entry(acct).or_default().insert(*k);
+        }
+        let proof = Proof::new(tf, hf).multiproof(targets).unwrap();
+
+        eprintln!("account subtree nodes:");
+        for (p, _) in proof.account_subtree.iter() {
+            eprintln!("  acct node path len={} {:?}", p.len(), p);
+        }
+        for (a, sp) in proof.storages.iter() {
+            eprintln!("storage {a}: root={} subtree={} nodes", sp.root, sp.subtree.iter().count());
+            let mut paths: Vec<_> = sp.subtree.iter().map(|(p, _)| p).collect();
+            paths.sort();
+            for p in paths.iter() {
+                let d = format!("{p:?}");
+                if d.contains("(0x55") || d.contains("(0x5)") {
+                    eprintln!("  st node path len={:2} {:?}", p.len(), p);
+                }
+            }
+        }
+        eprintln!("slot nibbles: {:?}", reth_trie::Nibbles::unpack(slot_key));
+
+        // Dump our cursor's branch entry at 0x5500 and neighbours.
+        {
+            use reth_trie::trie_cursor::{TrieCursor as _, TrieCursorFactory as _, TrieStorageCursor as _};
+            let mut c = tf.storage_trie_cursor(acct).unwrap();
+            let mut path = reth_trie::Nibbles::default();
+            for n in [5u8, 5, 0, 0] { path.push(n); }
+            let e = c.seek(path).unwrap();
+            if let Some((p, node)) = e {
+                eprintln!("cursor@{p:?}: state={:016b} tree={:016b} hash={:016b} nhashes={}",
+                    node.state_mask.get(), node.tree_mask.get(), node.hash_mask.get(), node.hashes.len());
+            } else { eprintln!("cursor@0x5500: NONE"); }
+            // next branch after 0x5500
+            if let Some((p, node)) = c.next().unwrap() {
+                eprintln!("next branch: {p:?} state={:016b} tree={:016b} hash={:016b}",
+                    node.state_mask.get(), node.tree_mask.get(), node.hash_mask.get());
+            } else { eprintln!("next branch: NONE"); }
+            // leaves under 0x55009
+            use reth_trie::hashed_cursor::{HashedCursor as _, HashedCursorFactory as _, HashedStorageCursor as _};
+            let mut hc = hf.hashed_storage_cursor(acct).unwrap();
+            let mut seek = [0u8; 32]; seek[0] = 0x55; seek[1] = 0x00; seek[2] = 0x90;
+            let mut cur = hc.seek(B256::from(seek)).unwrap();
+            for _ in 0..3 {
+                match cur { Some((k, _)) => { eprintln!("leaf: {k}"); cur = hc.next().unwrap(); } None => { eprintln!("leaf: NONE"); break; } }
+            }
+        }
+
+        // What does the decoded proof hold at 0x5500?
+        {
+            let decoded: reth_trie::DecodedMultiProof = proof.clone().try_into().unwrap();
+            let sp = decoded.storages.get(&acct).unwrap();
+            for (p, n) in sp.subtree.iter() {
+                if p.len() == 4 && format!("{p:?}").contains("0x5500") {
+                    eprintln!("decoded@{p:?}: {n:?}");
+                }
+                if p.len() == 5 && format!("{p:?}").contains("0x55001") {
+                    eprintln!("decoded@{p:?}: {n:?}");
+                }
+            }
+        }
+        // Now feed it to a fresh sparse trie and try the update.
+        let mut trie = SparseStateTrie::new();
+        trie.reveal_multiproof(proof).unwrap();
+        let st = trie.get_or_create_storage_trie_mut(acct);
+        let mut updates = B256Map::default();
+        for k in &slot_keys {
+            updates.insert(*k, LeafUpdate::Changed(vec![0x01]));
+        }
+        let mut asked: Vec<(B256, u8)> = Vec::new();
+        st.update_leaves(&mut updates, |k, m| asked.push((k, m))).unwrap();
+        asked.sort();
+        eprintln!("still pending: {} asked(first 5): {:?}", updates.len(), &asked[..asked.len().min(5)]);
+        for (k, _) in asked.iter().take(3) {
+            eprintln!("pending key nibbles: {:?}", reth_trie::Nibbles::unpack(*k));
+        }
+        drop(guard);
+
+        // Subset bisection: which op kind stalls with a fresh worker?
+        for (name, ops) in [
+            ("updates-8", (0..8u16).map(|s| set_slot(200, s * 100, 9_000 + s as u64)).collect::<Vec<_>>()),
+            ("updates-400", (0..400u16).map(|s| set_slot(200, s * 100, 9_000 + s as u64)).collect()),
+            ("deletes-100", (0..100u16).map(|s| del_slot(200, 7 + s * 250)).collect()),
+            ("inserts-100", (0..100u16).map(|s| set_slot(200, 50_000 + s, 3)).collect()),
+        ] {
+            let mut all = vec![set_acct(200, 2)];
+            all.extend(ops);
+            let mut w = Worker::new(shadow, g);
+            match w.finish(all) {
+                Ok((root, st)) => eprintln!("subset {name}: OK root={root} targets={} rounds={}", st.storage_targets, st.finish_rounds),
+                Err(e) => eprintln!("subset {name}: FAIL {e:#}"),
+            }
+        }
+    }
+
+    /// A promoted account (storage >16KB lifts into the RAM frontier as
+    /// PromotedAccount): proofs over its storage trie must still reveal —
+    /// the live-bench stall was isolated to the giant TIP20 contract.
+    #[test]
+    fn sparse_over_promoted_account_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("promoted.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = vec![set_acct(200, 1), set_acct(1, 1)];
+        for s in 0..50_000u16 {
+            genesis.push(set_slot(200, s, 5 + s as u64));
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        drop(oracle);
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        let mut parent = g;
+        let mut parent_number = 0u64;
+        for round in 0..2u64 {
+            let mut ops: Vec<(Key, StateOp)> = vec![set_acct(200, 2 + round)];
+            for s in 0..400u16 {
+                ops.push(set_slot(200, s * 100, 9_000 + round + s as u64)); // updates
+            }
+            for s in 0..100u16 {
+                ops.push(del_slot(200, 7 + s * 250 + round as u16)); // deletions
+            }
+            for s in 0..100u16 {
+                ops.push(set_slot(200, 50_000 + 200 * round as u16 + s, 3)); // inserts
+            }
+            let mut w = Worker::new(shadow, parent);
+            let (sparse_root, stats) = w
+                .finish(ops.clone())
+                .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
+            let flat_root = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            assert_eq!(sparse_root, flat_root, "round {round}");
+            eprintln!("round {round}: storage_targets={} rounds={}", stats.storage_targets, stats.finish_rounds);
+            parent = sparse_root;
+            parent_number += 1;
+        }
+    }
 
     /// tip20-shaped churn: hundreds of accounts, slot updates + deletions +
     /// inserts stacked over three blocks (the live-bench stall shape).
