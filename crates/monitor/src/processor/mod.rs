@@ -27,9 +27,11 @@ impl FinalizedBlockInput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProcessorError {
+    #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("store error: {0}")]
     Store(String),
 }
 

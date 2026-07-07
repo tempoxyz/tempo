@@ -12,40 +12,34 @@ use crate::{
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use std::num::NonZeroU64;
 
-#[cfg(feature = "store")]
-fn mdbx_store(path: &std::path::Path) -> MdbxMonitorStore {
-    MdbxMonitorStore::open(
+fn mdbx_store(path: &std::path::Path) -> eyre::Result<MdbxMonitorStore> {
+    Ok(MdbxMonitorStore::open(
         path,
         MdbxMonitorStoreConfig {
             bootstrap_policy: BootstrapPolicy::AnyFirstFinalizedBlock,
             database_args: reth_db::mdbx::DatabaseArguments::test(),
         },
-    )
-    .unwrap()
+    )?)
 }
 
-#[cfg(feature = "store")]
 #[test]
-fn mdbx_empty_reopen_and_schema_ready() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = mdbx_store(dir.path());
-    assert!(matches!(
-        store.schema_status().unwrap(),
-        SchemaStatus::Ready { .. }
-    ));
-    assert_eq!(store.monitor_head().unwrap(), None);
+fn mdbx_empty_reopen_and_schema_ready() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = mdbx_store(dir.path())?;
+    assert!(matches!(store.schema_status()?, SchemaStatus::Ready { .. }));
+    assert_eq!(store.monitor_head()?, None);
     drop(store);
-    let reopened = mdbx_store(dir.path());
+    let reopened = mdbx_store(dir.path())?;
     assert!(matches!(
-        reopened.schema_status().unwrap(),
+        reopened.schema_status()?,
         SchemaStatus::Ready { .. }
     ));
-    assert_eq!(reopened.monitor_head().unwrap(), None);
+    assert_eq!(reopened.monitor_head()?, None);
+    Ok(())
 }
 
-#[cfg(feature = "store")]
 #[test]
-fn mdbx_table_set_matches_schema_inventory() {
+fn mdbx_table_set_matches_schema_inventory() -> eyre::Result<()> {
     use reth_db_api::tables::TableSet;
 
     assert_eq!(
@@ -57,13 +51,13 @@ fn mdbx_table_set_matches_schema_inventory() {
             .map(|table| table.name)
             .collect::<std::collections::BTreeSet<_>>()
     );
+    Ok(())
 }
 
-#[cfg(feature = "store")]
 #[test]
-fn mdbx_commit_reopen_idempotency_and_outbox_delivery_persist() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = mdbx_store(dir.path());
+fn mdbx_commit_reopen_idempotency_and_outbox_delivery_persist() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = mdbx_store(dir.path())?;
     let mut c = commit(1, b(1), b(0));
     let key = finding_key(c.new_monitor_head);
     add_open_finding(&mut c, key.clone());
@@ -74,107 +68,87 @@ fn mdbx_commit_reopen_idempotency_and_outbox_delivery_persist() {
         },
         payload: serde_json::json!({"summary":"opened"}),
     });
-    store.commit_block(c.clone()).unwrap();
-    store.commit_block(c.clone()).unwrap();
-    assert!(store.pending_outbox(0).unwrap().is_empty());
-    assert_eq!(store.pending_outbox(10).unwrap().len(), 1);
-    let seq = store.pending_outbox(1).unwrap()[0].sequence;
-    store
-        .mark_outbox_delivered(
-            seq,
-            DeliveryRecord {
-                delivered_at_unix_ms: 7,
-                sink: "test".into(),
-                receipt: "ok".into(),
-            },
-        )
-        .unwrap();
+    store.commit_block(c.clone())?;
+    store.commit_block(c.clone())?;
+    assert!(store.pending_outbox(0)?.is_empty());
+    assert_eq!(store.pending_outbox(10)?.len(), 1);
+    let seq = store.pending_outbox(1)?[0].sequence;
+    store.mark_outbox_delivered(
+        seq,
+        DeliveryRecord {
+            delivered_at_unix_ms: 7,
+            sink: "test".into(),
+            receipt: "ok".into(),
+        },
+    )?;
     drop(store);
 
-    let reopened = mdbx_store(dir.path());
-    assert_eq!(reopened.monitor_head().unwrap(), Some(c.new_monitor_head));
+    let reopened = mdbx_store(dir.path())?;
+    assert_eq!(reopened.monitor_head()?, Some(c.new_monitor_head));
     assert_eq!(
-        reopened.finalized_block(1).unwrap(),
+        reopened.finalized_block(1)?,
         Some(c.finalized_block.clone())
     );
     assert!(matches!(
-        reopened.finding_state(&key).unwrap().unwrap().status,
+        reopened.finding_state(&key)?.expect("finding state").status,
         FindingStatus::Open
     ));
-    assert!(reopened.pending_outbox(10).unwrap().is_empty());
-    reopened.commit_block(c).unwrap();
-    assert!(reopened.pending_outbox(10).unwrap().is_empty());
+    assert!(reopened.pending_outbox(10)?.is_empty());
+    reopened.commit_block(c)?;
+    assert!(reopened.pending_outbox(10)?.is_empty());
+    Ok(())
 }
 
-#[cfg(feature = "store")]
 #[test]
-fn mdbx_failed_commit_is_atomic_and_mismatch_detected() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = mdbx_store(dir.path());
+fn mdbx_failed_commit_is_atomic_and_mismatch_detected() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = mdbx_store(dir.path())?;
     let c1 = commit(1, b(1), b(0));
-    store.commit_block(c1.clone()).unwrap();
+    store.commit_block(c1.clone())?;
     assert!(matches!(
         store.commit_block(commit(3, b(3), b(1))),
         Err(StoreError::Continuity(_))
     ));
-    assert_eq!(store.monitor_head().unwrap(), Some(c1.new_monitor_head));
-    assert!(store.finalized_block(3).unwrap().is_none());
+    assert_eq!(store.monitor_head()?, Some(c1.new_monitor_head));
+    assert!(store.finalized_block(3)?.is_none());
     let mut changed = c1;
     changed.block_facts.header.gas_used = 99;
     assert!(matches!(
         store.commit_block(changed),
         Err(StoreError::IdempotencyMismatch(_))
     ));
+    Ok(())
 }
 
-#[cfg(feature = "store")]
 #[test]
-fn mdbx_feature_updates_are_durable_and_schema_meta_is_strict() {
+fn mdbx_feature_updates_are_durable_and_schema_meta_is_strict() -> eyre::Result<()> {
     use reth_db_api::{
         database::Database,
         transaction::{DbTx, DbTxMut},
     };
 
-    let dir = tempfile::tempdir().unwrap();
-    let store = mdbx_store(dir.path());
+    let dir = tempfile::tempdir()?;
+    let store = mdbx_store(dir.path())?;
     let mut c = commit(1, b(1), b(0));
     populate_foundational_rows(&mut c);
-    store.commit_block(c).unwrap();
-    assert_eq!(
-        store
-            .entries::<super::mdbx::StateCacheUpdatesTable>()
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        store.entries::<super::mdbx::KeysetUpdatesTable>().unwrap(),
-        1
-    );
-    assert_eq!(
-        store
-            .entries::<super::mdbx::AggregateUpdatesTable>()
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        store.entries::<super::mdbx::HistoryUpdatesTable>().unwrap(),
-        1
-    );
-    assert_eq!(store.entries::<super::mdbx::SchemaMeta>().unwrap(), 22);
+    store.commit_block(c)?;
+    assert_eq!(store.entries::<super::mdbx::StateCacheUpdatesTable>()?, 1);
+    assert_eq!(store.entries::<super::mdbx::KeysetUpdatesTable>()?, 1);
+    assert_eq!(store.entries::<super::mdbx::AggregateUpdatesTable>()?, 1);
+    assert_eq!(store.entries::<super::mdbx::HistoryUpdatesTable>()?, 1);
+    assert_eq!(store.entries::<super::mdbx::SchemaMeta>()?, 22);
     drop(store);
 
     let db = reth_db::mdbx::init_db_for::<_, super::mdbx::MonitorTables>(
         dir.path(),
         reth_db::mdbx::DatabaseArguments::test(),
-    )
-    .unwrap();
-    let tx = db.tx_mut().unwrap();
+    )?;
+    let tx = db.tx_mut()?;
     tx.put::<super::mdbx::SchemaMeta>(
         b"schema_version".to_vec(),
-        super::mdbx::test_encode(&99u32).unwrap(),
-    )
-    .unwrap();
-    tx.commit().unwrap();
+        super::mdbx::test_encode(&99u32)?,
+    )?;
+    tx.commit()?;
     drop(db);
 
     assert!(matches!(
@@ -190,13 +164,13 @@ fn mdbx_feature_updates_are_durable_and_schema_meta_is_strict() {
             actual: 99
         })
     ));
+    Ok(())
 }
 
-#[cfg(feature = "store")]
 #[test]
-fn mdbx_outbox_sequence_survives_reopen_and_finished_height_restart() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = mdbx_store(dir.path());
+fn mdbx_outbox_sequence_survives_reopen_and_finished_height_restart() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = mdbx_store(dir.path())?;
     let mut c1 = commit(1, b(1), b(0));
     let key = finding_key(c1.new_monitor_head);
     add_open_finding(&mut c1, key.clone());
@@ -205,28 +179,24 @@ fn mdbx_outbox_sequence_survives_reopen_and_finished_height_restart() {
         kind: OutboxEventKind::CoverageGap,
         payload: serde_json::json!({}),
     });
-    store.commit_block(c1.clone()).unwrap();
+    store.commit_block(c1.clone())?;
     drop(store);
 
-    let reopened = mdbx_store(dir.path());
-    assert!(
-        reopened
-            .monitor_head()
-            .unwrap()
-            .is_some_and(|h| h.number >= 1)
-    );
+    let reopened = mdbx_store(dir.path())?;
+    assert!(reopened.monitor_head()?.is_some_and(|h| h.number >= 1));
     let mut c2 = commit(2, b(2), b(1));
     c2.outbox_events.push(OutboxEvent {
         finding_key: key,
         kind: OutboxEventKind::FindingUpdated,
         payload: serde_json::json!({}),
     });
-    reopened.commit_block(c2).unwrap();
-    let pending = reopened.pending_outbox(10).unwrap();
+    reopened.commit_block(c2)?;
+    let pending = reopened.pending_outbox(10)?;
     assert_eq!(
         pending.iter().map(|r| r.sequence).collect::<Vec<_>>(),
         vec![1, 2]
     );
+    Ok(())
 }
 
 use tempo_hardfork::TempoHardfork;
@@ -306,53 +276,57 @@ fn add_open_finding(c: &mut BlockCommit, key: FindingKey) {
 }
 
 #[test]
-fn empty_store_initializes_schema_and_head_unset() {
+fn empty_store_initializes_schema_and_head_unset() -> eyre::Result<()> {
     let store = any_store();
     assert!(
-        matches!(store.schema_status().unwrap(), SchemaStatus::Ready { version: SchemaVersion(0), tables } if tables.iter().any(|t| t.table == TableId::MonitorHead))
+        matches!(store.schema_status()? , SchemaStatus::Ready { version: SchemaVersion(0), tables } if tables.iter().any(|t| t.table == TableId::MonitorHead))
     );
-    assert_eq!(store.monitor_head().unwrap(), None);
+    assert_eq!(store.monitor_head()?, None);
+    Ok(())
 }
 
 #[test]
-fn initial_commit_advances_head_and_persists_block() {
+fn initial_commit_advances_head_and_persists_block() -> eyre::Result<()> {
     let store = any_store();
     let c = commit(1, b(1), b(0));
-    store.commit_block(c.clone()).unwrap();
-    assert_eq!(store.monitor_head().unwrap(), Some(c.new_monitor_head));
+    store.commit_block(c.clone())?;
+    assert_eq!(store.monitor_head()?, Some(c.new_monitor_head));
     assert_eq!(
-        store.finalized_block(1).unwrap().unwrap(),
+        store.finalized_block(1)?.expect("finalized block"),
         c.finalized_block
     );
+    Ok(())
 }
 
 #[test]
-fn non_contiguous_commit_is_rejected_atomically() {
+fn non_contiguous_commit_is_rejected_atomically() -> eyre::Result<()> {
     let store = any_store();
     let c1 = commit(1, b(1), b(0));
-    store.commit_block(c1.clone()).unwrap();
+    store.commit_block(c1.clone())?;
     let gap = commit(3, b(3), b(1));
     assert!(matches!(
         store.commit_block(gap),
         Err(StoreError::Continuity(_))
     ));
-    assert_eq!(store.monitor_head().unwrap(), Some(c1.new_monitor_head));
-    assert!(store.finalized_block(3).unwrap().is_none());
+    assert_eq!(store.monitor_head()?, Some(c1.new_monitor_head));
+    assert!(store.finalized_block(3)?.is_none());
+    Ok(())
 }
 
 #[test]
-fn mismatched_parent_is_rejected() {
+fn mismatched_parent_is_rejected() -> eyre::Result<()> {
     let store = any_store();
-    store.commit_block(commit(1, b(1), b(0))).unwrap();
+    store.commit_block(commit(1, b(1), b(0)))?;
     assert!(matches!(
         store.commit_block(commit(2, b(2), b(9))),
         Err(StoreError::Continuity(_))
     ));
-    assert_eq!(store.monitor_head().unwrap(), Some(block(1, b(1), b(0))));
+    assert_eq!(store.monitor_head()?, Some(block(1, b(1), b(0))));
+    Ok(())
 }
 
 #[test]
-fn idempotent_recommit_does_not_duplicate_finding_or_outbox_rows() {
+fn idempotent_recommit_does_not_duplicate_finding_or_outbox_rows() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     let key = finding_key(c.new_monitor_head);
@@ -370,17 +344,18 @@ fn idempotent_recommit_does_not_duplicate_finding_or_outbox_rows() {
         },
         payload: serde_json::json!({"summary":"opened"}),
     });
-    store.commit_block(c.clone()).unwrap();
-    store.commit_block(c).unwrap();
+    store.commit_block(c.clone())?;
+    store.commit_block(c)?;
     assert!(matches!(
-        store.finding_state(&key).unwrap().unwrap().status,
+        store.finding_state(&key)?.expect("finding state").status,
         FindingStatus::Open
     ));
-    assert_eq!(store.pending_outbox(10).unwrap().len(), 1);
+    assert_eq!(store.pending_outbox(10)?.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn commit_persists_coverage_and_inconclusive_outcome() {
+fn commit_persists_coverage_and_inconclusive_outcome() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     let coverage = CoverageRecord {
@@ -404,7 +379,7 @@ fn commit_persists_coverage_and_inconclusive_outcome() {
         coverage,
         outcome: CheckOutcome::Inconclusive(gap),
     });
-    store.commit_block(c).unwrap();
+    store.commit_block(c)?;
     let snapshot = store.snapshot();
     assert!(matches!(
         snapshot.coverage_records[0].status,
@@ -414,10 +389,11 @@ fn commit_persists_coverage_and_inconclusive_outcome() {
         snapshot.check_results[0].outcome,
         CheckOutcome::Inconclusive(_)
     ));
+    Ok(())
 }
 
 #[test]
-fn mark_outbox_delivered_updates_delivery_state() {
+fn mark_outbox_delivered_updates_delivery_state() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     let key = finding_key(c.new_monitor_head);
@@ -427,25 +403,24 @@ fn mark_outbox_delivered_updates_delivery_state() {
         kind: OutboxEventKind::CoverageGap,
         payload: serde_json::json!({}),
     });
-    store.commit_block(c).unwrap();
-    let seq = store.pending_outbox(1).unwrap()[0].sequence;
-    store
-        .mark_outbox_delivered(
-            seq,
-            DeliveryRecord {
-                delivered_at_unix_ms: 42,
-                sink: "test".into(),
-                receipt: "ok".into(),
-            },
-        )
-        .unwrap();
-    assert!(store.pending_outbox(10).unwrap().is_empty());
+    store.commit_block(c)?;
+    let seq = store.pending_outbox(1)?[0].sequence;
+    store.mark_outbox_delivered(
+        seq,
+        DeliveryRecord {
+            delivered_at_unix_ms: 42,
+            sink: "test".into(),
+            receipt: "ok".into(),
+        },
+    )?;
+    assert!(store.pending_outbox(10)?.is_empty());
+    Ok(())
 }
 
 #[test]
-fn head_cannot_advance_except_via_commit_api_shape() {
+fn head_cannot_advance_except_via_commit_api_shape() -> eyre::Result<()> {
     let store = any_store();
-    assert_eq!(store.monitor_head().unwrap(), None);
+    assert_eq!(store.monitor_head()?, None);
     assert!(
         store
             .mark_outbox_delivered(
@@ -458,7 +433,8 @@ fn head_cannot_advance_except_via_commit_api_shape() {
             )
             .is_err()
     );
-    assert_eq!(store.monitor_head().unwrap(), None);
+    assert_eq!(store.monitor_head()?, None);
+    Ok(())
 }
 
 fn populate_foundational_rows(c: &mut BlockCommit) {
@@ -531,7 +507,7 @@ fn populate_foundational_rows(c: &mut BlockCommit) {
 }
 
 #[test]
-fn schema_v0_inventory_contains_required_unique_tables() {
+fn schema_v0_inventory_contains_required_unique_tables() -> eyre::Result<()> {
     let tables = schema_v0_tables();
     let mut names = std::collections::HashSet::new();
     for table in &tables {
@@ -574,14 +550,15 @@ fn schema_v0_inventory_contains_required_unique_tables() {
         TableId::StateCacheUpdates.category(),
         TableCategory::Feature(FeatureTableKind::StateCache)
     );
+    Ok(())
 }
 
 #[test]
-fn full_commit_shape_is_persisted_by_memory_store() {
+fn full_commit_shape_is_persisted_by_memory_store() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     populate_foundational_rows(&mut c);
-    store.commit_block(c).unwrap();
+    store.commit_block(c)?;
     let snapshot = store.snapshot();
     assert_eq!(snapshot.tx_facts.len(), 1);
     assert_eq!(snapshot.receipt_facts.len(), 1);
@@ -592,24 +569,26 @@ fn full_commit_shape_is_persisted_by_memory_store() {
     assert_eq!(snapshot.aggregate_updates.len(), 1);
     assert_eq!(snapshot.history_updates.len(), 1);
     assert_eq!(snapshot.health_updates.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn idempotent_recommit_rejects_mismatched_rows() {
+fn idempotent_recommit_rejects_mismatched_rows() -> eyre::Result<()> {
     let store = any_store();
     let c = commit(1, b(1), b(0));
-    store.commit_block(c.clone()).unwrap();
+    store.commit_block(c.clone())?;
     let mut changed = c;
     changed.block_facts.header.gas_used = 99;
     assert!(matches!(
         store.commit_block(changed),
         Err(StoreError::IdempotencyMismatch(_))
     ));
-    assert_eq!(store.monitor_head().unwrap(), Some(block(1, b(1), b(0))));
+    assert_eq!(store.monitor_head()?, Some(block(1, b(1), b(0))));
+    Ok(())
 }
 
 #[test]
-fn delivered_outbox_stays_delivered_after_idempotent_recommit() {
+fn delivered_outbox_stays_delivered_after_idempotent_recommit() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     let key = finding_key(c.new_monitor_head);
@@ -619,31 +598,30 @@ fn delivered_outbox_stays_delivered_after_idempotent_recommit() {
         kind: OutboxEventKind::CoverageGap,
         payload: serde_json::json!({}),
     });
-    store.commit_block(c.clone()).unwrap();
-    let seq = store.pending_outbox(1).unwrap()[0].sequence;
-    store
-        .mark_outbox_delivered(
-            seq,
-            DeliveryRecord {
-                delivered_at_unix_ms: 1,
-                sink: "test".into(),
-                receipt: "ok".into(),
-            },
-        )
-        .unwrap();
-    store.commit_block(c).unwrap();
-    assert!(store.pending_outbox(10).unwrap().is_empty());
+    store.commit_block(c.clone())?;
+    let seq = store.pending_outbox(1)?[0].sequence;
+    store.mark_outbox_delivered(
+        seq,
+        DeliveryRecord {
+            delivered_at_unix_ms: 1,
+            sink: "test".into(),
+            receipt: "ok".into(),
+        },
+    )?;
+    store.commit_block(c)?;
+    assert!(store.pending_outbox(10)?.is_empty());
     assert_eq!(store.snapshot().outbox.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn bootstrap_policy_is_explicit() {
+fn bootstrap_policy_is_explicit() -> eyre::Result<()> {
     let default_store = InMemoryMonitorStore::new();
     assert!(matches!(
         default_store.commit_block(commit(1, b(1), b(0))),
         Err(StoreError::Continuity(_))
     ));
-    default_store.commit_block(commit(0, b(0), b(0))).unwrap();
+    default_store.commit_block(commit(0, b(0), b(0)))?;
 
     let genesis_only = InMemoryMonitorStore::with_bootstrap_policy(BootstrapPolicy::GenesisOnly);
     assert!(matches!(
@@ -657,12 +635,13 @@ fn bootstrap_policy_is_explicit() {
         start_at.commit_block(commit(6, b(6), b(0))),
         Err(StoreError::Continuity(_))
     ));
-    start_at.commit_block(commit(7, b(7), b(0))).unwrap();
-    assert_eq!(start_at.monitor_head().unwrap(), Some(start));
+    start_at.commit_block(commit(7, b(7), b(0)))?;
+    assert_eq!(start_at.monitor_head()?, Some(start));
+    Ok(())
 }
 
 #[test]
-fn invalid_commit_rows_are_rejected_before_mutation() {
+fn invalid_commit_rows_are_rejected_before_mutation() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     c.coverage_records.push(CoverageRecord {
@@ -676,11 +655,12 @@ fn invalid_commit_rows_are_rejected_before_mutation() {
         store.commit_block(c),
         Err(StoreError::InvalidCommit(_))
     ));
-    assert_eq!(store.monitor_head().unwrap(), None);
+    assert_eq!(store.monitor_head()?, None);
+    Ok(())
 }
 
 #[test]
-fn unknown_invariant_ids_are_rejected() {
+fn unknown_invariant_ids_are_rejected() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     c.coverage_records.push(CoverageRecord {
@@ -694,10 +674,11 @@ fn unknown_invariant_ids_are_rejected() {
         store.commit_block(c),
         Err(StoreError::UnknownInvariant(_))
     ));
+    Ok(())
 }
 
 #[test]
-fn orphan_outbox_event_is_rejected_before_mutation() {
+fn orphan_outbox_event_is_rejected_before_mutation() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     c.outbox_events.push(OutboxEvent {
@@ -709,17 +690,18 @@ fn orphan_outbox_event_is_rejected_before_mutation() {
         store.commit_block(c),
         Err(StoreError::InvalidCommit(_))
     ));
-    assert_eq!(store.monitor_head().unwrap(), None);
-    assert!(store.pending_outbox(10).unwrap().is_empty());
+    assert_eq!(store.monitor_head()?, None);
+    assert!(store.pending_outbox(10)?.is_empty());
+    Ok(())
 }
 
 #[test]
-fn outbox_event_for_existing_finding_is_accepted() {
+fn outbox_event_for_existing_finding_is_accepted() -> eyre::Result<()> {
     let store = any_store();
     let mut c1 = commit(1, b(1), b(0));
     let key = finding_key(c1.new_monitor_head);
     add_open_finding(&mut c1, key.clone());
-    store.commit_block(c1).unwrap();
+    store.commit_block(c1)?;
 
     let mut c2 = commit(2, b(2), b(1));
     c2.outbox_events.push(OutboxEvent {
@@ -727,12 +709,13 @@ fn outbox_event_for_existing_finding_is_accepted() {
         kind: OutboxEventKind::FindingUpdated,
         payload: serde_json::json!({"repeat": true}),
     });
-    store.commit_block(c2).unwrap();
-    assert_eq!(store.pending_outbox(10).unwrap().len(), 1);
+    store.commit_block(c2)?;
+    assert_eq!(store.pending_outbox(10)?.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn unknown_health_invariant_ids_are_rejected() {
+fn unknown_health_invariant_ids_are_rejected() -> eyre::Result<()> {
     let store = any_store();
     let mut c = commit(1, b(1), b(0));
     c.health_updates.push(MonitorHealthUpdate {
@@ -760,4 +743,5 @@ fn unknown_health_invariant_ids_are_rejected() {
         store.commit_block(c),
         Err(StoreError::UnknownInvariant(_))
     ));
+    Ok(())
 }

@@ -104,37 +104,33 @@ impl FinishedHeightSink for FakeSink {
 }
 
 #[test]
-fn commits_finalized_range_and_finishes_after_commit() {
+fn commits_finalized_range_and_finishes_after_commit() -> eyre::Result<()> {
     let store = InMemoryMonitorStore::new();
     let sink = FakeSink::default();
     let sent = sink.0.clone();
     let mut loop_ = FinalizedLoop::new(store, FakeSource::through(2), sink);
 
-    assert_eq!(loop_.tick().unwrap(), 3);
-    assert_eq!(loop_.store().monitor_head().unwrap(), Some(block(2)));
+    assert_eq!(loop_.tick()?, 3);
+    assert_eq!(loop_.store().monitor_head()?, Some(block(2)));
     assert_eq!(*sent.borrow(), vec![block(0), block(1), block(2)]);
+    Ok(())
 }
 
 #[test]
-fn startup_acknowledges_existing_head_without_recommit() {
+fn startup_acknowledges_existing_head_without_recommit() -> eyre::Result<()> {
     let store = InMemoryMonitorStore::new();
-    store
-        .commit_block(
-            crate::processor::FinalizedBlockProcessor
-                .build_commit(input(0), None)
-                .unwrap(),
-        )
-        .unwrap();
+    store.commit_block(crate::processor::FinalizedBlockProcessor.build_commit(input(0), None)?)?;
     let sink = FakeSink::default();
     let sent = sink.0.clone();
     let mut loop_ = FinalizedLoop::new(store, FakeSource::through(0), sink);
 
-    assert_eq!(loop_.tick().unwrap(), 0);
+    assert_eq!(loop_.tick()?, 0);
     assert_eq!(*sent.borrow(), vec![block(0)]);
+    Ok(())
 }
 
 #[test]
-fn missing_input_retries_without_head_advancement_or_finish() {
+fn missing_input_retries_without_head_advancement_or_finish() -> eyre::Result<()> {
     let store = InMemoryMonitorStore::new();
     let sink = FakeSink::default();
     let sent = sink.0.clone();
@@ -142,53 +138,51 @@ fn missing_input_retries_without_head_advancement_or_finish() {
     source.inputs.remove(&0);
     let mut loop_ = FinalizedLoop::new(store, source, sink);
 
-    let err = loop_.tick().unwrap_err();
+    let err = loop_.tick().expect_err("tick should retry");
     assert!(err.is_retry());
-    assert_eq!(loop_.store().monitor_head().unwrap(), None);
+    assert_eq!(loop_.store().monitor_head()?, None);
     assert!(sent.borrow().is_empty());
+    Ok(())
 }
 
 #[test]
-fn bootstrap_policy_blocks_arbitrary_empty_start() {
+fn bootstrap_policy_blocks_arbitrary_empty_start() -> eyre::Result<()> {
     let store = InMemoryMonitorStore::with_bootstrap_policy(BootstrapPolicy::StartAt(block(1)));
     let sink = FakeSink::default();
     let mut loop_ = FinalizedLoop::new(store, FakeSource::through(1), sink);
 
-    let err = loop_.tick().unwrap_err();
+    let err = loop_.tick().expect_err("tick should halt");
     assert!(err.is_halt());
-    assert_eq!(loop_.store().monitor_head().unwrap(), None);
+    assert_eq!(loop_.store().monitor_head()?, None);
+    Ok(())
 }
 
 #[test]
-fn non_canonical_existing_head_halts_before_finish() {
+fn non_canonical_existing_head_halts_before_finish() -> eyre::Result<()> {
     let store = InMemoryMonitorStore::new();
-    store
-        .commit_block(
-            crate::processor::FinalizedBlockProcessor
-                .build_commit(input(0), None)
-                .unwrap(),
-        )
-        .unwrap();
+    store.commit_block(crate::processor::FinalizedBlockProcessor.build_commit(input(0), None)?)?;
     let source = FakeSource::through(0);
     *source.canonical.borrow_mut() = false;
     let sink = FakeSink::default();
     let sent = sink.0.clone();
     let mut loop_ = FinalizedLoop::new(store, source, sink);
 
-    let err = loop_.tick().unwrap_err();
+    let err = loop_.tick().expect_err("tick should halt");
     assert!(err.is_halt());
     assert!(sent.borrow().is_empty());
+    Ok(())
 }
 
 #[test]
-fn watermark_hash_change_halts() {
+fn watermark_hash_change_halts() -> eyre::Result<()> {
     let mut watermark = FinalizedWatermark::new();
-    watermark.observe(Some(block(1))).unwrap();
+    watermark.observe(Some(block(1)))?;
     let err = watermark
         .observe(Some(BlockNumHash {
             number: 1,
             hash: b(9),
         }))
-        .unwrap_err();
+        .expect_err("hash change should halt");
     assert!(err.is_halt());
+    Ok(())
 }

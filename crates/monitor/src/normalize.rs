@@ -96,7 +96,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_facts_match_tempo_header_projection() {
+    fn block_facts_match_tempo_header_projection() -> eyre::Result<()> {
         let mut header = TempoHeader::default();
         header.inner.number = 42;
         header.inner.parent_hash = B256::repeat_byte(0x11);
@@ -120,10 +120,11 @@ mod tests {
         assert_eq!(facts.reference.parent, header.inner.parent_hash);
         assert_eq!(facts.hardfork, TempoHardfork::T1);
         assert_eq!(facts.header, HeaderFacts::from(&header));
+        Ok(())
     }
 
     #[test]
-    fn tx_facts_match_tempo_envelope_projection() {
+    fn tx_facts_match_tempo_envelope_projection() -> eyre::Result<()> {
         let sender = address!("0x0000000000000000000000000000000000000002");
         let fee_token = address!("0x0000000000000000000000000000000000000003");
         let to = address!("0x0000000000000000000000000000000000000004");
@@ -132,8 +133,8 @@ mod tests {
             gas_limit: 55_000,
             nonce_key: TEMPO_EXPIRING_NONCE_KEY,
             nonce: 7,
-            valid_before: Some(NonZeroU64::new(1000).unwrap()),
-            valid_after: Some(NonZeroU64::new(900).unwrap()),
+            valid_before: Some(NonZeroU64::new(1000).ok_or_else(|| eyre::eyre!("non-zero"))?),
+            valid_after: Some(NonZeroU64::new(900).ok_or_else(|| eyre::eyre!("non-zero"))?),
             calls: vec![tempo_primitives::transaction::Call {
                 to: TxKind::Call(to),
                 value: U256::from(42),
@@ -167,10 +168,11 @@ mod tests {
             FactValue::Available(envelope.unique_tx_identifier(sender))
         );
         assert!(facts.envelope.is_expiring_nonce());
+        Ok(())
     }
 
     #[test]
-    fn system_flag_uses_canonical_envelope_semantics_not_sender_only() {
+    fn system_flag_uses_canonical_envelope_semantics_not_sender_only() -> eyre::Result<()> {
         let envelope = TempoTxEnvelope::AA(
             TempoTransaction::default().into_signed(Signature::test_signature().into()),
         );
@@ -182,10 +184,11 @@ mod tests {
             Some(TEMPO_SYSTEM_TX_SENDER),
         );
         assert!(!facts.is_system);
+        Ok(())
     }
 
     #[test]
-    fn receipt_facts_match_tempo_receipt_projection() {
+    fn receipt_facts_match_tempo_receipt_projection() -> eyre::Result<()> {
         let receipt = TempoReceipt {
             tx_type: tempo_primitives::TempoTxType::AA,
             success: true,
@@ -202,5 +205,6 @@ mod tests {
         assert_eq!(facts.success, receipt.success);
         assert_eq!(facts.gas_used, FactValue::Available(19));
         assert_eq!(facts.cumulative_gas_used, receipt.cumulative_gas_used);
+        Ok(())
     }
 }

@@ -6811,6 +6811,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "eyre",
  "futures",
  "reth-db",
  "reth-db-api",
@@ -6824,6 +6825,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-hardfork",
  "tempo-primitives",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]

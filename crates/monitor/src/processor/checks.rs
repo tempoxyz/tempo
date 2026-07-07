@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn block_total_gas_pass_emits_check_result() {
+    fn block_total_gas_pass_emits_check_result() -> eyre::Result<()> {
         let result = check_block_total_gas(&input(21_000, 30_000, &[21_000]));
 
         assert_eq!(
@@ -299,10 +299,11 @@ mod tests {
         );
         assert!(matches!(result.outcome, CheckOutcome::Pass(_)));
         assert_eq!(result.coverage.status, CoverageStatus::Complete);
+        Ok(())
     }
 
     #[test]
-    fn block_total_gas_violation_emits_violation_result() {
+    fn block_total_gas_violation_emits_violation_result() -> eyre::Result<()> {
         let result = check_block_total_gas(&input(20_999, 30_000, &[21_000]));
 
         match &result.outcome {
@@ -315,22 +316,25 @@ mod tests {
             }
             outcome => panic!("expected violation, got {outcome:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn block_total_gas_emits_coverage_record() {
+    fn block_total_gas_emits_coverage_record() -> eyre::Result<()> {
         let result = check_block_total_gas(&input(0, 30_000, &[]));
 
         assert_eq!(result.coverage.status, CoverageStatus::Complete);
         assert_eq!(result.coverage.reasons, vec![CoverageReason::CompleteInput]);
+        Ok(())
     }
 
     #[test]
-    fn block_total_gas_missing_receipt_gas_is_inconclusive() {
+    fn block_total_gas_missing_receipt_gas_is_inconclusive() -> eyre::Result<()> {
         let result =
             check_block_total_gas(&input_with_receipt_gas(21_000, 30_000, &[21_000], Some(0)));
 
         assert_eq!(result.coverage.status, CoverageStatus::Inconclusive);
         assert!(matches!(result.outcome, CheckOutcome::Inconclusive(_)));
+        Ok(())
     }
 }

@@ -41,6 +41,7 @@ tempo-hardfork = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, default-features = false, features = ["std", "serde"] }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 futures = { workspace = true, optional = true }
 reth-db = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }
@@ -52,4 +53,5 @@ tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
+eyre.workspace = true
 tempfile.workspace = true

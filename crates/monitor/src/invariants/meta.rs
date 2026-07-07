@@ -290,7 +290,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_iterates_by_id() {
+    fn catalog_iterates_by_id() -> eyre::Result<()> {
         let ids = initial_catalog()
             .iter()
             .map(|m| m.id.as_str().to_owned())
@@ -298,10 +298,11 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort();
         assert_eq!(ids, sorted);
+        Ok(())
     }
 
     #[test]
-    fn static_metadata_is_complete_and_unique() {
+    fn static_metadata_is_complete_and_unique() -> eyre::Result<()> {
         let catalog = initial_catalog();
         assert_eq!(catalog.len(), 4);
         for meta in catalog.iter() {
@@ -311,5 +312,6 @@ mod tests {
                 meta.id.as_str()
             );
         }
+        Ok(())
     }
 }

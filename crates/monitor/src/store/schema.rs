@@ -15,17 +15,27 @@ pub const SCHEMA_VERSION_V0: u32 = 0;
 ///
 /// Continuity and invalid-commit errors are correctness failures: callers must
 /// not treat them as transient delivery failures or advance `FinishedHeight`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum StoreError {
+    #[error("store mutex poisoned")]
     Poisoned,
+    #[error("incompatible schema: expected {expected}, got {actual}")]
     IncompatibleSchema { expected: u32, actual: u32 },
+    #[error("migration blocked: {0:?}")]
     MigrationBlocked(MigrationStatus),
+    #[error("continuity error: {0}")]
     Continuity(String),
+    #[error("invalid commit: {0}")]
     InvalidCommit(String),
+    #[error("database error: {0}")]
     Database(String),
+    #[error("codec error: {0}")]
     Codec(String),
+    #[error("idempotency mismatch: {0}")]
     IdempotencyMismatch(String),
+    #[error("unknown invariant: {0:?}")]
     UnknownInvariant(InvariantId),
+    #[error("not found: {0}")]
     NotFound(String),
 }
 

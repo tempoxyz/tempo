@@ -2,10 +2,13 @@ use crate::{processor::ProcessorError, store::StoreError};
 
 pub type AdapterResult<T> = Result<T, AdapterError>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AdapterError {
+    #[error("halt: {0}")]
     Halt(String),
+    #[error("retry: {0}")]
     Retry(String),
+    #[error("ignore: {0}")]
     Ignore(String),
 }
 

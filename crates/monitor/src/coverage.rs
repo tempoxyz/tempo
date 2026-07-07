@@ -38,7 +38,8 @@ pub enum CoverageReason {
     NotApplicable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("coverage gap: {status:?}: {reason:?}: {detail}")]
 pub struct CoverageGap {
     pub status: CoverageStatus,
     pub reason: CoverageReason,
@@ -117,7 +118,7 @@ mod tests {
     use alloy_primitives::B256;
 
     #[test]
-    fn degraded_coverage_cannot_construct_global_pass_helper() {
+    fn degraded_coverage_cannot_construct_global_pass_helper() -> eyre::Result<()> {
         let coverage = CoverageRecord {
             invariant_id: InvariantId::new("X"),
             block: BlockNumHash {
@@ -129,10 +130,11 @@ mod tests {
             reasons: vec![CoverageReason::TaintedTable("tip20".into())],
         };
         assert!(CheckOutcome::pass(coverage).is_err());
+        Ok(())
     }
 
     #[test]
-    fn not_needed_coverage_cannot_construct_pass() {
+    fn not_needed_coverage_cannot_construct_pass() -> eyre::Result<()> {
         let coverage = CoverageRecord {
             invariant_id: InvariantId::new("X"),
             block: BlockNumHash {
@@ -144,5 +146,6 @@ mod tests {
             reasons: vec![CoverageReason::NotApplicable],
         };
         assert!(CheckOutcome::pass(coverage).is_err());
+        Ok(())
     }
 }
