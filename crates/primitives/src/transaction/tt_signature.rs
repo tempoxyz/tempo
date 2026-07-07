@@ -7,7 +7,7 @@ use super::{
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Encodable;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -593,6 +593,15 @@ impl TempoSignature {
     /// - If length is 65 bytes: treat as secp256k1 signature (no type identifier)
     /// - Otherwise: first byte is the signature type identifier
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        Self::from_bytes_with_depth(data, 1)
+    }
+
+    /// Parses a signature while tracking native multisig nesting `depth`.
+    ///
+    /// The top-level signature is depth `1`; each nested owner approval is parsed one level deeper.
+    /// [`MultisigSignature::decode_with_depth`] rejects nodes past [`MAX_MULTISIG_NESTING_DEPTH`],
+    /// so deeply nested untrusted input cannot recurse the parser into a stack overflow.
+    fn from_bytes_with_depth(data: &[u8], depth: usize) -> Result<Self, &'static str> {
         if data.is_empty() {
             return Err("Signature data is empty");
         }
@@ -603,7 +612,7 @@ impl TempoSignature {
 
         if data.len() > 1 && data[0] == SIGNATURE_TYPE_MULTISIG {
             let mut sig_data = &data[1..];
-            match MultisigSignature::decode(&mut sig_data) {
+            match MultisigSignature::decode_with_depth(&mut sig_data, depth) {
                 Ok(signature) if sig_data.is_empty() => return Ok(Self::Multisig(signature)),
                 _ => return Err("Invalid Multisig signature RLP"),
             }
@@ -645,6 +654,15 @@ impl TempoSignature {
         // For all non-Keychain signatures, delegate to PrimitiveSignature
         let primitive = PrimitiveSignature::from_bytes(data)?;
         Ok(Self::Primitive(primitive))
+    }
+
+    /// Decodes one RLP-encoded owner approval at the given native multisig nesting `depth`.
+    ///
+    /// Owner approvals are length-prefixed byte strings; this preserves the depth so nested
+    /// multisig approvals stay bounded by [`MultisigSignature::decode_with_depth`].
+    pub(crate) fn decode_with_depth(buf: &mut &[u8], depth: usize) -> alloy_rlp::Result<Self> {
+        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
+        Self::from_bytes_with_depth(&bytes, depth).map_err(alloy_rlp::Error::Custom)
     }
 
     /// Encode signature to bytes

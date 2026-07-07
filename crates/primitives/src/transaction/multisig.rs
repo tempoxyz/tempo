@@ -702,28 +702,69 @@ enum MultisigSignatureSerde {
     Init(InitMultisigSignatureWire),
 }
 
-impl alloy_rlp::Decodable for MultisigSignature {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = *buf;
-        let outer = alloy_rlp::Header::decode(&mut payload)?;
+impl MultisigSignature {
+    /// Decodes a native multisig signature while bounding recursive nesting.
+    ///
+    /// `depth` is the nesting level of this signature node; the top-level transaction signature is
+    /// depth `1` and each nested owner approval is one level deeper. Owner approvals are decoded at
+    /// `depth + 1`, and a node deeper than [`MAX_MULTISIG_NESTING_DEPTH`] is rejected. Enforcing the
+    /// bound during decoding (not only during authorization) prevents untrusted, deeply nested
+    /// input from exhausting the stack before any gas, fee, or hardfork check runs.
+    pub(crate) fn decode_with_depth(buf: &mut &[u8], depth: usize) -> alloy_rlp::Result<Self> {
+        if depth > MAX_MULTISIG_NESTING_DEPTH {
+            return Err(alloy_rlp::Error::Custom(
+                "native multisig nesting depth exceeded",
+            ));
+        }
+
+        let outer = alloy_rlp::Header::decode(buf)?;
         if !outer.list {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
-        if payload.len() < outer.payload_length {
+        if buf.len() < outer.payload_length {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
-        let mut fields = &payload[..outer.payload_length];
-        let first = alloy_rlp::Header::decode(&mut fields)?;
-        if first.list {
-            let wire = InitMultisigSignatureWire::decode(buf)?;
-            Self::from_decoded_address(MultisigAddress::Init(wire.init), wire.signatures)
-                .map_err(alloy_rlp::Error::Custom)
+        let body = *buf;
+        let (mut fields, rest) = body.split_at(outer.payload_length);
+
+        // The first field distinguishes the wire shape: a bootstrap init config is an RLP list,
+        // an initialized account is a 20-byte string.
+        let mut peek = fields;
+        let first = alloy_rlp::Header::decode(&mut peek)?;
+        let address = if first.list {
+            MultisigAddress::Init(<InitMultisig as alloy_rlp::Decodable>::decode(&mut fields)?)
         } else {
-            let wire = InitializedMultisigSignatureWire::decode(buf)?;
-            Self::from_decoded_address(MultisigAddress::Initialized(wire.account), wire.signatures)
-                .map_err(alloy_rlp::Error::Custom)
+            MultisigAddress::Initialized(<Address as alloy_rlp::Decodable>::decode(&mut fields)?)
+        };
+
+        // Decode owner approvals one nesting level deeper so nested multisig approvals are bounded.
+        let sig_header = alloy_rlp::Header::decode(&mut fields)?;
+        if !sig_header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
         }
+        if fields.len() < sig_header.payload_length {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+        let (mut sig_fields, sig_rest) = fields.split_at(sig_header.payload_length);
+        let mut signatures = Vec::new();
+        while !sig_fields.is_empty() {
+            signatures.push(TempoSignature::decode_with_depth(&mut sig_fields, depth + 1)?);
+        }
+        if !sig_rest.is_empty() {
+            return Err(alloy_rlp::Error::Custom(
+                "unexpected trailing native multisig signature fields",
+            ));
+        }
+
+        *buf = rest;
+        Self::from_decoded_address(address, signatures).map_err(alloy_rlp::Error::Custom)
+    }
+}
+
+impl alloy_rlp::Decodable for MultisigSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Self::decode_with_depth(buf, 1)
     }
 }
 
@@ -1020,6 +1061,22 @@ mod tests {
         signatures.encode(&mut encoded);
         encoded.push(alloy_rlp::EMPTY_STRING_CODE);
         encoded
+    }
+
+    /// Builds `levels` of nested initialized native multisig signatures, where the innermost owner
+    /// approval is a primitive signature and each outer level has a single nested multisig owner.
+    fn nested_multisig_encoding(levels: usize) -> Vec<u8> {
+        let account = Address::repeat_byte(0x11);
+        let mut current = encoded_multisig_without_init_slot(
+            account,
+            vec![valid_owner_signature_bytes().to_vec()],
+        );
+        for _ in 1..levels {
+            let mut owner_approval = vec![SIGNATURE_TYPE_MULTISIG];
+            owner_approval.extend_from_slice(&current);
+            current = encoded_multisig_without_init_slot(account, vec![owner_approval]);
+        }
+        current
     }
 
     fn encoded_legacy_multisig_with_trailing_init(
@@ -1344,6 +1401,31 @@ mod tests {
         );
 
         assert_eq!(signature, Err("multisig init does not derive account"));
+    }
+
+    #[test]
+    fn tempo_signature_decode_bounds_multisig_nesting() {
+        // Nesting up to MAX_MULTISIG_NESTING_DEPTH decodes structurally.
+        let mut ok = vec![SIGNATURE_TYPE_MULTISIG];
+        ok.extend(nested_multisig_encoding(MAX_MULTISIG_NESTING_DEPTH));
+        assert!(
+            TempoSignature::from_bytes(&ok).is_ok(),
+            "nesting within the depth bound must decode"
+        );
+
+        // One level deeper exceeds the bound and is rejected at decode time.
+        let mut too_deep = vec![SIGNATURE_TYPE_MULTISIG];
+        too_deep.extend(nested_multisig_encoding(MAX_MULTISIG_NESTING_DEPTH + 1));
+        assert!(
+            TempoSignature::from_bytes(&too_deep).is_err(),
+            "nesting past the depth bound must be rejected"
+        );
+
+        // A pathologically deep payload is rejected quickly instead of recursing into a stack
+        // overflow during decoding.
+        let mut pathological = vec![SIGNATURE_TYPE_MULTISIG];
+        pathological.extend(nested_multisig_encoding(4096));
+        assert!(TempoSignature::from_bytes(&pathological).is_err());
     }
 
     #[test]
