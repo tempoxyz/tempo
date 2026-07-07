@@ -316,11 +316,13 @@ impl OrderHandler {
     }
 
     /// Writes this order using a known one-based owning book ID, skipping index resolution.
+    /// WARN: `book_id` must be the 1-based book ID. This function handles normalization.
     pub(crate) fn write_in_book(&mut self, value: Order, book_id: u32) -> StorageResult<()> {
         self.write_with_book_id(value, Some(book_id))
     }
 
     /// Writes this order, skipping V2 index resolution when a book ID is provided.
+    /// WARN: `know_id` must be the 1-based book ID. This function handles normalization.
     fn write_with_book_id(&mut self, value: Order, known_id: Option<u32>) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
 
