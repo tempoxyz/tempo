@@ -15,6 +15,7 @@ use tempo_primitives::transaction::{
 };
 
 use crate::{
+    account_keychain::{AccountKeychain, getTransactionKeyCall},
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
@@ -182,6 +183,16 @@ impl NativeMultisig {
     ) -> Result<()> {
         let tx_origin = self.tx_origin.t_read()?;
         if tx_origin.is_zero() || tx_origin != msg_sender {
+            return Err(NativeMultisigError::unauthorized_caller().into());
+        }
+        // Config updates are authorized only by the current native multisig owner threshold. Native
+        // multisig accounts may authorize AccountKeychain access keys, but an access-key transaction
+        // MUST NOT rotate the owner set, even when the key is unrestricted or scoped to this
+        // precompile. Owner-threshold (multisig-signed) transactions leave the shared keychain
+        // transaction key at zero; access-key transactions set it to the access key address.
+        let transaction_key =
+            AccountKeychain::new().get_transaction_key(getTransactionKeyCall {}, msg_sender)?;
+        if !transaction_key.is_zero() {
             return Err(NativeMultisigError::unauthorized_caller().into());
         }
         if self.bootstrapped_account.t_read()? == msg_sender {
@@ -461,6 +472,50 @@ mod tests {
         }
         assert_eq!(persistent_slots.len(), 1 + 2 * config.owners.len());
 
+        storage.clear_transient();
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.set_tx_origin(account)?;
+            multisig.update_multisig_config(account, 2, abi_owners())?;
+            assert_eq!(multisig.get_multisig_config(account)?.threshold, 2);
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_config_rejects_access_key_authority() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let config = init_config();
+        let account = config.account().unwrap();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()
+        })?;
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.store_initial_config(account, &config)
+        })?;
+
+        // A keychain access-key transaction (nonzero keychain transaction key) must not rotate the
+        // owner set, even though tx_origin == msg_sender for a top-level keychain call.
+        storage.clear_transient();
+        StorageCtx::enter(&mut storage, || {
+            AccountKeychain::new().set_transaction_key(Address::repeat_byte(0x77))?;
+            let mut multisig = NativeMultisig::new();
+            multisig.set_tx_origin(account)?;
+            assert!(matches!(
+                multisig.update_multisig_config(account, 2, abi_owners()),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::UnauthorizedCaller(_)
+                ))
+            ));
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        // Owner-threshold authorization (keychain transaction key stays zero) still succeeds.
         storage.clear_transient();
         StorageCtx::enter(&mut storage, || {
             let mut multisig = NativeMultisig::new();
