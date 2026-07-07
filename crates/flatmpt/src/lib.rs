@@ -19,7 +19,7 @@
 //! of the same block is a memo hit rather than a second application.
 
 mod stream;
-pub use stream::{stream_check, stream_enabled, FlatStream};
+pub use stream::{stream_enabled, FlatStream};
 
 use alloy_primitives::{keccak256, B256, U256};
 use alloy_rlp::Decodable as _;
@@ -113,8 +113,6 @@ pub struct FlatShadow {
     entries: Vec<Entry>,
     timings: std::io::BufWriter<std::fs::File>,
     blocks_since_persist: u64,
-    /// A streamed block application is in progress (chunks applied, no entry yet).
-    in_flight: bool,
     /// Engine phase nanos accumulated since the last commit_entry (profiling builds).
     prof_acc: [u64; 8],
 }
@@ -157,7 +155,7 @@ impl FlatShadow {
                 .open(format!("{path}.timings"))?,
         );
         tracing::info!(target: "flatmpt", root = %hex(root), n_ops, path, "flat MPT initialized from genesis alloc");
-        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false, prof_acc: [0; 8] })
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, prof_acc: [0; 8] })
     }
 
     /// Golden-restore init (billion-slot scale): copy a prebuilt dump-only
@@ -187,7 +185,7 @@ impl FlatShadow {
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
         );
-        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false, prof_acc: [0; 8] })
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, prof_acc: [0; 8] })
     }
 
     /// Bloat-mode init: genesis alloc + state-bloat dump.
@@ -306,7 +304,7 @@ impl FlatShadow {
         let timings = std::io::BufWriter::new(
             std::fs::OpenOptions::new().create(true).append(true).open(format!("{path}.timings"))?,
         );
-        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, in_flight: false, prof_acc: [0; 8] })
+        Ok(Self { db, entries: Vec::new(), timings, blocks_since_persist: 0, prof_acc: [0; 8] })
     }
 
     /// State root after applying `ops` on the state whose root is `parent_root`.
@@ -341,11 +339,6 @@ impl FlatShadow {
             // the rollback loop below unwinds to the shared parent state.
         }
 
-        anyhow::ensure!(
-            !self.in_flight,
-            "root_for while a streamed block is in flight (parent {parent_number})"
-        );
-
         self.unwind_to(parent_root)?;
 
         let n_ops = ops.len();
@@ -359,9 +352,16 @@ impl FlatShadow {
             self.prof_acc[i] += n;
         }
         let apply_us = t.elapsed().as_micros() as u64;
+        self.db.prefetch_clear();
         debug_assert_eq!(root, self.db.root());
 
         self.commit_entry(parent_number, parent_root, fingerprint, vec![inverse], n_ops, 0, apply_us)
+    }
+
+    /// Warm the store's read-ahead buffer for a batch of ops (read-only;
+    /// advisory — see [`FlatStream`]).
+    pub fn prefetch(&self, ops: &[(Key, StateOp)]) -> anyhow::Result<()> {
+        self.db.prefetch_block(ops).map_err(|e| anyhow::anyhow!("{e:#}"))
     }
 
     /// Point-read an account by address: (nonce, balance, code_hash).
@@ -480,108 +480,6 @@ impl FlatShadow {
 
         tracing::debug!(target: "flatmpt", block = number, n_ops, chunks, apply_us, root = %hex(root), "flat root");
         Ok(B256::from(root))
-    }
-
-    /// Start a streamed application on top of `parent_root` (unwinding a
-    /// previous candidate for the same height first).
-    pub(crate) fn begin_stream(&mut self, parent_number: u64, parent_root: B256) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.in_flight, "another streamed block is already in flight");
-        // A repeat/candidate build for an already-applied height memo-hits in
-        // root_for but must physically unwind here, since we are about to apply.
-        let _ = parent_number;
-        self.unwind_to(parent_root)?;
-        self.in_flight = true;
-        Ok(())
-    }
-
-    /// Apply one streamed chunk; returns its inverse.
-    pub(crate) fn apply_stream_chunk(
-        &mut self,
-        ops: Vec<(Key, StateOp)>,
-    ) -> anyhow::Result<Vec<(Key, StateOp)>> {
-        anyhow::ensure!(self.in_flight, "stream chunk without begin_stream");
-        mpt_flat_poc::prof::reset();
-        let (_root, inverse) = self
-            .db
-            .apply_block(ops)
-            .map_err(|e| anyhow::anyhow!("stream chunk apply: {e:#}"))?;
-        for (i, (n, _)) in mpt_flat_poc::prof::snapshot().iter().enumerate() {
-            self.prof_acc[i] += n;
-        }
-        Ok(inverse)
-    }
-
-    /// Finalize a streamed block: optionally cross-check against the canonical
-    /// op list, then commit the entry (fingerprinted by `canonical_ops`, which
-    /// is what the validator will present).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn finish_stream(
-        &mut self,
-        parent_number: u64,
-        parent_root: B256,
-        mut canonical_ops: Vec<(Key, StateOp)>,
-        inverses: Vec<Vec<(Key, StateOp)>>,
-        streamed_ops: usize,
-        chunks: usize,
-        chunk_apply_us: u64,
-    ) -> anyhow::Result<B256> {
-        anyhow::ensure!(self.in_flight, "finish_stream without begin_stream");
-        self.in_flight = false;
-        canonical_ops.sort_by(|a, b| a.0.cmp(&b.0));
-        let fingerprint = ops_fingerprint(&canonical_ops);
-
-        if stream_check() {
-            // Re-derive the root from the canonical ops and require equality —
-            // catches any divergence between streamed EvmState mapping and
-            // bundle semantics. Debug tool: doubles the apply cost.
-            let streamed_root = self.db.root();
-            for inv in inverses.iter().rev() {
-                self.db
-                    .apply_block(inv.clone())
-                    .map_err(|e| anyhow::anyhow!("stream-check rollback: {e:#}"))?;
-            }
-            let (canon_root, canon_inverse) = self
-                .db
-                .apply_block(canonical_ops.clone())
-                .map_err(|e| anyhow::anyhow!("stream-check apply: {e:#}"))?;
-            assert_eq!(
-                hex(canon_root),
-                hex(streamed_root),
-                "STREAMED ROOT DIVERGES FROM CANONICAL at block {}",
-                parent_number + 1
-            );
-            return self.commit_entry(
-                parent_number,
-                parent_root,
-                fingerprint,
-                vec![canon_inverse],
-                streamed_ops,
-                chunks,
-                chunk_apply_us,
-            );
-        }
-
-        drop(canonical_ops);
-        self.commit_entry(
-            parent_number,
-            parent_root,
-            fingerprint,
-            inverses,
-            streamed_ops,
-            chunks,
-            chunk_apply_us,
-        )
-    }
-
-    /// Abort an in-flight stream, rolling back all applied chunks.
-    pub(crate) fn abort_stream(&mut self, inverses: Vec<Vec<(Key, StateOp)>>) -> anyhow::Result<()> {
-        self.in_flight = false;
-        for inv in inverses.into_iter().rev() {
-            self.db
-                .apply_block(inv)
-                .map_err(|e| anyhow::anyhow!("stream abort rollback: {e:#}"))?;
-        }
-        Ok(())
     }
 }
 
@@ -760,13 +658,11 @@ mod tests {
     }
 
     #[test]
-    fn stream_lifecycle_chunked_inverses() {
+    fn prefetch_is_advisory_and_root_neutral() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.flat");
         let path = path.to_str().unwrap();
 
-        // Keep >=2 keys live at every point: the engine does not support
-        // collapsing the trie below two keys (never happens on a real chain).
         let genesis = vec![acct(1, 1), acct(10, 1), acct(11, 1)];
         let mut oracle =
             FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
@@ -775,30 +671,20 @@ mod tests {
 
         let mut s = FlatShadow::init(path, genesis, g).unwrap();
 
-        // Streamed block 1 in two chunks == one-shot apply of both.
-        let (oneshot_root, _) = oracle
-            .apply_block(vec![acct(2, 1), acct(3, 1)])
-            .unwrap();
-        s.begin_stream(0, g).unwrap();
-        let i1 = s.apply_stream_chunk(vec![acct(2, 1)]).unwrap();
-        let i2 = s.apply_stream_chunk(vec![acct(3, 1)]).unwrap();
-        let r1 = s
-            .finish_stream(0, g, vec![acct(2, 1), acct(3, 1)], vec![i1, i2], 2, 2, 0)
-            .unwrap();
-        assert_eq!(r1.0, oneshot_root);
+        // Prefetch warms the read-ahead buffer; the apply consumes it and the
+        // root matches a never-prefetched oracle apply of the same ops.
+        let block = vec![acct(2, 1), acct(3, 1)];
+        s.prefetch(&block).unwrap();
+        let r1 = s.root_for(0, g, block.clone()).unwrap();
+        let (oracle_root, _) = oracle.apply_block(block.clone()).unwrap();
+        assert_eq!(r1.0, oracle_root);
 
-        // Validator replay with canonical ops memo-hits the streamed entry.
-        let r1b = s.root_for(0, g, vec![acct(2, 1), acct(3, 1)]).unwrap();
-        assert_eq!(r1, r1b);
-
-        // Candidate rebuild on the same parent: chunked entry unwinds cleanly.
-        let r1alt = s.root_for(0, g, vec![acct(7, 9)]).unwrap();
-        assert_ne!(r1, r1alt);
-
-        // Aborted stream rolls its chunks back.
-        s.begin_stream(0, g).unwrap();
-        let j1 = s.apply_stream_chunk(vec![acct(8, 1)]).unwrap();
-        s.abort_stream(vec![j1]).unwrap();
-        assert_eq!(s.db.root(), genesis_root);
+        // A prefetch pass that is never consumed (abandoned build) must not
+        // disturb subsequent applies.
+        s.prefetch(&[acct(7, 9)]).unwrap();
+        let r1b = s.root_for(0, g, block).unwrap();
+        assert_eq!(r1, r1b, "memo hit unaffected by stale prefetch");
+        let r2 = s.root_for(1, r1, vec![acct(4, 2)]).unwrap();
+        assert_ne!(r1, r2);
     }
 }

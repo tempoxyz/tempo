@@ -442,17 +442,7 @@ where
                 )
             })
             .expect("flat root mode is on");
-            match tempo_flatmpt::FlatStream::begin(
-                shadow,
-                parent_header.number(),
-                parent_header.state_root(),
-            ) {
-                Ok(stream) => Some(stream),
-                Err(err) => {
-                    warn!(target: "flatmpt", %err, "stream begin failed; falling back to finish-path apply");
-                    None
-                }
-            }
+            Some(tempo_flatmpt::FlatStream::begin(shadow))
         } else {
             None
         };
@@ -1068,14 +1058,14 @@ where
         // Flat-MPT commitment (experimental, env-gated): the flat engine's root for
         // this bundle. In `Root` mode it becomes the header's state root; in
         // `Compare` mode it is asserted against the regular pipeline's root below.
-        let flat_root = if let Some(stream) = flat_stream {
-            let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
-            Some(
-                stream
-                    .finish(ops)
-                    .map_err(|e| PayloadBuilderError::Other(e.into()))?,
-            )
-        } else if tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Off {
+        // Join the prefetcher first (its final pass must land before the apply
+        // so the read-ahead buffer is complete); then compute the root via the
+        // ordinary single-apply path — the trie was never touched mid-block.
+        if let Some(stream) = flat_stream {
+            let (prefetched_ops, passes) = stream.finish();
+            debug!(target: "flatmpt", prefetched_ops, passes, "prefetch joined");
+        }
+        let flat_root = if tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Off {
             None
         } else {
             let chain_spec = self.provider.chain_spec();
