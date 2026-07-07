@@ -127,9 +127,11 @@ impl StablecoinDEX {
     }
 
     /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
-    fn rewrite_order(&mut self, order: Order) -> Result<u64> {
+    fn rewrite_order(&mut self, order: Order, book_key_index: u32) -> Result<u64> {
         StorageCredits::new()
-            .track_minted_credits(self.address, || self.orders[order.order_id()].write(order))
+            .track_minted_credits(self.address, || {
+                self.orders[order.order_id()].write_in_book(order, book_key_index)
+            })
             .map(|(_, credits)| credits)
     }
 
@@ -164,11 +166,15 @@ impl StablecoinDEX {
     ///
     /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
     /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
-    fn write_order_spending_dex_storage_credits(&mut self, order: Order) -> Result<()> {
+    fn write_order_spending_dex_storage_credits(
+        &mut self,
+        order: Order,
+        book_id: u32,
+    ) -> Result<()> {
         let user = order.maker();
         let user_credits = self.dex_storage_credits[user].read()?;
         if user_credits == 0 {
-            return self.orders[order.order_id()].write(order);
+            return self.orders[order.order_id()].write_in_book(order, book_id);
         }
 
         // Clear the user's bookkeeping slot before writing the order record. This makes the
@@ -177,7 +183,7 @@ impl StablecoinDEX {
 
         let mut storage_credits = StorageCredits::new();
         let (_, delta) = storage_credits.with_budget(self.address, user_credits, || {
-            self.orders[order.order_id()].write(order)
+            self.orders[order.order_id()].write_in_book(order, book_id)
         })?;
         let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
@@ -699,6 +705,7 @@ impl StablecoinDEX {
     /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
+        let book_key_index = orderbook.book_key_index;
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
@@ -726,9 +733,9 @@ impl StablecoinDEX {
             if self.storage.spec().is_t8() {
                 self.orders[prev_tail].next()?.write(order.order_id())?;
             } else {
-                let mut prev_order = self.orders[prev_tail].read()?;
+                let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
                 prev_order.next = order.order_id();
-                self.orders[prev_tail].write(prev_order)?;
+                self.orders[prev_tail].write_in_book(prev_order, book_key_index)?;
             }
 
             // Set current order's prev pointer
@@ -748,14 +755,16 @@ impl StablecoinDEX {
 
         match (charge_credits, self.storage.spec()) {
             // User placements: T7+ can spend maker credits for new reusable order storage.
-            (true, spec) if spec.is_t7() => self.write_order_spending_dex_storage_credits(order),
+            (true, spec) if spec.is_t7() => {
+                self.write_order_spending_dex_storage_credits(order, book_key_index)
+            }
             // T8+ flip rewrites credit deleted order slots without spending maker credits.
             (false, spec) if spec.is_t8() => {
-                let (maker, credits) = (order.maker(), self.rewrite_order(order)?);
+                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_key_index)?);
                 self.credit_dex_storage_slots(maker, credits)
             }
             // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
-            _ => self.orders[order.order_id()].write(order),
+            _ => self.orders[order.order_id()].write_in_book(order, book_key_index),
         }
     }
 
@@ -1152,7 +1161,7 @@ impl StablecoinDEX {
                 let new_level = self.books[book_key]
                     .tick_level_handler(tick, order.is_bid())
                     .read()?;
-                let new_order = self.orders[new_level.head].read()?;
+                let new_order = self.orders[new_level.head].read_in_book(book_key)?;
 
                 Some((new_level, new_order))
             }
@@ -1173,7 +1182,7 @@ impl StablecoinDEX {
                 .tick_level_handler_mut(order.tick(), order.is_bid())
                 .write(level)?;
 
-            let new_order = self.orders[order.next()].read()?;
+            let new_order = self.orders[order.next()].read_in_book(book_key)?;
             storage_credits.credit_slots(new_order.maker(), credits);
 
             Some((level, new_order))
@@ -1192,7 +1201,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let mut order = self.orders[level.head].read_in_book(book_key)?;
 
         let mut total_amount_in: u128 = 0;
 
@@ -1273,7 +1282,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let mut order = self.orders[level.head].read_in_book(book_key)?;
 
         let mut total_amount_out: u128 = 0;
 
