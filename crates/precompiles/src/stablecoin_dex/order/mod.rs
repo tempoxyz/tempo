@@ -4,14 +4,22 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
+mod storage;
+pub(crate) use storage::OrderMapping;
+
 use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
 use alloy::primitives::{Address, B256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
 
+const ORDER_VERSION_V1: u8 = 1;
+
 /// Represents an order in the stablecoin DEX orderbook.
 ///
-/// This struct matches the Solidity reference implementation in StablecoinDEX.sol.
+/// `Order` is the logical representation used by matching, cancellation, flip-order handling,
+/// balance accounting, and the public order APIs. Storage handlers deserialize onchain data into
+/// this type before the business logic operates on it, regardless of the physical layout used in
+/// contract storage.
 ///
 /// # Order Types
 /// - **Regular orders**: Orders with `is_flip = false`
@@ -30,8 +38,12 @@ use tempo_precompiles_macros::Storable;
 /// so traversing from head to tail gives price-time priority.
 ///
 /// # Onchain Storage
-/// Orders are stored onchain in doubly linked lists organized by tick.
-/// Each tick maintains a FIFO queue of orders using `prev` and `next` pointers.
+/// Orders are stored onchain in doubly linked lists organized by tick. Each tick maintains a FIFO
+/// queue of orders using `prev` and `next` pointers.
+///
+/// The physical storage layout is versioned by the DEX order storage handlers:
+/// - [`LegacyOrder`] records use the original `Order` layout.
+/// - T8+ records are written as compact `V1Order` values and converted back into `Order` when read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub struct Order {
     /// Unique identifier for this order
@@ -58,6 +70,17 @@ pub struct Order {
     /// Pre-T5: for bid flips `flip_tick > tick`; for ask flips `flip_tick < tick`.
     /// T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
     pub flip_tick: i16,
+}
+
+/// Original onchain order storage layout.
+///
+/// pre-T8 (TIP-1062) orders were stored using the same field set as the canonical [`Order`] type,
+/// including the `order_id` even though it is already known from the `orders` mapping key. The
+/// storage layer still reads this layout and migrates records to the compact V1 layout on write.
+pub type LegacyOrder = Order;
+
+pub mod __packing_legacy_order {
+    pub use super::__packing_order::*;
 }
 
 impl Order {
@@ -298,11 +321,6 @@ impl From<Order> for IStablecoinDEX::Order {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        stablecoin_dex::StablecoinDEX,
-        storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
-    };
-
     use super::*;
     use alloy::primitives::{address, b256};
 
@@ -714,80 +732,5 @@ mod tests {
         // Flipped order should have reset pointers
         assert_eq!(flipped.prev(), 0);
         assert_eq!(flipped.next(), 0);
-    }
-
-    #[test]
-    fn test_store_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-
-            let id = 42;
-            let order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T4,
-            )
-            .unwrap();
-            exchange.orders[id].write(order)?;
-
-            let loaded_order = exchange.orders[id].read()?;
-            assert_eq!(loaded_order.order_id(), 42);
-            assert_eq!(loaded_order.maker(), TEST_MAKER);
-            assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
-            assert_eq!(loaded_order.amount(), 1000);
-            assert_eq!(loaded_order.remaining(), 1000);
-            assert_eq!(loaded_order.tick(), 5);
-            assert!(loaded_order.is_bid());
-            assert!(loaded_order.is_flip());
-            assert_eq!(loaded_order.flip_tick(), 10);
-            assert_eq!(loaded_order.prev(), 0);
-            assert_eq!(loaded_order.next(), 0);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_delete_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-
-            let id = 42;
-            let order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T4,
-            )
-            .unwrap();
-            exchange.orders[id].write(order)?;
-            exchange.orders[id].delete()?;
-
-            let deleted_order = exchange.orders[id].read()?;
-            assert_eq!(deleted_order.order_id(), 0);
-            assert_eq!(deleted_order.maker(), Address::ZERO);
-            assert_eq!(deleted_order.book_key(), B256::ZERO);
-            assert_eq!(deleted_order.amount(), 0);
-            assert_eq!(deleted_order.remaining(), 0);
-            assert_eq!(deleted_order.tick(), 0);
-            assert!(!deleted_order.is_bid());
-            assert!(!deleted_order.is_flip());
-            assert_eq!(deleted_order.flip_tick(), 0);
-            assert_eq!(deleted_order.prev(), 0);
-            assert_eq!(deleted_order.next(), 0);
-
-            Ok(())
-        })
     }
 }
