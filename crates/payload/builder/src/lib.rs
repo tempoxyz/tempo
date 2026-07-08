@@ -1077,16 +1077,24 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if self.config.skip_state_root {
-            (parent_header.state_root(), Arc::new(Default::default()))
+        let (state_root, trie_updates, changed_paths) = if self.config.skip_state_root {
+            (
+                parent_header.state_root(),
+                Arc::new(Default::default()),
+                None,
+            )
         } else if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
+            (
+                outcome.state_root,
+                outcome.trie_updates,
+                outcome.changed_paths,
+            )
         } else {
             let (state_root, trie_updates) = finish_provider
                 .state_root_with_updates(hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
 
-            (state_root, Arc::new(trie_updates))
+            (state_root, Arc::new(trie_updates), None)
         };
 
         let RootsTaskResult {
@@ -1290,7 +1298,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates,
-            changed_paths: None,
+            changed_paths,
         };
 
         let payload = TempoBuiltPayload::new(
