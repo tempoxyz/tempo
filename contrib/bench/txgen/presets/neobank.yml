@@ -14,11 +14,11 @@ accounts:
   users:
     mnemonic: "test test test test test test test test test test test junk"
     range:
-      - 1
+      - 0
       - ${TXGEN_ACCOUNTS}
   fee_payers:
     mnemonic: "test test test test test test test test test test test junk"
-    index: 0
+    index: 100000
 
 artifacts:
   ERC20: ../erc20.abi.json
