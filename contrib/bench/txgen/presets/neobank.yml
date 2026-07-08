@@ -135,6 +135,34 @@ setup:
         artifact: WrapperMainnet
         gas_limit: 1000000
         constructor_args: []
+    - id: directswap_route_seed_token0
+      tx:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        gas_limit: 1000000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: transfer
+          args:
+            - { var: setup.directswap_route.address }
+            - 100000000000
+    - id: directswap_seed_token0
+      tx:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        gas_limit: 1000000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: transfer
+          args:
+            - { var: setup.directswap.address }
+            - 100000000000
     - id: neobank_directswap_prewarm
       bindings:
         user:
