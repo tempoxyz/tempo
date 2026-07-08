@@ -14,7 +14,7 @@ use alloy::primitives::{Address, B256};
 
 #[contract(addr = CURRENT_COMMITTEE_ADDRESS)]
 pub struct CurrentCommittee {
-    public_keys: Vec<B256>,
+    ids: Vec<B256>,
 }
 
 impl CurrentCommittee {
@@ -22,7 +22,7 @@ impl CurrentCommittee {
         let current_epoch = self.storage().epoch(self.storage().block_number());
         Ok(ICurrentCommittee::getCommitteeMembersReturn {
             epoch: current_epoch,
-            publicKeys: self.public_keys.read()?,
+            publicKeys: self.ids.read()?,
         })
     }
 
@@ -35,7 +35,7 @@ impl CurrentCommittee {
             return Err(CurrentCommitteeError::unauthorized().into());
         }
 
-        self.public_keys.write(call.publicKeys)?;
+        self.ids.write(call.publicKeys)?;
         Ok(())
     }
 }

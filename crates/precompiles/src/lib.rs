@@ -162,9 +162,9 @@ pub fn tempo_precompiles(
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
 /// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
-/// AccountKeychain, ValidatorConfigV2, CurrentCommittee, and StorageCredits. Each precompile is
-/// wrapped via the `tempo_precompile!` macro which enforces direct-call-only (no delegatecall) and
-/// sets up the storage context.
+/// AccountKeychain, ValidatorConfigV2, and CurrentCommittee. Each precompile is wrapped via the
+/// `tempo_precompile!` macro which enforces direct-call-only (no delegatecall) and sets up the
+/// storage context.
 ///
 /// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
 pub fn extend_tempo_precompiles(
