@@ -9,7 +9,7 @@ use alloy_evm::{
     Evm as _,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory, TxResult as AlloyTxResult},
 };
-use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_primitives::{keccak256, Address, B256, Bytes, Log, U256};
 use core::ffi::c_int;
 use reth_chainspec::ForkCondition;
 use reth_consensus::Consensus as _;
@@ -30,9 +30,10 @@ use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockExecutionResultOutput, BlockInput,
     BlockPayload, BlockResult, ChainSpecInput, ErrorClass, ExecutedBlockOutput,
-    HarnessCapabilities, LogOutput, STATUS_BUFFER_TOO_SMALL, STATUS_INTERNAL_ERROR,
-    STATUS_INVALID_INPUT, STATUS_OK, StateDiff, StateInput, StorageChangeOutput, StorageInput,
-    TxInput, TxReceiptOutput, TxResult,
+    FUZZ_ACCEPT, FUZZ_REJECT, HarnessInputKind, LogOutput, NonEmpty, StateDiff, StateInput,
+    StorageChangeOutput, StorageInput, TYPED_HARNESS_SCHEMA_VERSION, TempoExecutionOutcome,
+    TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome, TransactionOutcome,
+    TxReceiptOutput,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 
@@ -43,7 +44,7 @@ struct DecodedBlock {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn tempo_fuzz_execute_block_with_result_v1(
+pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     out_ptr: *mut u8,
     out_len: usize,
     out_written: *mut usize,
@@ -51,51 +52,20 @@ pub unsafe extern "C" fn tempo_fuzz_execute_block_with_result_v1(
     in_len: usize,
 ) -> c_int {
     if in_ptr.is_null() {
-        return STATUS_INVALID_INPUT;
+        return FUZZ_REJECT;
     }
     let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
-    let response = match execute_block_result(input) {
-        Ok(response) => response,
-        Err(error) => BlockResult {
-            receipts: Vec::new(),
-            final_state: StateInput::default(),
-            state_diff: StateDiff::default(),
-            error,
-        },
+    let Ok(request) = bincode::deserialize::<TempoHarnessInput>(input) else {
+        return FUZZ_REJECT;
+    };
+    let Ok(response) = execute_typed_input(request) else {
+        return FUZZ_REJECT;
     };
     let output = match bincode::serialize(&response) {
         Ok(output) => output,
-        Err(_) => return STATUS_INTERNAL_ERROR,
+        Err(_) => return FUZZ_REJECT,
     };
-    unsafe { write_caller_buffer(out_ptr, out_len, out_written, &output) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn tempo_fuzz_execute_tx_with_result_v1(
-    out_ptr: *mut u8,
-    out_len: usize,
-    out_written: *mut usize,
-    in_ptr: *const u8,
-    in_len: usize,
-) -> c_int {
-    if in_ptr.is_null() {
-        return STATUS_INVALID_INPUT;
-    }
-    let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
-    let response = match execute_tx_result(input) {
-        Ok(response) => response,
-        Err(error) => TxResult {
-            receipt: None,
-            final_state: StateInput::default(),
-            state_diff: StateDiff::default(),
-            error,
-        },
-    };
-    let output = match bincode::serialize(&response) {
-        Ok(output) => output,
-        Err(_) => return STATUS_INTERNAL_ERROR,
-    };
-    unsafe { write_caller_buffer(out_ptr, out_len, out_written, &output) }
+    unsafe { write_fuzz_output(out_ptr, out_len, out_written, &output) }
 }
 
 #[unsafe(no_mangle)]
@@ -104,64 +74,121 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
     out_len: usize,
     out_written: *mut usize,
 ) -> c_int {
-    let capabilities = HarnessCapabilities {
-        supported_hardforks: supported_hardforks(),
+    let capabilities = TempoHarnessCapabilities {
+        schema_version: TYPED_HARNESS_SCHEMA_VERSION,
+        implementation: "tempo".to_string(),
+        git_revision: option_env!("TEMPO_GIT_REVISION")
+            .unwrap_or("unknown")
+            .to_string(),
+        supported_hardforks: NonEmpty::new(supported_hardforks())
+            .expect("Tempo harness supports at least one hardfork"),
+        supported_inputs: NonEmpty::new(vec![
+            HarnessInputKind::Transaction,
+            HarnessInputKind::State,
+            HarnessInputKind::Blockchain,
+        ])
+        .expect("Tempo harness supports at least one input kind"),
     };
     let output = match bincode::serialize(&capabilities) {
         Ok(output) => output,
-        Err(_) => return STATUS_INTERNAL_ERROR,
+        Err(_) => return FUZZ_REJECT,
     };
-    unsafe { write_caller_buffer(out_ptr, out_len, out_written, &output) }
+    unsafe { write_fuzz_output(out_ptr, out_len, out_written, &output) }
 }
 
-fn execute_block_result(input: &[u8]) -> Result<BlockResult, ErrorClass> {
-    let request: BlockInput = bincode::deserialize(input).map_err(|_| ErrorClass::InvalidInput)?;
-    let response = execute_concrete_block(&BlockInput {
-        chain_spec: request.chain_spec,
-        pre_state: request.pre_state,
-        blocks: request.blocks,
-    })?;
-    Ok(BlockResult {
+fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, ErrorClass> {
+    match input {
+        TempoHarnessInput::Transaction(input) => {
+            let tx = decode_tx(&input.tx)?;
+            let sender = tx.try_recover().map_err(|_| ErrorClass::Rejected)?;
+            Ok(TempoHarnessOutcome::Transaction(TransactionOutcome {
+                error: ErrorClass::None,
+                sender: Some(address_bytes(sender)),
+                tx_type: Some(tx.tx_type() as u8),
+                intrinsic_gas: None,
+            }))
+        }
+        TempoHarnessInput::State(input) => {
+            let response = execute_concrete_block(&BlockInput {
+                chain_spec: input.chain_spec,
+                pre_state: input.pre_state,
+                blocks: vec![BlockPayload {
+                    context: input.block_context,
+                    txs: vec![input.tx],
+                }],
+            })?;
+            Ok(TempoHarnessOutcome::State(tempo_execution_outcome(response)))
+        }
+        TempoHarnessInput::Blockchain(input) => {
+            let blocks = input
+                .blocks
+                .as_slice()
+                .iter()
+                .map(|block| BlockPayload {
+                    context: block.context.clone(),
+                    txs: block.txs.clone(),
+                })
+                .collect();
+            let response = execute_concrete_block(&BlockInput {
+                chain_spec: input.chain_spec,
+                pre_state: input.pre_state,
+                blocks,
+            })?;
+            Ok(TempoHarnessOutcome::Blockchain(tempo_execution_outcome(
+                response,
+            )))
+        }
+    }
+}
+
+fn tempo_execution_outcome(response: BlockResult) -> TempoExecutionOutcome {
+    let state_root = state_root(&response.final_state);
+    TempoExecutionOutcome {
+        error: response.error,
         receipts: response.receipts,
-        final_state: response.final_state,
+        state_root: Some(state_root),
+        final_state: Some(response.final_state),
         state_diff: response.state_diff,
-        error: response.error,
-    })
+        invariant_failures: Vec::new(),
+    }
 }
 
-fn execute_tx_result(input: &[u8]) -> Result<TxResult, ErrorClass> {
-    let request: TxInput = bincode::deserialize(input).map_err(|_| ErrorClass::InvalidInput)?;
-    let response = execute_concrete_block(&BlockInput {
-        chain_spec: request.chain_spec,
-        pre_state: request.pre_state,
-        blocks: vec![BlockPayload {
-            context: request.context,
-            txs: vec![request.tx],
-        }],
-    })?;
-    Ok(TxResult {
-        receipt: response.receipts.into_iter().next(),
-        final_state: response.final_state,
-        state_diff: response.state_diff,
-        error: response.error,
-    })
+fn decode_tx(input: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
+    let mut tx_slice = input;
+    let tx =
+        TempoTxEnvelope::decode_2718(&mut tx_slice).map_err(|_| ErrorClass::RlpDecode)?;
+    if !tx_slice.is_empty() {
+        return Err(ErrorClass::RlpDecode);
+    }
+    if tx.chain_id() != Some(PINNED_CHAIN_ID) {
+        return Err(ErrorClass::Rejected);
+    }
+    Ok(tx)
 }
 
-unsafe fn write_caller_buffer(
+fn state_root(state: &StateInput) -> [u8; 32] {
+    let encoded = bincode::serialize(state).expect("StateInput serialization should not fail");
+    let hash = keccak256(encoded);
+    let mut root = [0u8; 32];
+    root.copy_from_slice(hash.as_slice());
+    root
+}
+
+unsafe fn write_fuzz_output(
     dst: *mut u8,
     dst_len: usize,
     written: *mut usize,
     bytes: &[u8],
 ) -> c_int {
     if written.is_null() {
-        return STATUS_INVALID_INPUT;
+        return FUZZ_REJECT;
     }
     unsafe { *written = bytes.len() };
     if dst.is_null() || dst_len < bytes.len() {
-        return STATUS_BUFFER_TOO_SMALL;
+        return FUZZ_REJECT;
     }
     unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len()) };
-    STATUS_OK
+    FUZZ_ACCEPT
 }
 
 #[derive(Clone, Debug)]

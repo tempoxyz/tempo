@@ -1,22 +1,26 @@
 # Tempo Fuzz Harness
 
-This crate builds the cdylib loaded by the external Tempo fuzz runner for hardfork differential fuzzing and conformance replay.
+This crate builds the cdylib loaded by the external Tempo fuzz runner for
+hardfork differential fuzzing and typed replay.
 
 ```bash
 cargo build -p tempo-fuzz-harness --release
 ```
 
-The harness exports exactly three C ABI functions:
+The harness exports exactly two C ABI functions:
 
-- `tempo_fuzz_execute_tx_with_result_v1`
-- `tempo_fuzz_execute_block_with_result_v1`
+- `tempo_fuzz_execute_with_result_v1`
 - `tempo_fuzz_capabilities_v1`
 
-`tempo_fuzz_execute_tx_with_result_v1` accepts a bincode-encoded `tempo_fuzz_types::TxInput` and returns a bincode-encoded `tempo_fuzz_types::TxResult`.
+`tempo_fuzz_execute_with_result_v1` accepts a bincode-encoded
+`tempo_fuzz_types::TempoHarnessInput` and returns a bincode-encoded
+`tempo_fuzz_types::TempoHarnessOutcome`.
 
-`tempo_fuzz_execute_block_with_result_v1` accepts a bincode-encoded `tempo_fuzz_types::BlockInput` and returns a bincode-encoded `tempo_fuzz_types::BlockResult`. Block input is the conformance fixture format: a chain spec, pre-state, and ordered block payloads whose transaction bytes are RLP/EIP-2718 encoded `TempoTxEnvelope` values.
-
-`tempo_fuzz_capabilities_v1` returns `tempo_fuzz_types::HarnessCapabilities`, including the hardfork ids supported by this build. The external runner intersects capabilities across loaded harnesses before generating fuzz inputs, so older release branches can avoid newer hardfork-only behavior.
+`tempo_fuzz_capabilities_v1` returns
+`tempo_fuzz_types::TempoHarnessCapabilities`, including explicit hardfork and
+input-kind support. The external runner intersects capabilities across loaded
+harnesses before generating fuzz inputs, so older release branches can avoid
+newer hardfork-only behavior.
 
 The checked-in conformance fixtures live under `fixtures/block`. The `Conformance Fixtures` GitHub Action runs the full fixture directory with:
 
