@@ -149,7 +149,7 @@ jobs:
           # shellcheck disable=SC2086  # BUILD_ARGS must word-split into multiple cargo args
           cargo codspeed build $BUILD_ARGS
       - name: Run benchmark target(s)
-        uses: CodSpeedHQ/action@c5e3fca5233fb854c7193713adfbe99d3910f8d2 # v4.15.1 # zizmor: ignore[ref-version-mismatch]
+        uses: CodSpeedHQ/action@3194d9a39c4d46684cb44bf7207fc56626aad8fd # v4.15.1
         with:
           mode: ${{ steps.args.outputs.measurement_modes }}
           run: cargo codspeed run ${{ steps.args.outputs.run_args }}
