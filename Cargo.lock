@@ -13244,6 +13244,7 @@ dependencies = [
  "eyre",
  "monitor",
  "tempo",
+ "tokio",
  "tracing",
 ]
 

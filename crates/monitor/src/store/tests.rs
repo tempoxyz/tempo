@@ -745,3 +745,158 @@ fn unknown_health_invariant_ids_are_rejected() -> eyre::Result<()> {
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn jsonl_sink_writes_newline_object_and_delivery_record() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("nested/outbox.jsonl");
+    let sink = JsonlOutboxSink::open(&path)?;
+    let row = sample_outbox_row(1);
+    let record = sink.deliver(&row).await?;
+    assert_eq!(record.sink, "jsonl");
+    assert!(record.receipt.starts_with("tempo-monitor:1:0x"));
+
+    let contents = std::fs::read_to_string(path)?;
+    assert!(contents.ends_with('\n'));
+    assert_eq!(contents.lines().count(), 1);
+    let json: serde_json::Value = serde_json::from_str(contents.lines().next().expect("line"))?;
+    assert_eq!(json["schema"], "tempo.monitor.outbox.v1");
+    assert_eq!(json["idempotency_key"], record.receipt);
+    assert_eq!(json["sequence"], 1);
+    assert_eq!(json["block"]["number"], 7);
+    assert_eq!(json["block"]["hash"], format!("{}", b(7)));
+    assert_eq!(json["event"]["payload"]["summary"], "opened");
+    assert!(
+        json["event_digest"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("0x"))
+    );
+    assert!(json["delivered_at_unix_ms"].as_u64().is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn outbox_worker_drains_in_order_once_respects_batch_and_preserves_head() -> eyre::Result<()>
+{
+    let dir = tempfile::tempdir()?;
+    let store = std::sync::Arc::new(any_store());
+    let mut c = commit(7, b(7), b(6));
+    let key = finding_key(c.new_monitor_head);
+    add_open_finding(&mut c, key.clone());
+    c.outbox_events.push(OutboxEvent {
+        finding_key: key.clone(),
+        kind: OutboxEventKind::CoverageGap,
+        payload: serde_json::json!({"n":1}),
+    });
+    c.outbox_events.push(OutboxEvent {
+        finding_key: key,
+        kind: OutboxEventKind::FindingUpdated,
+        payload: serde_json::json!({"n":2}),
+    });
+    store.commit_block(c.clone())?;
+    let sink = JsonlOutboxSink::open(dir.path().join("outbox.jsonl"))?;
+    let worker = OutboxWorker::new(
+        store.clone(),
+        sink,
+        OutboxWorkerConfig {
+            batch_size: 1,
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(worker.tick().await?, 1);
+    assert_eq!(store.pending_outbox(10)?.len(), 1);
+    assert_eq!(store.monitor_head()?, Some(c.new_monitor_head));
+    assert_eq!(worker.tick().await?, 1);
+    assert!(store.pending_outbox(10)?.is_empty());
+    assert_eq!(worker.tick().await?, 0);
+
+    let contents = std::fs::read_to_string(dir.path().join("outbox.jsonl"))?;
+    let sequences = contents
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).map(|v| v["sequence"].as_u64()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(sequences, vec![Some(1), Some(2)]);
+    Ok(())
+}
+
+struct FailingSink;
+
+impl OutboxSink for FailingSink {
+    fn deliver<'a>(
+        &'a self,
+        _row: &'a OutboxRow,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = OutboxDeliveryResult<DeliveryRecord>> + Send + 'a>,
+    > {
+        Box::pin(async { Err(OutboxDeliveryError::Io(std::io::Error::other("boom"))) })
+    }
+}
+
+#[tokio::test]
+async fn outbox_worker_sink_failure_leaves_pending() -> eyre::Result<()> {
+    let store = std::sync::Arc::new(any_store());
+    let mut c = commit(1, b(1), b(0));
+    let key = finding_key(c.new_monitor_head);
+    add_open_finding(&mut c, key.clone());
+    c.outbox_events.push(OutboxEvent {
+        finding_key: key,
+        kind: OutboxEventKind::CoverageGap,
+        payload: serde_json::json!({}),
+    });
+    store.commit_block(c)?;
+    let worker = OutboxWorker::new(store.clone(), FailingSink, OutboxWorkerConfig::default());
+    assert_eq!(worker.tick().await?, 0);
+    assert_eq!(store.pending_outbox(10)?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn outbox_worker_resumes_pending_rows_after_mdbx_reopen() -> eyre::Result<()> {
+    let db_dir = tempfile::tempdir()?;
+    let jsonl_dir = tempfile::tempdir()?;
+    let store = mdbx_store(db_dir.path())?;
+    let mut c = commit(1, b(1), b(0));
+    let key = finding_key(c.new_monitor_head);
+    add_open_finding(&mut c, key.clone());
+    c.outbox_events.push(OutboxEvent {
+        finding_key: key,
+        kind: OutboxEventKind::FindingOpened {
+            severity: Severity::Critical,
+        },
+        payload: serde_json::json!({"resume":true}),
+    });
+    store.commit_block(c)?;
+    drop(store);
+
+    let reopened = mdbx_store(db_dir.path())?;
+    let sink = JsonlOutboxSink::open(jsonl_dir.path().join("outbox.jsonl"))?;
+    let worker = OutboxWorker::new(reopened.clone(), sink, OutboxWorkerConfig::default());
+    assert_eq!(worker.tick().await?, 1);
+    drop(worker);
+    drop(reopened);
+
+    let reopened = mdbx_store(db_dir.path())?;
+    assert!(reopened.pending_outbox(10)?.is_empty());
+    let contents = std::fs::read_to_string(jsonl_dir.path().join("outbox.jsonl"))?;
+    assert!(contents.contains("tempo-monitor:1:0x"));
+    assert!(contents.contains("resume"));
+    Ok(())
+}
+
+fn sample_outbox_row(sequence: u64) -> OutboxRow {
+    let block = block(7, b(7), b(6));
+    OutboxRow {
+        sequence,
+        block,
+        event: OutboxEvent {
+            finding_key: finding_key(block),
+            kind: OutboxEventKind::FindingOpened {
+                severity: Severity::Critical,
+            },
+            payload: serde_json::json!({"summary":"opened"}),
+        },
+        delivery: DeliveryStatus::Pending,
+        attempts: 0,
+    }
+}

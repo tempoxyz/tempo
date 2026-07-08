@@ -18,7 +18,7 @@ workspace = true
 
 [features]
 default = []
-store = ["dep:tracing", "dep:reth-db", "dep:reth-db-api"]
+store = ["dep:tracing", "dep:reth-db", "dep:reth-db-api", "dep:tokio"]
 reth = [
     "store",
     "tempo-primitives/reth",

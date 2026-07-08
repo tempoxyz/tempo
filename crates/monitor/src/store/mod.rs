@@ -9,6 +9,7 @@ mod codecs;
 mod commit;
 mod mdbx;
 mod memory;
+mod outbox;
 mod rows;
 mod schema;
 mod validation;
@@ -19,6 +20,7 @@ mod tests;
 pub use commit::*;
 pub use mdbx::{MdbxMonitorStore, MdbxMonitorStoreConfig};
 pub use memory::InMemoryMonitorStore;
+pub use outbox::*;
 pub use rows::*;
 pub use schema::*;
 
@@ -59,4 +61,28 @@ pub trait MonitorStore {
     ///
     /// Delivery state must not participate in `monitor_head` advancement.
     fn mark_outbox_delivered(&self, sequence: u64, delivery: DeliveryRecord) -> Result<()>;
+}
+
+impl<T: MonitorStore> MonitorStore for std::sync::Arc<T> {
+    fn schema_status(&self) -> Result<SchemaStatus> {
+        (**self).schema_status()
+    }
+    fn monitor_head(&self) -> Result<Option<BlockNumHash>> {
+        (**self).monitor_head()
+    }
+    fn commit_block(&self, commit: BlockCommit) -> Result<()> {
+        (**self).commit_block(commit)
+    }
+    fn finalized_block(&self, number: u64) -> Result<Option<FinalizedBlockRecord>> {
+        (**self).finalized_block(number)
+    }
+    fn finding_state(&self, key: &FindingKey) -> Result<Option<FindingState>> {
+        (**self).finding_state(key)
+    }
+    fn pending_outbox(&self, limit: usize) -> Result<Vec<OutboxRow>> {
+        (**self).pending_outbox(limit)
+    }
+    fn mark_outbox_delivered(&self, sequence: u64, delivery: DeliveryRecord) -> Result<()> {
+        (**self).mark_outbox_delivered(sequence, delivery)
+    }
 }
