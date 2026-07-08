@@ -81,4 +81,36 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_get_committee_members_defaults_and_replaces() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut committee = CurrentCommittee::new();
+
+            let empty = committee.get_committee_members()?;
+            assert_eq!(empty.epoch, 0);
+            assert!(empty.publicKeys.is_empty());
+
+            committee.set_committee_members(
+                Address::ZERO,
+                ICurrentCommittee::setCommitteeMembersCall {
+                    epoch: 1,
+                    publicKeys: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
+                },
+            )?;
+            committee.set_committee_members(
+                Address::ZERO,
+                ICurrentCommittee::setCommitteeMembersCall {
+                    epoch: 2,
+                    publicKeys: vec![B256::repeat_byte(0x33)],
+                },
+            )?;
+
+            let ret = committee.get_committee_members()?;
+            assert_eq!(ret.epoch, 2);
+            assert_eq!(ret.publicKeys, vec![B256::repeat_byte(0x33)]);
+            Ok(())
+        })
+    }
 }
