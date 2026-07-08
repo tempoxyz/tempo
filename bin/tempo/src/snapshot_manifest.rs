@@ -26,7 +26,6 @@ use tempo_node::node::TempoNode;
 use tempo_telemetry_util::display_duration;
 
 pub(crate) const TEMPO_CONSENSUS_MANIFEST_KEY: &str = "consensus";
-pub(crate) const CONSENSUS_ARCHIVE_ROOT: &str = "consensus";
 const CONSENSUS_ARCHIVE_FILE: &str = "consensus.tar.zst";
 
 type TempoExecutionProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>;
@@ -347,14 +346,12 @@ fn write_zstd_tar_archive(path: &Path, source_dir: &Path) -> eyre::Result<()> {
     let mut encoder = zstd::Encoder::new(file, 0)?;
     encoder.include_checksum(true)?;
     let mut builder = tar::Builder::new(encoder);
-    builder
-        .append_dir_all(CONSENSUS_ARCHIVE_ROOT, source_dir)
-        .wrap_err_with(|| {
-            format!(
-                "failed to append consensus archive from {}",
-                source_dir.display()
-            )
-        })?;
+    builder.append_dir_all("", source_dir).wrap_err_with(|| {
+        format!(
+            "failed to append consensus archive from {}",
+            source_dir.display()
+        )
+    })?;
 
     builder.finish()?;
     let encoder = builder.into_inner()?;
@@ -501,8 +498,8 @@ mod tests {
             .collect::<Vec<_>>();
         paths.sort();
 
-        assert!(paths.contains(&"consensus/partition-key/nested/00".to_string()));
-        assert!(paths.contains(&"consensus/partition-value/00".to_string()));
+        assert!(paths.contains(&"partition-key/nested/00".to_string()));
+        assert!(paths.contains(&"partition-value/00".to_string()));
     }
 
     #[test]
