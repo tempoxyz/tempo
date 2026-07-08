@@ -6,6 +6,7 @@
 mod budget;
 mod metrics;
 mod prewarming;
+mod proof_root_task;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
@@ -18,6 +19,7 @@ use crate::{
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
+    proof_root_task::{BuilderStateHook, ProofRootTaskHandle},
 };
 use alloy_consensus::{
     BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt, constants::EMPTY_ROOT_HASH,
@@ -33,7 +35,7 @@ use reth_basic_payload_builder::{
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{
-    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
+    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, SavedCache,
     instrumented_state::InstrumentedStateProvider,
 };
 use reth_errors::{ConsensusError, ProviderError};
@@ -52,9 +54,7 @@ use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention, state::EvmState,
 };
-use reth_storage_api::{
-    HashedPostStateProvider, StateProvider, StateProviderFactory, StateRootProvider,
-};
+use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -69,10 +69,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{
-    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm,
-    proof_trie::proof_root_from_state_provider,
-};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
@@ -382,6 +379,12 @@ where
 
         check_cancel!();
 
+        let proof_root_task = self.spawn_proof_root_task_for_payload_timestamp(
+            parent_header.hash(),
+            attributes.timestamp,
+            execution_cache.as_ref(),
+        )?;
+
         let chain_spec = self.provider.chain_spec();
         let is_osaka = self
             .provider
@@ -491,20 +494,25 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
+        let state_root_task_hook = trie_handle
+            .as_ref()
+            .map(|handle| Box::new(handle.state_hook()) as Box<dyn OnStateHook>);
+        let builder_state_hook =
+            BuilderStateHook::new(proof_root_task.state_hook(), state_root_task_hook);
+
         let bal_task_handle = if self.enable_bal {
-            let bal_task_handle =
-                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
+            let bal_task_handle = self.spawn_bal_task(builder_state_hook);
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(ref handle) = trie_handle {
+            if let Some(builder_state_hook) = builder_state_hook {
                 executor
                     .evm_mut()
                     .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
+                    .set_state_hook(Some(Box::new(builder_state_hook)));
             }
             None
         };
@@ -990,12 +998,7 @@ where
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
 
-        let proof_root = self.proof_root_for_payload_timestamp(
-            &finish_provider,
-            &parent_header,
-            &db.bundle_state,
-            evm_env.block_env.inner.timestamp.to::<u64>(),
-        )?;
+        let proof_root = proof_root_task.wait()?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1191,25 +1194,42 @@ where
         }
     }
 
-    fn proof_root_for_payload_timestamp(
+    fn spawn_proof_root_task_for_payload_timestamp(
         &self,
-        state_provider: &impl StateProvider,
-        _parent_header: &TempoHeader,
-        bundle_state: &reth_revm::db::states::bundle_state::BundleState,
+        parent_hash: B256,
         timestamp: u64,
-    ) -> Result<Option<B256>, BlockExecutionError> {
+        execution_cache: Option<&SavedCache>,
+    ) -> Result<ProofRootTaskHandle, PayloadBuilderError> {
         let chain_spec = self.evm_config.chain_spec();
         if !chain_spec.is_proof_root_active_at_timestamp(timestamp) {
-            return Ok(None);
+            return Ok(ProofRootTaskHandle::inactive());
         }
 
         let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
         if provable_accounts.is_empty() {
-            return Ok(Some(EMPTY_ROOT_HASH));
+            return Ok(ProofRootTaskHandle::ready(EMPTY_ROOT_HASH));
         }
-        proof_root_from_state_provider(state_provider, bundle_state, provable_accounts)
-            .map(Some)
-            .map_err(BlockExecutionError::other)
+
+        let mut state_provider = self.provider.state_by_block_hash(parent_hash)?;
+        if let Some(execution_cache) = execution_cache {
+            state_provider = Box::new(CachedStateProvider::new(
+                state_provider,
+                execution_cache.cache().clone(),
+                Some(self.cache_metrics.clone()),
+            ));
+        }
+        if self.state_provider_metrics {
+            state_provider = Box::new(InstrumentedStateProvider::new(
+                state_provider,
+                "builder-proof-root",
+            ));
+        }
+
+        Ok(ProofRootTaskHandle::spawn(
+            &self.executor,
+            state_provider,
+            Arc::from(provable_accounts.to_vec().into_boxed_slice()),
+        ))
     }
 
     #[expect(clippy::type_complexity)]
