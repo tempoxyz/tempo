@@ -17,7 +17,7 @@ const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
 const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
-const TXGEN_HELPER_NEOBANK_DIRECTSWAP_POLICY_ID = 469
+const TXGEN_HELPER_NEOBANK_DIRECTSWAP_POLICY_ID = 2
 
 def txgen-tip20-default-scenario [] {
     {
@@ -296,9 +296,9 @@ def --env txgen-configure-fee-amm-env [spec_path: string] {
 }
 
 def txgen-neobank-directswap-policy-calls [] {
-    # DirectSwap mainnet bytecode has getAllowedCallerPolicyId() hardcoded to 469.
-    # TIP403 user policies start at 2, so creating 468 empty blacklist policies makes
-    # policy 469 exist and authorize every non-blacklisted caller.
+    # DirectSwap bytecode is patched to use the first TIP403 user policy id.
+    # Creating one empty blacklist policy makes policy 2 exist and authorize
+    # every non-blacklisted caller.
     2..$TXGEN_HELPER_NEOBANK_DIRECTSWAP_POLICY_ID
         | each {
             {
