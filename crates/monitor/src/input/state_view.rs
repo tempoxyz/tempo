@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    evidence::EvidenceValue,
-    facts::{BlockNumHash, FactValue},
+    diagnostics::evidence::EvidenceValue,
+    input::facts::{BlockNumHash, FactValue},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -1,11 +1,14 @@
 use crate::{
-    coverage::{
-        CheckOutcome, CheckResult, CoverageGap, CoverageReason, CoverageRecord, CoverageStatus,
+    diagnostics::{
+        coverage::{
+            CheckOutcome, CheckResult, CoverageGap, CoverageReason, CoverageRecord, CoverageStatus,
+        },
+        evidence::{
+            EvidenceItem, EvidenceRef, EvidenceValue, ExpectedValue, ObservedValue,
+            ViolationEvidence,
+        },
     },
-    evidence::{
-        EvidenceItem, EvidenceRef, EvidenceValue, ExpectedValue, ObservedValue, ViolationEvidence,
-    },
-    facts::FactValue,
+    input::facts::FactValue,
     invariants::meta::{InvariantId, Severity, ids},
     processor::FinalizedBlockInput,
 };
@@ -177,7 +180,7 @@ fn block_total_gas_violation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{
+    use crate::input::facts::{
         BlockFacts, BlockNumHash, BlockWithParent, HeaderFacts, ReceiptFacts, TxEnvelopeFacts,
         TxFacts,
     };

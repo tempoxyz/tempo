@@ -6,23 +6,16 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-pub mod block_view;
-pub mod coverage;
+pub mod diagnostics;
 pub mod entity;
-pub mod evidence;
-pub mod facts;
-pub mod findings;
+pub mod input;
 pub mod invariants;
-pub mod normalize;
-pub mod state_view;
 
 #[cfg(feature = "activity")]
 pub mod activity;
 
 #[cfg(feature = "store")]
 pub mod processor;
-#[cfg(feature = "store")]
-pub mod reports;
 #[cfg(feature = "store")]
 pub mod store;
 

@@ -1,5 +1,5 @@
 use crate::{
-    facts::BlockNumHash,
+    input::facts::BlockNumHash,
     reth::{AdapterError, AdapterResult},
 };
 

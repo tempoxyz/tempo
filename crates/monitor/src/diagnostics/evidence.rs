@@ -4,11 +4,13 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    coverage::CoverageRecord,
+    diagnostics::coverage::CoverageRecord,
     entity::EntityKey,
-    facts::{BlockNumHash, BlockWithParent},
+    input::{
+        facts::{BlockNumHash, BlockWithParent},
+        state_view::StateReadKey,
+    },
     invariants::meta::InvariantId,
-    state_view::StateReadKey,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -24,7 +24,7 @@ pub use outbox::*;
 pub use rows::*;
 pub use schema::*;
 
-use crate::{facts::BlockNumHash, findings::FindingKey};
+use crate::{diagnostics::findings::FindingKey, input::facts::BlockNumHash};
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 

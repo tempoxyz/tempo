@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedSender, error::SendError};
 use tracing::{error, info, warn};
 
-use crate::{facts::BlockNumHash, store::MonitorStore};
+use crate::{input::facts::BlockNumHash, store::MonitorStore};
 use tempo_hardfork::TempoHardfork;
 
 use super::{

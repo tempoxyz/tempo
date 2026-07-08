@@ -10,10 +10,12 @@ use std::{
 };
 
 use crate::{
-    coverage::{CheckResult, CoverageRecord},
+    diagnostics::{
+        coverage::{CheckResult, CoverageRecord},
+        findings::FindingKey,
+    },
     entity::DirtyEntity,
-    facts::{BlockFacts, BlockNumHash, OrderedLog, ReceiptFacts, TxFacts},
-    findings::FindingKey,
+    input::facts::{BlockFacts, BlockNumHash, OrderedLog, ReceiptFacts, TxFacts},
     store::{
         AggregateUpdate, BlockCommit, BootstrapPolicy, DeliveryRecord, DeliveryStatus,
         FinalizedBlockRecord, FindingState, HistoryUpdate, KeysetUpdate, MonitorHealthUpdate,

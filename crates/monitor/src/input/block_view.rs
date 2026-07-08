@@ -1,10 +1,12 @@
 //! Immutable monitor-facing view consumed by invariant checks.
 
 use crate::{
-    coverage::CoverageRecord,
+    diagnostics::coverage::CoverageRecord,
     entity::DirtyEntity,
-    facts::{BlockFacts, DecodedEvent, OrderedLog, ReceiptFacts, TxFacts},
-    state_view::{HistoryView, StateReadView},
+    input::{
+        facts::{BlockFacts, DecodedEvent, OrderedLog, ReceiptFacts, TxFacts},
+        state_view::{HistoryView, StateReadView},
+    },
 };
 use serde::{Deserialize, Serialize};
 

@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    diagnostics::evidence::ViolationEvidence,
     entity::EntityKey,
-    evidence::ViolationEvidence,
-    facts::BlockNumHash,
+    input::facts::BlockNumHash,
     invariants::meta::{InvariantId, Severity},
 };
 

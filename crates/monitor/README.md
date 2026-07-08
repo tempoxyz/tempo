@@ -6,6 +6,16 @@ It owns monitor-domain types, normalized finalized-block facts, invariant metada
 
 Core modules avoid Reth provider and notification types. Reth integration is isolated behind the `reth` feature in `monitor::reth`.
 
+## Module layout
+
+- `input`: monitor-owned finalized chain input facts, normalization, and read views.
+- `diagnostics`: coverage/check outcomes, evidence, finding lifecycle types, and typed report payloads.
+- `invariants`: invariant identifiers and metadata.
+- `entity`: monitored protocol entity keys.
+- `processor`: store-backed finalized-block processing and commit construction. Enabled by `store`.
+- `store`: durable commit contract, MDBX/in-memory backends, and outbox worker/sink primitives. Enabled by `store`.
+- `reth`: Reth provider/ExEx adapter. Enabled by `reth`.
+
 ## Features
 
 - default: no optional features enabled.

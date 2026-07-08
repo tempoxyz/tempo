@@ -1,14 +1,16 @@
 use super::*;
 use crate::{
-    coverage::{CheckOutcome, CheckResult, CoverageReason, CoverageRecord, CoverageStatus},
+    diagnostics::{
+        coverage::{CheckOutcome, CheckResult, CoverageReason, CoverageRecord, CoverageStatus},
+        findings::{FindingStatus, FindingTransition, MonitorHealthSignal, OutboxEventKind},
+        reports::FINDING_REPORT_SCHEMA_V1,
+    },
     entity::{DirtyEntity, DirtyReason, EntityKey},
-    facts::{
+    input::facts::{
         BlockFacts, BlockNumHash, BlockWithParent, FactValue, HeaderFacts, OrderedLog,
         ReceiptFacts, TxEnvelopeFacts, TxFacts,
     },
-    findings::{FindingStatus, FindingTransition, MonitorHealthSignal, OutboxEventKind},
     invariants::meta::{InvariantId, Severity, ids},
-    reports::FINDING_REPORT_SCHEMA_V1,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use std::num::NonZeroU64;
@@ -366,7 +368,7 @@ fn commit_persists_coverage_and_inconclusive_outcome() -> eyre::Result<()> {
         status: CoverageStatus::Degraded,
         reasons: vec![CoverageReason::TaintedTable("block_facts".into())],
     };
-    let gap = crate::coverage::CoverageGap {
+    let gap = crate::diagnostics::coverage::CoverageGap {
         status: CoverageStatus::Degraded,
         reason: CoverageReason::TaintedTable("block_facts".into()),
         detail: "tainted".into(),

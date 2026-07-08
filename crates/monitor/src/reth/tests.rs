@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use tempo_hardfork::TempoHardfork;
 
 use crate::{
-    facts::{BlockFacts, BlockNumHash, BlockWithParent, HeaderFacts},
+    input::facts::{BlockFacts, BlockNumHash, BlockWithParent, HeaderFacts},
     processor::FinalizedBlockInput,
     reth::*,
     store::{BootstrapPolicy, InMemoryMonitorStore, MonitorStore},

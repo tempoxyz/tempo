@@ -4,12 +4,14 @@
 //! builds durable commit rows atomically with finalized block processing.
 
 use crate::{
-    coverage::{CheckOutcome, CheckResult, CoverageGap, CoverageRecord},
-    entity::EntityKey,
-    evidence::{EvidenceItem, ExpectedValue, ObservedValue},
-    findings::{
-        FindingKey, FindingStatus, FindingTransition, MonitorHealthSignal, OutboxEventKind,
+    diagnostics::{
+        coverage::{CheckOutcome, CheckResult, CoverageGap, CoverageRecord},
+        evidence::{EvidenceItem, ExpectedValue, ObservedValue},
+        findings::{
+            FindingKey, FindingStatus, FindingTransition, MonitorHealthSignal, OutboxEventKind,
+        },
     },
+    entity::EntityKey,
     invariants::meta::{InvariantId, Severity},
     processor::FinalizedBlockInput,
     store::{MonitorHealthUpdate, OutboxEvent},
@@ -43,7 +45,7 @@ pub struct FindingReportV1 {
     pub finding_key: FindingKey,
     pub status: FindingStatus,
     pub transition: FindingTransition,
-    pub block: crate::facts::BlockWithParent,
+    pub block: crate::input::facts::BlockWithParent,
     pub entity: Option<EntityKey>,
     pub expected: ExpectedValue,
     pub observed: Vec<ObservedValue>,
@@ -57,7 +59,7 @@ pub struct CoverageGapReportV1 {
     pub summary: String,
     pub invariant_id: InvariantId,
     pub severity: Severity,
-    pub block: crate::facts::BlockWithParent,
+    pub block: crate::input::facts::BlockWithParent,
     pub entity: Option<EntityKey>,
     pub coverage: CoverageRecord,
     pub gap: CoverageGap,

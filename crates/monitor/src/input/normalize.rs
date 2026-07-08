@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256};
 use tempo_hardfork::TempoHardfork;
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 
-use crate::facts::{
+use crate::input::facts::{
     BlockFacts, BlockNumHash, BlockWithParent, FactValue, HeaderFacts, ReceiptFacts,
     TxEnvelopeFacts, TxFacts,
 };

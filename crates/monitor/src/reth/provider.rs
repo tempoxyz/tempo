@@ -6,8 +6,10 @@ use tempo_hardfork::TempoHardfork;
 use tempo_primitives::{Block as TempoBlock, TempoReceipt};
 
 use crate::{
-    facts::{BlockNumHash, BlockWithParent, FactValue, OrderedLog, ReceiptFacts},
-    normalize::{block_facts_from_tempo_header, tx_facts_from_tempo_envelope},
+    input::{
+        facts::{BlockNumHash, BlockWithParent, FactValue, OrderedLog, ReceiptFacts},
+        normalize::{block_facts_from_tempo_header, tx_facts_from_tempo_envelope},
+    },
     processor::FinalizedBlockInput,
     reth::{AdapterError, AdapterResult, FinalizedBlockSource},
 };

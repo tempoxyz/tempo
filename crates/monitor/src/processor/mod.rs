@@ -7,8 +7,8 @@ mod checks;
 use checks::{CheckSummary, check_outcome_label, run_block_checks};
 
 use crate::{
-    facts::{BlockFacts, BlockNumHash, BlockWithParent, OrderedLog, ReceiptFacts, TxFacts},
-    reports::{ReportError, ReportingPolicy},
+    diagnostics::reports::{ReportError, ReportingPolicy},
+    input::facts::{BlockFacts, BlockNumHash, BlockWithParent, OrderedLog, ReceiptFacts, TxFacts},
     store::{BlockCommit, FinalizedBlockRecord, MonitorStore, StoreError},
 };
 use serde::{Deserialize, Serialize};
@@ -181,13 +181,15 @@ pub fn validate_input(input: &FinalizedBlockInput) -> Result<(), ProcessorError>
 mod tests {
     use super::*;
     use crate::{
-        facts::{
+        diagnostics::{
+            findings::{FindingStatus, OutboxEventKind},
+            reports::{COVERAGE_GAP_REPORT_SCHEMA_V1, FINDING_REPORT_SCHEMA_V1},
+        },
+        input::facts::{
             BlockFacts, BlockWithParent, FactValue, HeaderFacts, ReceiptFacts, TxEnvelopeFacts,
             TxFacts,
         },
-        findings::{FindingStatus, OutboxEventKind},
         invariants::meta::{Severity, ids},
-        reports::{COVERAGE_GAP_REPORT_SCHEMA_V1, FINDING_REPORT_SCHEMA_V1},
         store::{
             BootstrapPolicy, InMemoryMonitorStore, JsonlOutboxSink, MonitorStore, OutboxWorker,
             OutboxWorkerConfig,

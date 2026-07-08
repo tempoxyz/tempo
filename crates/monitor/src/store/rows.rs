@@ -4,8 +4,8 @@
 //! They must not embed Reth provider, notification, or table types.
 
 use crate::{
-    facts::{BlockNumHash, BlockWithParent},
-    findings::{FindingKey, FindingStatus, FindingTransition, OutboxEventKind},
+    diagnostics::findings::{FindingKey, FindingStatus, FindingTransition, OutboxEventKind},
+    input::facts::{BlockNumHash, BlockWithParent},
 };
 use serde::{Deserialize, Serialize};
 

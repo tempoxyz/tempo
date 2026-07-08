@@ -8,10 +8,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    coverage::{CheckResult, CoverageRecord},
+    diagnostics::{
+        coverage::{CheckResult, CoverageRecord},
+        findings::{FindingTransition, MonitorHealthSignal},
+    },
     entity::DirtyEntity,
-    facts::{BlockFacts, BlockNumHash, OrderedLog, ReceiptFacts, TxFacts},
-    findings::{FindingTransition, MonitorHealthSignal},
+    input::facts::{BlockFacts, BlockNumHash, OrderedLog, ReceiptFacts, TxFacts},
     store::{FinalizedBlockRecord, OutboxEvent},
 };
 

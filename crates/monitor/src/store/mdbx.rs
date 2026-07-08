@@ -13,8 +13,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{path::Path, sync::Arc};
 
 use crate::{
-    facts::BlockNumHash,
-    findings::FindingKey,
+    diagnostics::findings::FindingKey,
+    input::facts::BlockNumHash,
     store::{
         BlockCommit, BootstrapPolicy, DeliveryRecord, DeliveryStatus, FinalizedBlockRecord,
         FindingState, MigrationStatus, MonitorStore, OutboxRow, Result, SCHEMA_VERSION_V0,

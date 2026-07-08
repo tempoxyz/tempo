@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
-use crate::{evidence::EvidenceRef, facts::BlockNumHash};
+use crate::{diagnostics::evidence::EvidenceRef, input::facts::BlockNumHash};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EntityKind {

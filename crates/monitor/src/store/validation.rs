@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    findings::{FindingKey, MonitorHealthSignal},
+    diagnostics::findings::{FindingKey, MonitorHealthSignal},
     invariants::meta::{InvariantId, initial_catalog},
     store::{BlockCommit, BootstrapPolicy, MonitorHealthUpdate, Result, StoreError},
 };

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     entity::EntityKey,
-    facts::BlockNumHash,
+    input::facts::BlockNumHash,
     invariants::meta::{InvariantId, Severity},
 };
 
