@@ -2,8 +2,8 @@
 #
 # This preset keeps the same user and amount across both workload transactions.
 # It uses local TIP20 token 1 as the NBUSD stand-in for the DirectSwap leg. The
-# setup phase deploys mainnet runtime bytecode wrapped as initcode, then sends
-# one deterministic prewarm/readiness flow before measured workload starts.
+# setup phase deploys mainnet runtime bytecode wrapped as initcode and seeds
+# the local route liquidity before measured workload starts.
 chain_id: 1337
 
 gas:
@@ -163,80 +163,6 @@ setup:
           args:
             - { var: setup.directswap.address }
             - 100000000000
-    - id: neobank_directswap_prewarm
-      bindings:
-        user:
-          account:
-            pool: users
-            select: { index: 0 }
-        fee_payer:
-          account:
-            pool: fee_payers
-            select: { index: 0 }
-        amount:
-          u256:
-            const: 100000000
-      tx:
-        type: tempo
-        from: { var: user.ref }
-        sponsor: { var: fee_payer.ref }
-        gas_limit: 8000000
-        max_fee_per_gas: 100000000000
-        max_priority_fee_per_gas: 100000000000
-        fee_token: "0x20c0000000000000000000000000000000000000"
-        expiring_nonce: true
-        valid_for_secs: 25
-        calls:
-          - to: "0x20c0000000000000000000000000000000000001"
-            abi: ERC20
-            function: approve
-            args:
-              - { var: setup.directswap.address }
-              - { var: amount }
-          - to: { var: setup.directswap.address }
-            abi: DirectSwap
-            function: swapExactIn
-            args:
-              - "0x20c0000000000000000000000000000000000001"
-              - "0x20c0000000000000000000000000000000000000"
-              - { var: amount }
-    - id: neobank_vault_prewarm
-      bindings:
-        user:
-          account:
-            pool: users
-            select: { index: 0 }
-        fee_payer:
-          account:
-            pool: fee_payers
-            select: { index: 0 }
-        amount:
-          u256:
-            const: 100000000
-      tx:
-        type: tempo
-        from: { var: user.ref }
-        sponsor: { var: fee_payer.ref }
-        gas_limit: 8000000
-        max_fee_per_gas: 100000000000
-        max_priority_fee_per_gas: 100000000000
-        fee_token: "0x20c0000000000000000000000000000000000000"
-        expiring_nonce: true
-        valid_for_secs: 25
-        calls:
-          - to: "0x20c0000000000000000000000000000000000000"
-            abi: ERC20
-            function: approve
-            args:
-              - { var: setup.privy_fee_wrapper.address }
-              - { var: amount }
-          - to: { var: setup.privy_fee_wrapper.address }
-            abi: ERC4626Vault
-            function: deposit
-            args:
-              - { var: amount }
-              - { var: user.address }
-
 templates:
   neobank_directswap:
     type: tempo
