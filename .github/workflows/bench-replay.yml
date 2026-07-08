@@ -598,6 +598,9 @@ jobs:
       - name: Compare & comment
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
+          PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
@@ -610,8 +613,8 @@ jobs:
               comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
             }
 
-            const sha = '${{ steps.push-charts.outputs.sha }}';
-            const chartPath = '${{ steps.push-charts.outputs.path }}';
+            const sha = process.env.PUSH_CHARTS_SHA;
+            const chartPath = process.env.PUSH_CHARTS_PATH;
 
             if (sha && chartPath) {
               const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/${chartPath}`;
@@ -645,6 +648,9 @@ jobs:
 
       - name: Write job summary
         if: success()
+        env:
+          PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
+          PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         run: |
           {
             echo "Chain: \`${BENCH_CHAIN:-mainnet}\`"
@@ -656,8 +662,8 @@ jobs:
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-          CHART_SHA="${{ steps.push-charts.outputs.sha }}"
-          CHART_PATH="${{ steps.push-charts.outputs.path }}"
+          CHART_SHA="${PUSH_CHARTS_SHA}"
+          CHART_PATH="${PUSH_CHARTS_PATH}"
           if [ -n "$CHART_SHA" ] && [ -n "$CHART_PATH" ]; then
             BASE_URL="https://raw.githubusercontent.com/decofe/tempo-bench-charts/${CHART_SHA}/${CHART_PATH}"
             {
@@ -715,17 +721,25 @@ jobs:
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
           SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+          STEP_CHECKOUT_REF_OUTCOME: ${{ steps.checkout-ref.outcome }}
+          STEP_PR_INFO_OUTCOME: ${{ steps.pr-info.outcome }}
+          STEP_REFS_OUTCOME: ${{ steps.refs.outcome }}
+          STEP_BENCH_OUTCOME: ${{ steps.bench.outcome }}
+          STEP_RESULTS_OUTCOME: ${{ steps.results.outcome }}
+          STEP_CHARTS_OUTCOME: ${{ steps.charts.outcome }}
+          STEP_UPLOAD_RESULTS_OUTCOME: ${{ steps.upload-results.outcome }}
+          STEP_PUSH_CHARTS_OUTCOME: ${{ steps.push-charts.outcome }}
         with:
           script: |
             const stepsStatus = [
-              ['resolving checkout ref', '${{ steps.checkout-ref.outcome }}'],
-              ['resolving PR info', '${{ steps.pr-info.outcome }}'],
-              ['resolving refs', '${{ steps.refs.outcome }}'],
-              ['running replay benchmark', '${{ steps.bench.outcome }}'],
-              ['parsing results', '${{ steps.results.outcome }}'],
-              ['generating charts', '${{ steps.charts.outcome }}'],
-              ['uploading results', '${{ steps.upload-results.outcome }}'],
-              ['pushing charts', '${{ steps.push-charts.outcome }}'],
+              ['resolving checkout ref', process.env.STEP_CHECKOUT_REF_OUTCOME],
+              ['resolving PR info', process.env.STEP_PR_INFO_OUTCOME],
+              ['resolving refs', process.env.STEP_REFS_OUTCOME],
+              ['running replay benchmark', process.env.STEP_BENCH_OUTCOME],
+              ['parsing results', process.env.STEP_RESULTS_OUTCOME],
+              ['generating charts', process.env.STEP_CHARTS_OUTCOME],
+              ['uploading results', process.env.STEP_UPLOAD_RESULTS_OUTCOME],
+              ['pushing charts', process.env.STEP_PUSH_CHARTS_OUTCOME],
             ];
             const failed = stepsStatus.find(([, outcome]) => outcome === 'failure');
             const failedStep = failed ? failed[0] : 'unknown step';

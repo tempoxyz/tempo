@@ -9,9 +9,3 @@ self-hosted-runner:
     - depot-ubuntu-latest-arm-16
     - Linux
     - X64
-paths:
-  .github/workflows/**/*.yml:
-    # ShellCheck findings are handled by dedicated repo jobs/scripts. Keep
-    # actionlint focused on workflow structure and expression validation.
-    ignore:
-      - "shellcheck reported issue"

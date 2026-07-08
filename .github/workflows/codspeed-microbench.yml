@@ -143,7 +143,11 @@ jobs:
           printf '%q ' "${run_args[@]}"
           printf '\n'
       - name: Build benchmark target(s)
-        run: cargo codspeed build ${{ steps.args.outputs.build_args }}
+        env:
+          BUILD_ARGS: ${{ steps.args.outputs.build_args }}
+        run: |
+          # shellcheck disable=SC2086  # BUILD_ARGS must word-split into multiple cargo args
+          cargo codspeed build $BUILD_ARGS
       - name: Run benchmark target(s)
         uses: CodSpeedHQ/action@c5e3fca5233fb854c7193713adfbe99d3910f8d2 # v4.15.1 # zizmor: ignore[ref-version-mismatch]
         with:

@@ -149,6 +149,9 @@ jobs:
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
           SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+          STALE_AGE_HOURS: ${{ steps.refs.outputs.stale-age-hours }}
+          NIGHTLY_CREATED: ${{ steps.refs.outputs.nightly-created }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         with:
           script: |
             const token = process.env.SLACK_BENCH_BOT_TOKEN;
@@ -158,11 +161,11 @@ jobs:
               return;
             }
 
-            const repo = '${{ github.repository }}';
+            const repo = `${context.repo.owner}/${context.repo.repo}`;
             const runUrl = `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
-            const ageHours = '${{ steps.refs.outputs.stale-age-hours }}';
-            const created = '${{ steps.refs.outputs.nightly-created }}';
-            const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+            const ageHours = process.env.STALE_AGE_HOURS;
+            const created = process.env.NIGHTLY_CREATED;
+            const featureRef = process.env.FEATURE_REF;
             const shortSha = featureRef.slice(0, 8);
             const blocks = [
               {

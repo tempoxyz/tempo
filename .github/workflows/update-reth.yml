@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 120
     steps:
       # ── checkout ───────────────────────────────────────────────
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
           token: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
@@ -173,9 +173,11 @@ jobs:
             exit 0
           fi
 
-          echo "bumped=true" >> "$GITHUB_OUTPUT"
-          echo "old_rev=$BASE_REV" >> "$GITHUB_OUTPUT"
-          echo "new_rev=$NEW_REV" >> "$GITHUB_OUTPUT"
+          {
+            echo "bumped=true"
+            echo "old_rev=$BASE_REV"
+            echo "new_rev=$NEW_REV"
+          } >> "$GITHUB_OUTPUT"
 
           # Update all reth rev references in Cargo.toml files
           find . -name 'Cargo.toml' -exec sed -i "s|paradigmxyz/reth\", rev = \"${CURRENT_REV}\"|paradigmxyz/reth\", rev = \"${NEW_REV}\"|g" {} +
@@ -184,9 +186,11 @@ jobs:
       # ── commit rev bump if changed ──────────────────────────────
       - name: Commit reth rev bump
         if: steps.update.outputs.bumped == 'true'
+        env:
+          NEW_REV: ${{ steps.update.outputs.new_rev }}
         run: |
           git add -A
-          git commit -m "deps: bump reth rev to ${{ steps.update.outputs.new_rev }} ($(date -u +%Y-%m-%d))"
+          git commit -m "deps: bump reth rev to ${NEW_REV} ($(date -u +%Y-%m-%d))"
 
       # ── cargo check + Amp fix loop ────────────────────────────
       - name: Fix compilation errors
@@ -363,6 +367,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+          DETECT_EXISTING_PR: ${{ steps.detect.outputs.existing_pr }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
           TITLE="deps: update reth from main ($DATE)"
@@ -428,7 +433,7 @@ jobs:
               echo ""
             fi
 
-            echo "[GitHub Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "[GitHub Workflow](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
           } > /tmp/pr-body.txt
 
           # Skip PR if there are no commits between the branches
@@ -439,7 +444,7 @@ jobs:
           fi
 
           # Check for existing PR
-          EXISTING_PR="${{ steps.detect.outputs.existing_pr }}"
+          EXISTING_PR="${DETECT_EXISTING_PR}"
 
           echo "PR title: $TITLE"
           echo "Commits ahead: $COMMITS_AHEAD"
@@ -483,7 +488,7 @@ jobs:
           fi
 
           BENCH_COMMAND="derek bench preset=tip20"
-          EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+          EXISTING_BENCH_COMMENT=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --paginate \
             --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
             | head -n1)
@@ -639,14 +644,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
+          OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
+          NEW_REV_IN: ${{ steps.update.outputs.new_rev }}
+          BUMPED_IN: ${{ steps.update.outputs.bumped }}
+          CLIPPY_PASSED_IN: ${{ steps.check-loop.outputs.clippy_passed }}
+          TEST_PASSED_IN: ${{ steps.test-loop.outputs.test_passed }}
+          JOB_STATUS_IN: ${{ job.status }}
         run: |
           PR_BRANCH="reth-auto-bump"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          OLD_REV="${{ steps.update.outputs.old_rev }}"
-          NEW_REV="${{ steps.update.outputs.new_rev }}"
-          BUMPED="${{ steps.update.outputs.bumped }}"
-          CLIPPY_PASSED="${{ steps.check-loop.outputs.clippy_passed }}"
-          TEST_PASSED="${{ steps.test-loop.outputs.test_passed }}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          OLD_REV="${OLD_REV_IN}"
+          NEW_REV="${NEW_REV_IN}"
+          BUMPED="${BUMPED_IN}"
+          CLIPPY_PASSED="${CLIPPY_PASSED_IN}"
+          TEST_PASSED="${TEST_PASSED_IN}"
 
           PR_NUMBER=""
           PR_URL=""
@@ -656,7 +667,7 @@ jobs:
           fi
 
           # Determine overall status
-          JOB_STATUS="${{ job.status }}"
+          JOB_STATUS="${JOB_STATUS_IN}"
           if [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             STATUS="succeeded"

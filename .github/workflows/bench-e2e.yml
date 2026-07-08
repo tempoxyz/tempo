@@ -853,6 +853,8 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
           BENCH_GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
         run: |
           if [ "$BENCH_OTLP" != "true" ]; then
@@ -894,8 +896,8 @@ jobs:
             --gas-limit "$BENCH_GAS_LIMIT"
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
-            --baseline-name "${{ steps.refs.outputs.baseline-name }}"
-            --feature-name "${{ steps.refs.outputs.feature-name }}"
+            --baseline-name "$BASELINE_NAME"
+            --feature-name "$FEATURE_NAME"
             --tune
             --no-default-features
             --features "$BENCH_FEATURES"
@@ -969,8 +971,8 @@ jobs:
             tps="$BENCH_TPS"
             accounts="$BENCH_ACCOUNTS"
             max-concurrent-requests="$BENCH_MAX_CONCURRENT_REQUESTS"
-            baseline="${{ steps.refs.outputs.baseline-name }}"
-            feature="${{ steps.refs.outputs.feature-name }}"
+            baseline="$BASELINE_NAME"
+            feature="$FEATURE_NAME"
             baseline-hardfork="$BENCH_BASELINE_HARDFORK"
             feature-hardfork="$BENCH_FEATURE_HARDFORK"
             gas-limit="$BENCH_GAS_LIMIT"

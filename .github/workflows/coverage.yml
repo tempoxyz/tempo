@@ -130,6 +130,7 @@ jobs:
           fi
 
           # Merge profdata
+          # shellcheck disable=SC2086  # PROFDATA_FILES must word-split into multiple file args
           "$LLVM_BIN/llvm-profdata" merge -sparse $PROFDATA_FILES -o coverage-report/merged.profdata
 
           # Build object flags
@@ -153,6 +154,7 @@ jobs:
           fi
 
           # Generate report
+          # shellcheck disable=SC2086  # OBJECT_FLAGS must word-split into multiple --object args
           "$LLVM_BIN/llvm-cov" report \
             --instr-profile=coverage-report/merged.profdata \
             $OBJECT_FLAGS \
@@ -176,6 +178,7 @@ jobs:
           wc -l coverage-report/summary.txt || true
 
           # Generate lcov
+          # shellcheck disable=SC2086  # OBJECT_FLAGS must word-split into multiple --object args
           "$LLVM_BIN/llvm-cov" export \
             --format=lcov \
             --instr-profile=coverage-report/merged.profdata \
