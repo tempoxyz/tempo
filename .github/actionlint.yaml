@@ -7,5 +7,6 @@ self-hosted-runner:
     - depot-ubuntu-latest-16
     - depot-ubuntu-latest-32
     - depot-ubuntu-latest-arm-16
+    - depot-macos-15
     - Linux
     - X64
