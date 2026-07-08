@@ -380,7 +380,10 @@ mod tests {
                     EvmPrecompileStorageProvider::new_with_gas_limit(internals, &cfg, 1_000_000, 0);
                 StorageCtx::enter(&mut provider, || {
                     if with_marker {
-                        StorageCtx.set_code(epoch_account, Bytecode::new_legacy([0xef].into()))?;
+                        StorageCtx.set_code(
+                            epoch_account,
+                            Bytecode::new_legacy(TemporaryStorageAccount::MARKER_CODE.into()),
+                        )?;
                     }
                     store(SENDER, key, value)
                 })?;

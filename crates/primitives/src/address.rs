@@ -17,6 +17,12 @@ use tempo_contracts::{
 pub struct TemporaryStorageAccount(Address);
 
 impl TemporaryStorageAccount {
+    /// Code deployed to epoch accounts so they are non-empty and EIP-161 state clear
+    /// cannot drop their storage. These bytes are the preimage of TIP-1040's
+    /// `EPOCH_ACCOUNT_CODE_HASH` (`keccak256` of this string), the code hash the spec
+    /// mandates for epoch accounts.
+    pub const MARKER_CODE: &'static [u8] = b"tempo.tip1040.epoch_account";
+
     /// Returns the account storing epoch `epoch`'s data.
     ///
     /// The `+ 1` offset reserves `TEMPORARY_STORAGE_ADDRESS` itself for the precompile
@@ -235,6 +241,17 @@ mod tests {
         let mut tip20_bytes = [0u8; 20];
         tip20_bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
         assert!(!Address::from(tip20_bytes).is_valid_master());
+    }
+
+    #[test]
+    fn test_temporary_storage_marker_code_hash() {
+        // TIP-1040 `EPOCH_ACCOUNT_CODE_HASH`.
+        assert_eq!(
+            alloy_primitives::keccak256(TemporaryStorageAccount::MARKER_CODE),
+            alloy_primitives::b256!(
+                "0x36c6e1ae22d067a9cff9a601eb89b47b7e6b9d7170ed08dd74d663e14568066c"
+            )
+        );
     }
 
     #[test]

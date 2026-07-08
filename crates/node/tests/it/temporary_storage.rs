@@ -79,8 +79,8 @@ async fn test_temporary_storage_survives_block_commit() -> eyre::Result<()> {
     let loaded = temporary_storage.temporaryLoad(oog_key).call().await?;
     assert_eq!(loaded, B256::ZERO);
 
-    // The boundary hook deployed the 0xEF marker to the precompile and the current
-    // epoch's account, and the value sits in the epoch account's storage.
+    // The boundary hook deployed the 0xEF marker to the precompile and the TIP-1040
+    // marker to the current epoch's account, and the value sits in that account's storage.
     let epoch_account = TemporaryStorageAccount::for_epoch(store_block / EPOCH_LENGTH).address();
     assert_eq!(
         provider
@@ -89,7 +89,10 @@ async fn test_temporary_storage_survives_block_commit() -> eyre::Result<()> {
             .as_ref(),
         [0xef]
     );
-    assert_eq!(provider.get_code_at(epoch_account).await?.as_ref(), [0xef]);
+    assert_eq!(
+        provider.get_code_at(epoch_account).await?.as_ref(),
+        TemporaryStorageAccount::MARKER_CODE
+    );
 
     let slot = keccak256([sender.as_slice(), key.as_slice()].concat());
     let stored = provider
