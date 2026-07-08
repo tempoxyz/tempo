@@ -33,10 +33,10 @@ const RECONNECT_JITTER: Duration = Duration::from_secs(1);
 
 /// How often websocket pings are sent to keep the connection to the upstream
 /// node alive (and to detect dead connections, triggering a reconnect).
-const PING_INTERVAL: Duration = Duration::from_secs(30);
+const PING_INTERVAL: Duration = Duration::from_secs(5);
 /// How long the connection may stay inactive (no pongs or other messages)
 /// before it is considered dead and closed.
-const PING_INACTIVE_LIMIT: Duration = Duration::from_secs(40);
+const PING_INACTIVE_LIMIT: Duration = Duration::from_secs(10);
 /// How many times the connection may exceed the inactivity limit before it is
 /// closed.
 const PING_MAX_FAILURES: usize = 1;
