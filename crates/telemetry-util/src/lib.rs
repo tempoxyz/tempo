@@ -201,3 +201,66 @@ impl<T: std::fmt::Display> std::fmt::Display for DisplayOption<'_, T> {
         }
     }
 }
+
+/// Formats a [`url::Url`] with any embedded username or password redacted.
+///
+/// This is useful for logging endpoints that may include HTTP basic auth
+/// credentials in their userinfo component.
+///
+/// # Example
+///
+/// ```
+/// use tempo_telemetry_util::display_redacted_url;
+///
+/// let url = url::Url::parse("wss://user:secret@example.com").unwrap();
+/// tracing::warn!(
+///     url = %display_redacted_url(&url),
+///     "connection lost",
+/// );
+/// ```
+pub fn display_redacted_url(url: &url::Url) -> DisplayRedactedUrl<'_> {
+    DisplayRedactedUrl(url)
+}
+
+pub struct DisplayRedactedUrl<'a>(&'a url::Url);
+
+impl std::fmt::Display for DisplayRedactedUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut redacted = self.0.clone();
+
+        if !redacted.username().is_empty() {
+            let _ = redacted.set_username("redacted");
+        }
+
+        if redacted.password().is_some() {
+            let _ = redacted.set_password(Some("redacted"));
+        }
+
+        write!(f, "{redacted}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_redacted_url_removes_userinfo() {
+        let url = url::Url::parse("wss://user:secret@example.com:8546/path").unwrap();
+
+        assert_eq!(
+            display_redacted_url(&url).to_string(),
+            "wss://redacted:redacted@example.com:8546/path"
+        );
+    }
+
+    #[test]
+    fn display_redacted_url_leaves_public_url_unchanged() {
+        let url = url::Url::parse("wss://example.com:8546/path").unwrap();
+
+        assert_eq!(
+            display_redacted_url(&url).to_string(),
+            "wss://example.com:8546/path"
+        );
+    }
+}

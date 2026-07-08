@@ -14,7 +14,7 @@ use jsonrpsee::{
 };
 use rand_08::Rng as _;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
-use tempo_telemetry_util::display_duration;
+use tempo_telemetry_util::{display_duration, display_redacted_url};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -89,7 +89,7 @@ where
                                 %reason,
                                 attempts,
                                 reconnect_in = %display_duration(reconnect_in),
-                                url = %self.url,
+                                url = %display_redacted_url(self.url),
                                 "connecting to upstream node failed, attempting again",
                             ));
                             self.pending_connect.replace({
@@ -139,7 +139,7 @@ where
                         }
                         None => {
                             warn_span!("event_subscription").in_scope(|| warn!(
-                                url = %self.url,
+                                url = %display_redacted_url(self.url),
                                 "event stream terminated",
                             ));
                             self.event_stream = inactive_event_stream();
@@ -176,7 +176,10 @@ where
         if client.is_connected() {
             self.pending_stream.replace(subscribe(client));
         } else {
-            warn!(url = %self.url, "upstream client disconnected, reconnecting");
+            warn!(
+                url = %display_redacted_url(self.url),
+                "upstream client disconnected, reconnecting"
+            );
             self.connection.take();
             self.pending_connect.replace(connect(self.url, 1));
         }

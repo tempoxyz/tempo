@@ -16,3 +16,4 @@ publish.workspace = true
 eyre.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+url.workspace = true

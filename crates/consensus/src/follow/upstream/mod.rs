@@ -1,6 +1,6 @@
 //! Actors to communicate with the upstream node.
 //!
-//! Maintains a regular connection to an upstream node over websocker
+//! Maintains a regular connection to an upstream node over websocket
 //! or `in_process::Actor` as an in-process actor working off of channels.
 
 use alloy_rpc_client::BuiltInConnectionString;
@@ -8,6 +8,7 @@ use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
 use eyre::WrapErr as _;
 use tempo_node::rpc::consensus::Event;
+use tempo_telemetry_util::display_redacted_url;
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -50,14 +51,9 @@ pub(crate) fn init<TContext>(
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = ingress::Mailbox::new(tx);
 
-    let url = Box::leak(Box::from(
-        parse_upstream_url(&config.upstream_url).wrap_err_with(|| {
-            format!(
-                "failed parsing upstream location as websocket URL: `{}`",
-                config.upstream_url
-            )
-        })?,
-    ));
+    let url = parse_upstream_url(&config.upstream_url)
+        .wrap_err_with(|| redact_upstream_url_for_error(&config.upstream_url))?;
+    let url = Box::leak(Box::from(url));
     let actor = Actor {
         context: ContextCell::new(context),
         connection: None,
@@ -82,6 +78,16 @@ fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
         unreachable!("try_as_ws always returns a websocket connection string on success")
     };
     Ok(url)
+}
+
+fn redact_upstream_url_for_error(url: &str) -> String {
+    match Url::parse(url) {
+        Ok(url) => format!(
+            "failed parsing upstream location as websocket URL: `{}`",
+            display_redacted_url(&url)
+        ),
+        Err(_) => format!("failed parsing upstream location as websocket URL: `{url}`"),
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +125,24 @@ mod tests {
     fn parse_upstream_url_rejects_non_url_values() {
         assert!(parse_upstream_url("not a url").is_err());
         assert!(parse_upstream_url("localhost").is_err());
+    }
+
+    #[test]
+    fn redact_upstream_url_for_error_removes_userinfo() {
+        assert_eq!(
+            redact_upstream_url_for_error("http://user:secret@upstream.example:8546"),
+            concat!(
+                "failed parsing upstream location as websocket URL: ",
+                "`http://redacted:redacted@upstream.example:8546/`"
+            )
+        );
+    }
+
+    #[test]
+    fn redact_upstream_url_for_error_preserves_unparseable_input() {
+        assert_eq!(
+            redact_upstream_url_for_error("not a url"),
+            "failed parsing upstream location as websocket URL: `not a url`"
+        );
     }
 }

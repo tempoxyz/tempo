@@ -13491,6 +13491,7 @@ dependencies = [
  "eyre",
  "jiff",
  "tracing",
+ "url",
 ]
 
 [[package]]
