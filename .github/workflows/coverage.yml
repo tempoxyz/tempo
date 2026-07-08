@@ -31,9 +31,9 @@ jobs:
             const maxWaitMinutes = 30;
             const pollIntervalSeconds = 30;
             const maxAttempts = (maxWaitMinutes * 60) / pollIntervalSeconds;
-            
+
             console.log(`Waiting for Test workflow to complete for commit: ${commitSha}`);
-            
+
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const { data: runs } = await github.rest.actions.listWorkflowRuns({
                 owner: context.repo.owner,
@@ -42,11 +42,11 @@ jobs:
                 head_sha: commitSha,
                 per_page: 1
               });
-              
+
               if (runs.workflow_runs.length > 0) {
                 const run = runs.workflow_runs[0];
                 console.log(`Test workflow status: ${run.status}, conclusion: ${run.conclusion}`);
-                
+
                 if (run.status === 'completed') {
                   if (run.conclusion === 'success') {
                     console.log('Test workflow completed successfully');
@@ -59,13 +59,13 @@ jobs:
               } else {
                 console.log('No Test workflow run found yet');
               }
-              
+
               if (attempt < maxAttempts) {
                 console.log(`Attempt ${attempt}/${maxAttempts}, waiting ${pollIntervalSeconds}s...`);
                 await new Promise(r => setTimeout(r, pollIntervalSeconds * 1000));
               }
             }
-            
+
             console.log('Timeout waiting for Test workflow, proceeding with forge coverage only');
 
   merge-coverage:
@@ -82,7 +82,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           components: llvm-tools-preview
 
@@ -170,7 +170,7 @@ jobs:
 
           echo "=== Precompiles Coverage ==="
           cat coverage-report/summary.txt
-          
+
           echo ""
           echo "=== Debug: Line count in summary.txt ==="
           wc -l coverage-report/summary.txt || true
@@ -297,24 +297,24 @@ jobs:
 
                 for (const line of fileLines) {
                   const parts = line.trim().split(/\s+/);
-                  
+
                   // llvm-cov report format (13 columns with branches):
                   // Filename Regions MissedRegions RegionCover Functions MissedFunctions FuncCover Lines MissedLines LineCover Branches MissedBranches BranchCover
-                  
+
                   if (parts.length >= 10) {
                     const fullPath = parts[0];
-                    
+
                     // Lines data is at fixed positions: indices 7, 8, 9
                     const linesTotal = parseInt(parts[7]) || 0;
                     const linesMissed = parseInt(parts[8]) || 0;
                     const linesCoverage = parts[9];
                     const linesCovered = linesTotal - linesMissed;
-                    
+
                     // Determine which crate this file belongs to
                     // Paths are like: precompiles/src/... or contracts/src/...
                     let crateName = null;
                     let shortPath = fullPath;
-                    
+
                     if (fullPath.startsWith('precompiles/')) {
                       crateName = 'precompiles';
                       shortPath = fullPath.substring('precompiles/'.length);
@@ -322,7 +322,7 @@ jobs:
                       crateName = 'contracts';
                       shortPath = fullPath.substring('contracts/'.length);
                     }
-                    
+
                     if (crateName && crates[crateName]) {
                       crates[crateName].files.push({
                         path: shortPath,
@@ -342,31 +342,31 @@ jobs:
                 // Generate report per crate
                 for (const [crateName, data] of Object.entries(crates)) {
                   if (data.files.length === 0) continue;
-                  
-                  const cratePercentage = data.total > 0 
+
+                  const cratePercentage = data.total > 0
                     ? ((data.covered / data.total) * 100).toFixed(2) + '%'
                     : '0.00%';
-                  
+
                   body += `### ${crateName}\n\n`;
                   body += `**Coverage: ${data.covered}/${data.total} lines (${cratePercentage})**\n\n`;
                   body += '<details>\n<summary>File details</summary>\n\n';
                   body += '| File | Lines | Coverage |\n';
                   body += '|------|-------|----------|\n';
-                  
+
                   for (const file of data.files) {
                     body += `| \`${file.path}\` | ${file.covered}/${file.total} | ${file.percentage} |\n`;
                   }
-                  
+
                   body += '\n</details>\n\n';
                 }
 
                 // Add overall total (sum of precompiles + contracts only)
                 const totalCovered = crates['precompiles'].covered + crates['contracts'].covered;
                 const totalLines = crates['precompiles'].total + crates['contracts'].total;
-                const totalPercentage = totalLines > 0 
+                const totalPercentage = totalLines > 0
                   ? ((totalCovered / totalLines) * 100).toFixed(2) + '%'
                   : '0.00%';
-                
+
                 if (totalLines > 0) {
                   body += `### Total: ${totalCovered}/${totalLines} lines (${totalPercentage})\n\n`;
                 }

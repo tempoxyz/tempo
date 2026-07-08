@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
@@ -109,12 +109,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+        uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1 # zizmor: ignore[ref-version-mismatch]
 
       - name: Get build profile
         id: profile
@@ -291,7 +291,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
 
       - name: Open Cargo version bump PR
         env:
