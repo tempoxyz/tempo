@@ -86,6 +86,14 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
+
+    /// Require startup to use the consensus finalization archive as the
+    /// finalized floor. If the archive is empty this will reject pre-populated
+    /// execution layers.
+    ///
+    /// This setting is in preparation for consensus-enriched snapshots and will
+    /// eventually become the default once tempo has fully migrated.
+    pub strict_startup: bool,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -143,7 +151,8 @@ where
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
-            last_finalized_height,
+            finalized_floor,
+            finalized_tip,
         } = alias::marshal::init(
             context.clone(),
             page_cache_ref.clone(),
@@ -157,6 +166,7 @@ where
                 ),
                 max_pending_acks: MAX_PENDING_ACKS,
                 finalized_blocks_retention: self.finalized_blocks_retention,
+                strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
@@ -168,7 +178,8 @@ where
             context.with_label("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
-                last_finalized_height,
+                finalized_floor,
+                finalized_tip,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -182,7 +193,8 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                last_finalized_height,
+                finalized_floor,
+                finalized_tip,
             },
         );
 
@@ -281,7 +293,7 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
-                last_finalized_height,
+                last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
