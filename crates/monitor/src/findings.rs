@@ -1,47 +1,12 @@
-//! Durable evidence and finding domain types.
+//! Durable finding lifecycle domain types.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    coverage::CoverageRecord,
     entity::EntityKey,
-    evidence::{EvidenceRef, EvidenceValue},
-    facts::{BlockNumHash, BlockWithParent},
+    facts::BlockNumHash,
     invariants::meta::{InvariantId, Severity},
-    state_view::StateReadKey,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObservedValue {
-    pub label: String,
-    pub value: EvidenceValue,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExpectedValue {
-    pub label: String,
-    pub condition: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EvidenceItem {
-    StateRead(StateReadKey),
-    ChainRef(EvidenceRef),
-    Note(String),
-    Value(EvidenceValue),
-    Json(serde_json::Value),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ViolationEvidence {
-    pub invariant_id: InvariantId,
-    pub block: BlockWithParent,
-    pub entity: Option<EntityKey>,
-    pub expected: ExpectedValue,
-    pub observed: Vec<ObservedValue>,
-    pub items: Vec<EvidenceItem>,
-    pub coverage: CoverageRecord,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FindingKey {

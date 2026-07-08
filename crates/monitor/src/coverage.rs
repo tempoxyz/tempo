@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     entity::EntityKey,
+    evidence::ViolationEvidence,
     facts::BlockNumHash,
-    findings::ViolationEvidence,
     invariants::meta::{InvariantId, Severity},
 };
 

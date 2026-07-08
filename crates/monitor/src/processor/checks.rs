@@ -2,9 +2,10 @@ use crate::{
     coverage::{
         CheckOutcome, CheckResult, CoverageGap, CoverageReason, CoverageRecord, CoverageStatus,
     },
-    evidence::{EvidenceRef, EvidenceValue},
+    evidence::{
+        EvidenceItem, EvidenceRef, EvidenceValue, ExpectedValue, ObservedValue, ViolationEvidence,
+    },
     facts::FactValue,
-    findings::{EvidenceItem, ExpectedValue, ObservedValue, ViolationEvidence},
     invariants::meta::{InvariantId, Severity, ids},
     processor::FinalizedBlockInput,
 };

@@ -1,9 +1,15 @@
-//! Evidence references and serializable evidence values.
+//! Evidence references, values, and structured check evidence.
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Serialize};
 
-use crate::facts::BlockNumHash;
+use crate::{
+    coverage::CoverageRecord,
+    entity::EntityKey,
+    facts::{BlockNumHash, BlockWithParent},
+    invariants::meta::InvariantId,
+    state_view::StateReadKey,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvidenceRef {
@@ -30,4 +36,36 @@ pub enum EvidenceValue {
     Int(i128),
     Bytes(Bytes),
     Json(serde_json::Value),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedValue {
+    pub label: String,
+    pub value: EvidenceValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedValue {
+    pub label: String,
+    pub condition: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EvidenceItem {
+    StateRead(StateReadKey),
+    ChainRef(EvidenceRef),
+    Note(String),
+    Value(EvidenceValue),
+    Json(serde_json::Value),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViolationEvidence {
+    pub invariant_id: InvariantId,
+    pub block: BlockWithParent,
+    pub entity: Option<EntityKey>,
+    pub expected: ExpectedValue,
+    pub observed: Vec<ObservedValue>,
+    pub items: Vec<EvidenceItem>,
+    pub coverage: CoverageRecord,
 }

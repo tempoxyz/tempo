@@ -6,9 +6,9 @@
 use crate::{
     coverage::{CheckOutcome, CheckResult, CoverageGap, CoverageRecord},
     entity::EntityKey,
+    evidence::{EvidenceItem, ExpectedValue, ObservedValue},
     findings::{
-        EvidenceItem, ExpectedValue, FindingKey, FindingStatus, FindingTransition,
-        MonitorHealthSignal, ObservedValue, OutboxEventKind,
+        FindingKey, FindingStatus, FindingTransition, MonitorHealthSignal, OutboxEventKind,
     },
     invariants::meta::{InvariantId, Severity},
     processor::FinalizedBlockInput,
