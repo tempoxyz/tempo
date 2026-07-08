@@ -352,6 +352,15 @@ pub struct TempoHarnessCapabilities {
 pub struct StateDiff {
     pub accounts: Vec<AccountDiff>,
     pub storage: Vec<StorageChangeOutput>,
+    pub txs: Vec<TxStateDiff>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TxStateDiff {
+    pub block_index: u64,
+    pub tx_index: u64,
+    pub accounts: Vec<AccountDiff>,
+    pub storage: Vec<StorageChangeOutput>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
