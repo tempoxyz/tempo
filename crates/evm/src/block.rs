@@ -258,6 +258,7 @@ where
                         "failed decoding boundary block extra data as DKG outcome: {err}"
                     ))
                 })?;
+        let epoch = outcome.epoch.get();
         let public_keys = outcome
             .players()
             .iter()
@@ -265,6 +266,7 @@ where
             .collect();
 
         let calldata = ICurrentCommittee::setCommitteeMembersCall {
+            epoch,
             publicKeys: public_keys,
         }
         .abi_encode()
