@@ -2,7 +2,7 @@
 #
 # This preset keeps the same user and amount across both workload transactions.
 # It uses local TIP20 token 1 as the NBUSD stand-in for the DirectSwap leg. The
-# setup phase deploys mainnet runtime bytecode wrapped as initcode and seeds
+# setup phase deploys runtime bytecode wrapped as initcode and seeds
 # the local route liquidity before measured workload starts.
 chain_id: 1337
 
