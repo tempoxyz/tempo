@@ -840,6 +840,7 @@ fn b256_bytes(value: &B256) -> [u8; 32] {
     bytes.copy_from_slice(value.as_slice());
     bytes
 }
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct AccountView {
     balance: U256,
