@@ -131,6 +131,7 @@ fn test_stablecoin_dex_layout() {
         asks,
         best_bid_tick,
         best_ask_tick,
+        book_id,
         bid_bitmap,
         ask_bitmap
     );
@@ -314,6 +315,7 @@ fn export_all_storage_constants() {
             asks,
             best_bid_tick,
             best_ask_tick,
+            book_id,
             bid_bitmap,
             ask_bitmap
         );

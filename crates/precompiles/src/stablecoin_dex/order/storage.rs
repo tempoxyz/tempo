@@ -13,9 +13,11 @@
 //! [`OrderHandler`] detects the record version on read, exposes field-level handlers for mutable
 //! linked-list fields, and lazily migrates legacy records to V1 when they are rewritten.
 
-use super::{__packing_legacy_order, LegacyOrder, ORDER_VERSION_V1, Order};
+use super::{__packing_legacy_order, LegacyOrder, ORDER_VERSION_V1, ORDER_VERSION_V2, Order};
 use crate::{
+    STABLECOIN_DEX_ADDRESS,
     error::{Result as StorageResult, TempoPrecompileError},
+    stablecoin_dex::{self, StablecoinDEX, orderbook::BookId},
     storage::{
         Handler, HandlerCache, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx,
         StorageKey, StorageOps, packing,
@@ -33,6 +35,8 @@ pub(crate) enum OrderVersion {
     Legacy,
     /// T8+ (TIP-1062): Optimized physical layout represented by [`V1Order`].
     V1,
+    /// T8+ (TIP-1087): V1 prefix plus compact book index represented by [`V2Order`].
+    V2,
 }
 
 impl TryFrom<U256> for OrderVersion {
@@ -49,6 +53,7 @@ impl TryFrom<U256> for OrderVersion {
         match version {
             0 => Ok(Self::Legacy),
             ORDER_VERSION_V1 => Ok(Self::V1),
+            ORDER_VERSION_V2 => Ok(Self::V2),
             version => Err(TempoPrecompileError::Fatal(format!(
                 "unknown stablecoin DEX order storage version {version}"
             ))),
@@ -56,9 +61,34 @@ impl TryFrom<U256> for OrderVersion {
     }
 }
 
+struct OrderFlags;
+
+impl OrderFlags {
+    const IS_BID: u8 = 1 << 0;
+    const IS_FLIP: u8 = 1 << 1;
+
+    /// Packs logical order flags into a metadata byte.
+    #[inline]
+    fn pack(is_bid: bool, is_flip: bool) -> u8 {
+        (u8::from(is_bid) * Self::IS_BID) | (u8::from(is_flip) * Self::IS_FLIP)
+    }
+
+    /// Returns whether the metadata marks the order as a bid (`true`) or ask (`false`).
+    #[inline]
+    fn is_bid(metadata: u8) -> bool {
+        metadata & Self::IS_BID != 0
+    }
+
+    /// Returns whether the metadata marks the order as a flip order.
+    #[inline]
+    fn is_flip(metadata: u8) -> bool {
+        metadata & Self::IS_FLIP != 0
+    }
+}
+
 /// Compact TIP-1062 physical order layout.
 ///
-/// V1 omits `order_id`; reads synthesize it from the `orders` mapping key.
+/// V1 omits `order_id` by synthesizing it from the `orders` mapping key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 struct V1Order {
     /// Address of the user who placed the order.
@@ -86,33 +116,12 @@ struct V1Order {
 }
 
 impl V1Order {
-    const IS_BID_FLAG: u8 = 1 << 0;
-    const IS_FLIP_FLAG: u8 = 1 << 1;
-
-    /// Packs logical order flags into the V1 metadata byte.
-    #[inline]
-    fn metadata(is_bid: bool, is_flip: bool) -> u8 {
-        (u8::from(is_bid) * Self::IS_BID_FLAG) | (u8::from(is_flip) * Self::IS_FLIP_FLAG)
-    }
-
-    /// Returns whether this order is a bid (`true`) or ask (`false`).
-    #[inline]
-    fn is_bid(&self) -> bool {
-        self.metadata & Self::IS_BID_FLAG != 0
-    }
-
-    /// Returns whether this order should create an opposite-side order when fully filled.
-    #[inline]
-    fn is_flip(&self) -> bool {
-        self.metadata & Self::IS_FLIP_FLAG != 0
-    }
-
     /// Converts the logical order into the compact V1 physical layout.
     fn new(order: Order) -> Self {
         Self {
             maker: order.maker,
             tick: order.tick,
-            metadata: Self::metadata(order.is_bid, order.is_flip),
+            metadata: OrderFlags::pack(order.is_bid, order.is_flip),
             flip_tick: order.flip_tick,
             _unused: FixedBytes::<6>::ZERO,
             version: OrderVersion::V1,
@@ -130,13 +139,78 @@ impl V1Order {
             order_id,
             maker: self.maker,
             book_key: self.book_key,
-            is_bid: self.is_bid(),
+            is_bid: OrderFlags::is_bid(self.metadata),
             tick: self.tick,
             amount: self.amount,
             remaining: self.remaining,
             prev: self.prev,
             next: self.next,
-            is_flip: self.is_flip(),
+            is_flip: OrderFlags::is_flip(self.metadata),
+            flip_tick: self.flip_tick,
+        }
+    }
+}
+
+/// Compact TIP-1087 physical order layout.
+///
+/// V2 replaces V1's repeated `book_key` slot with a compact index into the DEX `book_keys` vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
+struct V2Order {
+    /// Address of the user who placed the order.
+    maker: Address,
+    /// Packed order metadata. Bit 0 stores `is_bid`; bit 1 stores `is_flip`.
+    metadata: u8,
+    /// Price tick for the order's current side.
+    tick: i16,
+    /// Destination tick for a fully filled flip order.
+    flip_tick: i16,
+    /// Index into the DEX `book_keys` vector.
+    book_index: u32,
+    /// Reserved bytes in packed slot 0.
+    _unused: FixedBytes<2>,
+    /// Physical layout marker stored in packed slot 0.
+    version: OrderVersion,
+    /// Original order amount.
+    amount: u128,
+    /// Remaining unfilled amount.
+    remaining: u128,
+    /// Previous order ID in the tick-level FIFO linked list.
+    prev: u128,
+    /// Next order ID in the tick-level FIFO linked list.
+    next: u128,
+}
+
+impl V2Order {
+    /// Converts the logical order into the compact V2 physical layout.
+    fn new(order: Order, book_index: u32) -> Self {
+        Self {
+            maker: order.maker,
+            metadata: OrderFlags::pack(order.is_bid, order.is_flip),
+            tick: order.tick,
+            flip_tick: order.flip_tick,
+            book_index,
+            _unused: FixedBytes::<2>::ZERO,
+            version: OrderVersion::V2,
+            amount: order.amount,
+            remaining: order.remaining,
+            prev: order.prev,
+            next: order.next,
+        }
+    }
+
+    /// Converts V2 storage back into the logical order, restoring `order_id` and `book_key`.
+    fn into_order(self, order_id: u128, book_key: B256) -> Order {
+        Order {
+            order_id,
+            maker: self.maker,
+            book_key,
+            is_bid: OrderFlags::is_bid(self.metadata),
+            tick: self.tick,
+            amount: self.amount,
+            remaining: self.remaining,
+            prev: self.prev,
+            next: self.next,
+            is_flip: OrderFlags::is_flip(self.metadata),
             flip_tick: self.flip_tick,
         }
     }
@@ -167,7 +241,7 @@ impl OrderHandler {
     pub(crate) fn maker(&self) -> StorageResult<Slot<Address>> {
         let loc = match self.version()? {
             OrderVersion::Legacy => __packing_legacy_order::MAKER_LOC,
-            OrderVersion::V1 => __packing_v1_order::MAKER_LOC,
+            OrderVersion::V1 | OrderVersion::V2 => __packing_v1_order::MAKER_LOC,
         };
 
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
@@ -201,11 +275,11 @@ impl OrderHandler {
     fn u128_field(
         &self,
         legacy: packing::FieldLocation,
-        v1: packing::FieldLocation,
+        compact: packing::FieldLocation,
     ) -> StorageResult<Slot<u128>> {
         let loc = match self.version()? {
             OrderVersion::Legacy => legacy,
-            OrderVersion::V1 => v1,
+            OrderVersion::V1 | OrderVersion::V2 => compact,
         };
 
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
@@ -217,6 +291,67 @@ impl OrderHandler {
             return Ok(OrderVersion::Legacy);
         }
         OrderVersion::try_from(self.load(self.base_slot)?)
+    }
+
+    /// Reads this order using a known owning book key, skipping V2 index resolution.
+    pub(crate) fn read_in_book(&self, book_key: B256) -> StorageResult<Order> {
+        self.read_with_book_key(Some(book_key))
+    }
+
+    /// Reads this order, skipping V2 index resolution when a book key is provided.
+    fn read_with_book_key(&self, known_book: Option<B256>) -> StorageResult<Order> {
+        match self.version()? {
+            OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
+            OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
+                .map(|res| res.into_order(self.order_id)),
+            OrderVersion::V2 => {
+                let order = V2Order::load(self, self.base_slot, LayoutCtx::FULL)?;
+                let book_key = match known_book {
+                    None => StablecoinDEX::new().book_key_for_index(order.book_index)?,
+                    Some(book_key) => book_key,
+                };
+                Ok(order.into_order(self.order_id, book_key))
+            }
+        }
+    }
+
+    /// Writes this order using a known owning book ID, skipping index resolution.
+    pub(crate) fn write_in_book(&mut self, value: Order, book_id: BookId) -> StorageResult<()> {
+        self.write_with_book_id(value, Some(book_id))
+    }
+
+    /// Writes this order, skipping V2 index resolution when a book ID is provided.
+    fn write_with_book_id(&mut self, value: Order, known_id: Option<BookId>) -> StorageResult<()> {
+        debug_assert_eq!(value.order_id, self.order_id);
+
+        if !StorageCtx.spec().is_t8() {
+            return value.store(self, self.base_slot, LayoutCtx::FULL);
+        }
+
+        let old_slots = match self.version()? {
+            OrderVersion::Legacy => LegacyOrder::SLOTS,
+            OrderVersion::V1 => V1Order::SLOTS,
+            OrderVersion::V2 => V2Order::SLOTS,
+        };
+
+        // If known, use the book ID. Otherwise resolve it from storage.
+        let book_index = match known_id {
+            None => StablecoinDEX::new().book_key_index(value.book_key)?,
+            Some(id) => id.index(),
+        };
+
+        let new_slots = if let Some(book_index) = book_index {
+            V2Order::new(value, book_index).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V2Order::SLOTS
+        } else {
+            V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
+            V1Order::SLOTS
+        };
+
+        for offset in new_slots..old_slots {
+            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+        }
+        Ok(())
     }
 }
 
@@ -233,31 +368,12 @@ impl StorageOps for OrderHandler {
 impl Handler<Order> for OrderHandler {
     /// Reads the order using the cached or detected physical layout version.
     fn read(&self) -> StorageResult<Order> {
-        match self.version()? {
-            OrderVersion::Legacy => LegacyOrder::load(self, self.base_slot, LayoutCtx::FULL),
-            OrderVersion::V1 => V1Order::load(self, self.base_slot, LayoutCtx::FULL)
-                .map(|res| res.into_order(self.order_id)),
-        }
+        self.read_with_book_key(None)
     }
 
-    /// Writes the order, migrating T8 records to V1 and updating the cached version.
+    /// Writes the order, migrating T8 records to V1/V2.
     fn write(&mut self, value: Order) -> StorageResult<()> {
-        debug_assert_eq!(value.order_id, self.order_id);
-
-        if !StorageCtx.spec().is_t8() {
-            return value.store(self, self.base_slot, LayoutCtx::FULL);
-        }
-
-        match self.version()? {
-            OrderVersion::Legacy => {
-                V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL)?;
-                for offset in V1Order::SLOTS..LegacyOrder::SLOTS {
-                    self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
-                }
-                Ok(())
-            }
-            OrderVersion::V1 => V1Order::new(value).store(self, self.base_slot, LayoutCtx::FULL),
-        }
+        self.write_with_book_id(value, None)
     }
 
     /// Deletes the physical slots for the cached or detected order layout.
@@ -265,6 +381,7 @@ impl Handler<Order> for OrderHandler {
         let slot_count = match self.version()? {
             OrderVersion::Legacy => LegacyOrder::SLOTS,
             OrderVersion::V1 => V1Order::SLOTS,
+            OrderVersion::V2 => V2Order::SLOTS,
         };
 
         for offset in 0..slot_count {
@@ -314,7 +431,7 @@ impl OrderMapping {
 
     #[inline]
     fn base_slot() -> U256 {
-        crate::stablecoin_dex::slots::ORDERS
+        stablecoin_dex::slots::ORDERS
     }
 
     /// Returns a cached handler for `order_id`.
@@ -323,7 +440,7 @@ impl OrderMapping {
             OrderHandler::new(
                 order_id.mapping_slot(Self::base_slot()),
                 order_id,
-                crate::STABLECOIN_DEX_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
             )
         })
     }
@@ -334,7 +451,7 @@ impl OrderMapping {
             OrderHandler::new(
                 order_id.mapping_slot(Self::base_slot()),
                 order_id,
-                crate::STABLECOIN_DEX_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
             )
         })
     }
@@ -382,7 +499,10 @@ impl StorableType for OrderMapping {
 mod tests {
     use super::*;
     use crate::{
-        stablecoin_dex::{IStablecoinDEX, StablecoinDEX},
+        stablecoin_dex::{
+            IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX, StablecoinDEXError,
+            orderbook::{Orderbook, RoundingDirection, base_to_quote},
+        },
         storage::{ContractStorage, Handler, StorageCtx, hashmap::HashMapStorageProvider},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
@@ -394,8 +514,139 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
+    const TEST_BASE: Address = address!("0x2222222222222222222222222222222222222222");
+    const TEST_QUOTE: Address = address!("0x3333333333333333333333333333333333333333");
     const TEST_BOOK_KEY: B256 =
         b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+
+    #[derive(Default)]
+    struct DexTestSetup {
+        alice: Address,
+        bob: Address,
+        carol: Address,
+        admin: Address,
+        amount: u128,
+        tick: i16,
+        quote: Address,
+        pairs: [(Address, B256); 2],
+    }
+
+    impl DexTestSetup {
+        fn new(amount: u128, tick: i16) -> Self {
+            Self {
+                alice: Address::random(),
+                bob: Address::random(),
+                carol: Address::random(),
+                admin: Address::random(),
+                amount,
+                tick,
+                ..Default::default()
+            }
+        }
+
+        fn hardfork_for(version: OrderVersion) -> TempoHardfork {
+            match version {
+                OrderVersion::Legacy => TempoHardfork::T7,
+                OrderVersion::V1 | OrderVersion::V2 => TempoHardfork::T8,
+            }
+        }
+
+        fn pair_index(version: OrderVersion) -> usize {
+            match version {
+                OrderVersion::Legacy | OrderVersion::V1 => 0,
+                OrderVersion::V2 => 1,
+            }
+        }
+
+        fn pair(&self, version: OrderVersion) -> (Address, B256) {
+            self.pairs[Self::pair_index(version)]
+        }
+
+        fn create_pair(
+            &mut self,
+            exchange: &mut StablecoinDEX,
+            version: OrderVersion,
+        ) -> StorageResult<()> {
+            let name = match version {
+                OrderVersion::Legacy | OrderVersion::V1 => "BASE_V1",
+                OrderVersion::V2 => "BASE_V2",
+            };
+            let salt = match version {
+                OrderVersion::Legacy | OrderVersion::V1 => {
+                    b256!("0x1111111111111111111111111111111111111111111111111111111111111111")
+                }
+                OrderVersion::V2 => {
+                    b256!("0x2222222222222222222222222222222222222222222222222222222222222222")
+                }
+            };
+            let base = TIP20Setup::create(name, name, self.admin)
+                .with_salt(salt)
+                .with_issuer(self.admin)
+                .with_mint(self.alice, U256::from(self.amount * 3))
+                .with_mint(self.bob, U256::from(self.amount * 3))
+                .with_mint(self.carol, U256::from(self.amount * 3))
+                .apply()?;
+            self.quote = base.quote_token()?;
+
+            // Ensure orderbook is created with/out its ID depending on the version
+            let prev_spec = StorageCtx.spec();
+            let pair_creation_hardfork = match version {
+                OrderVersion::Legacy | OrderVersion::V1 => TempoHardfork::T7,
+                OrderVersion::V2 => TempoHardfork::T8,
+            };
+            StorageCtx.set_spec(pair_creation_hardfork);
+            exchange.create_pair(base.address())?;
+            StorageCtx.set_spec(prev_spec);
+
+            let book_key = stablecoin_dex::orderbook::compute_book_key(base.address(), self.quote);
+            self.pairs[Self::pair_index(version)] = (base.address(), book_key);
+
+            Ok(())
+        }
+
+        fn setup(mut self, spec: TempoHardfork) -> (Self, HashMapStorageProvider) {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let price = stablecoin_dex::orderbook::tick_to_price(self.tick);
+                let quote_amount =
+                    self.amount * u128::from(price) / u128::from(stablecoin_dex::PRICE_SCALE);
+
+                TIP20Setup::path_usd(self.admin)
+                    .with_issuer(self.admin)
+                    .with_mint(self.alice, U256::from(quote_amount * 3))
+                    .with_mint(self.bob, U256::from(quote_amount * 3))
+                    .with_mint(self.carol, U256::from(quote_amount * 3))
+                    .with_approval(self.alice, exchange.address, U256::MAX)
+                    .with_approval(self.bob, exchange.address, U256::MAX)
+                    .with_approval(self.carol, exchange.address, U256::MAX)
+                    .apply()?;
+
+                // `V1Order`s require orderbooks WITHOUT `OrderbookId`
+                self.create_pair(&mut exchange, OrderVersion::V1)?;
+
+                // `V2Order`s require orderbooks WITH `OrderbookId`
+                self.create_pair(&mut exchange, OrderVersion::V2)?;
+
+                TIP20Setup::config(self.quote)
+                    .with_mint(self.alice, U256::from(quote_amount * 3))
+                    .with_mint(self.bob, U256::from(quote_amount * 3))
+                    .with_mint(self.carol, U256::from(quote_amount * 3))
+                    .with_approval(self.alice, exchange.address, U256::MAX)
+                    .with_approval(self.bob, exchange.address, U256::MAX)
+                    .with_approval(self.carol, exchange.address, U256::MAX)
+                    .apply()?;
+
+                Ok::<_, TempoPrecompileError>(())
+            })
+            .unwrap();
+
+            (self, storage)
+        }
+    }
+
     #[test]
     fn test_v1_order_layout_matches_tip_1062() {
         assert_eq!(__packing_v1_order::MAKER_LOC.offset_slots, 0);
@@ -419,257 +670,337 @@ mod tests {
     }
 
     #[test]
-    fn test_store_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-
-            let id = 42;
-            let order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T4,
-            )
-            .unwrap();
-            exchange.orders[id].write(order)?;
-
-            let loaded_order = exchange.orders[id].read()?;
-            assert_eq!(loaded_order.order_id(), 42);
-            assert_eq!(loaded_order.maker(), TEST_MAKER);
-            assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
-            assert_eq!(loaded_order.amount(), 1000);
-            assert_eq!(loaded_order.remaining(), 1000);
-            assert_eq!(loaded_order.tick(), 5);
-            assert!(loaded_order.is_bid());
-            assert!(loaded_order.is_flip());
-            assert_eq!(loaded_order.flip_tick(), 10);
-            assert_eq!(loaded_order.prev(), 0);
-            assert_eq!(loaded_order.next(), 0);
-
-            Ok(())
-        })
+    fn test_v2_order_layout_matches_tip_1087() {
+        assert_eq!(__packing_v2_order::MAKER_LOC.offset_slots, 0);
+        assert_eq!(__packing_v2_order::METADATA_LOC.offset_slots, 0);
+        assert_eq!(__packing_v2_order::METADATA_LOC.size, 1);
+        assert_eq!(__packing_v2_order::TICK_LOC.offset_slots, 0);
+        assert_eq!(__packing_v2_order::FLIP_TICK_LOC.offset_slots, 0);
+        assert_eq!(__packing_v2_order::BOOK_INDEX_LOC.offset_slots, 0);
+        assert_eq!(__packing_v2_order::BOOK_INDEX_LOC.size, 4);
+        assert_eq!(__packing_v2_order::VERSION_LOC.offset_slots, 0);
+        assert_eq!(
+            __packing_v2_order::AMOUNT_LOC.offset_slots,
+            __packing_v2_order::REMAINING_LOC.offset_slots
+        );
+        assert_eq!(
+            __packing_v2_order::PREV_LOC.offset_slots,
+            __packing_v2_order::NEXT_LOC.offset_slots
+        );
+        assert_eq!(V2Order::SLOTS, 3);
+        assert_eq!(V1Order::SLOTS, 4);
     }
 
     #[test]
-    fn test_t8_store_order_uses_v1_layout() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
+    fn test_store_order_uses_expected_layout() -> eyre::Result<()> {
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T7);
 
-            let id = 42;
-            let mut order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T8,
-            )
-            .unwrap();
-            order.set_prev(7);
-            order.set_next(9);
+        for (i, version) in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2]
+            .into_iter()
+            .enumerate()
+        {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                StorageCtx.set_spec(DexTestSetup::hardfork_for(version));
 
-            exchange.orders[id].write(order)?;
+                let mut exchange = StablecoinDEX::new();
+                let (_, book_key) = test.pair(version);
+                let id = 10 + i as u128;
 
-            let base_slot = exchange.orders[id].base_slot;
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
+                let mut order = Order::new_flip(
+                    id,
+                    TEST_MAKER,
+                    book_key,
+                    amount,
+                    tick,
+                    true,
+                    flip_tick,
+                    StorageCtx.spec(),
+                )?;
+                order.set_prev(id - 1);
+                order.set_next(id + 1);
 
-            let loaded_order = exchange.orders[id].read()?;
-            assert_eq!(loaded_order, order);
+                exchange.orders[id].write(order)?;
 
-            // New writes use only the v1 slots, not legacy-only slots 4 and 5.
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::REMAINING_LOC.offset_slots),
-                )?,
-                U256::ZERO
-            );
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::NEXT_LOC.offset_slots),
-                )?,
-                U256::ZERO
-            );
+                let base_slot = exchange.orders[id].base_slot;
+                assert_eq!(exchange.orders[id].version()?, version);
+                assert_eq!(exchange.orders[id].read()?, order);
 
-            Ok(())
-        })
+                let assert_slot_value = |loc: packing::FieldLocation, expected: U256| {
+                    let value = StorageCtx
+                        .sload(exchange.address(), base_slot + U256::from(loc.offset_slots))
+                        .expect("SLOAD failed");
+                    assert_eq!(value, expected);
+                };
+
+                match version {
+                    OrderVersion::Legacy => {
+                        let remaining_sload =
+                            legacy_order_slot(order, __packing_legacy_order::REMAINING_LOC)?;
+                        let next_sload =
+                            legacy_order_slot(order, __packing_legacy_order::NEXT_LOC)?;
+
+                        assert_slot_value(__packing_legacy_order::REMAINING_LOC, remaining_sload);
+                        assert_slot_value(__packing_legacy_order::NEXT_LOC, next_sload);
+                    }
+                    OrderVersion::V1 => {
+                        // `V1Order` writes do not use legacy-only slots 4 and 5.
+                        assert_slot_value(__packing_legacy_order::REMAINING_LOC, U256::ZERO);
+                        assert_slot_value(__packing_legacy_order::NEXT_LOC, U256::ZERO);
+                    }
+                    OrderVersion::V2 => {
+                        // `V2Order` writes do not use legacy-only slots 4 and 5.
+                        assert_slot_value(__packing_legacy_order::REMAINING_LOC, U256::ZERO);
+                        assert_slot_value(__packing_legacy_order::NEXT_LOC, U256::ZERO);
+                        // `V2Order` writes do not use `V1Order` slots 3.
+                        assert_slot_value(__packing_v1_order::BOOK_KEY_LOC, U256::ZERO);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
-    fn test_t6_store_order_uses_legacy_layout() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
+    fn test_can_delete_any_order_layout() -> eyre::Result<()> {
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T8);
 
-            let id = 42;
-            let mut order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T8,
-            )
-            .unwrap();
-            order.set_prev(7);
-            order.set_next(9);
+        for (i, version) in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2]
+            .into_iter()
+            .enumerate()
+        {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut exchange = StablecoinDEX::new();
+                let (_, book_key) = test.pair(version);
 
-            exchange.orders[id].write(order)?;
+                // Create 2 orders of each version
+                StorageCtx.set_spec(DexTestSetup::hardfork_for(version));
+                for n in [10, 20] {
+                    let id = n + i as u128;
 
-            let base_slot = exchange.orders[id].base_slot;
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
-            assert_eq!(exchange.orders[id].read()?, order);
-            let expected_remaining_slot =
-                legacy_order_slot(order, __packing_legacy_order::REMAINING_LOC)?;
-            let expected_next_slot = legacy_order_slot(order, __packing_legacy_order::NEXT_LOC)?;
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::REMAINING_LOC.offset_slots),
-                )?,
-                expected_remaining_slot,
-            );
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::NEXT_LOC.offset_slots),
-                )?,
-                expected_next_slot,
-            );
+                    let order = Order::new_flip(
+                        id,
+                        TEST_MAKER,
+                        book_key,
+                        amount,
+                        tick,
+                        true,
+                        flip_tick,
+                        StorageCtx.spec(),
+                    )?;
+                    exchange.orders[id].write(order)?;
+                    assert_eq!(exchange.orders[id].version()?, version);
+                    assert_eq!(exchange.orders[id].read()?, order);
+                }
 
-            Ok(())
-        })
+                // Verify orders are properly deleted regardless of hardfork
+                for (n, hardfork) in [(10, TempoHardfork::T7), (20, TempoHardfork::T8)] {
+                    StorageCtx.set_spec(hardfork);
+                    let id = n + i as u128;
+
+                    exchange.orders[id].delete()?;
+                    let deleted_order = exchange.orders[id].read()?;
+                    assert_eq!(deleted_order.order_id(), 0);
+                    assert_eq!(deleted_order.maker(), Address::ZERO);
+                    assert_eq!(deleted_order.book_key(), B256::ZERO);
+                    assert_eq!(deleted_order.amount(), 0);
+                    assert_eq!(deleted_order.remaining(), 0);
+                    assert_eq!(deleted_order.tick(), 0);
+                    assert!(!deleted_order.is_bid());
+                    assert!(!deleted_order.is_flip());
+                    assert_eq!(deleted_order.flip_tick(), 0);
+                    assert_eq!(deleted_order.prev(), 0);
+                    assert_eq!(deleted_order.next(), 0);
+                }
+
+                Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
-    fn test_read_and_mutate_legacy_order_layout() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let exchange = StablecoinDEX::new();
+    fn test_t8_can_read_and_mutate_any_order_layout() -> eyre::Result<()> {
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T8);
 
-            let id = 42;
-            let mut order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T4,
-            )
-            .unwrap();
-            order.set_prev(7);
-            order.set_next(9);
-            store_legacy_order(&exchange.orders[id], order)?;
+        for (i, version) in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2]
+            .into_iter()
+            .enumerate()
+        {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut exchange = StablecoinDEX::new();
+                let (_, book_key) = test.pair(version);
+                let id = 10 + i as u128;
 
-            assert_eq!(exchange.orders[id].read()?, order);
+                let mut order = Order::new_flip(
+                    id,
+                    TEST_MAKER,
+                    book_key,
+                    amount,
+                    tick,
+                    true,
+                    flip_tick,
+                    StorageCtx.spec(),
+                )?;
+                order.set_prev(id - 1);
+                order.set_next(id + 1);
 
-            exchange.orders[id].remaining()?.write(600)?;
-            exchange.orders[id].prev()?.write(11)?;
-            exchange.orders[id].next()?.write(12)?;
+                if version == OrderVersion::Legacy {
+                    store_legacy_order(&exchange.orders[id], order)?;
+                } else {
+                    exchange.orders[id].write(order)?;
+                }
 
-            let loaded_order = exchange.orders[id].read()?;
-            assert_eq!(loaded_order.order_id(), id);
-            assert_eq!(loaded_order.remaining(), 600);
-            assert_eq!(loaded_order.prev(), 11);
-            assert_eq!(loaded_order.next(), 12);
+                assert_eq!(exchange.orders[id].version()?, version);
+                assert_eq!(exchange.orders[id].read()?, order);
 
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
+                exchange.orders[id].remaining()?.write(600)?;
+                exchange.orders[id].prev()?.write(11)?;
+                exchange.orders[id].next()?.write(12)?;
 
-            Ok(())
-        })
+                let loaded_order = exchange.orders[id].read()?;
+                assert_eq!(loaded_order.order_id(), id);
+                assert_eq!(loaded_order.book_key(), book_key);
+                assert_eq!(loaded_order.remaining(), 600);
+                assert_eq!(loaded_order.prev(), 11);
+                assert_eq!(loaded_order.next(), 12);
+                assert_eq!(exchange.orders[id].version()?, version);
+
+                Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
-    fn test_write_migrates_legacy_order_to_v1_layout() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
+    fn test_t8_write_migrates_legacy_order_layout() -> eyre::Result<()> {
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T7);
 
-            let id = 42;
-            let mut order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T4,
-            )
-            .unwrap();
-            order.set_prev(7);
-            order.set_next(9);
-            exchange.next_order_id.write(id + 1)?;
-            store_legacy_order(&exchange.orders[id], order)?;
+        for (i, version) in [OrderVersion::V1, OrderVersion::V2].into_iter().enumerate() {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                StorageCtx.set_spec(TempoHardfork::T8);
+                let mut exchange = StablecoinDEX::new();
+                let (_, book_key) = test.pair(version);
+                let id = 10 + i as u128;
 
-            let base_slot = exchange.orders[id].base_slot;
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
-            let expected_remaining_slot =
-                legacy_order_slot(order, __packing_legacy_order::REMAINING_LOC)?;
-            let expected_next_slot = legacy_order_slot(order, __packing_legacy_order::NEXT_LOC)?;
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::REMAINING_LOC.offset_slots),
-                )?,
-                expected_remaining_slot,
-            );
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::NEXT_LOC.offset_slots),
-                )?,
-                expected_next_slot,
-            );
+                let mut order = Order::new_flip(
+                    id,
+                    TEST_MAKER,
+                    book_key,
+                    amount,
+                    tick,
+                    true,
+                    flip_tick,
+                    StorageCtx.spec(),
+                )?;
+                order.set_prev(id - 1);
+                order.set_next(id + 1);
+                exchange.next_order_id.write(id + 1)?;
+                store_legacy_order(&exchange.orders[id], order)?;
 
-            let mut migrated_order = order;
-            migrated_order.fill(250)?;
-            migrated_order.set_prev(11);
-            migrated_order.set_next(12);
-            exchange.orders[id].write(migrated_order)?;
+                let base_slot = exchange.orders[id].base_slot;
+                let assert_slot_value = |loc: packing::FieldLocation, expected: U256| {
+                    let value = StorageCtx
+                        .sload(
+                            STABLECOIN_DEX_ADDRESS,
+                            base_slot + U256::from(loc.offset_slots),
+                        )
+                        .expect("SLOAD failed");
+                    assert_eq!(value, expected);
+                };
 
-            assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
-            assert_eq!(exchange.orders[id].read()?, migrated_order);
-            assert_eq!(
-                IStablecoinDEX::Order::from(exchange.get_order(id)?),
-                migrated_order.into()
-            );
+                assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
+                // Legacy orders use legacy-only slots 4 and 5.
+                let remaining_sload =
+                    legacy_order_slot(order, __packing_legacy_order::REMAINING_LOC)?;
+                let next_sload = legacy_order_slot(order, __packing_legacy_order::NEXT_LOC)?;
+                assert_slot_value(__packing_legacy_order::REMAINING_LOC, remaining_sload);
+                assert_slot_value(__packing_legacy_order::NEXT_LOC, next_sload);
 
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::REMAINING_LOC.offset_slots),
-                )?,
-                U256::ZERO
-            );
-            assert_eq!(
-                StorageCtx.sload(
-                    exchange.address(),
-                    base_slot + U256::from(__packing_legacy_order::NEXT_LOC.offset_slots),
-                )?,
-                U256::ZERO
-            );
+                let mut migrated_order = order;
+                migrated_order.fill(250).unwrap();
+                migrated_order.set_prev(11);
+                migrated_order.set_next(12);
+                exchange.orders[id].write(migrated_order)?;
 
-            Ok(())
-        })
+                assert_eq!(exchange.orders[id].version()?, version);
+                assert_eq!(exchange.orders[id].read()?, migrated_order);
+                assert_eq!(
+                    IStablecoinDEX::Order::from(exchange.get_order(id)?),
+                    migrated_order.into()
+                );
+
+                // Migrating to compact layouts clears legacy-only slots 4 and 5.
+                assert_slot_value(__packing_legacy_order::REMAINING_LOC, U256::ZERO);
+                assert_slot_value(__packing_legacy_order::NEXT_LOC, U256::ZERO);
+
+                if matches!(version, OrderVersion::V2) {
+                    // `V2Order` migrations also clear the `V1Order` book key slot.
+                    assert_slot_value(__packing_v1_order::BOOK_KEY_LOC, U256::ZERO);
+                }
+
+                Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 
     fn store_legacy_order(handler: &OrderHandler, order: Order) -> StorageResult<()> {
         let mut storage = handler.clone();
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)
+    }
+
+    fn store_versioned_order(
+        exchange: &mut StablecoinDEX,
+        version: OrderVersion,
+        order: Order,
+    ) -> StorageResult<()> {
+        match version {
+            OrderVersion::Legacy => store_legacy_order(&exchange.orders[order.order_id()], order),
+            OrderVersion::V1 => {
+                let handler = &exchange.orders[order.order_id()];
+                let mut storage = handler.clone();
+                V1Order::new(order).store(&mut storage, handler.base_slot, LayoutCtx::FULL)
+            }
+            OrderVersion::V2 => {
+                let book_index = ensure_test_book_index(exchange, order.book_key)?;
+                let handler = &exchange.orders[order.order_id()];
+                let mut storage = handler.clone();
+                V2Order::new(order, book_index).store(
+                    &mut storage,
+                    handler.base_slot,
+                    LayoutCtx::FULL,
+                )
+            }
+        }
+    }
+
+    fn ensure_test_book_index(exchange: &mut StablecoinDEX, book_key: B256) -> StorageResult<u32> {
+        match exchange.book_key_index(book_key) {
+            Ok(Some(index)) => Ok(index),
+            Ok(None) => {
+                let index = exchange.book_keys.len()? as u32;
+                exchange.book_keys.push(book_key)?;
+                exchange.set_book_index(index)?;
+                Ok(index)
+            }
+            Err(TempoPrecompileError::StablecoinDEX(StablecoinDEXError::PairDoesNotExist(_))) => {
+                let index = exchange.book_keys.len()? as u32;
+                exchange.books[book_key]
+                    .write(Orderbook::new_with_index(TEST_BASE, TEST_QUOTE, index))?;
+                exchange.book_keys.push(book_key)?;
+                Ok(index)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     fn legacy_order_slot(order: Order, loc: packing::FieldLocation) -> StorageResult<U256> {
@@ -685,150 +1016,109 @@ mod tests {
             )
         })
     }
+
     #[test]
     fn test_t8_fill_legacy_flip_order_migrates_without_corrupting_book() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        let (amount, tick) = (MIN_ORDER_AMOUNT, 100i16);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let bid_escrow =
-                amount * u128::from(price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount * 2))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(bid_escrow * 2))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .apply()?;
+                let flip_id =
+                    exchange.place_flip(test.alice, base_token, amount, true, tick, tick, false)?;
+                let resting_id = exchange.place(test.alice, base_token, amount, true, tick)?;
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                let legacy_flip = exchange.orders[flip_id].read()?;
+                store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
+                assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::Legacy);
+                assert_eq!(exchange.storage_credits(test.alice)?, 0);
+                let pooled_credits_before = StorageCredits::new().balance_of(exchange.address())?;
 
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, tick, false)?;
-            let resting_id = exchange.place(alice, base_token, amount, true, tick)?;
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
 
-            let legacy_flip = exchange.orders[flip_id].read()?;
-            store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
-            assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::Legacy);
-            assert_eq!(exchange.storage_credits(alice)?, 0);
-            let pooled_credits_before = StorageCredits::new().balance_of(exchange.address())?;
+                assert!(
+                    exchange.storage_credits(test.alice)? > 0,
+                    "maker must receive TIP-1064 DEX storage credits for slots cleared by legacy -> V1/V2 flip rewrite"
+                );
+                assert!(
+                    StorageCredits::new().balance_of(exchange.address())? > pooled_credits_before,
+                    "legacy -> V1/V2 flip rewrite must still mint DEX TIP-1060 credits for cleared physical slots"
+                );
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+                let flipped = exchange.get_order(flip_id)?;
+                assert!(!flipped.is_bid());
+                assert_eq!(flipped.tick(), tick);
+                assert_eq!(flipped.prev(), 0);
+                assert_eq!(flipped.next(), 0);
+                assert_eq!(exchange.orders[flip_id].version()?, version);
 
-            assert!(
-                exchange.storage_credits(alice)? > 0,
-                "maker must receive TIP-1064 DEX storage credits for slots cleared by legacy -> V1 flip rewrite"
-            );
-            assert!(
-                StorageCredits::new().balance_of(exchange.address())? > pooled_credits_before,
-                "legacy -> V1 flip rewrite must still mint DEX TIP-1060 credits for cleared physical slots"
-            );
+                let resting = exchange.get_order(resting_id)?;
+                assert_eq!(resting.prev(), 0);
+                assert_eq!(resting.next(), 0);
 
-            let flipped = exchange.get_order(flip_id)?;
-            assert!(!flipped.is_bid());
-            assert_eq!(flipped.tick(), tick);
-            assert_eq!(flipped.prev(), 0);
-            assert_eq!(flipped.next(), 0);
-            assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::V1);
+                let bid_level = exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?;
+                assert_eq!(bid_level.head, resting_id);
+                assert_eq!(bid_level.tail, resting_id);
+                assert_eq!(bid_level.total_liquidity, amount);
 
-            let resting = exchange.get_order(resting_id)?;
-            assert_eq!(resting.prev(), 0);
-            assert_eq!(resting.next(), 0);
+                let ask_level = exchange.books[book_key]
+                    .tick_level_handler(tick, false)
+                    .read()?;
+                assert_eq!(ask_level.head, flip_id);
+                assert_eq!(ask_level.tail, flip_id);
+                assert_eq!(ask_level.total_liquidity, amount);
 
-            let bid_level = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(bid_level.head, resting_id);
-            assert_eq!(bid_level.tail, resting_id);
-            assert_eq!(bid_level.total_liquidity, amount);
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
 
-            let ask_level = exchange.books[book_key]
-                .tick_level_handler(tick, false)
-                .read()?;
-            assert_eq!(ask_level.head, flip_id);
-            assert_eq!(ask_level.tail, flip_id);
-            assert_eq!(ask_level.total_liquidity, amount);
-
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
     fn test_flip_rewrite_does_not_spend_maker_storage_credits() -> eyre::Result<()> {
-        for (placement_fork, rewrite_fork) in [
-            (TempoHardfork::T7, TempoHardfork::T7),
-            (TempoHardfork::T7, TempoHardfork::T8),
-            (TempoHardfork::T8, TempoHardfork::T8),
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
+
+        for (placement_fork, version) in [
+            (TempoHardfork::T7, OrderVersion::Legacy),
+            (TempoHardfork::T7, OrderVersion::V1),
+            (TempoHardfork::T7, OrderVersion::V2),
+            (TempoHardfork::T8, OrderVersion::V1),
+            (TempoHardfork::T8, OrderVersion::V2),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, placement_fork);
+            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(placement_fork);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                let (base_token, _) = test.pair(version);
 
-                let alice = Address::random();
-                let bob = Address::random();
-                let carol = Address::random();
-                let admin = Address::random();
-                let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-                let tick = 100i16;
-                let flip_tick = 200i16;
-                let bid_price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-                let bid_escrow =
-                    amount * u128::from(bid_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+                let flip_id = exchange
+                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+                let credit_order_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+                exchange.cancel(test.alice, credit_order_id)?;
 
-                let base = TIP20Setup::create("BASE", "BASE", admin)
-                    .with_issuer(admin)
-                    .with_mint(bob, U256::from(amount * 2))
-                    .with_mint(carol, U256::from(amount))
-                    .with_approval(bob, exchange.address, U256::MAX)
-                    .with_approval(carol, exchange.address, U256::MAX)
-                    .apply()?;
-                let base_token = base.address();
-                let quote_token = base.quote_token()?;
-                TIP20Setup::path_usd(admin)
-                    .with_issuer(admin)
-                    .with_mint(alice, U256::from(bid_escrow * 3))
-                    .with_approval(alice, exchange.address, U256::MAX)
-                    .apply()?;
-
-                exchange.create_pair(base_token)?;
-
-                let flip_id =
-                    exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
-                let credit_order_id = exchange.place(alice, base_token, amount, true, tick)?;
-                exchange.cancel(alice, credit_order_id)?;
-                let credits_before = exchange.storage_credits(alice)?;
+                let credits_before = exchange.storage_credits(test.alice)?;
                 assert!(
                     credits_before > 0,
-                    "{placement_fork:?}->{rewrite_fork:?} setup must give maker credits"
+                    "{placement_fork:?} setup must give maker credits"
                 );
 
+                let rewrite_fork = DexTestSetup::hardfork_for(version);
                 StorageCtx.set_spec(rewrite_fork);
 
                 let destination_tail =
-                    exchange.place(carol, base_token, amount, false, flip_tick)?;
-                exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
 
                 let flipped = exchange.get_order(flip_id)?;
                 assert!(!flipped.is_bid());
                 assert_eq!(flipped.prev(), destination_tail);
                 assert!(
-                    exchange.storage_credits(alice)? >= credits_before,
+                    exchange.storage_credits(test.alice)? >= credits_before,
                     "{placement_fork:?}->{rewrite_fork:?} flip rewrite spent maker credits"
                 );
 
@@ -840,529 +1130,390 @@ mod tests {
 
     #[test]
     fn test_t8_legacy_flip_rewrite_gets_fresh_destination_priority() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let carol = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let flip_tick = 200i16;
-            let bid_price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let ask_price = crate::stablecoin_dex::orderbook::tick_to_price(flip_tick);
-            let bid_escrow =
-                amount * u128::from(bid_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
-            let ask_quote =
-                amount * u128::from(ask_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount * 2))
-                .with_mint(carol, U256::from(amount))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .with_approval(carol, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(bid_escrow * 2))
-                .with_mint(bob, U256::from(ask_quote))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
+                let flip_id = exchange
+                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+                let destination_tail_id =
+                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                let legacy_flip = exchange.orders[flip_id].read()?;
+                store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
+                assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::Legacy);
 
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
-            let source_next_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let destination_tail_id =
-                exchange.place(carol, base_token, amount, false, flip_tick)?;
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
 
-            let legacy_flip = exchange.orders[flip_id].read()?;
-            store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
-            assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::Legacy);
+                let source_level = exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?;
+                assert_eq!(source_level.head, source_next_id);
+                assert_eq!(source_level.tail, source_next_id);
+                assert_eq!(source_level.total_liquidity, amount);
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+                let destination_level = exchange.books[book_key]
+                    .tick_level_handler(flip_tick, false)
+                    .read()?;
+                assert_eq!(destination_level.head, destination_tail_id);
+                assert_eq!(destination_level.tail, flip_id);
+                assert_eq!(destination_level.total_liquidity, amount * 2);
 
-            let source_level = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(source_level.head, source_next_id);
-            assert_eq!(source_level.tail, source_next_id);
-            assert_eq!(source_level.total_liquidity, amount);
+                let destination_tail = exchange.get_order(destination_tail_id)?;
+                assert_eq!(destination_tail.next(), flip_id);
 
-            let destination_level = exchange.books[book_key]
-                .tick_level_handler(flip_tick, false)
-                .read()?;
-            assert_eq!(destination_level.head, destination_tail_id);
-            assert_eq!(destination_level.tail, flip_id);
-            assert_eq!(destination_level.total_liquidity, amount * 2);
+                let flipped = exchange.get_order(flip_id)?;
+                assert!(!flipped.is_bid());
+                assert_eq!(flipped.tick(), flip_tick);
+                assert_eq!(flipped.prev(), destination_tail_id);
+                assert_eq!(flipped.next(), 0);
+                assert_eq!(exchange.orders[flip_id].version()?, version);
 
-            let destination_tail = exchange.get_order(destination_tail_id)?;
-            assert_eq!(destination_tail.next(), flip_id);
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
 
-            let flipped = exchange.get_order(flip_id)?;
-            assert!(!flipped.is_bid());
-            assert_eq!(flipped.tick(), flip_tick);
-            assert_eq!(flipped.prev(), destination_tail_id);
-            assert_eq!(flipped.next(), 0);
-            assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::V1);
-
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
     fn test_t8_cancel_migrated_legacy_flip_cleans_destination_queue() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let carol = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let flip_tick = 200i16;
-            let bid_price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let ask_price = crate::stablecoin_dex::orderbook::tick_to_price(flip_tick);
-            let bid_escrow =
-                amount * u128::from(bid_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
-            let ask_quote =
-                amount * u128::from(ask_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount * 2))
-                .with_mint(carol, U256::from(amount))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .with_approval(carol, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(bid_escrow * 2))
-                .with_mint(bob, U256::from(ask_quote))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
+                let flip_id = exchange
+                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+                let destination_tail_id =
+                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                let legacy_flip = exchange.orders[flip_id].read()?;
+                store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
-            let source_next_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let destination_tail_id =
-                exchange.place(carol, base_token, amount, false, flip_tick)?;
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                assert_eq!(exchange.orders[flip_id].version()?, version);
 
-            let legacy_flip = exchange.orders[flip_id].read()?;
-            store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
+                exchange.cancel(test.alice, flip_id)?;
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
-            exchange.cancel(alice, flip_id)?;
+                assert!(exchange.get_order(flip_id).is_err());
+                assert_eq!(exchange.balance_of(test.alice, base_token)?, amount);
 
-            assert!(exchange.get_order(flip_id).is_err());
-            assert_eq!(exchange.balance_of(alice, base_token)?, amount);
+                let source_level = exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?;
+                assert_eq!(source_level.head, source_next_id);
+                assert_eq!(source_level.tail, source_next_id);
+                assert_eq!(source_level.total_liquidity, amount);
 
-            let source_level = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(source_level.head, source_next_id);
-            assert_eq!(source_level.tail, source_next_id);
-            assert_eq!(source_level.total_liquidity, amount);
+                let destination_level = exchange.books[book_key]
+                    .tick_level_handler(flip_tick, false)
+                    .read()?;
+                assert_eq!(destination_level.head, destination_tail_id);
+                assert_eq!(destination_level.tail, destination_tail_id);
+                assert_eq!(destination_level.total_liquidity, amount);
 
-            let destination_level = exchange.books[book_key]
-                .tick_level_handler(flip_tick, false)
-                .read()?;
-            assert_eq!(destination_level.head, destination_tail_id);
-            assert_eq!(destination_level.tail, destination_tail_id);
-            assert_eq!(destination_level.total_liquidity, amount);
+                let destination_tail = exchange.get_order(destination_tail_id)?;
+                assert_eq!(destination_tail.prev(), 0);
+                assert_eq!(destination_tail.next(), 0);
 
-            let destination_tail = exchange.get_order(destination_tail_id)?;
-            assert_eq!(destination_tail.prev(), 0);
-            assert_eq!(destination_tail.next(), 0);
+                Ok(())
+            })?;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
     fn test_t8_cancel_stale_migrated_legacy_flip() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let carol = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let flip_tick = 200i16;
-            let bid_price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let ask_price = crate::stablecoin_dex::orderbook::tick_to_price(flip_tick);
-            let bid_escrow =
-                amount * u128::from(bid_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
-            let ask_quote =
-                amount * u128::from(ask_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount * 2))
-                .with_mint(carol, U256::from(amount))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .with_approval(carol, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(bid_escrow * 2))
-                .with_mint(bob, U256::from(ask_quote))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
+                let flip_id = exchange
+                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+                let destination_tail_id =
+                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                let legacy_flip = exchange.orders[flip_id].read()?;
+                store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
-            let source_next_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let destination_tail_id =
-                exchange.place(carol, base_token, amount, false, flip_tick)?;
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+                assert_eq!(exchange.orders[flip_id].version()?, version);
 
-            let legacy_flip = exchange.orders[flip_id].read()?;
-            store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
+                let mut registry = TIP403Registry::new();
+                let policy_id = registry.create_policy(
+                    test.admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin: test.admin,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+                let mut base = TIP20Token::from_address(base_token)?;
+                base.change_transfer_policy_id(
+                    test.admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+                registry.modify_policy_blacklist(
+                    test.admin,
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: policy_id,
+                        account: test.alice,
+                        restricted: true,
+                    },
+                )?;
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+                exchange.cancel_stale_order(flip_id)?;
 
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            let mut base = TIP20Token::from_address(base_token)?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+                assert!(exchange.get_order(flip_id).is_err());
+                assert_eq!(exchange.balance_of(test.alice, base_token)?, amount);
 
-            exchange.cancel_stale_order(flip_id)?;
+                let source_level = exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?;
+                assert_eq!(source_level.head, source_next_id);
+                assert_eq!(source_level.tail, source_next_id);
+                assert_eq!(source_level.total_liquidity, amount);
 
-            assert!(exchange.get_order(flip_id).is_err());
-            assert_eq!(exchange.balance_of(alice, base_token)?, amount);
+                let destination_level = exchange.books[book_key]
+                    .tick_level_handler(flip_tick, false)
+                    .read()?;
+                assert_eq!(destination_level.head, destination_tail_id);
+                assert_eq!(destination_level.tail, destination_tail_id);
+                assert_eq!(destination_level.total_liquidity, amount);
 
-            let source_level = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(source_level.head, source_next_id);
-            assert_eq!(source_level.tail, source_next_id);
-            assert_eq!(source_level.total_liquidity, amount);
+                let destination_tail = exchange.get_order(destination_tail_id)?;
+                assert_eq!(destination_tail.prev(), 0);
+                assert_eq!(destination_tail.next(), 0);
 
-            let destination_level = exchange.books[book_key]
-                .tick_level_handler(flip_tick, false)
-                .read()?;
-            assert_eq!(destination_level.head, destination_tail_id);
-            assert_eq!(destination_level.tail, destination_tail_id);
-            assert_eq!(destination_level.total_liquidity, amount);
+                Ok(())
+            })?;
+        }
 
-            let destination_tail = exchange.get_order(destination_tail_id)?;
-            assert_eq!(destination_tail.prev(), 0);
-            assert_eq!(destination_tail.next(), 0);
-
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
     fn test_t8_migrated_legacy_flip_can_partially_fill_then_flip_again() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        let (amount, tick) = (MIN_ORDER_AMOUNT, 100i16);
+        let partial = amount / 2;
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let partial = amount / 2;
-            let tick = 100i16;
-            let price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let quote_amount =
-                amount * u128::from(price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(quote_amount))
-                .with_mint(bob, U256::from(quote_amount))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
+                let flip_id =
+                    exchange.place_flip(test.alice, base_token, amount, true, tick, tick, false)?;
+                let legacy_flip = exchange.orders[flip_id].read()?;
+                store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
 
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, tick, false)?;
-            let legacy_flip = exchange.orders[flip_id].read()?;
-            store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
+                let ask_after_migration = exchange.get_order(flip_id)?;
+                assert!(!ask_after_migration.is_bid());
+                assert_eq!(ask_after_migration.remaining(), amount);
+                assert_eq!(exchange.orders[flip_id].version()?, version);
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+                exchange.swap_exact_amount_out(
+                    test.bob,
+                    test.quote,
+                    base_token,
+                    partial,
+                    u128::MAX,
+                )?;
+                let partially_filled_ask = exchange.get_order(flip_id)?;
+                assert!(!partially_filled_ask.is_bid());
+                assert_eq!(partially_filled_ask.remaining(), amount - partial);
 
-            let ask_after_migration = exchange.get_order(flip_id)?;
-            assert!(!ask_after_migration.is_bid());
-            assert_eq!(ask_after_migration.remaining(), amount);
-            assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::V1);
+                exchange.swap_exact_amount_out(
+                    test.bob,
+                    test.quote,
+                    base_token,
+                    amount - partial,
+                    u128::MAX,
+                )?;
 
-            exchange.swap_exact_amount_out(bob, quote_token, base_token, partial, u128::MAX)?;
+                let flipped_back = exchange.get_order(flip_id)?;
+                assert!(flipped_back.is_bid());
+                assert_eq!(flipped_back.tick(), tick);
+                assert_eq!(flipped_back.flip_tick(), tick);
+                assert_eq!(flipped_back.amount(), amount);
+                assert_eq!(flipped_back.remaining(), amount);
+                assert_eq!(flipped_back.prev(), 0);
+                assert_eq!(flipped_back.next(), 0);
+                assert_eq!(exchange.orders[flip_id].version()?, version);
 
-            let partially_filled_ask = exchange.get_order(flip_id)?;
-            assert!(!partially_filled_ask.is_bid());
-            assert_eq!(partially_filled_ask.remaining(), amount - partial);
+                let bid_level = exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?;
+                assert_eq!(bid_level.head, flip_id);
+                assert_eq!(bid_level.tail, flip_id);
+                assert_eq!(bid_level.total_liquidity, amount);
 
-            exchange.swap_exact_amount_out(
-                bob,
-                quote_token,
-                base_token,
-                amount - partial,
-                u128::MAX,
-            )?;
+                let ask_level = exchange.books[book_key]
+                    .tick_level_handler(tick, false)
+                    .read()?;
+                assert_eq!(ask_level.head, 0);
+                assert_eq!(ask_level.tail, 0);
+                assert_eq!(ask_level.total_liquidity, 0);
 
-            let flipped_back = exchange.get_order(flip_id)?;
-            assert!(flipped_back.is_bid());
-            assert_eq!(flipped_back.tick(), tick);
-            assert_eq!(flipped_back.flip_tick(), tick);
-            assert_eq!(flipped_back.amount(), amount);
-            assert_eq!(flipped_back.remaining(), amount);
-            assert_eq!(flipped_back.prev(), 0);
-            assert_eq!(flipped_back.next(), 0);
-            assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::V1);
+                Ok(())
+            })?;
+        }
 
-            let bid_level = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(bid_level.head, flip_id);
-            assert_eq!(bid_level.tail, flip_id);
-            assert_eq!(bid_level.total_liquidity, amount);
-
-            let ask_level = exchange.books[book_key]
-                .tick_level_handler(tick, false)
-                .read()?;
-            assert_eq!(ask_level.head, 0);
-            assert_eq!(ask_level.tail, 0);
-            assert_eq!(ask_level.total_liquidity, 0);
-
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
-    fn test_t8_fill_legacy_head_updates_v1_neighbor() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+    fn test_t8_fill_legacy_head_updates_v1_and_v2_neighbors() -> eyre::Result<()> {
+        let (amount, tick) = (MIN_ORDER_AMOUNT, 100i16);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T7);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let carol = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let quote_amount =
-                amount * u128::from(price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            StorageCtx::enter(&mut storage, || {
+                StorageCtx.set_spec(TempoHardfork::T8);
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
+                let legacy_head_id = exchange.place(test.alice, base_token, amount, false, tick)?;
+                let new_tail_id = exchange.place(test.bob, base_token, amount, false, tick)?;
+                let legacy_head = exchange.orders[legacy_head_id].read()?;
+                store_legacy_order(&exchange.orders[legacy_head_id], legacy_head)?;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(amount))
-                .with_mint(bob, U256::from(amount))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(carol, U256::from(quote_amount))
-                .with_approval(carol, exchange.address, U256::MAX)
-                .apply()?;
+                assert_eq!(
+                    exchange.orders[legacy_head_id].version()?,
+                    OrderVersion::Legacy
+                );
+                assert_eq!(exchange.orders[new_tail_id].version()?, version);
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                exchange.swap_exact_amount_out(
+                    test.carol,
+                    test.quote,
+                    base_token,
+                    amount,
+                    u128::MAX,
+                )?;
 
-            let legacy_head_id = exchange.place(alice, base_token, amount, false, tick)?;
-            let v1_tail_id = exchange.place(bob, base_token, amount, false, tick)?;
-            let legacy_head = exchange.orders[legacy_head_id].read()?;
-            store_legacy_order(&exchange.orders[legacy_head_id], legacy_head)?;
+                assert!(exchange.get_order(legacy_head_id).is_err());
 
-            assert_eq!(
-                exchange.orders[legacy_head_id].version()?,
-                OrderVersion::Legacy
-            );
-            assert_eq!(exchange.orders[v1_tail_id].version()?, OrderVersion::V1);
+                let new_tail = exchange.get_order(new_tail_id)?;
+                assert_eq!(new_tail.prev(), 0);
+                assert_eq!(new_tail.next(), 0);
+                assert_eq!(exchange.orders[new_tail_id].version()?, version);
 
-            exchange.swap_exact_amount_out(carol, quote_token, base_token, amount, u128::MAX)?;
+                let ask_level = exchange.books[book_key]
+                    .tick_level_handler(tick, false)
+                    .read()?;
+                assert_eq!(ask_level.head, new_tail_id);
+                assert_eq!(ask_level.tail, new_tail_id);
+                assert_eq!(ask_level.total_liquidity, amount);
 
-            assert!(exchange.get_order(legacy_head_id).is_err());
-
-            let v1_tail = exchange.get_order(v1_tail_id)?;
-            assert_eq!(v1_tail.prev(), 0);
-            assert_eq!(v1_tail.next(), 0);
-            assert_eq!(exchange.orders[v1_tail_id].version()?, OrderVersion::V1);
-
-            let ask_level = exchange.books[book_key]
-                .tick_level_handler(tick, false)
-                .read()?;
-            assert_eq!(ask_level.head, v1_tail_id);
-            assert_eq!(ask_level.tail, v1_tail_id);
-            assert_eq!(ask_level.total_liquidity, amount);
-
-            Ok(())
-        })
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
     fn test_t8_legacy_flip_failure_deletes_filled_record() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
-            let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let flip_tick = 200i16;
-            let price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
-            let bid_escrow =
-                amount * u128::from(price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+        for version in [OrderVersion::V1, OrderVersion::V2] {
+            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount * 2))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(bid_escrow * 2))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .apply()?;
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut exchange = StablecoinDEX::new();
+                let (base_token, book_key) = test.pair(version);
 
-            exchange.create_pair(base_token)?;
-            let book_key =
-                crate::stablecoin_dex::orderbook::compute_book_key(base_token, quote_token);
+                let flip_id = exchange
+                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+                let source_next_id = exchange.place(test.alice, base_token, amount, true, tick)?;
 
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
-            let source_next_id = exchange.place(alice, base_token, amount, true, tick)?;
+                let legacy_flip = exchange.orders[flip_id].read()?;
+                store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
 
-            let legacy_flip = exchange.orders[flip_id].read()?;
-            store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
+                let mut registry = TIP403Registry::new();
+                let policy_id = registry.create_policy(
+                    test.admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin: test.admin,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+                let mut quote = TIP20Token::from_address(test.quote)?;
+                quote.change_transfer_policy_id(
+                    test.admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+                registry.modify_policy_blacklist(
+                    test.admin,
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: policy_id,
+                        account: test.alice,
+                        restricted: true,
+                    },
+                )?;
 
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            let mut quote = TIP20Token::from_address(quote_token)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+                assert!(exchange.get_order(flip_id).is_err());
+                assert!(
+                    exchange.cancel(test.alice, flip_id).is_err(),
+                    "filled flip record must not remain cancellable after failed re-flip"
+                );
+                assert_eq!(
+                    exchange.balance_of(test.alice, base_token)?,
+                    amount,
+                    "maker keeps the legitimate proceeds from the filled bid"
+                );
+                assert_eq!(
+                    exchange.balance_of(test.alice, test.quote)?,
+                    0,
+                    "maker must not also recover the consumed bid escrow"
+                );
 
-            assert!(exchange.get_order(flip_id).is_err());
-            assert!(
-                exchange.cancel(alice, flip_id).is_err(),
-                "filled flip record must not remain cancellable after failed re-flip"
-            );
-            assert_eq!(
-                exchange.balance_of(alice, base_token)?,
-                amount,
-                "maker keeps the legitimate proceeds from the filled bid"
-            );
-            assert_eq!(
-                exchange.balance_of(alice, quote_token)?,
-                0,
-                "maker must not also recover the consumed bid escrow"
-            );
+                let source_next = exchange.get_order(source_next_id)?;
+                assert_eq!(source_next.prev(), 0);
+                assert_eq!(source_next.next(), 0);
 
-            let source_next = exchange.get_order(source_next_id)?;
-            assert_eq!(source_next.prev(), 0);
-            assert_eq!(source_next.next(), 0);
+                let bid_level = exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?;
+                assert_eq!(bid_level.head, source_next_id);
+                assert_eq!(bid_level.tail, source_next_id);
+                assert_eq!(bid_level.total_liquidity, amount);
 
-            let bid_level = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(bid_level.head, source_next_id);
-            assert_eq!(bid_level.tail, source_next_id);
-            assert_eq!(bid_level.total_liquidity, amount);
+                let ask_level = exchange.books[book_key]
+                    .tick_level_handler(flip_tick, false)
+                    .read()?;
+                assert_eq!(ask_level.head, 0);
+                assert_eq!(ask_level.tail, 0);
+                assert_eq!(ask_level.total_liquidity, 0);
 
-            let ask_level = exchange.books[book_key]
-                .tick_level_handler(flip_tick, false)
-                .read()?;
-            assert_eq!(ask_level.head, 0);
-            assert_eq!(ask_level.tail, 0);
-            assert_eq!(ask_level.total_liquidity, 0);
+                Ok(())
+            })?;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
@@ -1376,7 +1527,7 @@ mod tests {
             let mut slot0 = U256::ZERO;
             let mut packed_slot0 = packing::PackedSlot(slot0);
             <u8 as Storable>::store(
-                &2,
+                &3,
                 &mut packed_slot0,
                 U256::ZERO,
                 LayoutCtx::packed(__packing_v1_order::VERSION_LOC.offset_bytes),
@@ -1388,44 +1539,6 @@ mod tests {
             assert!(exchange.orders[id].read().is_err());
             assert!(exchange.orders[id].write(order).is_err());
             assert!(exchange.orders[id].delete().is_err());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_delete_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-
-            let id = 42;
-            let order = Order::new_flip(
-                id,
-                TEST_MAKER,
-                TEST_BOOK_KEY,
-                1000,
-                5,
-                true,
-                10,
-                TempoHardfork::T4,
-            )
-            .unwrap();
-            exchange.orders[id].write(order)?;
-            exchange.orders[id].delete()?;
-
-            let deleted_order = exchange.orders[id].read()?;
-            assert_eq!(deleted_order.order_id(), 0);
-            assert_eq!(deleted_order.maker(), Address::ZERO);
-            assert_eq!(deleted_order.book_key(), B256::ZERO);
-            assert_eq!(deleted_order.amount(), 0);
-            assert_eq!(deleted_order.remaining(), 0);
-            assert_eq!(deleted_order.tick(), 0);
-            assert!(!deleted_order.is_bid());
-            assert!(!deleted_order.is_flip());
-            assert_eq!(deleted_order.flip_tick(), 0);
-            assert_eq!(deleted_order.prev(), 0);
-            assert_eq!(deleted_order.next(), 0);
 
             Ok(())
         })
@@ -1458,6 +1571,14 @@ mod tests {
                 remaining_seed,
                 mixed_offset,
             ).unwrap();
+            let v2 = run_order_storage_linked_list_case(
+                OrderLayoutCase::V2,
+                &order_specs,
+                update_seed,
+                remove_seed,
+                remaining_seed,
+                mixed_offset,
+            ).unwrap();
             let mixed = run_order_storage_linked_list_case(
                 OrderLayoutCase::Mixed,
                 &order_specs,
@@ -1468,6 +1589,7 @@ mod tests {
             ).unwrap();
 
             prop_assert_eq!(&legacy, &v1);
+            prop_assert_eq!(&legacy, &v2);
             prop_assert_eq!(&legacy, &mixed);
         }
     }
@@ -1476,15 +1598,31 @@ mod tests {
     enum OrderLayoutCase {
         Legacy,
         V1,
+        V2,
         Mixed,
     }
 
-    #[derive(Debug, PartialEq, Eq)]
+    impl OrderLayoutCase {
+        fn version_at(self, index: usize, mixed_offset: bool) -> OrderVersion {
+            match self {
+                Self::Legacy => OrderVersion::Legacy,
+                Self::V1 => OrderVersion::V1,
+                Self::V2 => OrderVersion::V2,
+                Self::Mixed => match (index + usize::from(mixed_offset)) % 3 {
+                    0 => OrderVersion::Legacy,
+                    1 => OrderVersion::V1,
+                    _ => OrderVersion::V2,
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     struct DexMigrationSnapshot {
         next_order_id: u128,
         active_orders: Vec<Option<Order>>,
-        bid_level: crate::stablecoin_dex::orderbook::TickLevel,
-        ask_level: crate::stablecoin_dex::orderbook::TickLevel,
+        bid_level: stablecoin_dex::orderbook::TickLevel,
+        ask_level: stablecoin_dex::orderbook::TickLevel,
         best_bid_tick: i16,
         best_ask_tick: i16,
         alice_internal_base: u128,
@@ -1503,89 +1641,93 @@ mod tests {
 
     #[test]
     fn test_t8_dex_sequence_equivalent_across_order_storage_versions() -> eyre::Result<()> {
-        let v1 = run_dex_migration_sequence_case(0)?;
+        let v1 = run_dex_migration_sequence_case(OrderVersion::V1, 0)?;
+        let v2 = run_dex_migration_sequence_case(OrderVersion::V2, 0)?;
+
+        let without_order_book_keys = |snapshot: &DexMigrationSnapshot| {
+            let mut normalized = snapshot.clone();
+            for order in normalized.active_orders.iter_mut().flatten() {
+                order.book_key = B256::ZERO;
+            }
+            normalized
+        };
+        assert_eq!(without_order_book_keys(&v1), without_order_book_keys(&v2));
+
         for legacy_mask in 1..(1u8 << 3) {
             assert_eq!(
                 v1,
-                run_dex_migration_sequence_case(legacy_mask)?,
-                "legacy mask {legacy_mask:03b}"
+                run_dex_migration_sequence_case(OrderVersion::V1, legacy_mask)?,
+                "v1 legacy mask {legacy_mask:03b}"
+            );
+            assert_eq!(
+                v2,
+                run_dex_migration_sequence_case(OrderVersion::V2, legacy_mask)?,
+                "v2 legacy mask {legacy_mask:03b}"
             );
         }
 
         Ok(())
     }
 
-    fn run_dex_migration_sequence_case(legacy_mask: u8) -> eyre::Result<DexMigrationSnapshot> {
-        use crate::stablecoin_dex::{
-            MIN_ORDER_AMOUNT,
-            orderbook::{RoundingDirection, base_to_quote, compute_book_key},
-        };
+    fn run_dex_migration_sequence_case(
+        version: OrderVersion,
+        legacy_mask: u8,
+    ) -> eyre::Result<DexMigrationSnapshot> {
+        let amount = MIN_ORDER_AMOUNT;
+        let partial = amount / 2;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+        let ask_quote = base_to_quote(amount, flip_tick, RoundingDirection::Up)
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let test = DexTestSetup {
+            admin: address!("0x1000000000000000000000000000000000000001"),
+            alice: address!("0x1000000000000000000000000000000000000002"),
+            bob: address!("0x1000000000000000000000000000000000000003"),
+            carol: address!("0x1000000000000000000000000000000000000004"),
+            ..DexTestSetup::new(amount, tick)
+        };
+        let (test, mut storage) = test.setup(TempoHardfork::T8);
+
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let (base_token, book_key) = test.pair(version);
+            let quote_token = test.quote;
 
-            let admin = address!("0x1000000000000000000000000000000000000001");
-            let alice = address!("0x1000000000000000000000000000000000000002");
-            let bob = address!("0x1000000000000000000000000000000000000003");
-            let carol = address!("0x1000000000000000000000000000000000000004");
-            let amount = MIN_ORDER_AMOUNT;
-            let partial = amount / 2;
-            let tick = 100i16;
-            let flip_tick = 200i16;
-            let bid_escrow = base_to_quote(amount, tick, RoundingDirection::Up)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            let ask_quote = base_to_quote(amount, flip_tick, RoundingDirection::Up)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_salt(b256!(
-                    "0x1111111111111111111111111111111111111111111111111111111111111111"
-                ))
-                .with_issuer(admin)
-                .with_mint(bob, U256::from(amount))
-                .with_mint(carol, U256::from(amount))
-                .with_approval(bob, exchange.address, U256::MAX)
-                .with_approval(carol, exchange.address, U256::MAX)
-                .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-            TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(alice, U256::from(bid_escrow * 2))
-                .with_mint(bob, U256::from(ask_quote * 2))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
+            TIP20Setup::config(quote_token)
+                .with_mint(test.bob, U256::from(ask_quote * 2))
                 .apply()?;
 
-            exchange.create_pair(base_token)?;
-            let book_key = compute_book_key(base_token, quote_token);
-
-            let flip_id =
-                exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
-            let resting_bid_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let flip_id = exchange
+                .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+            let resting_bid_id = exchange.place(test.alice, base_token, amount, true, tick)?;
             let destination_tail_id =
-                exchange.place(carol, base_token, amount, false, flip_tick)?;
+                exchange.place(test.carol, base_token, amount, false, flip_tick)?;
 
             rewrite_initial_orders_for_layout(
                 &mut exchange,
                 legacy_mask,
                 &[flip_id, resting_bid_id, destination_tail_id],
             )?;
-            assert_initial_versions_for_mask(&exchange, legacy_mask, 3)?;
+            assert_initial_versions_for_mask(&exchange, version, legacy_mask, 3)?;
 
-            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
-            exchange.cancel(carol, destination_tail_id)?;
-            exchange.swap_exact_amount_out(bob, quote_token, base_token, partial, u128::MAX)?;
+            exchange.swap_exact_amount_in(test.bob, base_token, quote_token, amount, 0)?;
+            exchange.cancel(test.carol, destination_tail_id)?;
             exchange.swap_exact_amount_out(
-                bob,
+                test.bob,
+                quote_token,
+                base_token,
+                partial,
+                u128::MAX,
+            )?;
+            exchange.swap_exact_amount_out(
+                test.bob,
                 quote_token,
                 base_token,
                 amount - partial,
                 u128::MAX,
             )?;
-            exchange.cancel(alice, resting_bid_id)?;
+            exchange.cancel(test.alice, resting_bid_id)?;
 
             let next_order_id = exchange.next_order_id()?;
             let active_orders = (1..next_order_id)
@@ -1608,22 +1750,28 @@ mod tests {
                 ask_level,
                 best_bid_tick: book.best_bid_tick,
                 best_ask_tick: book.best_ask_tick,
-                alice_internal_base: exchange.balance_of(alice, base_token)?,
-                alice_internal_quote: exchange.balance_of(alice, quote_token)?,
-                bob_internal_base: exchange.balance_of(bob, base_token)?,
-                bob_internal_quote: exchange.balance_of(bob, quote_token)?,
-                carol_internal_base: exchange.balance_of(carol, base_token)?,
-                carol_internal_quote: exchange.balance_of(carol, quote_token)?,
-                alice_wallet_base: base_tip20
-                    .balance_of(ITIP20::balanceOfCall { account: alice })?,
-                alice_wallet_quote: quote_tip20
-                    .balance_of(ITIP20::balanceOfCall { account: alice })?,
-                bob_wallet_base: base_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?,
-                bob_wallet_quote: quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?,
-                carol_wallet_base: base_tip20
-                    .balance_of(ITIP20::balanceOfCall { account: carol })?,
-                carol_wallet_quote: quote_tip20
-                    .balance_of(ITIP20::balanceOfCall { account: carol })?,
+                alice_internal_base: exchange.balance_of(test.alice, base_token)?,
+                alice_internal_quote: exchange.balance_of(test.alice, quote_token)?,
+                bob_internal_base: exchange.balance_of(test.bob, base_token)?,
+                bob_internal_quote: exchange.balance_of(test.bob, quote_token)?,
+                carol_internal_base: exchange.balance_of(test.carol, base_token)?,
+                carol_internal_quote: exchange.balance_of(test.carol, quote_token)?,
+                alice_wallet_base: base_tip20.balance_of(ITIP20::balanceOfCall {
+                    account: test.alice,
+                })?,
+                alice_wallet_quote: quote_tip20.balance_of(ITIP20::balanceOfCall {
+                    account: test.alice,
+                })?,
+                bob_wallet_base: base_tip20
+                    .balance_of(ITIP20::balanceOfCall { account: test.bob })?,
+                bob_wallet_quote: quote_tip20
+                    .balance_of(ITIP20::balanceOfCall { account: test.bob })?,
+                carol_wallet_base: base_tip20.balance_of(ITIP20::balanceOfCall {
+                    account: test.carol,
+                })?,
+                carol_wallet_quote: quote_tip20.balance_of(ITIP20::balanceOfCall {
+                    account: test.carol,
+                })?,
             })
         })
     }
@@ -1644,17 +1792,25 @@ mod tests {
 
     fn assert_initial_versions_for_mask(
         exchange: &StablecoinDEX,
+        expected_compact: OrderVersion,
         legacy_mask: u8,
         len: usize,
     ) -> eyre::Result<()> {
-        for index in 0..len {
-            let id = index as u128 + 1;
-            let version = exchange.orders[id].version()?;
-            assert_eq!(
-                version == OrderVersion::Legacy,
-                legacy_mask & (1 << index) != 0
-            );
-        }
+        debug_assert!(matches!(
+            expected_compact,
+            OrderVersion::V1 | OrderVersion::V2
+        ));
+
+        assert_order_versions(
+            exchange,
+            (0..len).map(|index| {
+                if legacy_mask & (1 << index) != 0 {
+                    OrderVersion::Legacy
+                } else {
+                    expected_compact
+                }
+            }),
+        )?;
         Ok(())
     }
 
@@ -1800,19 +1956,19 @@ mod tests {
         index: usize,
         order: Order,
     ) -> StorageResult<()> {
-        if should_store_legacy(layout, mixed_offset, index) {
-            store_legacy_order(&exchange.orders[order.order_id()], order)
-        } else {
-            exchange.orders[order.order_id()].write(order)
-        }
+        store_versioned_order(exchange, layout.version_at(index, mixed_offset), order)
     }
 
-    fn should_store_legacy(layout: OrderLayoutCase, mixed_offset: bool, index: usize) -> bool {
-        match layout {
-            OrderLayoutCase::Legacy => true,
-            OrderLayoutCase::V1 => false,
-            OrderLayoutCase::Mixed => (index + usize::from(mixed_offset)).is_multiple_of(2),
-        }
+    fn assert_order_versions(
+        exchange: &StablecoinDEX,
+        expected: impl IntoIterator<Item = OrderVersion>,
+    ) -> eyre::Result<Vec<OrderVersion>> {
+        let expected = expected.into_iter().collect::<Vec<_>>();
+        let actual = (0..expected.len())
+            .map(|index| exchange.orders[index as u128 + 1].version())
+            .collect::<StorageResult<Vec<_>>>()?;
+        assert_eq!(actual, expected);
+        Ok(actual)
     }
 
     fn assert_initial_versions(
@@ -1821,34 +1977,18 @@ mod tests {
         mixed_offset: bool,
         len: usize,
     ) -> eyre::Result<()> {
-        let mut saw_legacy = false;
-        let mut saw_v1 = false;
+        let actual = assert_order_versions(
+            exchange,
+            (0..len).map(|index| layout.version_at(index, mixed_offset)),
+        )?;
 
-        for index in 0..len {
-            let id = index as u128 + 1;
-            let version = exchange.orders[id].version()?;
-            let expect_legacy = should_store_legacy(layout, mixed_offset, index);
-            assert_eq!(version == OrderVersion::Legacy, expect_legacy);
-            saw_legacy |= version == OrderVersion::Legacy;
-            saw_v1 |= version == OrderVersion::V1;
-        }
-
-        match layout {
-            OrderLayoutCase::Legacy => {
-                assert!(saw_legacy);
-                assert!(!saw_v1);
-            }
-            OrderLayoutCase::V1 => {
-                assert!(!saw_legacy);
-                assert!(saw_v1);
-            }
-            OrderLayoutCase::Mixed if len > 1 => {
-                assert!(saw_legacy);
-                assert!(saw_v1);
-            }
-            OrderLayoutCase::Mixed => {
-                assert!(saw_legacy || saw_v1);
-            }
+        if matches!(layout, OrderLayoutCase::Mixed) && len >= 3 {
+            assert!(actual.contains(&OrderVersion::Legacy));
+            assert!(actual.contains(&OrderVersion::V1));
+            assert!(actual.contains(&OrderVersion::V2));
+        } else if matches!(layout, OrderLayoutCase::V1 | OrderLayoutCase::V2) {
+            let is_compact = |v: OrderVersion| !matches!(v, OrderVersion::Legacy);
+            assert!(actual.iter().copied().all(is_compact));
         }
 
         Ok(())
