@@ -14,8 +14,8 @@ const TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
 const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
-const TXGEN_HELPER_FEE_AMM_ADDRESS = "0xfeec000000000000000000000000000000000000"
-const TXGEN_HELPER_PATHUSD_ADDRESS = "0x20c0000000000000000000000000000000000000"
+const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
+const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
 
 def txgen-tip20-default-scenario [] {
@@ -132,76 +132,8 @@ def txgen-scenario-file-stem [scenario_id: string] {
         | str replace -a "/" "-"
 }
 
-def txgen-helper-path [name: string] {
-    [ (txgen-repo-root) "contrib/bench/txgen" $name ] | path join
-}
-
 def txgen-tip20-uses-fee-amm [scenario: record] {
     $scenario.fee_token == "any_tip20"
-}
-
-def txgen-is-record [value: any] {
-    ($value | describe) | str starts-with "record"
-}
-
-def txgen-is-list [value: any] {
-    let type_name = ($value | describe)
-    ($type_name | str starts-with "list") or ($type_name | str starts-with "table")
-}
-
-def txgen-merge-values [base: any, patch: any] {
-    if (txgen-is-record $base) and (txgen-is-record $patch) {
-        mut merged = $base
-        for entry in ($patch | transpose key value) {
-            let current = ($merged | get -o $entry.key)
-
-            if $current == null {
-                let value = if (txgen-is-record $entry.value) {
-                    txgen-merge-values {} $entry.value
-                } else {
-                    $entry.value
-                }
-                $merged = ($merged | insert $entry.key $value)
-            } else {
-                $merged = ($merged | upsert $entry.key (txgen-merge-values $current $entry.value))
-            }
-        }
-        return $merged
-    }
-
-    $patch
-}
-
-def txgen-append-values [base: any, patch: any] {
-    if (txgen-is-record $patch) {
-        if $base != null and not (txgen-is-record $base) {
-            error make { msg: "cannot append nested fields into a non-record value" }
-        }
-
-        mut merged = if $base == null { {} } else { $base }
-        for entry in ($patch | transpose key value) {
-            let current = ($merged | get -o $entry.key)
-            let value = (txgen-append-values $current $entry.value)
-            if $current == null {
-                $merged = ($merged | insert $entry.key $value)
-            } else {
-                $merged = ($merged | upsert $entry.key $value)
-            }
-        }
-        return $merged
-    }
-
-    if (txgen-is-list $patch) {
-        if $base == null {
-            return $patch
-        }
-        if not (txgen-is-list $base) {
-            error make { msg: "cannot append a list into a non-list value" }
-        }
-        return ($base | append $patch)
-    }
-
-    error make { msg: "append section leaves must be lists" }
 }
 
 def txgen-tip20-pieces-dir [] {
@@ -212,36 +144,13 @@ def txgen-tip20-piece-path [piece: string] {
     [ (txgen-tip20-pieces-dir) $"($piece).yml" ] | path join
 }
 
-def txgen-load-tip20-piece [piece: string] {
+def txgen-tip20-piece-path-checked [piece: string] {
     let piece_path = (txgen-tip20-piece-path $piece)
     if not ($piece_path | path exists) {
         error make { msg: $"missing tip20 txgen piece: ($piece)" }
     }
 
-    open $piece_path
-}
-
-def txgen-apply-tip20-piece [spec: record, piece_name: string] {
-    let piece = (txgen-load-tip20-piece $piece_name)
-    let keys = ($piece | columns)
-    for key in $keys {
-        if $key not-in ["merge" "append"] {
-            error make { msg: $"tip20 txgen piece ($piece_name) has unknown section '($key)'; expected merge or append" }
-        }
-    }
-
-    mut out = $spec
-    let merge_patch = ($piece | get -o merge)
-    if $merge_patch != null {
-        $out = (txgen-merge-values $out $merge_patch)
-    }
-
-    let append_patch = ($piece | get -o append)
-    if $append_patch != null {
-        $out = (txgen-append-values $out $append_patch)
-    }
-
-    $out
+    $piece_path
 }
 
 def txgen-tip20-piece-name [dimension: string, value: string] {
@@ -263,48 +172,8 @@ def txgen-tip20-scenario-pieces [scenario: record] {
     $pieces
 }
 
-def txgen-tip20-placeholder-values [scenario: record] {
-    let fee_amm_amount = if $scenario.nonce == "2d" { 10000000000000 } else { 10000000000 }
-    {
-        __TXGEN_ERC20_ABI_PATH__: (txgen-helper-path "erc20.abi.json")
-        __TXGEN_FEE_AMM_ABI_PATH__: (txgen-helper-path "fee-amm.abi.json")
-        __TXGEN_FEE_AMM_LIQUIDITY_AMOUNT__: $fee_amm_amount
-    }
-}
-
-def txgen-replace-placeholders [value: any, replacements: record] {
-    if (txgen-is-record $value) {
-        mut out = {}
-        for entry in ($value | transpose key value) {
-            $out = ($out | insert $entry.key (txgen-replace-placeholders $entry.value $replacements))
-        }
-        return $out
-    }
-
-    if (txgen-is-list $value) {
-        return ($value | each { |item| txgen-replace-placeholders $item $replacements })
-    }
-
-    if (($value | describe) == "string") {
-        let replacement = ($replacements | get -o $value)
-        if $replacement != null {
-            return $replacement
-        }
-    }
-
-    $value
-}
-
-def txgen-assemble-tip20-spec [scenario: record] {
-    mut spec = {}
-    $spec = (txgen-apply-tip20-piece $spec "base")
-    for piece in (txgen-tip20-scenario-pieces $scenario) {
-        $spec = (txgen-apply-tip20-piece $spec $piece)
-    }
-
-    txgen-replace-placeholders $spec (txgen-tip20-placeholder-values $scenario)
-}
-
+# Write a scenario spec that lists its pieces via txgen's native `include`
+# directive; txgen resolves the merge/append sections in each piece itself.
 def txgen-render-tip20-spec [scenario: record, out_dir: string] {
     let out_dir = if ($out_dir | str trim) == "" {
         [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR ] | path join
@@ -314,13 +183,15 @@ def txgen-render-tip20-spec [scenario: record, out_dir: string] {
     mkdir $out_dir
 
     let uses_fee_amm = (txgen-tip20-uses-fee-amm $scenario)
-    let spec = (txgen-assemble-tip20-spec $scenario)
+    let pieces = (["base"] | append (txgen-tip20-scenario-pieces $scenario))
+    let piece_paths = ($pieces | each { |piece| txgen-tip20-piece-path-checked $piece })
 
     let scenario_id = (txgen-tip20-scenario-id $scenario)
     let spec_path = ([ $out_dir $"(txgen-scenario-file-stem $scenario_id).yml" ] | path join)
-    $spec
-        | to yaml
-        | str replace -a "'18446744073709551615'" "18446744073709551615"
+    [$"# ($scenario_id)" "include:"]
+        | append ($piece_paths | each { |piece_path| $"  - ($piece_path)" })
+        | append ""
+        | str join "\n"
         | save -f $spec_path
 
     {
@@ -410,6 +281,17 @@ def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
     $env.TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS = (txgen-keychain-tip20-allowed-calls $token_count)
     $env.TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = ($TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT | into string)
     $env.TXGEN_KEY_AUTHORIZATION_GAS_LIMIT = (txgen-key-authorization-gas-limit $token_count)
+}
+
+# 2D-nonce specs mint deeper FeeAMM liquidity, matching the removed
+# tip20_2d_nonces preset. `nonce_key:` only appears in 2D-nonce specs.
+def --env txgen-configure-fee-amm-env [spec_path: string] {
+    let amount = if (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*nonce_key:\s*$' {
+        $TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT
+    } else {
+        $TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT
+    }
+    $env.TXGEN_FEE_AMM_LIQUIDITY_AMOUNT = ($amount | into string)
 }
 
 def txgen-shell-quote [value: any] {
@@ -552,8 +434,41 @@ def txgen-validate-bench-args [bench_args: string] {
     txgen-parse-bench-args $bench_args | ignore
 }
 
+# Return the spec text with `include` entries expanded, so content checks see
+# included pieces. Pieces do not nest includes, so one level is enough.
+def txgen-spec-effective-text [spec_path: string] {
+    let path = ($spec_path | path expand)
+    let raw = (open --raw $path)
+    let doc = (try { $raw | from yaml } catch { null })
+    if $doc == null or not (($doc | describe) | str starts-with "record") {
+        return $raw
+    }
+
+    let include_value = ($doc | get -o include | default ($doc | get -o includes))
+    let includes = if $include_value == null {
+        []
+    } else if (($include_value | describe) == "string") {
+        [$include_value]
+    } else {
+        $include_value
+    }
+
+    let base_dir = ($path | path dirname)
+    $includes
+        | each { |include_path|
+            let resolved = if ($include_path | str starts-with "/") {
+                $include_path
+            } else {
+                [ $base_dir $include_path ] | path join
+            }
+            open --raw $resolved
+        }
+        | append $raw
+        | str join "\n"
+}
+
 def txgen-spec-has-keychain-setup [spec_path: string] {
-    (open --raw $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
+    (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
 }
 
 def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
@@ -577,7 +492,7 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
     let spec_uses_existing_recipients = if ($preset_path | path exists) {
-        (open --raw $preset_path) =~ '(?m)^\s*existing_recipients:\s*$'
+        (txgen-spec-effective-text $preset_path) =~ '(?m)^\s*existing_recipients:\s*$'
     } else {
         false
     }
@@ -703,6 +618,7 @@ def txgen-run-preset-pipeline [
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-keychain-env $accounts $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)

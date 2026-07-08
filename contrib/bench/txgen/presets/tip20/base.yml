@@ -10,10 +10,10 @@ merge:
       mnemonic: "test test test test test test test test test test test junk"
       range:
         - 0
-        - "${TXGEN_ACCOUNTS}"
+        - ${TXGEN_ACCOUNTS}
 
   artifacts:
-    ERC20: "__TXGEN_ERC20_ABI_PATH__"
+    ERC20: "../../erc20.abi.json"
 
   templates:
     tip20_transfer:
@@ -25,7 +25,7 @@ merge:
       max_priority_fee_per_gas: 100000000000
       call:
         to:
-          choice: "${TXGEN_TIP20_TOKENS}"
+          choice: ${TXGEN_TIP20_TOKENS}
         abi: ERC20
         function: transfer
 
