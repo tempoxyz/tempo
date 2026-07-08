@@ -504,6 +504,7 @@ pub mod lthash {
         BasicEngineValidatorBuilder, BoxedPersistenceHook, ChangesetCache, EngineValidatorBuilder,
     };
     use reth_provider::providers::ProviderNodeTypes;
+    use reth_tracing::tracing::info;
     use std::sync::Arc;
     use tempo_lthash::{LthashPersistenceHook, LthashStore, TempoLthashStateRootStrategy};
     use tempo_primitives::TempoPrimitives;
@@ -535,10 +536,24 @@ pub mod lthash {
             changeset_cache: ChangesetCache,
             state_trie_overlays: StateTrieOverlayManager<TempoPrimitives>,
         ) -> eyre::Result<Self::EngineValidator> {
+            let skip_state_root = tree_config.skip_state_root();
             let validator = self
                 .inner
                 .build_tree_validator(ctx, tree_config, changeset_cache, state_trie_overlays)
                 .await?;
+
+            // The skip gates live inside the default strategy: it echoes header roots on
+            // validation and hands the builder no state-root handle, matching the builder's
+            // own skip branch. The lthash strategy has no skip path — installing it here
+            // would compute real lthash roots and reject every skip-built block — so leave
+            // the default strategy in place.
+            if skip_state_root {
+                info!(
+                    target: "tempo::lthash",
+                    "--debug.skip-state-root is set, lthash state-root strategy disabled"
+                );
+                return Ok(validator);
+            }
 
             Ok(
                 validator.with_state_root_strategy(Arc::new(TempoLthashStateRootStrategy::new(
