@@ -17,7 +17,6 @@ const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
 const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
-const TXGEN_HELPER_NEOBANK_DIRECTSWAP_POLICY_ID = 2
 
 def txgen-tip20-default-scenario [] {
     {
@@ -294,30 +293,6 @@ def --env txgen-configure-fee-amm-env [spec_path: string] {
     }
     $env.TXGEN_FEE_AMM_LIQUIDITY_AMOUNT = ($amount | into string)
 }
-
-def txgen-neobank-directswap-policy-calls [] {
-    # DirectSwap bytecode is patched to use the first TIP403 user policy id.
-    # Creating one empty blacklist policy makes policy 2 exist and authorize
-    # every non-blacklisted caller.
-    2..$TXGEN_HELPER_NEOBANK_DIRECTSWAP_POLICY_ID
-        | each {
-            {
-                to: "0x403c000000000000000000000000000000000000"
-                abi: "TIP403Registry"
-                function: "createPolicy"
-                args: [
-                    "0x0000000000000000000000000000000000000000"
-                    1
-                ]
-            }
-        }
-        | to json -r
-}
-
-def --env txgen-configure-neobank-env [] {
-    $env.TXGEN_NEOBANK_DIRECTSWAP_POLICY_CALLS = (txgen-neobank-directswap-policy-calls)
-}
-
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
     let escaped = ($s | str replace -a "'" "'\"'\"'")
@@ -641,7 +616,6 @@ def txgen-run-preset-pipeline [
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-keychain-env $accounts $tx_token_count
-    txgen-configure-neobank-env
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
