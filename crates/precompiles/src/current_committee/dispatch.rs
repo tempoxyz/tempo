@@ -60,7 +60,8 @@ mod tests {
 
     #[test]
     fn test_set_committee_members_is_system_only() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_block_number(2);
+        let mut storage = HashMapStorageProvider::new(1);
+        storage.set_block_number(2);
         StorageCtx::enter(&mut storage, || {
             let mut committee = CurrentCommittee::new();
             let call = ICurrentCommittee::setCommitteeMembersCall {
