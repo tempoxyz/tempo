@@ -770,6 +770,7 @@ fn final_state_diff(pre_state: &StateInput, after_state: &StateInput) -> StateDi
     StateDiff {
         accounts: account_changes(pre_state, after_state),
         storage: storage_changes(pre_state, after_state),
+        txs: Vec::new(),
     }
 }
 
