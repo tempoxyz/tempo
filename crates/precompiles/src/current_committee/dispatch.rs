@@ -65,6 +65,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut committee = CurrentCommittee::new();
             let call = ICurrentCommittee::setCommitteeMembersCall {
+                epoch: 42,
                 publicKeys: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
             };
 
@@ -75,7 +76,7 @@ mod tests {
             assert!(system.is_ok_and(|output| output.is_success()));
 
             let ret = committee.get_committee_members()?;
-            assert_eq!(ret.epoch, 2);
+            assert_eq!(ret.epoch, call.epoch);
             assert_eq!(ret.publicKeys, call.publicKeys);
             Ok(())
         })

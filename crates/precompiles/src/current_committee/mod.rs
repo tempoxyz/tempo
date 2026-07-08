@@ -6,26 +6,27 @@ use tempo_contracts::precompiles::CurrentCommitteeError;
 pub use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee};
 use tempo_precompiles_macros::contract;
 
-use crate::{
-    error::Result,
-    storage::{ContractStorage, Handler},
-};
+use crate::{error::Result, storage::Handler};
 use alloy::primitives::{Address, B256};
 
 #[contract(addr = CURRENT_COMMITTEE_ADDRESS)]
 pub struct CurrentCommittee {
+    epoch: u64,
     ids: Vec<B256>,
 }
 
 impl CurrentCommittee {
     pub fn get_committee_members(&self) -> Result<ICurrentCommittee::getCommitteeMembersReturn> {
-        let current_epoch = self.storage().epoch(self.storage().block_number());
         Ok(ICurrentCommittee::getCommitteeMembersReturn {
-            epoch: current_epoch,
+            epoch: self.epoch.read()?,
             publicKeys: self.ids.read()?,
         })
     }
 
+    /// Stores the next epoch's committee.
+    ///
+    /// Correctness assumes this system-only entrypoint is invoked only while
+    /// processing the last block of an epoch.
     pub fn set_committee_members(
         &mut self,
         msg_sender: Address,
@@ -35,6 +36,7 @@ impl CurrentCommittee {
             return Err(CurrentCommitteeError::unauthorized().into());
         }
 
+        self.epoch.write(call.epoch)?;
         self.ids.write(call.publicKeys)?;
         Ok(())
     }
