@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
+use commonware_codec::{DecodeExt, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
@@ -44,6 +44,11 @@ pub struct OnchainDkgOutcome {
 }
 
 impl OnchainDkgOutcome {
+    /// Decode an on-chain DKG outcome and reject any trailing bytes.
+    pub fn decode(buf: impl Buf) -> Result<Self, commonware_codec::Error> {
+        <Self as DecodeExt<()>>::decode(buf)
+    }
+
     pub fn dealers(&self) -> &ordered::Set<PublicKey> {
         self.output.dealers()
     }
@@ -107,7 +112,7 @@ impl EncodeSize for OnchainDkgOutcome {
 mod tests {
     use std::iter::repeat_with;
 
-    use commonware_codec::{Encode as _, ReadExt as _};
+    use commonware_codec::{Encode as _, Error};
     use commonware_consensus::types::Epoch;
     use commonware_cryptography::{Signer as _, bls12381::dkg, ed25519::PrivateKey};
     use commonware_math::algebra::Random as _;
@@ -141,9 +146,40 @@ mod tests {
             is_next_full_dkg: false,
         };
         let bytes = on_chain.encode();
-        assert_eq!(
-            OnchainDkgOutcome::read(&mut bytes.as_ref()).unwrap(),
-            on_chain,
-        );
+        assert_eq!(OnchainDkgOutcome::decode(bytes.as_ref()).unwrap(), on_chain,);
+    }
+
+    #[test]
+    fn onchain_dkg_outcome_decode_rejects_trailing_bytes() {
+        let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
+
+        let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
+            .take(10)
+            .collect::<Vec<_>>();
+        player_keys.sort_by_key(|key| key.public_key());
+        let (output, _shares) = dkg::deal::<_, _, N3f1>(
+            &mut rng,
+            Default::default(),
+            ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
+        )
+        .unwrap();
+
+        let on_chain = OnchainDkgOutcome {
+            epoch: Epoch::new(42),
+            output,
+            next_players: ordered::Set::try_from_iter(
+                player_keys.iter().map(|key| key.public_key()),
+            )
+            .unwrap(),
+            is_next_full_dkg: false,
+        };
+
+        let mut bytes = on_chain.encode().to_vec();
+        bytes.push(0xff);
+
+        assert!(matches!(
+            OnchainDkgOutcome::decode(bytes.as_slice()),
+            Err(Error::ExtraData(1))
+        ));
     }
 }

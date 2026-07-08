@@ -19,7 +19,7 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_signer_trezor::{HDPath as TrezorHDPath, TrezorSigner};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
-use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     Signer as _,
@@ -1152,7 +1152,7 @@ impl ValidatorInfo {
                 ));
             }
 
-            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+            let dkg_outcome = OnchainDkgOutcome::decode(extra_data.as_ref())
                 .wrap_err("failed to decode DKG outcome from extra_data")?;
 
             let key = PublicKey::decode(&mut &pubkey_bytes[..])
@@ -1282,7 +1282,7 @@ impl Info {
             ));
         }
 
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+        let dkg_outcome = OnchainDkgOutcome::decode(extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
         let next_dkg_result = provider

@@ -17,7 +17,7 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
-use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+use commonware_codec::{Encode as _, EncodeSize as _};
 use commonware_consensus::{
     Heightable as _,
     simplex::Plan,
@@ -1096,7 +1096,7 @@ async fn verify_header(
                 "failed getting public dkg ceremony outcome; cannot verify end \
                 of epoch block",
             )?;
-        let block_outcome = OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
+        let block_outcome = OnchainDkgOutcome::decode(block.header().extra_data().as_ref())
             .wrap_err(
                 "failed decoding extra data header as DKG ceremony \
                 outcome; cannot verify end of epoch block",

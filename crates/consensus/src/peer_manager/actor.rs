@@ -7,7 +7,6 @@ use std::{
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -229,13 +228,12 @@ where
             read_header_at_height(&self.execution_node, highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::decode(
+            latest_boundary_header.extra_data().as_ref(),
+        )
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
         let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(

@@ -44,7 +44,6 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Reporters,
     marshal::Update,
@@ -474,8 +473,8 @@ where
                 .await
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
-            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut block.header().extra_data().as_ref(),
+            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+                block.header().extra_data().as_ref(),
             )
             .expect("boundary blocks must contain DKG outcomes");
             self.config.scheme_provider.register(

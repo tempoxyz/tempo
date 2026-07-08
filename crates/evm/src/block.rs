@@ -14,7 +14,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::{DecodeExt, ReadExt};
+use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
@@ -252,7 +252,7 @@ where
         }
 
         let outcome =
-            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut self.extra_data.as_ref())
+            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(self.extra_data.as_ref())
                 .map_err(|err| {
                     BlockValidationError::msg(format!(
                         "failed decoding boundary block extra data as DKG outcome: {err}"

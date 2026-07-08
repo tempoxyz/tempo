@@ -762,7 +762,7 @@ where
         info!("reached last block of epoch; reading DKG outcome from header");
 
         let onchain_outcome =
-            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(header.extra_data().as_ref())
                 .expect("the last block of an epoch must contain the DKG outcome");
 
         info!("reading validator from contract");
@@ -1299,7 +1299,7 @@ async fn read_outcome_from_boundary(
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
 
-    OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+    OnchainDkgOutcome::decode(header.extra_data().as_ref())
         .wrap_err("the boundary block did not contain the on-chain DKG outcome")
 }
 

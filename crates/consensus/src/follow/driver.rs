@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Epochable, Heightable as _, Reporter, marshal,
     simplex::{
@@ -75,8 +75,8 @@ pub(super) fn try_init<TContext>(
     } else {
         Height::zero()
     };
-    let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut config
+    let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+        config
             .execution_node
             .provider
             .header_by_number(last_boundary.get())
@@ -271,8 +271,8 @@ where
                 return Ok(());
             };
 
-            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut boundary_block.header().extra_data().as_ref(),
+            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+                boundary_block.header().extra_data().as_ref(),
             )
             .wrap_err_with(|| {
                 format!(
@@ -405,8 +405,8 @@ where
             .expect("strategy valid for all heights");
 
         if epoch_info.last() == block.height() {
-            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut block.header().extra_data().as_ref(),
+            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+                block.header().extra_data().as_ref(),
             )
             .expect("boundary blocks must contain DKG outcomes");
 

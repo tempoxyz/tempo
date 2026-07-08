@@ -52,9 +52,8 @@ impl NetworkIdentity {
     }
 
     pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
-        let mut extra_data = extra_data;
         let outcome =
-            OnchainDkgOutcome::read(&mut extra_data).wrap_err("unable to parse dkg outcome")?;
+            OnchainDkgOutcome::decode(extra_data).wrap_err("unable to parse dkg outcome")?;
 
         Ok(Self {
             from_epoch: outcome.epoch.get(),
