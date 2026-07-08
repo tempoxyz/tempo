@@ -3,7 +3,7 @@ use std::{
     num::{NonZeroU16, NonZeroU32, NonZeroUsize},
 };
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, Heightable as _,
@@ -28,6 +28,7 @@ use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
+use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
@@ -254,15 +255,15 @@ where
         Ok(())
     }
 
-    /// Appends the height, digest, and parent of the finalized block to the journal.
-    pub(super) async fn append_finalized_block(
+    /// Appends the height, digest, and parent of the finalized header to the journal.
+    pub(super) async fn append_finalized_header(
         &mut self,
         epoch: Epoch,
-        block: Block,
+        header: TempoHeader,
     ) -> eyre::Result<()> {
-        let height = block.height();
-        let digest = block.digest();
-        let parent = block.parent();
+        let height = Height::new(header.number());
+        let digest = Digest(header.hash_slow());
+        let parent = Digest(header.parent_hash());
         if self
             .cache
             .get(&epoch)
@@ -298,9 +299,9 @@ where
         cache.finalized.insert(
             height,
             FinalizedBlockInfo {
-                height: block.height(),
-                digest: block.digest(),
-                parent: block.parent_digest(),
+                height,
+                digest,
+                parent,
             },
         );
         Ok(())
