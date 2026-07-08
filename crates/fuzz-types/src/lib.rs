@@ -1,10 +1,16 @@
-use serde::{Deserialize, Serialize};
+use std::fmt;
 
-pub const STATUS_OK: i32 = 1;
-pub const STATUS_INVALID_INPUT: i32 = -1;
-pub const STATUS_BUFFER_TOO_SMALL: i32 = -2;
-pub const STATUS_INTERNAL_ERROR: i32 = -3;
-pub const STATUS_UNIMPLEMENTED: i32 = -4;
+use serde::{
+    de::{Error as DeError, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
+
+pub type FuzzStatus = i32;
+
+pub const FUZZ_REJECT: FuzzStatus = 0;
+pub const FUZZ_ACCEPT: FuzzStatus = 1;
+
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 1;
 
 pub const PINNED_CHAIN_ID: u64 = 42431;
 pub const MODERATO_T0_TIMESTAMP: u64 = 1_770_303_600;
@@ -32,6 +38,80 @@ pub enum ErrorClass {
 impl Default for ErrorClass {
     fn default() -> Self {
         Self::None
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct NonEmpty<T> {
+    items: Vec<T>,
+}
+
+impl<T> NonEmpty<T> {
+    pub fn new(items: Vec<T>) -> Result<Self, Vec<T>> {
+        if items.is_empty() {
+            Err(items)
+        } else {
+            Ok(Self { items })
+        }
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        &self.items
+    }
+}
+
+impl<'de, T> Deserialize<'de> for NonEmpty<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct NonEmptyVisitor<T> {
+            marker: std::marker::PhantomData<T>,
+        }
+
+        impl<'de, T> Visitor<'de> for NonEmptyVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = NonEmpty<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a non-empty sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let first = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("expected at least one element"))?;
+                let mut items = vec![first];
+                while let Some(item) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(NonEmpty { items })
+            }
+        }
+
+        deserializer.deserialize_seq(NonEmptyVisitor {
+            marker: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<T> Serialize for NonEmpty<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.items.serialize(serializer)
     }
 }
 
@@ -146,6 +226,48 @@ pub struct TxInput {
     pub tx: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum HarnessInputKind {
+    Transaction,
+    State,
+    Blockchain,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TempoHarnessInput {
+    Transaction(TempoTransactionInput),
+    State(TempoStateInput),
+    Blockchain(TempoBlockchainInput),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TempoTransactionInput {
+    pub chain_spec: ChainSpecInput,
+    pub fork: u8,
+    pub tx: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TempoStateInput {
+    pub chain_spec: ChainSpecInput,
+    pub pre_state: StateInput,
+    pub block_context: BlockContextInput,
+    pub tx: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TempoBlockchainInput {
+    pub chain_spec: ChainSpecInput,
+    pub pre_state: StateInput,
+    pub blocks: NonEmpty<TempoBlock>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TempoBlock {
+    pub context: BlockContextInput,
+    pub txs: Vec<Vec<u8>>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BlockResult {
     pub receipts: Vec<TxReceiptOutput>,
@@ -164,6 +286,45 @@ pub struct TxResult {
     pub error: ErrorClass,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TransactionOutcome {
+    pub error: ErrorClass,
+    pub sender: Option<[u8; 20]>,
+    pub tx_type: Option<u8>,
+    pub intrinsic_gas: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct InvariantFailure {
+    pub id: String,
+    pub message: String,
+    pub scope: InvariantScope,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum InvariantScope {
+    Transaction { block_index: u64, tx_index: u64 },
+    Block { block_index: u64 },
+    Execution,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TempoHarnessOutcome {
+    Transaction(TransactionOutcome),
+    State(TempoExecutionOutcome),
+    Blockchain(TempoExecutionOutcome),
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TempoExecutionOutcome {
+    pub error: ErrorClass,
+    pub receipts: Vec<TxReceiptOutput>,
+    pub state_root: Option<[u8; 32]>,
+    pub final_state: Option<StateInput>,
+    pub state_diff: StateDiff,
+    pub invariant_failures: Vec<InvariantFailure>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HarnessCapabilities {
     #[serde(default)]
@@ -176,6 +337,15 @@ impl Default for HarnessCapabilities {
             supported_hardforks: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TempoHarnessCapabilities {
+    pub schema_version: u32,
+    pub implementation: String,
+    pub git_revision: String,
+    pub supported_hardforks: NonEmpty<u8>,
+    pub supported_inputs: NonEmpty<HarnessInputKind>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -243,32 +413,4 @@ pub struct StorageChangeOutput {
     pub slot: [u8; 32],
     pub before: [u8; 32],
     pub after: [u8; 32],
-}
-
-/// Writes `bytes` into the caller-provided FFI output buffer.
-///
-/// # Safety
-///
-/// `written` must be either null or valid for writing one `usize`. If `dst` is non-null and
-/// `dst_len >= bytes.len()`, `dst` must be valid for writes of `bytes.len()` bytes and must not
-/// overlap `bytes`.
-pub unsafe fn write_caller_buffer(
-    dst: *mut u8,
-    dst_len: usize,
-    written: *mut usize,
-    bytes: &[u8],
-) -> i32 {
-    if written.is_null() {
-        return STATUS_INVALID_INPUT;
-    }
-
-    unsafe { *written = bytes.len() };
-
-    if dst.is_null() || dst_len < bytes.len() {
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len()) };
-
-    STATUS_OK
 }
