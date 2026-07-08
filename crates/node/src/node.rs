@@ -21,8 +21,8 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
@@ -257,7 +257,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        lthash::TreeValidatorBuilder,
         Identity,
     >,
     validator_key: Option<B256>,
@@ -274,7 +274,7 @@ where
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                lthash::TreeValidatorBuilder::default(),
                 Identity::default(),
                 Default::default(),
             ),
@@ -345,7 +345,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = lthash::TreeValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -489,6 +489,103 @@ where
     async fn build(self, _ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
         Ok(TempoEngineValidator::new())
     }
+}
+
+/// Wiring of the lthash state-root prototype (TIP-1078) into the Tempo node.
+#[cfg(feature = "lthash")]
+pub mod lthash {
+    use super::{TempoEngineValidatorBuilder, TempoNode};
+    use crate::{TempoExecutionData, engine::TempoEngineValidator};
+    use reth_chain_state::StateTrieOverlayManager;
+    use reth_engine_tree::tree::{BasicEngineValidator, TreeConfig};
+    use reth_evm::ConfigureEngineEvm;
+    use reth_node_api::{AddOnsContext, FullNodeComponents, NodeTypesWithDBAdapter};
+    use reth_node_builder::rpc::{
+        BasicEngineValidatorBuilder, BoxedPersistenceHook, ChangesetCache, EngineValidatorBuilder,
+    };
+    use reth_provider::providers::ProviderNodeTypes;
+    use std::sync::Arc;
+    use tempo_lthash::{LthashPersistenceHook, LthashStore, TempoLthashStateRootStrategy};
+    use tempo_primitives::TempoPrimitives;
+
+    /// The tree-validator builder wired into the add-ons.
+    pub(super) type TreeValidatorBuilder = TempoEngineValidatorBuilderWithLthash;
+
+    #[derive(Debug, Default, Clone)]
+    pub struct TempoEngineValidatorBuilderWithLthash {
+        inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        /// Accumulator store shared between the state-root strategy and the persistence hook.
+        store: Arc<LthashStore>,
+    }
+
+    impl<Node> EngineValidatorBuilder<Node> for TempoEngineValidatorBuilderWithLthash
+    where
+        Node: FullNodeComponents<
+                Types = TempoNode,
+                Evm: ConfigureEngineEvm<TempoExecutionData, Primitives = TempoPrimitives>,
+            >,
+    {
+        type EngineValidator =
+            BasicEngineValidator<Node::Provider, Node::Evm, TempoEngineValidator>;
+
+        async fn build_tree_validator(
+            self,
+            ctx: &AddOnsContext<'_, Node>,
+            tree_config: TreeConfig,
+            changeset_cache: ChangesetCache,
+            state_trie_overlays: StateTrieOverlayManager<TempoPrimitives>,
+        ) -> eyre::Result<Self::EngineValidator> {
+            let validator = self
+                .inner
+                .build_tree_validator(ctx, tree_config, changeset_cache, state_trie_overlays)
+                .await?;
+
+            Ok(
+                validator.with_state_root_strategy(Arc::new(TempoLthashStateRootStrategy::new(
+                    self.store.clone(),
+                ))),
+            )
+        }
+
+        fn persistence_hook(
+            &self,
+            _ctx: &AddOnsContext<'_, Node>,
+        ) -> eyre::Result<BoxedPersistenceHook<NodeTypesWithDBAdapter<Node::Types, Node::DB>>>
+        where
+            NodeTypesWithDBAdapter<Node::Types, Node::DB>: ProviderNodeTypes,
+        {
+            Ok(Box::new(LthashPersistenceHook::new(self.store.clone())))
+        }
+    }
+}
+
+/// Stand-in wiring with reth's default state-root strategy when the lthash prototype is
+/// compiled out.
+#[cfg(not(feature = "lthash"))]
+mod lthash {
+    use reth_node_builder::rpc::BasicEngineValidatorBuilder;
+
+    pub(super) type TreeValidatorBuilder =
+        BasicEngineValidatorBuilder<super::TempoEngineValidatorBuilder>;
+}
+
+/// Ensures Tempo's own database tables exist on an already-opened environment.
+///
+/// Reth creates only its standard tables when opening the database. Every way of opening a
+/// Tempo node's database must call this before launch.
+///
+/// Idempotent: tables are opened with `MDBX_CREATE`, which creates a missing table and merely
+/// opens an existing one, leaving its rows untouched — the same path reth's standard tables
+/// take on every datadir reopen. A table whose definition changed (e.g. different flags)
+/// surfaces an error instead of touching the existing data.
+pub fn ensure_tempo_tables_created(
+    db: &mut reth_db::DatabaseEnv,
+) -> Result<(), reth_db::DatabaseError> {
+    #[cfg(feature = "lthash")]
+    db.create_and_track_tables_for::<tempo_lthash::tables::Tables>()?;
+    #[cfg(not(feature = "lthash"))]
+    let _ = db;
+    Ok(())
 }
 
 /// A basic Tempo transaction pool.

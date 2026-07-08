@@ -446,7 +446,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 &args.node_args,
                 validator_key,
             )))
-            .apply(|mut builder: WithLaunchContext<_>| {
+            .try_apply(|mut builder: WithLaunchContext<_>| {
+                // Ensure Tempo's own tables exist on the already-opened database environment so
+                // the engine persistence hook can write to them.
+                tempo_node::ensure_tempo_tables_created(builder.db_mut())
+                    .wrap_err("failed to create tempo database tables")?;
+
                 // Enable discv5 peer discovery
                 builder
                     .config_mut()
@@ -466,7 +471,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 let has_consensus_engine =
                     args.has_consensus_engine(builder.config().dev.dev);
 
-                builder.extend_rpc_modules(move |ctx| {
+                let builder = builder.extend_rpc_modules(move |ctx| {
                     if faucet_args.enabled {
                         let faucet_ext = TempoFaucetExt::new(
                             faucet_args.addresses(),
@@ -485,8 +490,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     Ok(())
-                })
-            })
+                });
+                eyre::Ok(builder)
+            })?
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;

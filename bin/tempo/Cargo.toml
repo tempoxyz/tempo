@@ -121,6 +121,7 @@ path = "src/main.rs"
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 bal = ["tempo-consensus/bal", "tempo-node/bal"]
+lthash = ["tempo-node/lthash"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

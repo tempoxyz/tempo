@@ -237,11 +237,11 @@ where
         // Create database if not exists
         if self.execution_database.is_none() {
             let db_path = self.execution_node_datadir.join("db");
-            self.execution_database = Some(
-                reth_db::init_db(db_path, test_db_args())
-                    .expect("failed to init database")
-                    .with_metrics(),
-            );
+            let mut db =
+                reth_db::init_db(db_path, test_db_args()).expect("failed to init database");
+            tempo_node::ensure_tempo_tables_created(&mut db)
+                .expect("failed to create tempo tables");
+            self.execution_database = Some(db.with_metrics());
         }
 
         let execution_node = self

@@ -20,6 +20,7 @@ tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-lthash = { workspace = true, optional = true }
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
@@ -29,7 +30,10 @@ tempo-revm.workspace = true
 thiserror.workspace = true
 
 reth-chainspec.workspace = true
+reth-chain-state = { workspace = true, optional = true }
 reth-errors.workspace = true
+reth-db.workspace = true
+reth-engine-tree = { workspace = true, optional = true }
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
@@ -106,6 +110,12 @@ vergen-git2.workspace = true
 [features]
 default = []
 bal = ["tempo-payload-builder/bal"]
+lthash = [
+	"dep:tempo-lthash",
+	"dep:reth-chain-state",
+	"dep:reth-engine-tree",
+	"tempo-payload-builder/lthash",
+]
 asm-keccak = [
 	"alloy/asm-keccak",
 	"alloy-evm/asm-keccak",
@@ -149,5 +159,6 @@ min-trace-logs = ["reth-node-core/min-trace-logs"]
 trie-debug = [
 	"reth-node-builder/trie-debug",
 	"reth-node-core/trie-debug",
+	"tempo-lthash?/trie-debug",
 	"tempo-payload-builder/trie-debug",
 ]

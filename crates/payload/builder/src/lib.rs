@@ -1012,8 +1012,8 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
+        // Drop the state hook to signal that execution is complete and the state-root task can
+        // finalize the root.
         db.set_state_hook(None);
 
         // Drop the BAL task sender to trigger finalization.
@@ -1051,16 +1051,23 @@ where
                             target: "payload_builder",
                             id = %payload_id,
                             state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
+                            task = handle.name(),
+                            "received state root from payload state-root task"
                         );
                         Some((outcome, elapsed))
                     }
+                    // The sync fallback below computes an MPT root, which is not a valid
+                    // substitute for the lthash root the strategy handle computes. Fail the
+                    // build attempt instead of proposing a block validation will reject.
+                    #[cfg(feature = "lthash")]
+                    Err(err) => return Err(PayloadBuilderError::other(err)),
+                    #[cfg(not(feature = "lthash"))]
                     Err(err) => {
                         warn!(
                             target: "payload_builder",
                             id = %payload_id,
                             %err,
-                            "sparse trie failed, falling back to sync state root"
+                            "payload state-root task failed, falling back to sync state root"
                         );
                         None
                     }
@@ -1361,7 +1368,10 @@ where
         (transactions_tx, result_rx)
     }
 
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+    fn spawn_bal_task(
+        &self,
+        mut state_root_handle_hook: Option<impl OnStateHook>,
+    ) -> BalTaskHandle {
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
         self.executor.spawn_blocking_named("builder-bal-task", || {
@@ -1374,14 +1384,14 @@ where
                     }
                     BalMessage::State(state) => {
                         bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
+                        if let Some(state_root_handle_hook) = &mut state_root_handle_hook {
+                            state_root_handle_hook.on_state(state);
                         }
                     }
                 }
             }
 
-            drop(state_root_task_hook);
+            drop(state_root_handle_hook);
             let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
             let mut encoded = Vec::new();
             bal.encode(&mut encoded);
