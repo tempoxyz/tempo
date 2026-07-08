@@ -41,6 +41,17 @@ impl JsonlOutboxSink {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    fn write_line(&self, json: &[u8]) -> OutboxDeliveryResult<()> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|err| std::io::Error::other(format!("jsonl sink mutex poisoned: {err}")))?;
+        writer.write_all(json)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        Ok(())
+    }
 }
 
 impl OutboxSink for JsonlOutboxSink {
@@ -49,9 +60,10 @@ impl OutboxSink for JsonlOutboxSink {
         row: &'a OutboxRow,
     ) -> Pin<Box<dyn Future<Output = OutboxDeliveryResult<DeliveryRecord>> + Send + 'a>> {
         Box::pin(async move {
+            let event_digest = event_digest(row)?;
             let delivered_at_unix_ms = unix_ms()?;
-            let receipt = idempotency_key(row)?;
-            let line = JsonlOutboxLine {
+            let receipt = idempotency_key(row, &event_digest);
+            let json = serde_json::to_vec(&JsonlOutboxLine {
                 schema: JSONL_SCHEMA,
                 idempotency_key: receipt.clone(),
                 sequence: row.sequence,
@@ -59,17 +71,11 @@ impl OutboxSink for JsonlOutboxSink {
                     number: row.block.number,
                     hash: row.block.hash,
                 },
-                event_digest: event_digest(row)?,
+                event_digest,
                 event: &row.event,
                 delivered_at_unix_ms,
-            };
-            let json = serde_json::to_vec(&line)?;
-            {
-                let mut writer = self.writer.lock().expect("jsonl sink mutex poisoned");
-                writer.write_all(&json)?;
-                writer.write_all(b"\n")?;
-                writer.flush()?;
-            }
+            })?;
+            self.write_line(&json)?;
             Ok(DeliveryRecord {
                 delivered_at_unix_ms,
                 sink: JSONL_SINK_NAME.into(),
@@ -104,10 +110,6 @@ fn event_digest(row: &OutboxRow) -> OutboxDeliveryResult<String> {
     Ok(format!("{}", keccak256(serde_json::to_vec(&row.event)?)))
 }
 
-fn idempotency_key(row: &OutboxRow) -> OutboxDeliveryResult<String> {
-    Ok(format!(
-        "tempo-monitor:{}:{}",
-        row.sequence,
-        event_digest(row)?
-    ))
+fn idempotency_key(row: &OutboxRow, event_digest: &str) -> String {
+    format!("tempo-monitor:{}:{event_digest}", row.sequence)
 }

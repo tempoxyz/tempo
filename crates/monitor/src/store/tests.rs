@@ -8,6 +8,7 @@ use crate::{
     },
     findings::{FindingStatus, FindingTransition, MonitorHealthSignal, OutboxEventKind},
     invariants::meta::{InvariantId, Severity, ids},
+    reports::FINDING_REPORT_SCHEMA_V1,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use std::num::NonZeroU64;
@@ -765,7 +766,8 @@ async fn jsonl_sink_writes_newline_object_and_delivery_record() -> eyre::Result<
     assert_eq!(json["sequence"], 1);
     assert_eq!(json["block"]["number"], 7);
     assert_eq!(json["block"]["hash"], format!("{}", b(7)));
-    assert_eq!(json["event"]["payload"]["summary"], "opened");
+    assert_eq!(json["event"]["payload"]["schema"], FINDING_REPORT_SCHEMA_V1);
+    assert_eq!(json["event"]["payload"]["summary"], "test finding report");
     assert!(
         json["event_digest"]
             .as_str()
@@ -864,7 +866,7 @@ async fn outbox_worker_resumes_pending_rows_after_mdbx_reopen() -> eyre::Result<
         kind: OutboxEventKind::FindingOpened {
             severity: Severity::Critical,
         },
-        payload: serde_json::json!({"resume":true}),
+        payload: serde_json::json!({"schema": FINDING_REPORT_SCHEMA_V1, "resume": true}),
     });
     store.commit_block(c)?;
     drop(store);
@@ -880,7 +882,7 @@ async fn outbox_worker_resumes_pending_rows_after_mdbx_reopen() -> eyre::Result<
     assert!(reopened.pending_outbox(10)?.is_empty());
     let contents = std::fs::read_to_string(jsonl_dir.path().join("outbox.jsonl"))?;
     assert!(contents.contains("tempo-monitor:1:0x"));
-    assert!(contents.contains("resume"));
+    assert!(contents.contains(FINDING_REPORT_SCHEMA_V1));
     Ok(())
 }
 
@@ -894,7 +896,10 @@ fn sample_outbox_row(sequence: u64) -> OutboxRow {
             kind: OutboxEventKind::FindingOpened {
                 severity: Severity::Critical,
             },
-            payload: serde_json::json!({"summary":"opened"}),
+            payload: serde_json::json!({
+                "schema": FINDING_REPORT_SCHEMA_V1,
+                "summary": "test finding report"
+            }),
         },
         delivery: DeliveryStatus::Pending,
         attempts: 0,

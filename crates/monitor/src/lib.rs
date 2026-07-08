@@ -14,13 +14,17 @@ pub mod facts;
 pub mod findings;
 pub mod invariants;
 pub mod normalize;
-pub mod processor;
-pub mod reports;
 pub mod state_view;
 
 #[cfg(feature = "activity")]
 pub mod activity;
-#[cfg(feature = "reth")]
-pub mod reth;
+
+#[cfg(feature = "store")]
+pub mod processor;
+#[cfg(feature = "store")]
+pub mod reports;
 #[cfg(feature = "store")]
 pub mod store;
+
+#[cfg(feature = "reth")]
+pub mod reth;

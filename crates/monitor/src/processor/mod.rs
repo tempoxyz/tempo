@@ -3,12 +3,14 @@
 //! The processor builds monitor-owned block views, runs checks, computes
 //! coverage/finding/report rows, and hands a single block commit to the store.
 
-#[cfg(feature = "store")]
 mod checks;
-#[cfg(feature = "store")]
 use checks::{CheckSummary, check_outcome_label, run_block_checks};
 
-use crate::facts::{BlockFacts, BlockNumHash, BlockWithParent, OrderedLog, ReceiptFacts, TxFacts};
+use crate::{
+    facts::{BlockFacts, BlockNumHash, BlockWithParent, OrderedLog, ReceiptFacts, TxFacts},
+    reports::{ReportError, ReportingPolicy},
+    store::{BlockCommit, FinalizedBlockRecord, MonitorStore, StoreError},
+};
 use serde::{Deserialize, Serialize};
 
 /// Monitor-owned finalized block input produced by adapters before store writes.
@@ -35,25 +37,28 @@ pub enum ProcessorError {
     Store(String),
 }
 
-#[cfg(feature = "store")]
-impl From<crate::store::StoreError> for ProcessorError {
-    fn from(value: crate::store::StoreError) -> Self {
+impl From<StoreError> for ProcessorError {
+    fn from(value: StoreError) -> Self {
+        Self::Store(format!("{value:?}"))
+    }
+}
+
+impl From<ReportError> for ProcessorError {
+    fn from(value: ReportError) -> Self {
         Self::Store(format!("{value:?}"))
     }
 }
 
 /// Builds complete block commits from normalized finalized block input.
-#[cfg(feature = "store")]
 #[derive(Clone, Debug, Default)]
 pub struct FinalizedBlockProcessor;
 
-#[cfg(feature = "store")]
 impl FinalizedBlockProcessor {
     pub fn build_commit(
         &self,
         input: FinalizedBlockInput,
         _prior_head: Option<BlockNumHash>,
-    ) -> Result<crate::store::BlockCommit, ProcessorError> {
+    ) -> Result<BlockCommit, ProcessorError> {
         validate_input(&input)?;
         let block = input.block();
         let check_results = run_block_checks(&input);
@@ -61,11 +66,10 @@ impl FinalizedBlockProcessor {
             .iter()
             .map(|result| result.coverage.clone())
             .collect();
-        // Finding and outbox rows for violations are deferred until the reporting policy is wired;
-        // this PoC persists the durable check result and coverage record.
+        let reports = ReportingPolicy.build_reports(&input, &check_results)?;
 
-        Ok(crate::store::BlockCommit {
-            finalized_block: crate::store::FinalizedBlockRecord {
+        Ok(BlockCommit {
+            finalized_block: FinalizedBlockRecord {
                 reference: input.reference,
                 timestamp: input.block_facts.header.timestamp,
                 hardfork: input.block_facts.hardfork,
@@ -81,14 +85,14 @@ impl FinalizedBlockProcessor {
             history_updates: Vec::new(),
             check_results,
             coverage_records,
-            finding_updates: Vec::new(),
-            health_updates: Vec::new(),
-            outbox_events: Vec::new(),
+            finding_updates: reports.finding_updates,
+            health_updates: reports.health_updates,
+            outbox_events: reports.outbox_events,
             new_monitor_head: block,
         })
     }
 
-    pub fn process_and_commit<S: crate::store::MonitorStore>(
+    pub fn process_and_commit<S: MonitorStore>(
         &self,
         store: &S,
         input: FinalizedBlockInput,
@@ -171,4 +175,223 @@ pub fn validate_input(input: &FinalizedBlockInput) -> Result<(), ProcessorError>
         ));
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "store"))]
+mod tests {
+    use super::*;
+    use crate::{
+        facts::{
+            BlockFacts, BlockWithParent, FactValue, HeaderFacts, ReceiptFacts, TxEnvelopeFacts,
+            TxFacts,
+        },
+        findings::{FindingStatus, OutboxEventKind},
+        invariants::meta::{Severity, ids},
+        reports::{COVERAGE_GAP_REPORT_SCHEMA_V1, FINDING_REPORT_SCHEMA_V1},
+        store::{
+            BootstrapPolicy, InMemoryMonitorStore, JsonlOutboxSink, MonitorStore, OutboxWorker,
+            OutboxWorkerConfig,
+        },
+    };
+    use alloy_primitives::{Address, B256, TxKind, U256};
+    use std::num::NonZeroU64;
+    use tempo_hardfork::TempoHardfork;
+    use tempo_primitives::TempoTxType;
+
+    fn b(n: u8) -> B256 {
+        B256::repeat_byte(n)
+    }
+
+    fn input(
+        header_gas_used: u64,
+        gas_limit: u64,
+        receipt_cumulative_gas: u64,
+        missing_receipt_gas: bool,
+    ) -> FinalizedBlockInput {
+        let block = BlockNumHash {
+            number: 1,
+            hash: b(1),
+        };
+        let reference = BlockWithParent::new(b(0), block);
+        let tx_hash = b(0x10);
+        FinalizedBlockInput {
+            reference,
+            block_facts: BlockFacts {
+                reference,
+                hardfork: TempoHardfork::Genesis,
+                header: HeaderFacts {
+                    timestamp: 1,
+                    timestamp_millis: 1000,
+                    gas_used: header_gas_used,
+                    gas_limit,
+                    general_gas_limit: gas_limit,
+                    shared_gas_limit: 0,
+                    base_fee_per_gas: None,
+                    beneficiary: Address::ZERO,
+                    consensus_context: None,
+                },
+            },
+            tx_facts: vec![TxFacts {
+                block,
+                tx_index: 0,
+                tx_hash,
+                is_system: false,
+                envelope: TxEnvelopeFacts {
+                    tx_type: TempoTxType::AA,
+                    action: TxKind::Call(Address::ZERO),
+                    gas_limit: 30_000,
+                    nonce: 0,
+                    value: U256::ZERO,
+                    nonce_key: None,
+                    valid_before: NonZeroU64::new(100),
+                    valid_after: None,
+                    fee_token: None,
+                },
+                sender: FactValue::Available(Address::ZERO),
+                fee_payer: FactValue::Available(Address::ZERO),
+                unique_intent: FactValue::Available(b(0x20)),
+            }],
+            receipt_facts: vec![ReceiptFacts {
+                block,
+                tx_hash,
+                tx_index: 0,
+                success: true,
+                gas_used: if missing_receipt_gas {
+                    FactValue::Missing {
+                        reason: "test missing gas".into(),
+                    }
+                } else {
+                    FactValue::Available(receipt_cumulative_gas)
+                },
+                cumulative_gas_used: receipt_cumulative_gas,
+            }],
+            ordered_logs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn violating_check_creates_typed_finding_report() -> eyre::Result<()> {
+        let commit =
+            FinalizedBlockProcessor.build_commit(input(20_999, 30_000, 21_000, false), None)?;
+        assert_eq!(commit.finding_updates.len(), 1);
+        assert_eq!(commit.outbox_events.len(), 1);
+        let transition = &commit.finding_updates[0];
+        assert_eq!(transition.to, FindingStatus::Open);
+        assert_eq!(transition.key.first_seen, commit.new_monitor_head);
+        let event = &commit.outbox_events[0];
+        assert_eq!(event.finding_key, transition.key);
+        assert!(matches!(
+            event.kind,
+            OutboxEventKind::FindingOpened {
+                severity: Severity::Critical
+            }
+        ));
+        assert_eq!(event.payload["schema"], FINDING_REPORT_SCHEMA_V1);
+        assert_eq!(event.payload["invariant_id"], ids::BLOCK_TOTAL_GAS);
+        assert_eq!(event.payload["severity"], "Critical");
+        assert_eq!(
+            event.payload["finding_key"],
+            serde_json::to_value(&transition.key)?
+        );
+        assert_eq!(
+            event.payload["block"],
+            serde_json::to_value(commit.finalized_block.reference)?
+        );
+        assert_eq!(event.payload["expected"]["label"], "block total gas");
+        assert_eq!(
+            event.payload["observed"]
+                .as_array()
+                .expect("observed")
+                .len(),
+            3
+        );
+        assert_eq!(
+            event.payload["evidence"]
+                .as_array()
+                .expect("evidence")
+                .len(),
+            2
+        );
+        assert_eq!(
+            event.payload["coverage"],
+            serde_json::to_value(&commit.coverage_records[0])?
+        );
+        assert_eq!(
+            event.payload["summary"],
+            "TEMPO-BLOCK-TOTAL-GAS violated at block 1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inconclusive_check_creates_coverage_gap_report_and_health_update() -> eyre::Result<()> {
+        let commit =
+            FinalizedBlockProcessor.build_commit(input(21_000, 30_000, 21_000, true), None)?;
+        assert!(commit.finding_updates.is_empty());
+        assert_eq!(commit.health_updates.len(), 1);
+        assert_eq!(commit.outbox_events.len(), 1);
+        let event = &commit.outbox_events[0];
+        assert!(matches!(event.kind, OutboxEventKind::CoverageGap));
+        assert_eq!(event.payload["schema"], COVERAGE_GAP_REPORT_SCHEMA_V1);
+        assert_eq!(event.payload["invariant_id"], ids::BLOCK_TOTAL_GAS);
+        assert!(
+            event.payload["gap"]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("test missing gas"))
+        );
+        assert!(
+            event.payload["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("inconclusive at block 1"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn passing_check_does_not_emit_reports() -> eyre::Result<()> {
+        let commit =
+            FinalizedBlockProcessor.build_commit(input(21_000, 30_000, 21_000, false), None)?;
+        assert!(commit.finding_updates.is_empty());
+        assert!(commit.health_updates.is_empty());
+        assert!(commit.outbox_events.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn typed_finding_reports_commit_idempotently_enqueue_and_deliver_jsonl()
+    -> eyre::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = std::sync::Arc::new(InMemoryMonitorStore::with_bootstrap_policy(
+            BootstrapPolicy::AnyFirstFinalizedBlock,
+        ));
+        let commit =
+            FinalizedBlockProcessor.build_commit(input(20_999, 30_000, 21_000, false), None)?;
+        let key = commit.finding_updates[0].key.clone();
+        store.commit_block(commit.clone())?;
+        store.commit_block(commit)?;
+        assert_eq!(store.monitor_head()?.expect("head").number, 1);
+        assert_eq!(
+            store.finding_state(&key)?.expect("finding state").status,
+            FindingStatus::Open
+        );
+        let pending = store.pending_outbox(10)?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event.payload["schema"], FINDING_REPORT_SCHEMA_V1);
+
+        let path = dir.path().join("outbox.jsonl");
+        let worker = OutboxWorker::new(
+            store.clone(),
+            JsonlOutboxSink::open(&path)?,
+            OutboxWorkerConfig::default(),
+        );
+        assert_eq!(worker.tick().await?, 1);
+        let contents = std::fs::read_to_string(path)?;
+        let line: serde_json::Value = serde_json::from_str(contents.trim_end())?;
+        assert_eq!(line["event"]["payload"]["schema"], FINDING_REPORT_SCHEMA_V1);
+        assert_eq!(
+            line["event"]["payload"]["finding_key"],
+            serde_json::to_value(key)?
+        );
+        Ok(())
+    }
 }
