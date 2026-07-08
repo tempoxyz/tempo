@@ -7,7 +7,7 @@ use revm::{
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 use crate::{
     error::TempoPrecompileError,
@@ -156,6 +156,32 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
 
         Ok(())
+    }
+
+    /// NOTE: always reports `is_cold: false` — cold/warm gas assertions must run against
+    /// the journal-backed [`EvmPrecompileStorageProvider`](super::evm::EvmPrecompileStorageProvider).
+    fn temporary_sstore(
+        &mut self,
+        account: TemporaryStorageAccount,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
+        let address = account.address();
+        self.counter_sstore += 1;
+        let present = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        self.internals.insert((address, key), value);
+        Ok(StateLoad::new(
+            SStoreResult {
+                original_value: present,
+                present_value: present,
+                new_value: value,
+            },
+            false,
+        ))
     }
 
     fn tstore(
@@ -367,6 +393,11 @@ impl HashMapStorageProvider {
     /// Overrides the block timestamp.
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.block_env.timestamp = timestamp;
+    }
+
+    /// Overrides the static-call flag.
+    pub fn set_is_static(&mut self, is_static: bool) {
+        self.is_static = is_static;
     }
 
     /// Overrides the block beneficiary (coinbase).

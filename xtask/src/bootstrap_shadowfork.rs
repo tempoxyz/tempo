@@ -525,6 +525,26 @@ where
         Ok(())
     }
 
+    fn temporary_sstore(
+        &mut self,
+        account: tempo_primitives::TemporaryStorageAccount,
+        key: U256,
+        value: U256,
+    ) -> Result<revm::interpreter::StateLoad<revm::interpreter::SStoreResult>, TempoPrecompileError>
+    {
+        let address = account.address();
+        let present = self.sload(address, key)?;
+        self.overlay.insert((address, key), value);
+        Ok(revm::interpreter::StateLoad::new(
+            revm::interpreter::SStoreResult {
+                original_value: present,
+                present_value: present,
+                new_value: value,
+            },
+            false,
+        ))
+    }
+
     fn tstore(
         &mut self,
         _address: Address,

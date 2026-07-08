@@ -7,6 +7,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
+pub mod temporary_storage;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -24,6 +25,7 @@ pub use receive_policy_guard::*;
 pub use signature_verifier::*;
 pub use stablecoin_dex::*;
 pub use storage_credits::*;
+pub use temporary_storage::*;
 pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_channel_reserve::*;
@@ -58,6 +60,10 @@ pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
 pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x1060000000000000000000000000000000000000");
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
+/// TIP-1040 temporary storage precompile. The address range following it is reserved
+/// for the per-epoch storage accounts at `TEMPORARY_STORAGE_ADDRESS + epoch + 1`.
+pub const TEMPORARY_STORAGE_ADDRESS: Address =
+    address!("0x1040000000000000000000000000000000000000");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
@@ -75,4 +81,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
+    (TEMPORARY_STORAGE_ADDRESS, TempoHardfork::T9),
 ];

@@ -20,6 +20,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
+pub mod temporary_storage;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -41,6 +42,7 @@ use crate::{
     stablecoin_dex::StablecoinDEX,
     storage::{StorageCtx, actions::StorageActions},
     storage_credits::{NonCreditableSlots, StorageCredits},
+    temporary_storage::TemporaryStorage,
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -68,9 +70,9 @@ pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    SYSTEM_PRECOMPILES, TEMPORARY_STORAGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -206,6 +208,8 @@ pub fn extend_tempo_precompiles(
             Some(StorageCredits::create_precompile(&env))
         } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t8() {
             Some(CurrentCommittee::create_precompile(&env))
+        } else if *address == TEMPORARY_STORAGE_ADDRESS && env.cfg.spec.is_t9() {
+            Some(TemporaryStorage::create_precompile(&env))
         } else {
             None
         }
@@ -365,6 +369,13 @@ impl StorageCredits {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
+    }
+}
+
+impl TemporaryStorage {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TemporaryStorage", env: env, |input| { Self::new() })
     }
 }
 
@@ -1109,6 +1120,27 @@ mod tests {
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
+        );
+    }
+
+    #[test]
+    fn test_temporary_storage_registered_at_t9_only() {
+        let mut t8 = CfgEnv::<TempoHardfork>::default();
+        t8.set_spec_and_mainnet_gas_params(TempoHardfork::T8);
+        assert!(
+            test_tempo_precompiles(&t8)
+                .get(&TEMPORARY_STORAGE_ADDRESS)
+                .is_none(),
+            "TemporaryStorage should NOT be registered before T9"
+        );
+
+        let mut t9 = CfgEnv::<TempoHardfork>::default();
+        t9.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
+        assert!(
+            test_tempo_precompiles(&t9)
+                .get(&TEMPORARY_STORAGE_ADDRESS)
+                .is_some(),
+            "TemporaryStorage should be registered at T9"
         );
     }
 

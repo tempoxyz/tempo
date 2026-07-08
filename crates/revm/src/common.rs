@@ -478,6 +478,15 @@ where
         unreachable!("'sstore' not supported in read-only context")
     }
 
+    fn temporary_sstore(
+        &mut self,
+        _: tempo_primitives::TemporaryStorageAccount,
+        _: U256,
+        _: U256,
+    ) -> TempoResult<revm::interpreter::StateLoad<revm::interpreter::SStoreResult>> {
+        unreachable!("'temporary_sstore' not supported in read-only context")
+    }
+
     fn set_code(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
         unreachable!("'set_code' not supported in read-only context")
     }

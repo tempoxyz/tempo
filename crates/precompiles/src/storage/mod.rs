@@ -24,11 +24,14 @@ pub use types::mapping as slots;
 use alloy::primitives::{Address, B256, LogData, Signature, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
-    interpreter::gas::{KECCAK256, KECCAK256WORD},
+    interpreter::{
+        SStoreResult, StateLoad,
+        gas::{KECCAK256, KECCAK256WORD},
+    },
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -68,6 +71,20 @@ pub trait PrecompileStorageProvider {
 
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Journal SSTORE into a TIP-1040 temporary storage account, charging no gas and
+    /// returning the value transition and whether the slot was cold.
+    ///
+    /// Callers meter gas themselves per the TIP-1040 schedule. Bypasses TIP-1060
+    /// storage-credit accounting (expiring storage must neither mint nor spend credits).
+    /// Like [`sstore`](Self::sstore), static-call protection is the dispatcher's job
+    /// (`mutate`/`mutate_void`), not this method's.
+    fn temporary_sstore(
+        &mut self,
+        account: TemporaryStorageAccount,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>>;
 
     /// Increments a persistent storage slot by `delta`.
     ///

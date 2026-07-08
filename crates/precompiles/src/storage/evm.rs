@@ -14,7 +14,7 @@ use revm::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -385,6 +385,29 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.sstore_inner(address, key, value, |result| {
             StorageAction::Sstore(address, key, result.present_value, value)
         })
+    }
+
+    #[inline]
+    fn temporary_sstore(
+        &mut self,
+        account: TemporaryStorageAccount,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
+        let address = account.address();
+
+        // Skip the expensive cold load when the remaining gas cannot cover a cold access;
+        // callers meter at least that much for cold slots.
+        let skip_cold_load =
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost();
+        let result = self.sstore_journal(address, key, value, skip_cold_load)?;
+        self.actions.record(StorageAction::Sstore(
+            address,
+            key,
+            result.data.present_value,
+            value,
+        ));
+        Ok(result)
     }
 
     #[inline]

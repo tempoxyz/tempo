@@ -18,6 +18,7 @@ mod simulate;
 mod stablecoin_dex;
 mod storage_credits;
 mod tempo_transaction;
+mod temporary_storage;
 mod tip20;
 mod tip20_factory;
 mod tip20_gas_fees;

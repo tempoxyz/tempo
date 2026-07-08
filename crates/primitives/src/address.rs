@@ -1,5 +1,47 @@
-use alloy_primitives::{Address, FixedBytes, hex};
-use tempo_contracts::{TempoHardfork, precompiles::SYSTEM_PRECOMPILES};
+use alloy_primitives::{Address, B256, FixedBytes, U256, hex};
+use tempo_contracts::{
+    TempoHardfork,
+    precompiles::{SYSTEM_PRECOMPILES, TEMPORARY_STORAGE_ADDRESS},
+};
+
+/// A [TIP-1040] per-epoch temporary storage account: `TEMPORARY_STORAGE_ADDRESS + epoch + 1`.
+///
+/// Only constructible via [`Self::for_epoch`], so holding one is proof the address is a
+/// temporary storage account. Writes to these accounts follow TIP-1040 gas rules and are
+/// exempt from TIP-1060 storage credits; nodes may prune their storage once the epoch
+/// expires. Code that only has a raw [`Address`] can classify it with
+/// [`TempoAddressExt::is_temporary_storage_account`].
+///
+/// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TemporaryStorageAccount(Address);
+
+impl TemporaryStorageAccount {
+    /// Returns the account storing epoch `epoch`'s data.
+    ///
+    /// The `+ 1` offset reserves `TEMPORARY_STORAGE_ADDRESS` itself for the precompile
+    /// dispatch logic. The sum cannot overflow 160 bits: the base address has its low
+    /// 144 bits zero. `epoch + 1` fits the trailing 8 bytes for all epochs except
+    /// `u64::MAX` (unreachable: ~10^13 years at 500ms blocks), which would carry into
+    /// the 12-byte prefix that [`TempoAddressExt::is_temporary_storage_account`] checks.
+    pub fn for_epoch(epoch: u64) -> Self {
+        let base: U256 = TEMPORARY_STORAGE_ADDRESS.into_word().into();
+        Self(Address::from_word(B256::from(
+            base + U256::from(epoch) + U256::ONE,
+        )))
+    }
+
+    /// Returns the underlying account address.
+    pub const fn address(&self) -> Address {
+        self.0
+    }
+}
+
+impl From<TemporaryStorageAccount> for Address {
+    fn from(account: TemporaryStorageAccount) -> Self {
+        account.0
+    }
+}
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
@@ -44,6 +86,12 @@ pub trait TempoAddressExt {
     /// - A system precompile active at the specified `spec` hardfork.
     fn is_precompile(&self, spec: TempoHardfork) -> bool;
 
+    /// Returns `true` if the address is a [TIP-1040] per-epoch temporary storage account
+    /// (`TEMPORARY_STORAGE_ADDRESS + epoch + 1`).
+    ///
+    /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+    fn is_temporary_storage_account(&self) -> bool;
+
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
     /// (bytes `[4:14]` == [`Self::VIRTUAL_MAGIC`]).
     ///
@@ -70,6 +118,14 @@ impl TempoAddressExt for Address {
 
     fn is_tip20(&self) -> bool {
         is_tip20_prefix(*self)
+    }
+
+    fn is_temporary_storage_account(&self) -> bool {
+        // Epoch accounts are `TEMPORARY_STORAGE_ADDRESS + epoch + 1` with `epoch` a u64,
+        // so they share the base address's first 12 bytes and differ in the trailing 8.
+        // The base address itself is the precompile, not a storage account.
+        self.as_slice()[..12] == TEMPORARY_STORAGE_ADDRESS.as_slice()[..12]
+            && *self != TEMPORARY_STORAGE_ADDRESS
     }
 
     fn is_virtual(&self) -> bool {
@@ -182,10 +238,39 @@ mod tests {
     }
 
     #[test]
+    fn test_temporary_storage_account_for_epoch() {
+        assert_eq!(
+            TemporaryStorageAccount::for_epoch(0).address(),
+            Address::from(hex!("1040000000000000000000000000000000000001"))
+        );
+        assert_eq!(
+            TemporaryStorageAccount::for_epoch(u64::from(u32::MAX)).address(),
+            Address::from(hex!("1040000000000000000000000000000100000000"))
+        );
+
+        // Every constructible account satisfies the raw-address predicate.
+        for epoch in [0, 1, 42, u64::from(u32::MAX), u64::MAX - 1] {
+            assert!(
+                TemporaryStorageAccount::for_epoch(epoch)
+                    .address()
+                    .is_temporary_storage_account()
+            );
+        }
+
+        // The precompile itself and unrelated addresses are not storage accounts.
+        assert!(!TEMPORARY_STORAGE_ADDRESS.is_temporary_storage_account());
+        assert!(!Address::ZERO.is_temporary_storage_account());
+        assert!(
+            !Address::from(hex!("1060000000000000000000000000000000000001"))
+                .is_temporary_storage_account()
+        );
+    }
+
+    #[test]
     fn test_is_precompile_address() {
         for &(address, activated) in SYSTEM_PRECOMPILES {
             assert!(address.is_precompile(activated));
-            assert!(address.is_precompile(TempoHardfork::T8));
+            assert!(address.is_precompile(TempoHardfork::T9));
 
             if activated != TempoHardfork::Genesis {
                 assert!(!address.is_precompile(TempoHardfork::Genesis));

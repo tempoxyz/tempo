@@ -5,13 +5,14 @@ use alloy::{
 use alloy_evm::{Database, EvmInternals};
 use revm::{
     context::{CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint},
+    interpreter::{SStoreResult, StateLoad},
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
 use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 use crate::{
     Precompile,
@@ -164,6 +165,18 @@ impl StorageCtx {
     /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
+    }
+
+    /// Journal SSTORE into a TIP-1040 temporary storage account, charging no gas and
+    /// returning the value transition and whether the slot was cold. Callers meter gas
+    /// themselves per the TIP-1040 schedule.
+    pub fn temporary_sstore(
+        &mut self,
+        account: TemporaryStorageAccount,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>> {
+        Self::try_with_storage(|s| s.temporary_sstore(account, key, value))
     }
 
     /// Increments a persistent storage slot by `delta`.
