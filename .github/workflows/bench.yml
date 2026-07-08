@@ -464,7 +464,7 @@ jobs:
             }
 
             // Resolve display names for baseline/feature
-            let baselineName = baseline || 'main';
+            let baselineName = baseline || 'merge-base';
             let featureName = feature;
             if (pr) {
               const { data: prData } = await github.rest.pulls.get({

@@ -58,6 +58,7 @@ enum ArchiveEntryKind {
 /// contiguous path from execution finalized to the anchor.
 pub async fn prepare<TContext, P>(
     context: &TContext,
+    storage_partition_prefix: &str,
     execution_provider: P,
     archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<State>
@@ -74,11 +75,11 @@ where
     let execution_finalized_digest = Digest(execution_finalized.hash);
 
     let finalizations =
-        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache.clone())
+        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to open finalizations-by-height archive")?;
     let prunable =
-        init_prunable_finalized_blocks_archive(context, crate::PARTITION_PREFIX, page_cache)
+        init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
             .wrap_err("failed to open prunable finalized blocks archive")?;
 
@@ -108,24 +109,30 @@ where
 
 /// Returns whether `name` is one of the finalized-block prunable storage
 /// partitions that must be copied into a consensus snapshot archive.
-pub fn is_prunable_finalized_blocks_partition(name: &str) -> bool {
-    name.starts_with(&partition_prefix(super::PRUNABLE_FINALIZED_BLOCKS))
+pub fn is_prunable_finalized_blocks_partition(storage_partition_prefix: &str, name: &str) -> bool {
+    name.starts_with(&archive_partition_prefix(
+        storage_partition_prefix,
+        super::PRUNABLE_FINALIZED_BLOCKS,
+    ))
 }
 
 /// Returns whether `name` is a consensus storage partition that can appear in a
 /// consensus snapshot archive.
-pub fn is_snapshot_storage_partition(name: &str) -> bool {
-    name.starts_with(&partition_prefix(super::FINALIZATIONS_BY_HEIGHT))
-        || is_prunable_finalized_blocks_partition(name)
+pub fn is_snapshot_storage_partition(storage_partition_prefix: &str, name: &str) -> bool {
+    name.starts_with(&archive_partition_prefix(
+        storage_partition_prefix,
+        super::FINALIZATIONS_BY_HEIGHT,
+    )) || is_prunable_finalized_blocks_partition(storage_partition_prefix, name)
 }
 
-fn partition_prefix(archive_name: &str) -> String {
-    format!("{}-{archive_name}-", crate::PARTITION_PREFIX)
+fn archive_partition_prefix(storage_partition_prefix: &str, archive_name: &str) -> String {
+    format!("{storage_partition_prefix}-{archive_name}-")
 }
 
 /// Materialize consensus archive entries into fresh storage archives.
 pub async fn write_archive<TContext>(
     context: &TContext,
+    storage_partition_prefix: &str,
     mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
@@ -133,11 +140,11 @@ where
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let mut finalizations =
-        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache.clone())
+        init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to open snapshot finalizations-by-height archive")?;
     let mut blocks =
-        init_prunable_finalized_blocks_archive(context, crate::PARTITION_PREFIX, page_cache)
+        init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
             .await
             .wrap_err("failed to open snapshot prunable finalized blocks archive")?;
 

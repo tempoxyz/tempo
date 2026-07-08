@@ -34,7 +34,7 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
-use reth_tracing::tracing::{debug, info};
+use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
     TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
@@ -85,6 +85,10 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 
+    /// Enable speculative parallel payload builder.
+    #[arg(long = "builder.parallel", default_value_t = false, hide = true)]
+    pub builder_parallel: bool,
+
     /// Disable sharing the execution cache with the payload builder.
     #[arg(
         long = "engine.disable-execution-cache-sharing-with-builder",
@@ -112,6 +116,7 @@ impl Default for TempoNodeArgs {
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
+            builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
@@ -130,9 +135,14 @@ impl TempoNodeArgs {
 
     /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
+        if self.builder_parallel {
+            warn!("Parallel block builder is still in development and should not be used");
+        }
+
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: !self.builder_disable_prewarming,
+            enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -697,6 +707,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Enable speculative parallel payload-builder planning.
+    pub enable_parallel: bool,
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
@@ -707,6 +719,7 @@ impl Default for TempoPayloadBuilderBuilder {
         Self {
             state_provider_metrics: false,
             enable_prewarming: true,
+            enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -745,6 +758,7 @@ where
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
                 skip_state_root: ctx.config().tree_config().skip_state_root(),
+                enable_parallel: self.enable_parallel,
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))

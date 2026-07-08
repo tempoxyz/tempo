@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-alloy@1.10.1`
+
+### Patch Changes
+
+- Added typed `RecoveryAuthority` selector and `set_receive_policy_for_receiver` helper for building validated TIP-1028 receive-policy calls, rejecting recovery authorities that can never pass `ReceivePolicyGuard.claim()`. (by @DerekCofausper, [#6734](https://github.com/tempoxyz/tempo/pull/6734))
+
 ## `tempo-alloy@1.10.0`
 
 ### Minor Changes

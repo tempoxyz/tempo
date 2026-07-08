@@ -35,6 +35,8 @@ use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
 
+use crate::consensus::Digest;
+
 mod actor;
 mod ingress;
 
@@ -50,10 +52,14 @@ pub(crate) struct Config<TOracle> {
     pub(crate) execution_node: Arc<TempoFullNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
-    /// The last finalized height according to the consensus layer (marshal).
+    /// The last finalized height according to the marshal actor.
     /// Used during start to determine the correct boundary block, since
     /// the execution layer may be behind.
-    pub(crate) last_finalized_height: Height,
+    pub(crate) finalized_floor: Height,
+    /// Highest finalized tip observed from consensus at startup.
+    /// Execution-layer-derived reads must not advance beyond this tip until
+    /// marshal reports a newer finalized tip.
+    pub(crate) finalized_tip: (Height, Digest),
 }
 
 /// Initializes a peer manager actor from a `config` with runtime `context`.

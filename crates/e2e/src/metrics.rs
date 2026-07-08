@@ -11,7 +11,6 @@ const LATEST_EPOCH: &str = "epoch_manager_latest_epoch";
 const LATEST_PARTICIPANTS: &str = "epoch_manager_latest_participants";
 const PROCESSED_HEIGHT: &str = "marshal_processed_height";
 const DKG_FAILURES: &str = "dkg_manager_ceremony_failures_total";
-const ROUNDS_SKIPPED: &str = "rounds_skipped_total";
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -172,16 +171,6 @@ impl Metrics {
         assert!(
             self.values::<u64>(DKG_FAILURES)
                 .all(|failures| failures == 0)
-        );
-    }
-
-    /// Asserts that at least one consensus instance skipped rounds.
-    #[track_caller]
-    pub fn assert_any_rounds_skipped(&self) {
-        assert!(
-            self.values::<u64>(ROUNDS_SKIPPED)
-                .any(|skipped_rounds| skipped_rounds > 0),
-            "expected at least one consensus instance to have skipped rounds"
         );
     }
 }

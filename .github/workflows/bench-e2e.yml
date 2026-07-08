@@ -865,9 +865,12 @@ jobs:
             echo "::error::run-pairs must be a positive integer"
             exit 1
           fi
-          if [ "$BENCH_RUN_SIDE" != "comparison" ] && [ "$BENCH_RUN_SIDE" != "feature" ]; then
-            echo "::error::run-side must be one of: comparison, feature"
+          if [ "$BENCH_RUN_SIDE" != "comparison" ] && [ "$BENCH_RUN_SIDE" != "feature" ] && [ "$BENCH_RUN_SIDE" != "baseline" ]; then
+            echo "::error::run-side must be one of: comparison, feature, baseline"
             exit 1
+          fi
+          if [ "$BENCH_RUN_SIDE" = "baseline" ] && [ "$BENCH_CLICKHOUSE_RUN" = "feature-1" ]; then
+            BENCH_CLICKHOUSE_RUN="baseline-1"
           fi
           if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::token-count must be a positive integer"

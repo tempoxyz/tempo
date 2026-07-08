@@ -7,9 +7,8 @@ pub use error::{IntoPrecompileResult, Result};
 
 pub mod storage;
 
-mod dispatch;
-pub use dispatch::StaticCallNotAllowed;
-pub(crate) use dispatch::*;
+pub mod dispatch;
+pub use dispatch::*;
 
 pub(crate) mod ip_validation;
 

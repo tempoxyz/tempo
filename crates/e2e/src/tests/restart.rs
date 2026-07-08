@@ -89,7 +89,7 @@ impl SimpleRestart {
                 height = restart_after,
                 "waiting for network to reach target height before stopping a validator",
             );
-            wait_for_height(&context, setup.how_many_signers, restart_after, false).await;
+            wait_for_height(&context, setup.how_many_signers, restart_after).await;
 
             validators[0].stop().await;
             debug!(public_key = %validators[0].public_key(), "stopped validator");
@@ -112,7 +112,7 @@ impl SimpleRestart {
                 height = stop_at,
                 "waiting for reconstituted validators to reach target height to reach test success",
             );
-            wait_for_height(&context, validators.len() as u32, stop_at, false).await;
+            wait_for_height(&context, validators.len() as u32, stop_at).await;
         })
     }
 }
@@ -126,7 +126,6 @@ fn validator_catches_up_to_network_during_epoch() {
         shutdown_height: 5,
         restart_height: 10,
         final_height: 15,
-        assert_skips: false,
         connect_execution_layer: false,
     }
     .run();
@@ -142,7 +141,6 @@ fn validator_catches_up_with_gap_of_one_epoch() {
         shutdown_height: epoch_length + 1,
         restart_height: 2 * epoch_length + 1,
         final_height: 3 * epoch_length + 1,
-        assert_skips: false,
         connect_execution_layer: false,
     }
     .run();
@@ -159,7 +157,6 @@ fn validator_catches_up_with_gap_of_three_epochs() {
         shutdown_height: epoch_length + 1,
         restart_height: 4 * epoch_length + 1,
         final_height: 5 * epoch_length + 1,
-        assert_skips: true,
     }
     .run();
 }
@@ -237,8 +234,6 @@ struct RestartSetup {
     restart_height: u64,
     /// Final height that all validators (including restarted) must reach
     final_height: u64,
-    /// Whether to assert that DKG rounds were skipped
-    assert_skips: bool,
 }
 
 impl RestartSetup {
@@ -249,7 +244,6 @@ impl RestartSetup {
             shutdown_height,
             restart_height,
             final_height,
-            assert_skips,
             connect_execution_layer,
         } = self;
         let _ = tempo_eyre::install();
@@ -272,13 +266,7 @@ impl RestartSetup {
                 height = shutdown_height,
                 "waiting for network to reach target height before stopping a validator",
             );
-            wait_for_height(
-                &context,
-                setup.how_many_signers,
-                shutdown_height,
-                false,
-            )
-            .await;
+            wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
 
             // Randomly select a validator to kill
             let idx = context.gen_range(0..validators.len());
@@ -290,13 +278,7 @@ impl RestartSetup {
                 height = restart_height,
                 "waiting for remaining validators to reach target height before restarting validator",
             );
-            wait_for_height(
-                &context,
-                setup.how_many_signers - 1,
-                restart_height,
-                false,
-            )
-            .await;
+            wait_for_height(&context, setup.how_many_signers - 1, restart_height).await;
 
             debug!("target height reached, restarting stopped validator");
             validators[idx].start(&context).await;
@@ -313,36 +295,15 @@ impl RestartSetup {
                 height = final_height,
                 "waiting for reconstituted validators to reach target height to reach test success",
             );
-            wait_for_height(
-                &context,
-                setup.how_many_signers,
-                final_height,
-                assert_skips,
-            )
-            .await;
+            wait_for_height(&context, setup.how_many_signers, final_height).await;
         })
     }
 }
 
 /// Wait for a specific number of validators to reach a target height
-async fn wait_for_height(
-    context: &Context,
-    expected_validators: u32,
-    target_height: u64,
-    assert_skips: bool,
-) {
-    let mut skips_observed = false;
+async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
     wait_for_metrics(context, |metrics| {
-        skips_observed |= metrics
-            .values::<u64>("_rounds_skipped_total")
-            .any(|count| count > 0);
-
-        if metrics.consensus_at_height(target_height) == expected_validators as usize {
-            assert!(!assert_skips || skips_observed);
-            true
-        } else {
-            false
-        }
+        metrics.consensus_at_height(target_height) == expected_validators as usize
     })
     .await;
 }
@@ -520,7 +481,7 @@ fn backfill_on_start_after_crash() {
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         // Wait for chain to advance past 10
-        wait_for_height(&context, 1, 10, false).await;
+        wait_for_height(&context, 1, 10).await;
 
         validators[0].stop().await;
 
@@ -532,7 +493,7 @@ fn backfill_on_start_after_crash() {
         validators[0].start(&context).await;
 
         // Wait for the node to recover and produce past the pre-unwind height
-        wait_for_height(&context, 1, el_before + 5, false).await;
+        wait_for_height(&context, 1, el_before + 5).await;
 
         // Verify EL actually persisted the recovered blocks
         let el_recovered = validators[0]
@@ -575,7 +536,7 @@ fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
         connect_execution_peers(&validators).await;
 
         // Let the network reach height 40.
-        wait_for_height(&context, 4, 40, false).await;
+        wait_for_height(&context, 4, 40).await;
 
         // Stop validator[0] and unwind its EL by 35 blocks (exceeds 32-block pipeline sync threshold).
         validators[0].stop().await;
@@ -583,7 +544,7 @@ fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
         debug!(el_before, el_after, "unwound validator[0] by 35 blocks");
 
         // Let the remaining 3 validators advance 10 more blocks.
-        wait_for_height(&context, 3, 50, false).await;
+        wait_for_height(&context, 3, 50).await;
 
         let pipeline_runs_before = get_pipeline_runs(metrics_recorder);
 

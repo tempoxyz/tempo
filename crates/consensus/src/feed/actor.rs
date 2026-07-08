@@ -17,7 +17,7 @@ use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
-    types::{Epoch, FixedEpocher, Round, View},
+    types::{Epoch, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
@@ -29,14 +29,10 @@ use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tempo_node::{
-    TempoFullNode,
-    rpc::consensus::{CertifiedBlock, Event},
-};
+use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tracing::{debug, error, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
@@ -107,14 +103,10 @@ impl<TContext: Spawner> Actor<TContext> {
     pub(crate) fn new(
         context: TContext,
         marshal: marshal::Mailbox,
-        epocher: FixedEpocher,
-        execution_node: Arc<TempoFullNode>,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {
         state.set_marshal(marshal.clone());
-        state.set_epocher(epocher);
-        state.set_execution_node(execution_node);
 
         Self {
             context: ContextCell::new(context),
@@ -227,18 +219,24 @@ impl<TContext: Spawner> Actor<TContext> {
             .latest_finalized
             .as_ref()
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+
         let latest_notarized_round = state
             .latest_notarized
             .as_ref()
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
 
         // Update state and broadcast events
+        let height = certified.block.inner.number;
+        let subscribers = self.state.events_tx().receiver_count();
         match activity {
             Activity::Notarization(_) => {
-                let _ = self.state.events_tx().send(Event::Notarized {
-                    block: certified.clone(),
-                    seen: now_millis(),
-                });
+                if latest_notarized_round.is_none_or(|previous| round > previous) {
+                    debug!(subscribers, height, "sending new notarized event");
+                    let _ = self.state.events_tx().send(Event::Notarized {
+                        block: certified.clone(),
+                        seen: now_millis(),
+                    });
+                }
 
                 if latest_finalized_round.is_none_or(|r| r < round)
                     && latest_notarized_round.is_none_or(|r| r < round)
@@ -248,14 +246,13 @@ impl<TContext: Spawner> Actor<TContext> {
             }
 
             Activity::Finalization(_) => {
-                debug!(
-                    subscribers = self.state.events_tx().receiver_count(),
-                    "sending finalized event",
-                );
-                let _ = self.state.events_tx().send(Event::Finalized {
-                    block: certified.clone(),
-                    seen: now_millis(),
-                });
+                if latest_finalized_round.is_none_or(|previous| round > previous) {
+                    debug!(subscribers, height, "sending new finalized event");
+                    let _ = self.state.events_tx().send(Event::Finalized {
+                        block: certified.clone(),
+                        seen: now_millis(),
+                    });
+                }
 
                 if latest_finalized_round.is_none_or(|r| r < round) {
                     if latest_notarized_round.is_none_or(|r| r < round) {
