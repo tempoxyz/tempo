@@ -4,7 +4,7 @@
 //! When requested, it can also replace selected genesis accounts from the new chain spec and
 //! update hashed state, trie, and block-0 history without rebuilding unrelated bloat state.
 
-use std::fs;
+use std::{collections::BTreeSet, fs, sync::Arc};
 
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -12,7 +12,10 @@ use clap::Parser;
 use eyre::{ensure, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::{CliNodeTypes, EnvironmentArgs};
-use reth_db::{DatabaseEnv, open_db};
+use reth_db::{
+    DatabaseEnv, open_db,
+    static_file::{AccountChangesetMask, StaticFileCursor, StorageChangesetMask},
+};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
     models::{
@@ -22,6 +25,7 @@ use reth_db_api::{
     transaction::{DbTx, DbTxMut},
 };
 use reth_ethereum::tasks::Runtime;
+use reth_nippy_jar::NippyJar;
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::{Account, AlloyBlockHeader, Bytecode, NodePrimitives, StorageEntry};
 use reth_provider::{
@@ -30,7 +34,7 @@ use reth_provider::{
     StaticFileSegment, StaticFileWriter, StorageSettingsCache, TrieWriter,
     providers::RocksDBProvider,
 };
-use reth_storage_api::{ChangeSetReader, DBProvider, StateRootProvider, StorageChangeSetReader};
+use reth_storage_api::{DBProvider, StateRootProvider};
 use reth_trie::{HashedPostState, HashedStorage};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
@@ -203,9 +207,7 @@ where
         + StorageSettingsCache
         + TrieWriter
         + StaticFileProviderFactory
-        + RocksDBProviderFactory
-        + ChangeSetReader
-        + StorageChangeSetReader,
+        + RocksDBProviderFactory,
     P::Tx: DbTxMut,
 {
     if accounts.is_empty() {
@@ -222,15 +224,7 @@ where
     let synced_addresses = replacements
         .iter()
         .map(|replacement| replacement.address)
-        .collect();
-    let old_account_changeset = provider_rw.account_block_changeset(0)?;
-    let old_storage_changeset = provider_rw.storage_block_changeset(0)?;
-    let (account_changeset, storage_changeset) = replacement_block_zero_changesets(
-        &synced_addresses,
-        &replacements,
-        old_account_changeset,
-        old_storage_changeset.clone(),
-    );
+        .collect::<BTreeSet<_>>();
 
     let hashed_state = replacement_hashed_post_state(&replacements);
     let (state_root, trie_updates) = {
@@ -241,14 +235,9 @@ where
     replace_hashed_accounts(provider_rw, &replacements)?;
     replace_hashed_storage(provider_rw, &replacements)?;
     provider_rw.write_trie_updates(trie_updates)?;
-    sync_genesis_account_history(
-        provider_rw,
-        &replacements,
-        old_storage_changeset
-            .iter()
-            .filter(|change| synced_addresses.contains(&change.address)),
-    )?;
-    replace_block_zero_static_changesets(provider_rw, account_changeset, storage_changeset)?;
+    let old_storage_history_keys =
+        replace_block_zero_static_changesets(provider_rw, &synced_addresses, &replacements)?;
+    sync_genesis_account_history(provider_rw, &replacements, old_storage_history_keys)?;
 
     if state_root != genesis_state_root {
         warn!(
@@ -343,50 +332,45 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
         }))
 }
 
-fn replacement_block_zero_changesets(
-    synced_addresses: &std::collections::BTreeSet<Address>,
+fn replacement_account_changeset_entries(
     replacements: &[GenesisAccountReplacement],
-    old_account_changeset: Vec<AccountBeforeTx>,
-    old_storage_changeset: Vec<StorageBeforeTx>,
-) -> (Vec<AccountBeforeTx>, Vec<StorageBeforeTx>) {
-    let mut account_changeset = old_account_changeset
-        .into_iter()
-        .filter(|change| !synced_addresses.contains(&change.address))
-        .collect::<Vec<_>>();
-    account_changeset.extend(replacements.iter().map(|replacement| AccountBeforeTx {
-        address: replacement.address,
-        info: None,
-    }));
-    account_changeset.sort_unstable_by_key(|change| change.address);
-
-    let mut storage_changeset = old_storage_changeset
-        .into_iter()
-        .filter(|change| !synced_addresses.contains(&change.address))
-        .collect::<Vec<_>>();
-    storage_changeset.extend(replacements.iter().flat_map(|replacement| {
-        replacement.storage.iter().map(|entry| StorageBeforeTx {
+) -> Vec<AccountBeforeTx> {
+    let mut changeset = replacements
+        .iter()
+        .map(|replacement| AccountBeforeTx {
             address: replacement.address,
-            key: entry.key,
-            value: U256::ZERO,
+            info: None,
         })
-    }));
-    storage_changeset.sort_unstable_by_key(|change| (change.address, change.key));
-
-    (account_changeset, storage_changeset)
+        .collect::<Vec<_>>();
+    changeset.sort_unstable_by_key(|change| change.address);
+    changeset
 }
 
-fn sync_genesis_account_history<'a, P>(
+fn replacement_storage_changeset_entries(
+    replacements: &[GenesisAccountReplacement],
+) -> Vec<StorageBeforeTx> {
+    let mut changeset = replacements
+        .iter()
+        .flat_map(|replacement| {
+            replacement.storage.iter().map(|entry| StorageBeforeTx {
+                address: replacement.address,
+                key: entry.key,
+                value: U256::ZERO,
+            })
+        })
+        .collect::<Vec<_>>();
+    changeset.sort_unstable_by_key(|change| (change.address, change.key));
+    changeset
+}
+
+fn sync_genesis_account_history<P>(
     provider_rw: &P,
     replacements: &[GenesisAccountReplacement],
-    old_storage_changeset: impl IntoIterator<Item = &'a StorageBeforeTx>,
+    mut old_storage_history_keys: Vec<StorageShardedKey>,
 ) -> eyre::Result<()>
 where
     P: RocksDBProviderFactory,
 {
-    let mut old_storage_history_keys = old_storage_changeset
-        .into_iter()
-        .map(|change| StorageShardedKey::last(change.address, change.key))
-        .collect::<Vec<_>>();
     old_storage_history_keys.sort_unstable();
     old_storage_history_keys.dedup();
 
@@ -421,28 +405,120 @@ where
 
 fn replace_block_zero_static_changesets<P>(
     provider_rw: &P,
-    account_changeset: Vec<AccountBeforeTx>,
-    storage_changeset: Vec<StorageBeforeTx>,
-) -> eyre::Result<()>
+    synced_addresses: &BTreeSet<Address>,
+    replacements: &[GenesisAccountReplacement],
+) -> eyre::Result<Vec<StorageShardedKey>>
 where
     P: StaticFileProviderFactory,
 {
     let static_file_provider = provider_rw.static_file_provider();
+    let old_account_static = static_file_provider
+        .get_maybe_segment_provider(StaticFileSegment::AccountChangeSets, 0)?
+        .map(|provider| -> eyre::Result<_> {
+            Ok((
+                provider.data_path().to_path_buf(),
+                provider.read_changeset_offset(0)?,
+            ))
+        })
+        .transpose()?;
+    let old_storage_static = static_file_provider
+        .get_maybe_segment_provider(StaticFileSegment::StorageChangeSets, 0)?
+        .map(|provider| -> eyre::Result<_> {
+            Ok((
+                provider.data_path().to_path_buf(),
+                provider.read_changeset_offset(0)?,
+            ))
+        })
+        .transpose()?;
+
+    let old_account_file = old_account_static
+        .map(|(path, offset)| -> eyre::Result<_> {
+            let jar = NippyJar::load(&path)?;
+            let reader = Arc::new(jar.open_data_reader()?);
+            Ok((jar, reader, offset))
+        })
+        .transpose()?;
+    let old_storage_file = old_storage_static
+        .map(|(path, offset)| -> eyre::Result<_> {
+            let jar = NippyJar::load(&path)?;
+            let reader = Arc::new(jar.open_data_reader()?);
+            Ok((jar, reader, offset))
+        })
+        .transpose()?;
+
     static_file_provider.delete_segment(StaticFileSegment::AccountChangeSets)?;
     static_file_provider.delete_segment(StaticFileSegment::StorageChangeSets)?;
 
     {
         let mut writer =
             provider_rw.get_static_file_writer(0, StaticFileSegment::AccountChangeSets)?;
-        writer.append_account_changeset(account_changeset, 0)?;
+        writer.begin_account_changeset(0)?;
+
+        let mut replacement_changes = replacement_account_changeset_entries(replacements)
+            .into_iter()
+            .peekable();
+
+        if let Some((jar, reader, Some(offset))) = old_account_file.as_ref() {
+            let mut cursor = StaticFileCursor::new(jar, Arc::clone(reader))?;
+            for row in offset.changeset_range() {
+                let Some(change) = cursor.get_one::<AccountChangesetMask>(row.into())? else {
+                    continue;
+                };
+                if synced_addresses.contains(&change.address) {
+                    continue;
+                }
+                while let Some(replacement) = replacement_changes.peek() {
+                    if replacement.address >= change.address {
+                        break;
+                    }
+                    writer.append_account_changeset_entry(replacement_changes.next().unwrap())?;
+                }
+                writer.append_account_changeset_entry(change)?;
+            }
+        }
+
+        for change in replacement_changes {
+            writer.append_account_changeset_entry(change)?;
+        }
     }
+
+    let mut old_storage_history_keys = Vec::new();
     {
         let mut writer =
             provider_rw.get_static_file_writer(0, StaticFileSegment::StorageChangeSets)?;
-        writer.append_storage_changeset(storage_changeset, 0)?;
+        writer.begin_storage_changeset(0)?;
+
+        let mut replacement_changes = replacement_storage_changeset_entries(replacements)
+            .into_iter()
+            .peekable();
+
+        if let Some((jar, reader, Some(offset))) = old_storage_file.as_ref() {
+            let mut cursor = StaticFileCursor::new(jar, Arc::clone(reader))?;
+            for row in offset.changeset_range() {
+                let Some(change) = cursor.get_one::<StorageChangesetMask>(row.into())? else {
+                    continue;
+                };
+                if synced_addresses.contains(&change.address) {
+                    old_storage_history_keys
+                        .push(StorageShardedKey::last(change.address, change.key));
+                    continue;
+                }
+                while let Some(replacement) = replacement_changes.peek() {
+                    if (replacement.address, replacement.key) >= (change.address, change.key) {
+                        break;
+                    }
+                    writer.append_storage_changeset_entry(replacement_changes.next().unwrap())?;
+                }
+                writer.append_storage_changeset_entry(change)?;
+            }
+        }
+
+        for change in replacement_changes {
+            writer.append_storage_changeset_entry(change)?;
+        }
     }
 
-    Ok(())
+    Ok(old_storage_history_keys)
 }
 
 fn replace_hashed_accounts<P>(
@@ -520,7 +596,36 @@ fn hashed_genesis_storage_entries(account: &GenesisAccount) -> Vec<StorageEntry>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reth_provider::{
+        ProviderResult,
+        providers::{StaticFileProvider, StaticFileProviderRWRefMut},
+    };
+    use reth_storage_api::{ChangeSetReader, NodePrimitivesProvider, StorageChangeSetReader};
     use std::collections::{BTreeMap, BTreeSet};
+    use tempo_primitives::TempoPrimitives;
+
+    #[derive(Clone)]
+    struct StaticOnlyProvider {
+        provider: StaticFileProvider<TempoPrimitives>,
+    }
+
+    impl NodePrimitivesProvider for StaticOnlyProvider {
+        type Primitives = TempoPrimitives;
+    }
+
+    impl StaticFileProviderFactory for StaticOnlyProvider {
+        fn static_file_provider(&self) -> StaticFileProvider<Self::Primitives> {
+            self.provider.clone()
+        }
+
+        fn get_static_file_writer(
+            &self,
+            block: u64,
+            segment: StaticFileSegment,
+        ) -> ProviderResult<StaticFileProviderRWRefMut<'_, Self::Primitives>> {
+            self.provider.get_writer(block, segment)
+        }
+    }
 
     #[test]
     fn sync_accounts_deduplicates_validator_config() {
@@ -555,14 +660,125 @@ mod tests {
     }
 
     #[test]
-    fn replacement_block_zero_changesets_replace_synced_account_only() {
-        let synced_address = Address::repeat_byte(0x11);
-        let other_address = Address::repeat_byte(0x22);
+    fn replacement_changeset_entries_are_sorted_and_genesis_owned() {
+        let high_address = Address::repeat_byte(0x22);
+        let low_address = Address::repeat_byte(0x11);
+        let high_slot = B256::repeat_byte(0x66);
+        let low_slot = B256::repeat_byte(0x55);
+        let value = B256::repeat_byte(0x77);
+
+        let high_replacement = genesis_account_replacement(
+            high_address,
+            &GenesisAccount {
+                storage: Some(BTreeMap::from([(high_slot, value)])),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let low_replacement = genesis_account_replacement(
+            low_address,
+            &GenesisAccount {
+                storage: Some(BTreeMap::from([(low_slot, value)])),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let replacements = vec![high_replacement, low_replacement];
+
+        assert_eq!(
+            replacement_account_changeset_entries(&replacements),
+            vec![
+                AccountBeforeTx {
+                    address: low_address,
+                    info: None,
+                },
+                AccountBeforeTx {
+                    address: high_address,
+                    info: None,
+                },
+            ]
+        );
+        assert_eq!(
+            replacement_storage_changeset_entries(&replacements),
+            vec![
+                StorageBeforeTx {
+                    address: low_address,
+                    key: low_slot,
+                    value: U256::ZERO,
+                },
+                StorageBeforeTx {
+                    address: high_address,
+                    key: high_slot,
+                    value: U256::ZERO,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn replace_block_zero_static_changesets_streams_existing_entries() {
+        let synced_address = Address::repeat_byte(0x22);
+        let other_address = Address::repeat_byte(0x11);
         let old_synced_slot = B256::repeat_byte(0x33);
         let stale_synced_slot = B256::repeat_byte(0x44);
         let new_synced_slot = B256::repeat_byte(0x55);
         let other_slot = B256::repeat_byte(0x66);
         let value = B256::repeat_byte(0x77);
+
+        let static_dir = tempfile::tempdir().unwrap();
+        let provider: StaticFileProvider<TempoPrimitives> =
+            StaticFileProviderBuilder::read_write(static_dir.path())
+                .build()
+                .unwrap();
+        {
+            let mut writer = provider
+                .get_writer(0, StaticFileSegment::AccountChangeSets)
+                .unwrap();
+            writer
+                .append_account_changeset(
+                    vec![
+                        AccountBeforeTx {
+                            address: other_address,
+                            info: None,
+                        },
+                        AccountBeforeTx {
+                            address: synced_address,
+                            info: Some(Account::default()),
+                        },
+                    ],
+                    0,
+                )
+                .unwrap();
+        }
+        {
+            let mut writer = provider
+                .get_writer(0, StaticFileSegment::StorageChangeSets)
+                .unwrap();
+            writer
+                .append_storage_changeset(
+                    vec![
+                        StorageBeforeTx {
+                            address: other_address,
+                            key: other_slot,
+                            value: U256::ZERO,
+                        },
+                        StorageBeforeTx {
+                            address: synced_address,
+                            key: old_synced_slot,
+                            value: U256::ZERO,
+                        },
+                        StorageBeforeTx {
+                            address: synced_address,
+                            key: stale_synced_slot,
+                            value: U256::ZERO,
+                        },
+                    ],
+                    0,
+                )
+                .unwrap();
+        }
+        provider.commit().unwrap();
 
         let replacement = genesis_account_replacement(
             synced_address,
@@ -572,63 +788,50 @@ mod tests {
             },
         )
         .unwrap();
+        let provider_wrapper = StaticOnlyProvider {
+            provider: provider.clone(),
+        };
 
-        let (account_changeset, storage_changeset) = replacement_block_zero_changesets(
+        let mut old_storage_history_keys = replace_block_zero_static_changesets(
+            &provider_wrapper,
             &BTreeSet::from([synced_address]),
             &[replacement],
-            vec![
-                AccountBeforeTx {
-                    address: synced_address,
-                    info: Some(Account::default()),
-                },
-                AccountBeforeTx {
-                    address: other_address,
-                    info: None,
-                },
-            ],
-            vec![
-                StorageBeforeTx {
-                    address: synced_address,
-                    key: old_synced_slot,
-                    value: U256::ZERO,
-                },
-                StorageBeforeTx {
-                    address: synced_address,
-                    key: stale_synced_slot,
-                    value: U256::ZERO,
-                },
-                StorageBeforeTx {
-                    address: other_address,
-                    key: other_slot,
-                    value: U256::ZERO,
-                },
-            ],
-        );
+        )
+        .unwrap();
+        provider.commit().unwrap();
 
+        old_storage_history_keys.sort_unstable();
         assert_eq!(
-            account_changeset,
+            old_storage_history_keys,
+            vec![
+                StorageShardedKey::last(synced_address, old_synced_slot),
+                StorageShardedKey::last(synced_address, stale_synced_slot),
+            ]
+        );
+        assert_eq!(
+            provider.account_block_changeset(0).unwrap(),
             vec![
                 AccountBeforeTx {
-                    address: synced_address,
+                    address: other_address,
                     info: None,
                 },
                 AccountBeforeTx {
-                    address: other_address,
+                    address: synced_address,
                     info: None,
                 },
             ]
         );
         assert_eq!(
-            storage_changeset,
+            provider.storage_block_changeset(0).unwrap(),
             vec![
-                StorageBeforeTx {
-                    address: synced_address,
-                    key: new_synced_slot,
-                    value: U256::ZERO,
-                },
                 StorageBeforeTx {
                     address: other_address,
                     key: other_slot,
+                    value: U256::ZERO,
+                },
+                StorageBeforeTx {
+                    address: synced_address,
+                    key: new_synced_slot,
                     value: U256::ZERO,
                 },
             ]

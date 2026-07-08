@@ -12853,6 +12853,7 @@ dependencies = [
  "reth-metrics",
  "reth-network-api",
  "reth-network-peers",
+ "reth-nippy-jar",
  "reth-node-builder",
  "reth-primitives-traits",
  "reth-provider",
