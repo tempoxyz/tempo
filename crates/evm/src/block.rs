@@ -215,6 +215,9 @@ where
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    ///
+    /// This also dispatches the state change to the system caller's state hook so that the
+    /// sparse trie task is aware of the change.
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
