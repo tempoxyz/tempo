@@ -24,6 +24,7 @@ artifacts:
   ERC20: ../erc20.abi.json
   DirectSwap: ../directswap.abi.json
   ERC4626Vault: ../erc4626-vault.abi.json
+  TIP403Registry: ../tip403-registry.abi.json
   DirectSwapMainnet:
     abi: ../directswap.abi.json
     bytecode: ../neobank-bytecodes/directswap.bin
@@ -135,6 +136,22 @@ setup:
         artifact: WrapperMainnet
         gas_limit: 1000000
         constructor_args: []
+    - id: neobank_directswap_policy
+      tx:
+        type: tempo
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        sponsor:
+          pool: fee_payers
+          select: { index: 0 }
+        gas_limit: 30000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        fee_token: "0x20c0000000000000000000000000000000000000"
+        expiring_nonce: true
+        valid_for_secs: 25
+        calls: ${TXGEN_NEOBANK_DIRECTSWAP_POLICY_CALLS}
     - id: neobank_directswap_prewarm
       bindings:
         user:
