@@ -24,7 +24,6 @@ artifacts:
   ERC20: ../erc20.abi.json
   DirectSwapABI: ../directswap.abi.json
   ERC4626Vault: ../erc4626-vault.abi.json
-  TIP20Rewards: ../tip20-rewards.abi.json
   DirectSwap:
     abi: ../directswap.abi.json
     bytecode: ../neobank-bytecodes/directswap.bin
@@ -243,15 +242,6 @@ sequences:
               args:
                 - { var: amount }
                 - { var: user.address }
-      - name: claim_pathusd_rewards
-        template: neobank_vault_deposit
-        with:
-          from: { var: user.ref }
-          calls:
-            - to: "0x20c0000000000000000000000000000000000000"
-              abi: TIP20Rewards
-              function: claimRewards
-              args: []
       - name: withdraw_from_neobank_vault
         template: neobank_vault_deposit
         with:
