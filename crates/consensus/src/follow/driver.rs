@@ -369,13 +369,10 @@ where
         };
 
         // If we can accept this cert, hand it to marshal. Marshal stores the
-        // block and its finalization, reports the new finalized tip to the
-        // executor (which drives reth to sync via forkchoice updates), and
-        // repairs any gap below via its resolver. The floor is intentionally
-        // never advanced here: jumping it past blocks that are not yet stored
-        // (neither in marshal nor finalized in reth) leaves a hole below the
-        // durable floor that wedges the executor's startup backfill on
-        // restart.
+        // block and its finalization, gap repairing any blocks below via the resolver.
+        // The floor is intentionally never advanced here: jumping it past blocks that
+        // are not yet stored leaves a hole below which we expect to be able to backfill
+        // to on startup
         if finalization.verify(&mut self.context, &scheme, &Sequential) {
             let round = finalization.round();
             let activity = Activity::Finalization(finalization);
