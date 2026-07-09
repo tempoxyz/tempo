@@ -20,10 +20,10 @@ abstract contract ZoneFactory is IZoneFactory {
     uint256 public constant ZONE_CREATION_GAS = 15_000_000;
 
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
-    bytes12 public constant ZONE_PORTAL_PREFIX = 0x20D000000000000000000000;
+    bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
 
     /// @notice Protocol-managed account that stores the central ZonePortal logic bytecode.
-    address public constant ZONE_PORTAL_LOGIC_ADDRESS = 0x20D1000000000000000000000000000000000000;
+    address public constant ZONE_PORTAL_LOGIC_ADDRESS = 0x5AD1000000000000000000000000000000000000;
 
     /// @notice Runtime prefix for an EIP-1167-style delegatecall proxy.
     bytes10 internal constant PORTAL_PROXY_PREFIX = 0x363d3d373d3d3d363d73;
