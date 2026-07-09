@@ -368,7 +368,6 @@ where
             ),
         };
 
-        // If we can accept this cert, jump to it.
         if finalization.verify(&mut self.context, &scheme, &Sequential) {
             let round = finalization.round();
             let activity = Activity::Finalization(finalization);
