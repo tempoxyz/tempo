@@ -38,6 +38,10 @@ use reth_trie::{
     proof::Proof, HashedPostState, HashedPostStateSorted, HashedStorage, MultiProofTargets,
     MultiProofTargetsV2, ProofV2Target, TrieAccount, EMPTY_ROOT_HASH,
 };
+use reth_trie::{
+    BranchNodeMasks, BranchNodeV2, DecodedMultiProofV2, LeafNode, Nibbles, ProofTrieNodeV2,
+    TrieMask, TrieNodeV2,
+};
 use reth_trie_sparse::{LeafUpdate, SparseStateTrie};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -220,6 +224,201 @@ fn ops_to_post_state(ops: &[(Key, StateOp)]) -> HashedPostState {
         }
     }
     post
+}
+
+/// Whether reveal nodes come straight from flat records (default) instead of
+/// the generic proof walk (`TEMPO_FLATMPT_FAST_REVEAL=0` selects the latter).
+fn fast_reveal() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TEMPO_FLATMPT_FAST_REVEAL").as_deref() != Ok("0"))
+}
+
+/// Convert the engine's reveal nodes to V2 proof nodes, folding each
+/// extension into its child branch (the V2 representation). The engine
+/// guarantees an extension is immediately followed by that branch.
+fn to_v2_nodes(nodes: Vec<mpt_flat_poc::reveal::RevealNode>) -> anyhow::Result<Vec<ProofTrieNodeV2>> {
+    use mpt_flat_poc::reveal::{RevealNode as R, RevealRef};
+    fn rlp_ref(r: &RevealRef) -> anyhow::Result<reth_trie::RlpNode> {
+        Ok(match r {
+            RevealRef::Hash(h) => reth_trie::RlpNode::word_rlp(&B256::from(*h)),
+            RevealRef::Inline(b) => reth_trie::RlpNode::from_raw(b)
+                .ok_or_else(|| anyhow::anyhow!("inline child too long"))?,
+        })
+    }
+    fn nib(p: &[u8]) -> Nibbles {
+        Nibbles::from_nibbles(p)
+    }
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut it = nodes.into_iter().peekable();
+    while let Some(n) = it.next() {
+        match n {
+            R::EmptyRoot => out.push(ProofTrieNodeV2 {
+                path: Nibbles::default(),
+                node: TrieNodeV2::EmptyRoot,
+                masks: None,
+            }),
+            R::Leaf { path, key, value } => out.push(ProofTrieNodeV2 {
+                path: nib(&path),
+                node: TrieNodeV2::Leaf(LeafNode::new(nib(&key), value)),
+                masks: None,
+            }),
+            R::Branch { path, children, tree_mask, hash_mask } => {
+                let mut stack = Vec::new();
+                let mut state = 0u16;
+                for (i, c) in children.iter().enumerate() {
+                    if let Some(c) = c {
+                        state |= 1 << i;
+                        stack.push(rlp_ref(c)?);
+                    }
+                }
+                out.push(ProofTrieNodeV2 {
+                    path: nib(&path),
+                    node: TrieNodeV2::Branch(BranchNodeV2 {
+                        key: Nibbles::default(),
+                        stack,
+                        state_mask: TrieMask::new(state),
+                        branch_rlp_node: None,
+                    }),
+                    masks: Some(BranchNodeMasks {
+                        hash_mask: TrieMask::new(hash_mask),
+                        tree_mask: TrieMask::new(tree_mask),
+                    }),
+                });
+            }
+            R::Extension { path, key, child } => {
+                // Fold with the immediately following child branch.
+                let Some(R::Branch { path: bpath, children, tree_mask, hash_mask }) =
+                    it.next()
+                else {
+                    anyhow::bail!("extension at {path:?} not followed by its child branch");
+                };
+                let mut expect = path.clone();
+                expect.extend_from_slice(&key);
+                anyhow::ensure!(bpath == expect, "extension child branch path mismatch");
+                let mut stack = Vec::new();
+                let mut state = 0u16;
+                for (i, c) in children.iter().enumerate() {
+                    if let Some(c) = c {
+                        state |= 1 << i;
+                        stack.push(rlp_ref(c)?);
+                    }
+                }
+                out.push(ProofTrieNodeV2 {
+                    path: nib(&path),
+                    node: TrieNodeV2::Branch(BranchNodeV2 {
+                        key: nib(&key),
+                        stack,
+                        state_mask: TrieMask::new(state),
+                        branch_rlp_node: Some(rlp_ref(&child)?),
+                    }),
+                    masks: Some(BranchNodeMasks {
+                        hash_mask: TrieMask::new(hash_mask),
+                        tree_mask: TrieMask::new(tree_mask),
+                    }),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Reveal nodes for a target set straight from flat records — the fast
+/// path (no proof reconstruction). Storage of an absent/opaque account
+/// reveals as an empty trie.
+fn direct_reveal(
+    db: &mpt_flat_poc::FlatMpt,
+    acct_targets: &B256Map<u8>,
+    storage_targets: &B256Map<B256Map<u8>>,
+) -> anyhow::Result<DecodedMultiProofV2> {
+    let mut keys: Vec<Key> = acct_targets.keys().map(|k| k.0).collect();
+    // Storage targets also need their account's path revealed.
+    keys.extend(storage_targets.keys().map(|k| k.0));
+    keys.sort_unstable();
+    keys.dedup();
+    let account_proofs = to_v2_nodes(db.reveal_account_paths(&keys)?)?;
+    let mut storage_proofs = B256Map::default();
+    for (acct, per) in storage_targets {
+        if per.is_empty() {
+            continue;
+        }
+        let mut slots: Vec<Key> = per.keys().map(|k| k.0).collect();
+        slots.sort_unstable();
+        let nodes = match db.reveal_storage_paths(&acct.0, &slots)? {
+            Some(n) => to_v2_nodes(n)?,
+            None => vec![ProofTrieNodeV2 {
+                path: Nibbles::default(),
+                node: TrieNodeV2::EmptyRoot,
+                masks: None,
+            }],
+        };
+        storage_proofs.insert(*acct, nodes);
+    }
+    Ok(DecodedMultiProofV2 { account_proofs, storage_proofs })
+}
+
+/// The generic proof walk (chunked, parallel), used under overlays or as
+/// the fallback when the direct reveal cannot serve a target.
+fn chunked_proofs(
+    guard: &parking_lot::RwLockReadGuard<'_, FlatShadow>,
+    overlay: Option<&(std::sync::Arc<TrieUpdatesSorted>, std::sync::Arc<HashedPostStateSorted>)>,
+    acct_targets: &B256Map<u8>,
+    storage_targets: &B256Map<B256Map<u8>>,
+) -> anyhow::Result<Vec<DecodedMultiProofV2>> {
+    let n_storage: usize = storage_targets.values().map(|p| p.len()).sum();
+    let mut flat: Vec<(B256, ProofV2Target)> = Vec::with_capacity(n_storage);
+    for (acct, per) in storage_targets {
+        for (k, m) in per {
+            flat.push((*acct, ProofV2Target::new(*k).with_min_len(*m)));
+        }
+    }
+    flat.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key_nibbles.cmp(&b.1.key_nibbles)));
+    // IO-latency-bound sync preads: oversubscribe past the core count
+    // (measured near-linear to 48 threads). `TEMPO_FLATMPT_PROOF_THREADS`.
+    let threads = proof_threads();
+    let chunk_size = flat.len().div_ceil(threads).max(256);
+    let mut chunks: Vec<MultiProofTargetsV2> = Vec::new();
+    {
+        let mut t = MultiProofTargetsV2::default();
+        for (key, min_len) in acct_targets {
+            t.account_targets.push(ProofV2Target::new(*key).with_min_len(*min_len));
+        }
+        if !t.account_targets.is_empty() {
+            chunks.push(t);
+        }
+    }
+    for slice in flat.chunks(chunk_size) {
+        let mut t = MultiProofTargetsV2::default();
+        for (acct, target) in slice {
+            t.storage_targets.entry(*acct).or_default().push(target.clone());
+        }
+        chunks.push(t);
+    }
+
+    let db = guard.db();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|t| {
+                s.spawn(move || match overlay {
+                    None => Proof::new(
+                        FlatTrieCursorFactory { mpt: db },
+                        FlatHashedCursorFactory { mpt: db },
+                    )
+                    .multiproof_v2(t),
+                    Some((tu, hps)) => Proof::new(
+                        InMemoryTrieCursorFactory::new(FlatTrieCursorFactory { mpt: db }, tu),
+                        HashedPostStateCursorFactory::new(FlatHashedCursorFactory { mpt: db }, hps),
+                    )
+                    .multiproof_v2(t),
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("proof chunk thread panicked"))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .map_err(|e| anyhow::anyhow!("multiproof_v2 over flat cursors: {e}"))
 }
 
 /// Parallelism for chunked proof fetches (`TEMPO_FLATMPT_PROOF_THREADS`).
@@ -675,73 +874,29 @@ impl Worker {
                     continue;
                 };
 
-                // Balanced, path-sorted chunks: contiguous key ranges keep
-                // each chunk's walk inside a narrow subtree span.
-                let mut flat: Vec<(B256, ProofV2Target)> = Vec::with_capacity(n_storage as usize);
-                for (acct, per) in &storage_targets {
-                    for (k, m) in per {
-                        flat.push((*acct, ProofV2Target::new(*k).with_min_len(*m)));
+                // Fast path: copy reveal nodes straight out of the records —
+                // no proof reconstruction. Falls back to the generic proof
+                // walk on any error (e.g. opaque storage) or under overlays.
+                if overlay.is_none() && fast_reveal() {
+                    match direct_reveal(&guard.db, &acct_targets, &storage_targets) {
+                        Ok(p) => vec![p],
+                        Err(e) if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
+                            == Ok("1") =>
+                        {
+                            return Err(anyhow::anyhow!("direct reveal failed (strict): {e:#}"));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "flatmpt",
+                                err = %format!("{e:#}"),
+                                "direct reveal failed; using proof walk"
+                            );
+                            chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?
+                        }
                     }
+                } else {
+                    chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?
                 }
-                flat.sort_unstable_by(|a, b| {
-                    a.0.cmp(&b.0).then_with(|| a.1.key_nibbles.cmp(&b.1.key_nibbles))
-                });
-                // The fetch is IO-latency-bound (sync preads): scaling is
-                // near-linear well past the core count (measured 12.7k→49.6k
-                // targets/s cold from 12→48 threads on a 32-core box), so
-                // oversubscribe. `TEMPO_FLATMPT_PROOF_THREADS` overrides.
-                let threads = proof_threads();
-                let chunk_size = flat.len().div_ceil(threads).max(256);
-                let mut chunks: Vec<MultiProofTargetsV2> = Vec::new();
-                {
-                    let mut t = MultiProofTargetsV2::default();
-                    for (key, min_len) in &acct_targets {
-                        t.account_targets.push(ProofV2Target::new(*key).with_min_len(*min_len));
-                    }
-                    if !t.account_targets.is_empty() {
-                        chunks.push(t);
-                    }
-                }
-                for slice in flat.chunks(chunk_size) {
-                    let mut t = MultiProofTargetsV2::default();
-                    for (acct, target) in slice {
-                        t.storage_targets.entry(*acct).or_default().push(target.clone());
-                    }
-                    chunks.push(t);
-                }
-
-                let db = &guard.db;
-                let overlay = &overlay;
-                std::thread::scope(|s| {
-                    let handles: Vec<_> = chunks
-                        .into_iter()
-                        .map(|t| {
-                            s.spawn(move || match overlay {
-                                None => Proof::new(
-                                    FlatTrieCursorFactory { mpt: db },
-                                    FlatHashedCursorFactory { mpt: db },
-                                )
-                                .multiproof_v2(t),
-                                Some((tu, hps)) => Proof::new(
-                                    InMemoryTrieCursorFactory::new(
-                                        FlatTrieCursorFactory { mpt: db },
-                                        tu,
-                                    ),
-                                    HashedPostStateCursorFactory::new(
-                                        FlatHashedCursorFactory { mpt: db },
-                                        hps,
-                                    ),
-                                )
-                                .multiproof_v2(t),
-                            })
-                        })
-                        .collect();
-                    handles
-                        .into_iter()
-                        .map(|h| h.join().expect("proof chunk thread panicked"))
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .map_err(|e| anyhow::anyhow!("multiproof_v2 over flat cursors: {e}"))?
             };
             self.stats.proof_ms += t_proof.elapsed().as_millis() as u64;
 
