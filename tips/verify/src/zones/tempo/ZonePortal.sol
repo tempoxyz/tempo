@@ -11,7 +11,7 @@ import {
     EncryptedDepositPayload,
     EncryptionKeyEntry,
     IVerifier,
-    IWithdrawalReceiver,
+    IZoneMessenger,
     IZonePortal,
     MAX_WITHDRAWAL_CALLBACK_GAS,
     QueuedDeposit,
@@ -68,6 +68,7 @@ contract ZonePortal is IZonePortal {
 
     uint32 public immutable zoneId;
     address public immutable verifier;
+    address public immutable messenger;
     uint64 public immutable genesisTempoBlockNumber;
 
     /// @notice Current sequencer address
@@ -137,6 +138,7 @@ contract ZonePortal is IZonePortal {
     constructor(
         uint32 _zoneId,
         address _initialToken,
+        address _messenger,
         address _admin,
         address _sequencer,
         address _verifier,
@@ -148,6 +150,7 @@ contract ZonePortal is IZonePortal {
         admin = _admin;
         sequencer = _sequencer;
         verifier = _verifier;
+        messenger = _messenger;
         blockHash = _genesisBlockHash;
         genesisTempoBlockNumber = _genesisTempoBlockNumber;
         rpcUrl = _rpcUrl;
@@ -751,9 +754,10 @@ contract ZonePortal is IZonePortal {
     }
 
     /// @notice Deliver a callback withdrawal in a revertable self-call frame.
-    /// @dev Only callable by this portal. If the callback reverts or returns the wrong selector,
-    ///      this call reverts and rolls back the token transfer. The outer processWithdrawal
-    ///      catches the revert and records a bounce-back.
+    /// @dev Only callable by this portal. It transfers only the current withdrawal amount to
+    ///      the shared messenger, then asks the messenger to call the target. If delivery
+    ///      fails, this call reverts and rolls back the transfer to the messenger. The outer
+    ///      processWithdrawal catches the revert and records a bounce-back.
     function deliverWithdrawal(
         address token,
         address target,
@@ -765,17 +769,12 @@ contract ZonePortal is IZonePortal {
         external
         onlySelf
     {
-        if (!ITIP20(token).transfer(target, amount)) {
+        if (!ITIP20(token).transfer(messenger, amount)) {
             revert TransferFailed();
         }
 
-        bytes4 selector = IWithdrawalReceiver(target).onWithdrawalReceived{ gas: gasLimit }(
-            zoneId, senderTag, token, amount, data
-        );
-
-        if (selector != IWithdrawalReceiver.onWithdrawalReceived.selector) {
-            revert CallbackRejected();
-        }
+        IZoneMessenger(messenger)
+            .relayMessage(zoneId, token, senderTag, target, amount, gasLimit, data);
     }
 
     function _processDepositBounceBack(Withdrawal calldata withdrawal) internal {
