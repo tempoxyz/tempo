@@ -31,10 +31,9 @@ const TEMPORARY_STORE_GAS_EXISTING_WARM: u64 = 200;
 
 /// TIP-1040 temporary storage precompile.
 ///
-/// The precompile address itself only hosts the dispatch logic; all values live in the
-/// per-epoch [`TemporaryStorageAccount`]s. `temporaryLoad` gas follows the standard
-/// EIP-2929 SLOAD pricing; `temporaryStore` uses the TIP-1040 pricing above, metered by
-/// this precompile on top of the unmetered [`temporary_sstore`](crate::storage::StorageCtx::temporary_sstore).
+/// `temporaryLoad` gas follows the standard EIP-2929 SLOAD pricing; `temporaryStore`
+/// uses the TIP-1040 pricing above, metered by this precompile on top of the unmetered
+/// [`temporary_sstore`](crate::storage::StorageCtx::temporary_sstore).
 #[contract(addr = TEMPORARY_STORAGE_ADDRESS)]
 pub struct TemporaryStorage {}
 

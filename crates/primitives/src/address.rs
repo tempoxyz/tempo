@@ -7,9 +7,7 @@ use tempo_contracts::{
 /// A [TIP-1040] per-epoch temporary storage account: `TEMPORARY_STORAGE_ADDRESS + epoch + 1`.
 ///
 /// Only constructible via [`Self::for_epoch`], so holding one is proof the address is a
-/// temporary storage account. Writes to these accounts follow TIP-1040 gas rules and are
-/// exempt from TIP-1060 storage credits; nodes may prune their storage once the epoch
-/// expires. Code that only has a raw [`Address`] can classify it with
+/// temporary storage account. Code that only has a raw [`Address`] can classify it with
 /// [`TempoAddressExt::is_temporary_storage_account`].
 ///
 /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
@@ -19,17 +17,14 @@ pub struct TemporaryStorageAccount(Address);
 impl TemporaryStorageAccount {
     /// Code deployed to epoch accounts so they are non-empty and EIP-161 state clear
     /// cannot drop their storage. These bytes are the preimage of TIP-1040's
-    /// `EPOCH_ACCOUNT_CODE_HASH` (`keccak256` of this string), the code hash the spec
-    /// mandates for epoch accounts.
+    /// `EPOCH_ACCOUNT_CODE_HASH`.
     pub const MARKER_CODE: &'static [u8] = b"tempo.tip1040.epoch_account";
 
     /// Returns the account storing epoch `epoch`'s data.
     ///
     /// The `+ 1` offset reserves `TEMPORARY_STORAGE_ADDRESS` itself for the precompile
-    /// dispatch logic. The sum cannot overflow 160 bits: the base address has its low
-    /// 144 bits zero. `epoch + 1` fits the trailing 8 bytes for all epochs except
-    /// `u64::MAX` (unreachable: ~10^13 years at 500ms blocks), which would carry into
-    /// the 12-byte prefix that [`TempoAddressExt::is_temporary_storage_account`] checks.
+    /// dispatch logic. The sum cannot overflow 160 bits; `epoch + 1` fits the trailing
+    /// 8 bytes for any reachable epoch.
     pub fn for_epoch(epoch: u64) -> Self {
         let base: U256 = TEMPORARY_STORAGE_ADDRESS.into_word().into();
         Self(Address::from_word(B256::from(

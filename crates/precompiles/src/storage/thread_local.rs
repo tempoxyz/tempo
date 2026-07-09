@@ -167,9 +167,7 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
-    /// Journal SSTORE into a TIP-1040 temporary storage account, charging no gas and
-    /// returning the value transition and whether the slot was cold. Callers meter gas
-    /// themselves per the TIP-1040 schedule.
+    /// Journal SSTORE into a TIP-1040 temporary storage account, charging no gas.
     pub fn temporary_sstore(
         &mut self,
         account: TemporaryStorageAccount,
