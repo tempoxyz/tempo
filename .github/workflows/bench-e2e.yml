@@ -726,7 +726,7 @@ jobs:
              } catch {
                baselineRef = process.env.INPUT_SHA;
              }
-             baselineName = baselineNameArg && baselineNameArg !== 'merge-base' ? baselineNameArg : baselineRef;
+             baselineName = baselineNameArg && baselineNameArg !== 'merge-base' ? baselineNameArg : baseRef;
            }
 
            if (featureArg) {
