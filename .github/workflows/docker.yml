@@ -8,6 +8,7 @@ on:
       - main
       - "rc/*"
     tags:
+      - "*.*.*"
       - "v*.*.*"
   merge_group:
   workflow_dispatch:
@@ -38,6 +39,33 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Validate tag matches Cargo version
+        if: ${{ github.ref_type == 'tag' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(awk '
+            $0 == "[workspace.package]" { in_section = 1; next }
+            /^\[/ { in_section = 0 }
+            in_section && $1 == "version" {
+              gsub(/"/, "", $3)
+              print $3
+              exit
+            }
+          ' Cargo.toml)"
+
+          if [[ -z "$cargo_version" ]]; then
+            echo "::error::Could not read workspace.package.version from Cargo.toml"
+            exit 1
+          fi
+
+          if [[ "$tag_version" != "$cargo_version" ]]; then
+            echo "::error::Tag version ${tag_version} does not match Cargo.toml version ${cargo_version}"
+            exit 1
+          fi
 
       - uses: depot/setup-action@15c09a5f77a0840ad4bce955686522a257853461 # v1.7.1
 
