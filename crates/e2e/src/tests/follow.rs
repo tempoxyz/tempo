@@ -219,6 +219,24 @@ impl MetricScope for Follower {
     }
 }
 
+/// Polls the feed until `query` resolves successfully.
+///
+/// The follower's archives fill in asynchronously via marshal's gap repair,
+/// so finalizations below the follower's join point become available only
+/// once backfill catches up.
+async fn wait_for_finalization<TContext: Clock>(
+    context: &TContext,
+    feed: &FeedStateHandle,
+    query: Query,
+) {
+    while !matches!(
+        feed.get_finalization(query.clone()).await,
+        Response::Success(..)
+    ) {
+        context.sleep(Duration::from_millis(100)).await;
+    }
+}
+
 #[test_traced]
 fn follower_bootstraps_from_validator() {
     let _ = tempo_eyre::install();
@@ -246,16 +264,15 @@ fn follower_bootstraps_from_validator() {
 
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 
-        // Follower starts only from the bootstrap point.
-        let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
-        let Response::Missing(..) = historical_cert else {
-            panic!("shouldn't have historical certs");
-        };
+        // The marshal floor only advances with actually processed blocks, so
+        // the follower backfills the gap between its startup floor (genesis
+        // for a fresh node) and the join point via gap repair.
+        wait_for_finalization(&context, &follower.feed, Query::Height(1)).await;
     });
 }
 
 #[test_traced]
-fn follower_fast_sync_skips_historical_boundaries() {
+fn follower_backfills_historical_boundaries() {
     let _ = tempo_eyre::install();
 
     let start_height = 2 * EPOCH_LENGTH + 1;
@@ -279,19 +296,14 @@ fn follower_fast_sync_skips_historical_boundaries() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, follower_target_height).await;
-        follower.feed.get_finalization(Query::Latest).await.unwrap();
+        wait_for_finalization(&context, &follower.feed, Query::Latest).await;
 
+        // The follower joined past two epoch boundaries; gap repair backfills
+        // them (blocks and certificates) down to the startup floor.
         let epoch_0_boundary = EPOCH_LENGTH - 1;
         let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
         for boundary in [epoch_0_boundary, epoch_1_boundary] {
-            let historical_boundary = follower
-                .feed
-                .get_finalization(Query::Height(boundary))
-                .await;
-
-            let Response::Missing(..) = historical_boundary else {
-                panic!("boundary block at height {boundary} should be missing after fast sync");
-            };
+            wait_for_finalization(&context, &follower.feed, Query::Height(boundary)).await;
         }
     });
 }
@@ -335,19 +347,17 @@ fn follower_reads_boundaries_after_full_dkg() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, follower_target_height).await;
-        follower.feed.get_finalization(Query::Latest).await.unwrap();
+
+        // After the full DKG rotated the network identity, the follower can
+        // only verify (and thus feed) tip finalizations once dispatch has
+        // caught up to the boundary block carrying the rotated identity, so
+        // poll rather than assert immediately.
+        wait_for_finalization(&context, &follower.feed, Query::Latest).await;
 
         let epoch_0_boundary = EPOCH_LENGTH - 1;
         let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
         for boundary in [epoch_0_boundary, epoch_1_boundary] {
-            let historical_boundary = follower
-                .feed
-                .get_finalization(Query::Height(boundary))
-                .await;
-
-            let Response::Success(..) = historical_boundary else {
-                panic!("boundary block at height {boundary} should be present after full DKG");
-            };
+            wait_for_finalization(&context, &follower.feed, Query::Height(boundary)).await;
         }
     });
 }

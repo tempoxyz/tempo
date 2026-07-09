@@ -209,7 +209,6 @@ where
     }
 
     async fn run(mut self) {
-        self.config.marshal.set_floor(self.last_boundary).await;
         if self.heal_gap().await.is_err() {
             return;
         };
@@ -340,14 +339,15 @@ where
 
             // In the event our network identity cannot verify this finalization,
             // hint the boundary of the current epoch to progress.
+            //
+            // The floor is intentionally not advanced to the boundary: marshal
+            // must only skip past blocks it (or the finalized execution layer)
+            // actually stores. The gap up to the boundary is healed by
+            // marshal's gap-repair resolver as reth syncs the blocks via P2P.
             self.config
                 .marshal
                 .hint_finalized(boundary_height, stub_peers.clone())
                 .await;
-
-            if let Some(one_before_boundary) = boundary_height.previous() {
-                self.config.marshal.set_floor(one_before_boundary).await;
-            }
 
             let network_identity = self.config.network_identity.clone();
             if finalization_epoch.get() < network_identity.from_epoch {
@@ -368,8 +368,14 @@ where
             ),
         };
 
-        // If we can accept this cert, jump to it and set the floor as the
-        // upstream may have pruned any intermediatery blocks.
+        // If we can accept this cert, hand it to marshal. Marshal stores the
+        // block and its finalization, reports the new finalized tip to the
+        // executor (which drives reth to sync via forkchoice updates), and
+        // repairs any gap below via its resolver. The floor is intentionally
+        // never advanced here: jumping it past blocks that are not yet stored
+        // (neither in marshal nor finalized in reth) leaves a hole below the
+        // durable floor that wedges the executor's startup backfill on
+        // restart.
         if finalization.verify(&mut self.context, &scheme, &Sequential) {
             let round = finalization.round();
             let activity = Activity::Finalization(finalization);
@@ -377,10 +383,6 @@ where
                 warn_span!("follow_driver").in_scope(
                     || warn!(?round, %height, "marshal refused to persist the verified block"),
                 )
-            }
-
-            if let Some(one_before_block) = height.previous() {
-                self.config.marshal.set_floor(one_before_block).await;
             }
 
             self.config.marshal.report(activity.clone()).await;
