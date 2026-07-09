@@ -57,26 +57,26 @@ jobs:
     name: check version
     runs-on: ubuntu-latest
     needs: get-version
-    if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Verify crate version matches tag
-        # Check that the Cargo version starts with the tag,
-        # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
+      - name: Verify workspace version matches tag
+        if: ${{ !startsWith(github.ref, 'refs/heads/rc/') && github.event.inputs.dry_run != 'true' }}
         run: |
+          set -euo pipefail
+
           tag="${{ needs.get-version.outputs.version }}"
           tag=${tag#v}
-          cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
-          [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
+          cargo_ver=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)
+          [[ -n "$cargo_ver" ]] || { echo "Could not read [workspace.package] version from Cargo.toml"; exit 1; }
+          [[ "$tag" == "$cargo_ver" ]] || { echo "Tag $tag doesn't match the workspace Cargo version $cargo_ver"; exit 1; }
 
   build-release:
     name: Build Release Binaries
-    needs: get-version
+    needs: [get-version, check-version]
     environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:
