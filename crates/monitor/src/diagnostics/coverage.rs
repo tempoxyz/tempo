@@ -14,30 +14,45 @@ use crate::{
 /// Only `Complete` coverage may produce a `CheckOutcome::Pass`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoverageStatus {
+    /// All required inputs were available.
     Complete,
+    /// Check ran over selected/incomplete inputs.
     Partial,
+    /// Required inputs were missing, so no conclusion can be drawn.
     Inconclusive,
+    /// Inputs or derived tables were degraded/tainted.
     Degraded,
+    /// Check did not apply to this block/entity.
     NotNeeded,
 }
 
 impl CoverageStatus {
+    /// Return true when this coverage status may produce a passing outcome.
     pub const fn allows_pass(&self) -> bool {
         matches!(self, Self::Complete)
     }
 }
 
+/// Reason for a coverage classification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoverageReason {
+    /// All required inputs were complete.
     CompleteInput,
+    /// Only selected candidates were evaluated.
     SelectedCandidatesOnly,
+    /// A required input was missing.
     MissingRequiredInput(String),
+    /// A derived table was marked tainted.
     TaintedTable(String),
+    /// A keyset was incomplete.
     IncompleteKeyset(String),
+    /// Replay data was unavailable.
     ReplayUnavailable,
+    /// Check was not applicable.
     NotApplicable,
 }
 
+/// Explanation for a non-complete check coverage result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("coverage gap: {status:?}: {reason:?}: {detail}")]
 pub struct CoverageGap {
@@ -46,6 +61,7 @@ pub struct CoverageGap {
     pub detail: String,
 }
 
+/// Durable coverage row for a check result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageRecord {
     pub invariant_id: InvariantId,
@@ -57,7 +73,10 @@ pub struct CoverageRecord {
 
 /// A coverage-checked pass. Constructed only from complete coverage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompleteCoverage(pub CoverageRecord);
+pub struct CompleteCoverage(
+    /// Coverage record proven complete.
+    pub CoverageRecord,
+);
 
 impl TryFrom<CoverageRecord> for CompleteCoverage {
     type Error = CoverageGap;
@@ -77,6 +96,7 @@ impl TryFrom<CoverageRecord> for CompleteCoverage {
     }
 }
 
+/// Check execution error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckError {
     pub message: String,
@@ -90,18 +110,24 @@ pub struct CheckError {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckOutcome {
+    /// Check passed with complete coverage.
     Pass(CompleteCoverage),
+    /// Check found an invariant violation.
     Violation(ViolationEvidence),
+    /// Check could not reach a conclusion due to coverage.
     Inconclusive(CoverageGap),
+    /// Check failed internally.
     Error(CheckError),
 }
 
 impl CheckOutcome {
+    /// Construct a passing outcome only if coverage is complete.
     pub fn pass(coverage: CoverageRecord) -> Result<Self, CoverageGap> {
         CompleteCoverage::try_from(coverage).map(Self::Pass)
     }
 }
 
+/// Durable result of evaluating one invariant for a block/entity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckResult {
     pub invariant_id: InvariantId,

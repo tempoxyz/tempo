@@ -39,6 +39,7 @@ pub struct BlockFacts {
     pub header: HeaderFacts,
 }
 
+/// Normalized header facts used by monitor checks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeaderFacts {
     pub timestamp: u64,
@@ -107,6 +108,7 @@ impl From<&TempoTxEnvelope> for TxEnvelopeFacts {
 }
 
 impl TxEnvelopeFacts {
+    /// Return true when this transaction uses Tempo's expiring nonce key.
     pub fn is_expiring_nonce(&self) -> bool {
         self.nonce_key == Some(TEMPO_EXPIRING_NONCE_KEY)
     }
@@ -143,6 +145,7 @@ pub struct ReceiptFacts {
 }
 
 impl ReceiptFacts {
+    /// Build receipt facts and fail closed on non-monotonic cumulative gas.
     pub fn from_tempo_receipt(
         block: BlockNumHash,
         tx_hash: B256,
@@ -174,6 +177,7 @@ impl ReceiptFacts {
     }
 }
 
+/// Log with block, transaction, and log ordering context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrderedLog {
     pub block: BlockNumHash,
@@ -185,12 +189,19 @@ pub struct OrderedLog {
     pub data: Bytes,
 }
 
+/// Decoded event variants recognized by the monitor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DecodedEventKind {
+    /// TIP-20 transfer event.
     Tip20Transfer(ITIP20::Transfer),
-    Unknown { topic0: Option<B256> },
+    /// Unknown event with optional first topic.
+    Unknown {
+        /// First topic when available.
+        topic0: Option<B256>,
+    },
 }
 
+/// Decoded event paired with its source log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecodedEvent {
     pub source: OrderedLog,

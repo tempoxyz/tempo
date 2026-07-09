@@ -1,3 +1,5 @@
+//! Finalized-block processing loop shared by Reth integration tests and ExEx runtime.
+
 use crate::{
     input::facts::BlockNumHash,
     processor::{FinalizedBlockInput, FinalizedBlockProcessor},

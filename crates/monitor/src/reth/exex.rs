@@ -1,3 +1,5 @@
+//! Reth ExEx entrypoint for finalized-block monitor processing.
+
 use futures::StreamExt as _;
 use reth_exex::{ExExContext, ExExEvent};
 use reth_node_api::FullNodeComponents;

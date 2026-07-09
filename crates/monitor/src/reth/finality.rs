@@ -1,3 +1,5 @@
+//! Finalized watermark and finished-height abstractions.
+
 use crate::{
     input::facts::BlockNumHash,
     reth::{AdapterError, AdapterResult},

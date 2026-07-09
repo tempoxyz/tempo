@@ -12,25 +12,33 @@ use thiserror::Error;
 use tokio::time::sleep;
 use tracing::error;
 
+/// Result type returned by outbox sinks.
 pub type OutboxDeliveryResult<T> = std::result::Result<T, OutboxDeliveryError>;
 
+/// Error returned when an outbox sink cannot durably acknowledge delivery.
 #[derive(Debug, Error)]
 pub enum OutboxDeliveryError {
+    /// JSON payload serialization failed before any delivery acknowledgement.
     #[error("json serialization failed: {0}")]
     Json(#[from] serde_json::Error),
+    /// Sink I/O failed; the worker must leave the outbox row pending.
     #[error("io failed: {0}")]
     Io(#[from] std::io::Error),
+    /// System time could not be converted to Unix time for the delivery record.
     #[error("system clock is before unix epoch: {0}")]
     Clock(#[from] std::time::SystemTimeError),
 }
 
+/// External delivery sink for durable outbox rows.
 pub trait OutboxSink {
+    /// Deliver one already-durable row and return an acknowledgement record only after success.
     fn deliver<'a>(
         &'a self,
         row: &'a OutboxRow,
     ) -> Pin<Box<dyn Future<Output = OutboxDeliveryResult<DeliveryRecord>> + Send + 'a>>;
 }
 
+/// Configuration for polling and draining pending outbox rows.
 #[derive(Clone, Debug)]
 pub struct OutboxWorkerConfig {
     pub enabled: bool,
@@ -48,6 +56,7 @@ impl Default for OutboxWorkerConfig {
     }
 }
 
+/// At-least-once worker that drains durable outbox rows into a sink.
 pub struct OutboxWorker<S, K> {
     store: S,
     sink: K,
@@ -55,6 +64,7 @@ pub struct OutboxWorker<S, K> {
 }
 
 impl<S, K> OutboxWorker<S, K> {
+    /// Create a worker over a monitor store and delivery sink.
     pub fn new(store: S, sink: K, config: OutboxWorkerConfig) -> Self {
         Self {
             store,
@@ -69,6 +79,7 @@ where
     S: MonitorStore,
     K: OutboxSink,
 {
+    /// Poll pending rows forever until a store error stops the worker.
     pub async fn run_forever(&self) -> StoreResult<()> {
         if !self.config.enabled {
             return Ok(());
@@ -81,6 +92,7 @@ where
         }
     }
 
+    /// Drain at most one configured batch and return the number of rows marked delivered.
     pub async fn tick(&self) -> StoreResult<usize> {
         if !self.config.enabled || self.config.batch_size == 0 {
             return Ok(0);

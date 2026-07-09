@@ -1,3 +1,5 @@
+//! Reth provider adapter that normalizes finalized blocks into monitor input facts.
+
 use alloy_consensus::{BlockHeader as _, TxReceipt, transaction::TxHashRef as _};
 use alloy_eips::BlockHashOrNumber;
 use reth_primitives_traits::BlockBody as _;

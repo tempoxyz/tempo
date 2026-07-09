@@ -9,6 +9,7 @@ use crate::input::facts::{
     TxEnvelopeFacts, TxFacts,
 };
 
+/// Project a Tempo header into monitor-owned block facts.
 pub fn block_facts_from_tempo_header(
     header: &TempoHeader,
     number: u64,
@@ -22,6 +23,7 @@ pub fn block_facts_from_tempo_header(
     }
 }
 
+/// Project a Tempo receipt into monitor-owned receipt facts.
 pub fn receipt_facts_from_tempo_receipt(
     block: BlockNumHash,
     tx_hash: B256,
@@ -38,6 +40,7 @@ pub fn receipt_facts_from_tempo_receipt(
     )
 }
 
+/// Project a Tempo transaction envelope into monitor-owned transaction facts.
 pub fn tx_facts_from_tempo_envelope(
     block: BlockNumHash,
     tx_index: u64,

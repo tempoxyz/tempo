@@ -1,3 +1,5 @@
+//! Reth finalized-loop and adapter contract tests.
+
 use alloy_primitives::{Address, B256};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use tempo_hardfork::TempoHardfork;

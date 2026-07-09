@@ -1,3 +1,5 @@
+//! Built-in finalized-block checks and check-result summaries.
+
 use crate::{
     diagnostics::{
         coverage::{

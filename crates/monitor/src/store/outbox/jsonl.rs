@@ -19,6 +19,7 @@ use std::{
 const JSONL_SINK_NAME: &str = "jsonl";
 const JSONL_SCHEMA: &str = "tempo.monitor.outbox.v1";
 
+/// File sink that appends one flushed JSON object per delivered outbox row.
 #[derive(Debug)]
 pub struct JsonlOutboxSink {
     path: PathBuf,
@@ -26,6 +27,7 @@ pub struct JsonlOutboxSink {
 }
 
 impl JsonlOutboxSink {
+    /// Open or create the JSONL file, creating parent directories if needed.
     pub fn open(path: impl AsRef<Path>) -> OutboxDeliveryResult<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -38,6 +40,7 @@ impl JsonlOutboxSink {
         })
     }
 
+    /// Return the configured JSONL path.
     pub fn path(&self) -> &Path {
         &self.path
     }

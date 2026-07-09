@@ -1,3 +1,5 @@
+//! Monitor store contract, MDBX backend, and outbox worker tests.
+
 use super::*;
 use crate::{
     diagnostics::{

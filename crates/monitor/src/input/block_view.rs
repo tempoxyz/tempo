@@ -10,12 +10,14 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Replay availability facts for checks that require execution replay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayFacts {
     pub available: bool,
     pub notes: Vec<String>,
 }
 
+/// Immutable block-scoped view consumed by invariant checks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockView {
     pub block: BlockFacts,

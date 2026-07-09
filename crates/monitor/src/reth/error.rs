@@ -1,3 +1,5 @@
+//! Error classification for the Reth monitor adapter.
+
 use crate::{processor::ProcessorError, store::StoreError};
 
 pub type AdapterResult<T> = Result<T, AdapterError>;

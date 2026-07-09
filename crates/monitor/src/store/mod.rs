@@ -26,6 +26,7 @@ pub use schema::*;
 
 use crate::{diagnostics::findings::FindingKey, input::facts::BlockNumHash};
 
+/// Result type returned by monitor store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Store boundary for finalized-block proof state.

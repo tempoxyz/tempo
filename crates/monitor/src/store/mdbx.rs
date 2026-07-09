@@ -84,12 +84,14 @@ monitor_tables! {
     HistoryUpdatesTable => "history_updates",
 }
 
+/// Configuration for opening the durable MDBX monitor store.
 #[derive(Clone, Debug, Default)]
 pub struct MdbxMonitorStoreConfig {
     pub bootstrap_policy: BootstrapPolicy,
     pub database_args: DatabaseArguments,
 }
 
+/// Durable monitor-owned MDBX implementation of [`MonitorStore`].
 #[derive(Debug, Clone)]
 pub struct MdbxMonitorStore {
     db: Arc<DatabaseEnv>,
@@ -97,6 +99,7 @@ pub struct MdbxMonitorStore {
 }
 
 impl MdbxMonitorStore {
+    /// Open or initialize a monitor MDBX environment at `path`.
     pub fn open(path: impl AsRef<Path>, config: MdbxMonitorStoreConfig) -> Result<Self> {
         std::fs::create_dir_all(path.as_ref()).map_err(db_err)?;
         let db = init_db_for::<_, MonitorTables>(path, config.database_args).map_err(db_err)?;

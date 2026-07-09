@@ -17,9 +17,12 @@ use crate::{
     store::{MonitorHealthUpdate, OutboxEvent},
 };
 
+/// Schema identifier for typed finding report payloads.
 pub const FINDING_REPORT_SCHEMA_V1: &str = "tempo.monitor.finding.v1";
+/// Schema identifier for typed coverage-gap report payloads.
 pub const COVERAGE_GAP_REPORT_SCHEMA_V1: &str = "tempo.monitor.coverage_gap.v1";
 
+/// Commit rows produced by the reporting policy for one finalized block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReportBundle {
     pub finding_updates: Vec<FindingTransition>,
@@ -27,15 +30,18 @@ pub struct ReportBundle {
     pub outbox_events: Vec<OutboxEvent>,
 }
 
+/// Stateless policy that converts check outcomes into finding/report commit rows.
 #[derive(Clone, Debug, Default)]
 pub struct ReportingPolicy;
 
+/// Error returned while constructing typed report payloads.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ReportError {
     #[error("failed to serialize report payload: {0}")]
     Serialize(String),
 }
 
+/// Versioned machine-readable report for a newly opened finding.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FindingReportV1 {
     pub schema: String,
@@ -53,6 +59,7 @@ pub struct FindingReportV1 {
     pub coverage: CoverageRecord,
 }
 
+/// Versioned machine-readable report for an inconclusive check / coverage gap.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CoverageGapReportV1 {
     pub schema: String,
@@ -66,6 +73,7 @@ pub struct CoverageGapReportV1 {
 }
 
 impl ReportingPolicy {
+    /// Build finding transitions, health updates, and outbox events for check results.
     pub fn build_reports(
         &self,
         input: &FinalizedBlockInput,

@@ -2,7 +2,7 @@
 //!
 //! This crate contains monitor-owned protocol proof types and processing
 //! boundaries. Core modules intentionally avoid Reth types; Reth integration is
-//! isolated behind the `reth` feature in [`crate::reth`].
+//! isolated behind the `reth` feature in `monitor::reth`.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 

@@ -40,7 +40,9 @@ pub struct FindingState {
 /// Delivery state for a report outbox row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeliveryStatus {
+    /// Row has not yet been acknowledged by a sink.
     Pending,
+    /// Row was acknowledged by a sink.
     Delivered(DeliveryRecord),
 }
 

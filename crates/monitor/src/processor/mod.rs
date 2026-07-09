@@ -24,15 +24,19 @@ pub struct FinalizedBlockInput {
 }
 
 impl FinalizedBlockInput {
+    /// Return the finalized block identity.
     pub fn block(&self) -> BlockNumHash {
         self.reference.block
     }
 }
 
+/// Error returned while validating or committing finalized monitor input.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProcessorError {
+    /// Input facts are internally inconsistent.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// Store or report construction failed.
     #[error("store error: {0}")]
     Store(String),
 }
@@ -141,6 +145,7 @@ impl FinalizedBlockProcessor {
     }
 }
 
+/// Validate that all normalized facts reference the finalized input block.
 pub fn validate_input(input: &FinalizedBlockInput) -> Result<(), ProcessorError> {
     let block = input.block();
     if input.block_facts.reference != input.reference {
