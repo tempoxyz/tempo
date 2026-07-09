@@ -368,8 +368,7 @@ where
             ),
         };
 
-        // If we can accept this cert, jump to it and set the floor as the
-        // upstream may have pruned any intermediatery blocks.
+        // If we can accept this cert, jump to it.
         if finalization.verify(&mut self.context, &scheme, &Sequential) {
             let round = finalization.round();
             let activity = Activity::Finalization(finalization);
@@ -377,10 +376,6 @@ where
                 warn_span!("follow_driver").in_scope(
                     || warn!(?round, %height, "marshal refused to persist the verified block"),
                 )
-            }
-
-            if let Some(one_before_block) = height.previous() {
-                self.config.marshal.set_floor(one_before_block).await;
             }
 
             self.config.marshal.report(activity.clone()).await;
