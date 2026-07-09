@@ -1349,7 +1349,7 @@ def "main e2e" [
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
-    --accounts: int = 1000                              # Number of accounts
+    --accounts: int = 10000                             # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
