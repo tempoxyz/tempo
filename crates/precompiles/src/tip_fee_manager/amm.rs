@@ -2,7 +2,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ContractStorage, Handler, StorageAction, StorageCtx, StorageKey},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
-    tip20::{ITIP20, TIP20Error, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip403_registry::AuthRole,
 };
 use alloy::{
@@ -10,7 +10,6 @@ use alloy::{
     sol_types::SolValue,
 };
 use tempo_precompiles_macros::Storable;
-use tempo_primitives::TempoAddressExt;
 
 /// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
 pub const M: U256 = uint!(9970_U256);
@@ -296,9 +295,6 @@ impl TipFeeManager {
         let user_token = TIP20Token::from_address(user_token)?;
         let mut validator_token = TIP20Token::from_address(validator_token)?;
         if self.storage.spec().is_t8() {
-            if to.is_zero() || to.is_tip20() || to.is_virtual() {
-                return Err(TIP20Error::invalid_recipient().into());
-            }
             user_token.ensure_authorized_as(&[
                 (msg_sender, AuthRole::sender()),
                 (self.address, AuthRole::recipient()),
@@ -687,7 +683,6 @@ impl TipFeeManager {
 mod tests {
     use alloy::primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::{MasterId, UserTag};
 
     use super::*;
     use crate::{
@@ -696,6 +691,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip_fee_manager::TIPFeeAMMError,
+        tip20::TIP20Error,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
@@ -1003,35 +999,6 @@ mod tests {
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-            ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_mint_rejects_virtual_lp_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        let admin = Address::random();
-        let virtual_to = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
-        StorageCtx::enter(&mut storage, || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .with_mint(admin, U256::from(10000))
-                .apply()?;
-
-            let mut amm = TipFeeManager::new();
-            let result = amm.mint(
-                admin,
-                user_token.address(),
-                validator_token.address(),
-                U256::from(10000),
-                virtual_to,
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_)))
             ));
 
             Ok(())
