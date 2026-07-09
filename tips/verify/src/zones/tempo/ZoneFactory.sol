@@ -2,21 +2,29 @@
 pragma solidity ^0.8.13;
 
 import { IZoneFactory, ZoneInfo } from "../interfaces/IZone.sol";
-import { ZonePortal } from "./ZonePortal.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 
 /// @title ZoneFactory
-/// @notice Reference zone registry and portal creation behavior for the enshrined factory.
-contract ZoneFactory is IZoneFactory {
+/// @notice Reference registry logic for the enshrined ZoneFactory precompile.
+/// @dev This is not deployable EVM bytecode. Native host hooks below model the
+///      protocol operations that install portal proxy bytecode at vanity addresses.
+abstract contract ZoneFactory is IZoneFactory {
 
     /*//////////////////////////////////////////////////////////////
-                                STORAGE
+                                CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Minimum gas required for zone creation.
     /// @dev Prevents low-cost zone spam. The caller must supply at least this much gas.
     uint256 public constant ZONE_CREATION_GAS = 15_000_000;
+
+    /// @notice 12-byte prefix reserved for zone portal vanity addresses.
+    bytes12 public constant ZONE_PORTAL_PREFIX = 0x20D000000000000000000000;
+
+    /*//////////////////////////////////////////////////////////////
+                                STORAGE
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Next zone ID to be assigned.
     /// @dev Starts at 1, reserving zone ID 0 for potential future use.
@@ -27,22 +35,21 @@ contract ZoneFactory is IZoneFactory {
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
     address internal _messenger;
-
-    /// @notice Tracks deployment count for CREATE address prediction in this EVM reference.
-    /// @dev Contracts start with nonce 1, not 0.
-    uint256 internal _deploymentNonce = 1;
+    address internal _portalLogic;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address initialVerifier, address sharedMessenger) {
+    constructor(address initialVerifier, address sharedMessenger, address portalLogic) {
         if (initialVerifier == address(0)) revert InvalidVerifier();
         require(sharedMessenger != address(0), "invalid messenger");
+        require(portalLogic != address(0), "invalid portal logic");
 
         _validVerifiers[initialVerifier] = true;
         _verifier = initialVerifier;
         _messenger = sharedMessenger;
+        _portalLogic = portalLogic;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -65,25 +72,25 @@ contract ZoneFactory is IZoneFactory {
         if (zoneId == type(uint32).max) revert ZoneIdOverflow();
         _nextZoneId = zoneId + 1;
 
-        uint256 currentNonce = _deploymentNonce;
-        _deploymentNonce += 1;
+        portal = portalAddress(zoneId);
 
-        address predictedPortal = _computeCreateAddress(address(this), currentNonce);
-
-        ZonePortal portalContract = new ZonePortal(
-            zoneId,
-            params.initialToken,
-            _messenger,
-            params.admin,
-            params.sequencer,
-            params.verifier,
-            params.zoneParams.genesisBlockHash,
-            params.zoneParams.genesisTempoBlockNumber,
-            params.rpcUrl
-        );
-        portal = address(portalContract);
-
-        require(portal == predictedPortal, "portal address mismatch");
+        // Native precompile operation, not EVM CREATE or CREATE2:
+        //
+        // 1. The protocol asserts that `portal` has no code, storage, or EIP-7702
+        //    delegation and that no non-protocol deployment path can target it.
+        // 2. The protocol etches minimal portal proxy/caller bytecode directly into
+        //    the `portal` account. The runtime delegates/calls into `_portalLogic`,
+        //    the single protocol-managed ZonePortal logic implementation.
+        // 3. The protocol initializes the portal account's storage/immutable
+        //    equivalents with the same values the ZonePortal constructor would have
+        //    received: zone ID, initial token, shared messenger, admin, sequencer,
+        //    verifier, genesis block hash, genesis Tempo block number, and RPC URL.
+        //
+        // The exact host operations are implementation details of the Tempo
+        // precompile, represented by abstract hooks here so this artifact documents
+        // the required behavior without pretending it is ordinary Solidity.
+        _nativeInstallPortalProxy(portal, _portalLogic);
+        _nativeInitializePortal(portal, zoneId, params);
 
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
@@ -113,33 +120,23 @@ contract ZoneFactory is IZoneFactory {
         );
     }
 
-    /// @notice Compute the address of a contract deployed with CREATE.
-    /// @dev address = keccak256(rlp([sender, nonce]))[12:]
-    function _computeCreateAddress(address deployer, uint256 nonce)
-        internal
-        pure
-        returns (address)
-    {
-        bytes memory data;
-        if (nonce == 0x00) {
-            data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(0x80));
-        } else if (nonce <= 0x7f) {
-            data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, uint8(nonce));
-        } else if (nonce <= 0xff) {
-            data =
-                abi.encodePacked(bytes1(0xd7), bytes1(0x94), deployer, bytes1(0x81), uint8(nonce));
-        } else if (nonce <= 0xffff) {
-            data =
-                abi.encodePacked(bytes1(0xd8), bytes1(0x94), deployer, bytes1(0x82), uint16(nonce));
-        } else if (nonce <= 0xffffff) {
-            data =
-                abi.encodePacked(bytes1(0xd9), bytes1(0x94), deployer, bytes1(0x83), uint24(nonce));
-        } else {
-            data =
-                abi.encodePacked(bytes1(0xda), bytes1(0x94), deployer, bytes1(0x84), uint32(nonce));
-        }
-        return address(uint160(uint256(keccak256(data))));
+    /// @notice Returns the deterministic portal vanity address for a zone ID.
+    function portalAddress(uint32 zoneId) public pure returns (address) {
+        uint160 prefix = uint160(bytes20(ZONE_PORTAL_PREFIX));
+        return address(prefix | uint160(uint64(zoneId)));
     }
+
+    /// @dev Native host hook: etch proxy/caller bytecode at `portal`.
+    function _nativeInstallPortalProxy(address portal, address portalLogic) internal virtual;
+
+    /// @dev Native host hook: initialize state equivalent to the ZonePortal constructor.
+    function _nativeInitializePortal(
+        address portal,
+        uint32 zoneId,
+        CreateZoneParams calldata params
+    )
+        internal
+        virtual;
 
     /*//////////////////////////////////////////////////////////////
                                  VIEWS

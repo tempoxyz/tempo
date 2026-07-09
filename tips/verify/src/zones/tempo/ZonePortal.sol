@@ -20,7 +20,6 @@ import {
 } from "../interfaces/IZone.sol";
 import { getBlockHash } from "../libraries/BlockHashHistory.sol";
 import { DepositQueueLib } from "../libraries/DepositQueueLib.sol";
-import { ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE } from "../libraries/EncryptedDeposit.sol";
 import { Secp256k1Lib } from "../libraries/Secp256k1Lib.sol";
 import { WithdrawalQueue, WithdrawalQueueLib } from "../libraries/WithdrawalQueueLib.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
@@ -61,6 +60,9 @@ contract ZonePortal is IZonePortal {
 
     /// @notice Maximum allowed gas fee rate to prevent overflows
     uint128 public constant MAX_GAS_FEE_RATE = 1e18;
+
+    /// @notice Encrypted deposit payloads always encrypt `(address to, bytes32 memo)`.
+    uint256 internal constant ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE = 64;
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
