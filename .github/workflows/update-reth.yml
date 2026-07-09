@@ -482,18 +482,6 @@ jobs:
             PR_NUMBER=$(gh pr view reth-auto-bump --json number --jq '.number')
           fi
 
-          BENCH_COMMAND="derek bench preset=tip20"
-          EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-            --paginate \
-            --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
-            | head -n1)
-          if [ -n "$EXISTING_BENCH_COMMENT" ]; then
-            echo "Benchmark command already posted on PR #${PR_NUMBER} as comment ${EXISTING_BENCH_COMMENT}"
-          else
-            echo "Posting benchmark command on PR #${PR_NUMBER}"
-            gh pr comment "$PR_NUMBER" --body "$BENCH_COMMAND"
-          fi
-
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
         env:
@@ -535,6 +523,23 @@ jobs:
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
+                PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
+
+                BENCH_COMMAND="derek bench preset=tip20"
+                EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                  --paginate \
+                  --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
+                  | head -n1)
+                if [ -n "$EXISTING_BENCH_COMMENT" ]; then
+                  echo "Benchmark command already posted on PR #${PR_NUMBER} as comment ${EXISTING_BENCH_COMMENT}"
+                else
+                  echo "Posting benchmark command on PR #${PR_NUMBER}"
+                  gh pr comment "$PR_NUMBER" --body "$BENCH_COMMAND"
+                fi
+
+                CYCLOPS_COMMAND="cyclops audit fast"
+                echo "Posting Cyclops command on PR #${PR_NUMBER}"
+                gh pr comment "$PR_NUMBER" --body "$CYCLOPS_COMMAND"
                 exit 0
               fi
 
