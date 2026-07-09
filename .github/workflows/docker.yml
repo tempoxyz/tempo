@@ -30,6 +30,7 @@ jobs:
     if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -282,8 +283,21 @@ jobs:
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
           SHA_EVENT_OUTCOME: ${{ steps.publish-sha-event.outcome }}
           NIGHTLY_EVENT_OUTCOME: ${{ steps.publish-nightly-event.outcome }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          job_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if command -v gh >/dev/null 2>&1; then
+            resolved_job_url="$(gh api \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+              --paginate \
+              --jq '.jobs[] | select(.name == "Build and Push Docker Images") | .html_url' \
+              | head -n 1 || true)"
+            if [ -n "$resolved_job_url" ]; then
+              job_url="$resolved_job_url"
+            fi
+          fi
 
           {
             echo "## Docker build"
@@ -294,7 +308,7 @@ jobs:
             echo "| Ref | \`${{ github.ref_name }}\` |"
             echo "| Workflow run | [run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Workflow run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
-            echo "| Job summary | [Build and Push Docker Images](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#summary-build-and-push-docker-images) |"
+            echo "| Job summary | [Build and Push Docker Images](${job_url}) |"
             echo "| Short SHA tag | \`sha-${SHORT_SHA}\` |"
             echo "| Build | \`${BUILD_OUTCOME:-unknown}\` |"
             echo "| Sign | \`${SIGN_OUTCOME:-unknown}\` |"
