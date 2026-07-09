@@ -175,21 +175,29 @@ where
         // so eviction matches events emitted with sub-policy IDs.
         let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        // Pre-collect policy IDs where TIP_FEE_MANAGER_ADDRESS (the fee recipient) was
-        // blacklisted or un-whitelisted. This is constant across all txs so we compute
-        // it once instead of re-scanning the updates list per transaction.
-        let fee_manager_blacklisted: Vec<u64> = updates
-            .blacklist_additions
-            .iter()
-            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-            .map(|(policy_id, _)| *policy_id)
-            .collect();
-        let fee_manager_unwhitelisted: Vec<u64> = updates
-            .whitelist_removals
-            .iter()
-            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-            .map(|(policy_id, _)| *policy_id)
-            .collect();
+        // Pre-T8 fee collection checked TIP_FEE_MANAGER_ADDRESS as the fee-token recipient.
+        // TIP-1042 exempts that recipient side, so T8+ invalidation only tracks fee-payer sender
+        // authorization.
+        let is_t8 = spec.is_t8();
+        // NOTE: We can remove this logic after T8 activation
+        let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
+            (
+                updates
+                    .blacklist_additions
+                    .iter()
+                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                    .map(|(policy_id, _)| *policy_id)
+                    .collect(),
+                updates
+                    .whitelist_removals
+                    .iter()
+                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                    .map(|(policy_id, _)| *policy_id)
+                    .collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
@@ -1330,7 +1338,8 @@ fn get_sender_policy_ids(
 /// For simple (non-compound) policies, the transfer policy applies symmetrically to both
 /// sender and recipient, so the set contains just the policy ID. For compound policies
 /// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
-/// fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+/// pre-T8 fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+/// T8+ fee collection exempts the FeeManager recipient side, so this returns `None`.
 ///
 /// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
 /// where the fee manager itself is blacklisted or un-whitelisted.
@@ -1339,6 +1348,10 @@ fn get_recipient_policy_ids(
     fee_token: Address,
     spec: TempoHardfork,
 ) -> Option<Vec<u64>> {
+    if spec.is_t8() {
+        return None;
+    }
+
     provider.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
@@ -2430,9 +2443,9 @@ mod tests {
         );
     }
 
-    /// `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
+    /// Pre-T8, `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
     #[test]
-    fn recipient_policy_ids_includes_recipient_sub_policy() {
+    fn recipient_policy_ids_includes_recipient_sub_policy_pre_t8() {
         let fee_token = address!("20C0000000000000000000000000000000000001");
         let compound_policy_id: u64 = 5;
         let sender_sub: u64 = 3;
@@ -2472,7 +2485,7 @@ mod tests {
             .unwrap();
 
         let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
             .expect("should resolve policy IDs");
 
         assert!(
@@ -2489,9 +2502,9 @@ mod tests {
         );
     }
 
-    /// For simple (non-compound) policies, `get_recipient_policy_ids` returns just the root.
+    /// For simple (non-compound) policies, pre-T8 `get_recipient_policy_ids` returns just the root.
     #[test]
-    fn recipient_policy_ids_simple_policy() {
+    fn recipient_policy_ids_simple_policy_pre_t8() {
         let fee_token = address!("20C0000000000000000000000000000000000001");
         let simple_policy_id: u64 = 7;
 
@@ -2522,10 +2535,33 @@ mod tests {
             .unwrap();
 
         let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
             .expect("should resolve policy IDs");
 
         assert_eq!(ids, vec![simple_policy_id]);
+    }
+
+    #[test]
+    fn recipient_policy_ids_exempt_on_t8() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let simple_policy_id: u64 = 7;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        assert!(get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T8).is_none());
     }
 
     #[test]

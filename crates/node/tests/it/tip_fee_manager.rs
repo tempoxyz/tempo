@@ -502,36 +502,11 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
         .await?;
     assert!(receipt.status(), "changeTransferPolicyId should succeed");
 
-    // T1C requires both sender and FeeManager whitelisted — fee_payer is whitelisted
-    // but FeeManager is not, so the tx should be rejected at the pool level.
+    // TIP-1042 exempts the FeeManager recipient check during fee collection. The fee payer is
+    // whitelisted as a sender, so the tx should go through even though FeeManager is not listed.
     let tx = TransactionRequest::default()
         .to(Address::ZERO)
         .value(U256::ZERO);
-    let result = fee_payer_provider.send_transaction(tx).await;
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("PolicyForbids"),
-        "expected PolicyForbids error, got: {err}"
-    );
-
-    // Whitelist FeeManager — now fee_payer's tx should go through
-    registry
-        .modifyPolicyWhitelist(policy_id, TIP_FEE_MANAGER_ADDRESS, true)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Re-fetch nonce from chain since the rejected tx above desynchronized
-    // the provider's internal nonce tracker.
-    let nonce = fee_payer_provider
-        .get_transaction_count(fee_payer_addr)
-        .await?;
-    let tx = TransactionRequest::default()
-        .to(Address::ZERO)
-        .value(U256::ZERO)
-        .nonce(nonce);
     let receipt = fee_payer_provider
         .send_transaction(tx)
         .await?
