@@ -179,6 +179,7 @@ where
         // TIP-1042 exempts that recipient side, so T8+ invalidation only tracks fee-payer sender
         // authorization.
         let is_t8 = spec.is_t8();
+        // NOTE: We can remove this logic after T8 activation
         let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
             (
                 updates
