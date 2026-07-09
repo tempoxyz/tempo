@@ -1331,17 +1331,14 @@ mod proofbench {
         let path = std::env::var("PROOFBENCH_FLAT").expect("set PROOFBENCH_FLAT");
         let mpt = mpt_flat_poc::FlatMpt::open(&path).expect("open bench flat");
         const K: usize = 8_192;
+        let contract: B256 =
+            "0x2698635f2d1ac2fffe298dd19560c4be0519bb8894fb4008b21668355dc7b6f1"
+                .parse()
+                .unwrap();
         for (round, threads) in [12usize, 24, 32, 48, 12].into_iter().enumerate() {
             // Fresh pseudo-random account targets per round (cold: 1B keyspace
             // >> page cache; exclusion proofs exercise the same record-read
             // path as storage targets in a giant contract).
-            // The 1B bloat state = 4 giant contracts holding the slots; cold
-            // targets are random storage keys in one of them (matches the
-            // tip20cold leg's shape).
-            let contract: B256 =
-                "0x2698635f2d1ac2fffe298dd19560c4be0519bb8894fb4008b21668355dc7b6f1"
-                    .parse()
-                    .unwrap();
             let mut keys: Vec<B256> = (0..K)
                 .map(|i| B256::from(keccak256(format!("proofbench-{round}-{i}"))))
                 .collect();
@@ -1375,11 +1372,57 @@ mod proofbench {
             });
             let ms = t.elapsed().as_millis().max(1);
             eprintln!(
-                "threads={threads:2} {K} targets in {ms:6} ms -> {:6} targets/s ({} nodes)",
+                "proof-walk threads={threads:2} {K} targets in {ms:6} ms -> {:6} targets/s ({} nodes)",
                 K as u128 * 1000 / ms,
                 n_nodes
             );
             let _ = Nibbles::default();
+        }
+
+        // Direct reveal (fast path), same shape: fresh random targets per
+        // round, single-threaded then chunk-parallel.
+        for (round, threads) in [(100usize, 1usize), (101, 8), (102, 32)] {
+            let keys: Vec<mpt_flat_poc::Key> = (0..K)
+                .map(|i| keccak256(format!("proofbench-{round}-{i}")).0)
+                .collect();
+            let mut sorted = keys.clone();
+            sorted.sort_unstable();
+            let t = Instant::now();
+            let n_nodes: usize = if threads == 1 {
+                to_v2_nodes(
+                    mpt.reveal_storage_paths(&contract.0, &sorted).unwrap().unwrap(),
+                )
+                .unwrap()
+                .len()
+            } else {
+                let chunk = K.div_ceil(threads);
+                std::thread::scope(|s| {
+                    sorted
+                        .chunks(chunk)
+                        .map(|c| {
+                            let mpt = &mpt;
+                            let contract = &contract;
+                            s.spawn(move || {
+                                to_v2_nodes(
+                                    mpt.reveal_storage_paths(&contract.0, c).unwrap().unwrap(),
+                                )
+                                .unwrap()
+                                .len()
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .map(|h| h.join().unwrap())
+                        .sum()
+                })
+            };
+            let us = t.elapsed().as_micros().max(1);
+            eprintln!(
+                "direct-reveal threads={threads:2} {K} targets in {:6} ms -> {:7} targets/s ({} nodes)",
+                us / 1000,
+                K as u128 * 1_000_000 / us,
+                n_nodes
+            );
         }
     }
 }
