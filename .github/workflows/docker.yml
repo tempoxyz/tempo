@@ -156,6 +156,52 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
+      - name: Summarize Docker images
+        shell: bash
+        env:
+          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
+          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Docker images"
+            echo
+            echo "| Image | Tags |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summarize_tags() {
+            local image="$1"
+            local tags="$2"
+            local formatted=""
+            local tag
+
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              if [ -n "$formatted" ]; then
+                formatted="${formatted}<br>${tag}"
+              else
+                formatted="$tag"
+              fi
+            done <<< "$tags"
+
+            echo "| ${image} | ${formatted:-None} |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          summarize_tags "tempo" "$TEMPO_TAGS"
+          summarize_tags "tempo-sidecar" "$TEMPO_SIDECAR_TAGS"
+          summarize_tags "tempo-xtask" "$TEMPO_XTASK_TAGS"
+
+          {
+            echo
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Short SHA tag: \`sha-${SHORT_SHA}\`"
+            echo "- Ref: \`${{ github.ref_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install cosign
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
