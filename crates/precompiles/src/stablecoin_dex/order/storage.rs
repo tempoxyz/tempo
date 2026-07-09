@@ -245,6 +245,7 @@ impl OrderHandler {
             OrderVersion::V1 | OrderVersion::V2 => __packing_v1_order::MAKER_LOC,
         };
 
+        // T8+ version detection loads slot 0. We reuse it when the maker is stored there.
         if let Some(slot0) = slot0
             && loc.offset_slots == 0
         {
