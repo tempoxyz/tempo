@@ -31,7 +31,8 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
 
-    error UnauthorizedPortal();
+    error UnauthorizedMessenger();
+    error InvalidSourcePortal();
     error InvalidTargetPortal();
     error InvalidToken();
 
@@ -49,8 +50,8 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Receive a cross-zone withdrawal, optionally swap tokens, and deposit to target zone
-    /// @dev Implements IWithdrawalReceiver. Only callable by registered zone portals.
-    ///      The portal has already transferred tokens to this router.
+    /// @dev Implements IWithdrawalReceiver. Only callable by the shared zone messenger.
+    ///      The messenger has already transferred tokens to this router.
     ///      On failure, the entire callback reverts, triggering bounce-back to source zone.
     /// @param tokenIn The TIP-20 token received from the source zone withdrawal
     /// @param amount The amount of tokens transferred
@@ -63,6 +64,7 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     /// Note: minAmountOut is ignored for same-token transfers (no swap)
     function onWithdrawalReceived(
         uint32 sourceZoneId,
+        address sourcePortal,
         bytes32, /* senderTag */
         address tokenIn,
         uint128 amount,
@@ -71,9 +73,13 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
         external
         returns (bytes4)
     {
+        if (msg.sender != zoneFactory.messenger()) {
+            revert UnauthorizedMessenger();
+        }
+
         ZoneInfo memory sourceZone = zoneFactory.zones(sourceZoneId);
-        if (sourceZone.portal != msg.sender) {
-            revert UnauthorizedPortal();
+        if (sourceZone.portal != sourcePortal) {
+            revert InvalidSourcePortal();
         }
 
         bool isEncrypted = abi.decode(data, (bool));

@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import { IZoneFactory, ZoneInfo } from "../interfaces/IZone.sol";
 import { Verifier } from "./Verifier.sol";
+import { ZoneMessenger } from "./ZoneMessenger.sol";
 import { ZonePortal } from "./ZonePortal.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
@@ -27,11 +28,12 @@ contract ZoneFactory is IZoneFactory {
     mapping(address => bool) internal _isZonePortal;
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
+    address internal _messenger;
 
     /// @notice Tracks deployment count for CREATE address prediction
-    /// @dev Contracts start with nonce 1, not 0. Nonce 1 is used by the Verifier deployment
-    ///      in the constructor, so zone deployments start at nonce 2.
-    uint256 internal _deploymentNonce = 2;
+    /// @dev Contracts start with nonce 1, not 0. Nonce 1 is used by the Verifier deployment,
+    ///      nonce 2 by the shared ZoneMessenger, so zone deployments start at nonce 3.
+    uint256 internal _deploymentNonce = 3;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -41,6 +43,7 @@ contract ZoneFactory is IZoneFactory {
         address v = address(new Verifier());
         _validVerifiers[v] = true;
         _verifier = v;
+        _messenger = address(new ZoneMessenger(address(this)));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -74,6 +77,7 @@ contract ZoneFactory is IZoneFactory {
         ZonePortal portalContract = new ZonePortal(
             zoneId,
             params.initialToken,
+            _messenger,
             params.admin,
             params.sequencer,
             params.verifier,
@@ -166,6 +170,10 @@ contract ZoneFactory is IZoneFactory {
 
     function verifier() external view returns (address) {
         return _verifier;
+    }
+
+    function messenger() external view returns (address) {
+        return _messenger;
     }
 
 }

@@ -439,6 +439,10 @@ interface IZoneFactory {
     /// @return valid True if `verifier` can be passed to `createZone`.
     function isValidVerifier(address verifier) external view returns (bool);
 
+    /// @notice Returns the default verifier deployed by the factory.
+    /// @return verifier The default verifier contract address.
+    function verifier() external view returns (address);
+
     /// @notice Creates a new zone and deploys its portal contract.
     /// @param params The initial token, sequencer, verifier, and genesis parameters for the zone.
     /// @return zoneId The newly assigned zone ID.
@@ -460,6 +464,10 @@ interface IZoneFactory {
     /// @param portal The portal address to check.
     /// @return isPortal True if `portal` was created by this factory.
     function isZonePortal(address portal) external view returns (bool);
+
+    /// @notice Returns the shared messenger used for withdrawal callbacks.
+    /// @return messenger The shared messenger contract address.
+    function messenger() external view returns (address);
 
 }
 
@@ -625,6 +633,8 @@ interface IZonePortal {
     function zoneGasRate() external view returns (uint128);
 
     function verifier() external view returns (address);
+
+    function messenger() external view returns (address);
 
     function withdrawalBatchIndex() external view returns (uint64);
 
@@ -816,12 +826,30 @@ interface IZonePortal {
 
 }
 
+/// @title IZoneMessenger
+/// @notice Shared callback sender for zone withdrawals.
+interface IZoneMessenger {
+
+    function relayMessage(
+        uint32 zoneId,
+        address token,
+        bytes32 senderTag,
+        address target,
+        uint128 amount,
+        uint64 gasLimit,
+        bytes calldata data
+    )
+        external;
+
+}
+
 /// @title IWithdrawalReceiver
 /// @notice Interface for contracts that receive withdrawals with callbacks
 interface IWithdrawalReceiver {
 
     function onWithdrawalReceived(
         uint32 zoneId,
+        address sourcePortal,
         bytes32 senderTag,
         address token,
         uint128 amount,
