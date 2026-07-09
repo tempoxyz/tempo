@@ -22,6 +22,15 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x20D000000000000000000000;
 
+    /// @notice Protocol-managed account that stores the central ZonePortal logic bytecode.
+    address public constant ZONE_PORTAL_LOGIC_ADDRESS = 0x20D1000000000000000000000000000000000000;
+
+    /// @notice Runtime prefix for an EIP-1167-style delegatecall proxy.
+    bytes10 internal constant PORTAL_PROXY_PREFIX = 0x363d3d373d3d3d363d73;
+
+    /// @notice Runtime suffix for an EIP-1167-style delegatecall proxy.
+    bytes15 internal constant PORTAL_PROXY_SUFFIX = 0x5af43d82803e903d91602b57fd5bf3;
+
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -35,21 +44,18 @@ abstract contract ZoneFactory is IZoneFactory {
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
     address internal _messenger;
-    address internal _portalLogic;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address initialVerifier, address sharedMessenger, address portalLogic) {
+    constructor(address initialVerifier, address sharedMessenger) {
         if (initialVerifier == address(0)) revert InvalidVerifier();
         require(sharedMessenger != address(0), "invalid messenger");
-        require(portalLogic != address(0), "invalid portal logic");
 
         _validVerifiers[initialVerifier] = true;
         _verifier = initialVerifier;
         _messenger = sharedMessenger;
-        _portalLogic = portalLogic;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -79,8 +85,9 @@ abstract contract ZoneFactory is IZoneFactory {
         // 1. The protocol asserts that `portal` has no code, storage, or EIP-7702
         //    delegation and that no non-protocol deployment path can target it.
         // 2. The protocol etches minimal portal proxy/caller bytecode directly into
-        //    the `portal` account. The runtime delegates/calls into `_portalLogic`,
-        //    the single protocol-managed ZonePortal logic implementation.
+        //    the `portal` account. The runtime delegatecalls into
+        //    ZONE_PORTAL_LOGIC_ADDRESS, the single protocol-managed ZonePortal logic
+        //    implementation.
         // 3. The protocol initializes the portal account's storage/immutable
         //    equivalents with the same values the ZonePortal constructor would have
         //    received: zone ID, initial token, shared messenger, admin, sequencer,
@@ -89,7 +96,7 @@ abstract contract ZoneFactory is IZoneFactory {
         // The exact host operations are implementation details of the Tempo
         // precompile, represented by abstract hooks here so this artifact documents
         // the required behavior without pretending it is ordinary Solidity.
-        _nativeInstallPortalProxy(portal, _portalLogic);
+        _nativeEtchPortalProxy(portal, portalProxyRuntime());
         _nativeInitializePortal(portal, zoneId, params);
 
         _zones[zoneId] = ZoneInfo({
@@ -126,8 +133,13 @@ abstract contract ZoneFactory is IZoneFactory {
         return address(prefix | uint160(uint64(zoneId)));
     }
 
-    /// @dev Native host hook: etch proxy/caller bytecode at `portal`.
-    function _nativeInstallPortalProxy(address portal, address portalLogic) internal virtual;
+    /// @notice Returns the exact runtime bytecode etched into each portal account.
+    function portalProxyRuntime() public pure returns (bytes memory) {
+        return abi.encodePacked(PORTAL_PROXY_PREFIX, ZONE_PORTAL_LOGIC_ADDRESS, PORTAL_PROXY_SUFFIX);
+    }
+
+    /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
+    function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
     /// @dev Native host hook: initialize state equivalent to the ZonePortal constructor.
     function _nativeInitializePortal(
