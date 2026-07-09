@@ -128,6 +128,7 @@ pub(crate) async fn init_finalized_blocks<TContext, P>(
     page_cache: CacheRef,
     provider: P,
     retention_blocks: u64,
+    items_per_section: std::num::NonZeroU64,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
@@ -138,10 +139,14 @@ where
         "finalized blocks retention must be greater than zero",
     );
 
-    let prunable =
-        init_prunable_finalized_blocks_archive(context, partition_prefix, page_cache.clone())
-            .await
-            .wrap_err("failed to initialize prunable finalized blocks archive")?;
+    let prunable = init_prunable_finalized_blocks_archive(
+        context,
+        partition_prefix,
+        page_cache.clone(),
+        items_per_section,
+    )
+    .await
+    .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
     // Contiguous run of blocks starting at the prunable archive's first index.
     let start_range = prunable.first_index().and_then(|first| {
@@ -174,6 +179,7 @@ async fn init_prunable_finalized_blocks_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
+    items_per_section: std::num::NonZeroU64,
 ) -> Result<prunable::Archive<TwoCap, TContext, Digest, Block>, commonware_storage::archive::Error>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
@@ -188,7 +194,7 @@ where
             value_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-value"),
             compression: FREEZER_VALUE_COMPRESSION,
             codec_config: (),
-            items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+            items_per_section,
             key_write_buffer: WRITE_BUFFER,
             value_write_buffer: WRITE_BUFFER,
             replay_buffer: REPLAY_BUFFER,

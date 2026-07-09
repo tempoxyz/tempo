@@ -166,6 +166,7 @@ where
                 ),
                 max_pending_acks: MAX_PENDING_ACKS,
                 finalized_blocks_retention: self.finalized_blocks_retention,
+                finalized_blocks_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
                 strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),

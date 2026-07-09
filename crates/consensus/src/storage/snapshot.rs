@@ -78,10 +78,14 @@ where
         init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to open finalizations-by-height archive")?;
-    let prunable =
-        init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
-            .await
-            .wrap_err("failed to open prunable finalized blocks archive")?;
+    let prunable = init_prunable_finalized_blocks_archive(
+        context,
+        storage_partition_prefix,
+        page_cache,
+        super::PRUNABLE_ITEMS_PER_SECTION,
+    )
+    .await
+    .wrap_err("failed to open prunable finalized blocks archive")?;
 
     let selected =
         find_anchor_and_tip_finalizations(&finalizations, &prunable, execution_finalized_height)
@@ -143,10 +147,14 @@ where
         init_finalizations_archive(context, storage_partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to open snapshot finalizations-by-height archive")?;
-    let mut blocks =
-        init_prunable_finalized_blocks_archive(context, storage_partition_prefix, page_cache)
-            .await
-            .wrap_err("failed to open snapshot prunable finalized blocks archive")?;
+    let mut blocks = init_prunable_finalized_blocks_archive(
+        context,
+        storage_partition_prefix,
+        page_cache,
+        super::PRUNABLE_ITEMS_PER_SECTION,
+    )
+    .await
+    .wrap_err("failed to open snapshot prunable finalized blocks archive")?;
 
     while let Some(entry) = entries.recv().await {
         match entry.0 {

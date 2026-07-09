@@ -3,7 +3,14 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::time::Duration;
+use std::{
+    num::NonZeroU64,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use crate::{
     Setup, TestingNode, connect_execution_peers,
@@ -24,8 +31,15 @@ use futures::future::join_all;
 use rand_core::CryptoRngCore;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
+use tracing::{Event, Subscriber, field::Visit};
+use tracing_subscriber::{
+    EnvFilter, Layer,
+    layer::{Context as LayerContext, SubscriberExt},
+    registry::LookupSpan,
+};
 
 static EPOCH_LENGTH: u64 = 10;
+const DEFAULT_FINALIZED_BLOCKS_ITEMS_PER_SECTION: NonZeroU64 = NZU64!(4_096);
 
 trait FeedStateProvider {
     fn feed_state(&self) -> FeedStateHandle;
@@ -55,6 +69,9 @@ struct FollowerBuilder {
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
+    epoch_length: Option<u64>,
+    finalized_blocks_retention: Option<u64>,
+    finalized_blocks_items_per_section: Option<NonZeroU64>,
 }
 
 impl FollowerBuilder {
@@ -91,6 +108,30 @@ impl FollowerBuilder {
         }
     }
 
+    fn epoch_length(self, epoch_length: u64) -> Self {
+        Self {
+            epoch_length: Some(epoch_length),
+            ..self
+        }
+    }
+
+    fn finalized_blocks_retention(self, finalized_blocks_retention: u64) -> Self {
+        Self {
+            finalized_blocks_retention: Some(finalized_blocks_retention),
+            ..self
+        }
+    }
+
+    fn finalized_blocks_items_per_section(
+        self,
+        finalized_blocks_items_per_section: NonZeroU64,
+    ) -> Self {
+        Self {
+            finalized_blocks_items_per_section: Some(finalized_blocks_items_per_section),
+            ..self
+        }
+    }
+
     async fn follow<TContext>(
         self,
         context: &mut TContext,
@@ -105,6 +146,9 @@ impl FollowerBuilder {
             partition_prefix,
             runtime,
             donor,
+            epoch_length,
+            finalized_blocks_retention,
+            finalized_blocks_items_per_section,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -168,12 +212,14 @@ impl FollowerBuilder {
             execution_node: node.node.clone().into(),
             feed_state: feed_state.clone(),
             partition_prefix,
-            epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
+            epoch_strategy: FixedEpocher::new(NZU64!(epoch_length.unwrap_or(EPOCH_LENGTH))),
             mailbox_size: 16_384,
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
-            finalized_blocks_retention: 1024,
+            finalized_blocks_retention: finalized_blocks_retention.unwrap_or(1024),
+            finalized_blocks_items_per_section: finalized_blocks_items_per_section
+                .unwrap_or(DEFAULT_FINALIZED_BLOCKS_ITEMS_PER_SECTION),
             strict_startup: true,
         };
 
@@ -237,6 +283,108 @@ async fn wait_for_finalization<TContext: Clock>(
     }
 }
 
+async fn wait_for_execution_finalized_bounded<TContext: Clock>(
+    context: &TContext,
+    follower: &Follower,
+    target_height: u64,
+    attempts: usize,
+) -> bool {
+    for _ in 0..attempts {
+        let finalized_height = follower
+            .execution_node
+            .node
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash()
+            .map_or(0, |num_hash| num_hash.number);
+        if finalized_height >= target_height {
+            return true;
+        }
+        context.sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+async fn wait_for_consensus_height_bounded<TContext: Clock + RuntimeMetrics>(
+    context: &TContext,
+    scope: &impl MetricScope,
+    target_height: u64,
+    attempts: usize,
+) -> bool {
+    for _ in 0..attempts {
+        if context
+            .to_metrics()
+            .for_scope(scope)
+            .consensus_at_height(target_height)
+            > 0
+        {
+            return true;
+        }
+        context.sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+struct HybridNoopPutDetector {
+    threshold: usize,
+    count: Arc<AtomicUsize>,
+}
+
+impl<S> Layer<S> for HybridNoopPutDetector
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
+        if event.metadata().target() != "tempo_consensus::storage::hybrid" {
+            return;
+        }
+
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+        let Some(message) = visitor.message else {
+            return;
+        };
+
+        if !message.contains("finalized block below prunable cache window") {
+            return;
+        }
+
+        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        assert!(
+            count <= self.threshold,
+            "marshal/hybrid gap repair livelock: observed {count} finalized-block puts below the \
+            hybrid prunable cache window"
+        );
+    }
+}
+
+#[derive(Default)]
+struct MessageVisitor {
+    message: Option<String>,
+}
+
+impl Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = Some(format!("{value:?}"));
+        }
+    }
+}
+
+fn with_hybrid_noop_put_detector(threshold: usize, f: impl FnOnce()) {
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(EnvFilter::new(
+            "warn,tempo_consensus::storage::hybrid=debug",
+        ))
+        .with(HybridNoopPutDetector {
+            threshold,
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+    let dispatcher = tracing::Dispatch::new(subscriber);
+
+    tracing::dispatcher::with_default(&dispatcher, f);
+}
+
 #[test_traced]
 fn follower_bootstraps_from_validator() {
     let _ = tempo_eyre::install();
@@ -268,6 +416,54 @@ fn follower_bootstraps_from_validator() {
         // the follower backfills the gap between its startup floor (genesis
         // for a fresh node) and the join point via gap repair.
         wait_for_finalization(&context, &follower.feed, Query::Height(1)).await;
+    });
+}
+
+#[test]
+fn follower_backfills_after_reth_finalizes_beyond_hybrid_window() {
+    let _ = tempo_eyre::install();
+
+    with_hybrid_noop_put_detector(256, || {
+        let target_height = 128;
+        let epoch_length = 256;
+        let setup = Setup::new().how_many_signers(1).epoch_length(epoch_length);
+        let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+        let executor = Runner::from(cfg);
+        executor.start(|mut context| async move {
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+            wait_for_height(&context, &validators[0], target_height).await;
+
+            let follower = Follower::builder()
+                .runtime(execution_runtime.handle())
+                .epoch_length(epoch_length)
+                .finalized_blocks_retention(1)
+                .finalized_blocks_items_per_section(NZU64!(8))
+                .follow(&mut context, &validators[0])
+                .await;
+
+            follower.connect_peers(&validators).await;
+
+            assert!(
+                wait_for_execution_finalized_bounded(&context, &follower, target_height, 200).await,
+                "follower execution layer did not finalize to the join point"
+            );
+
+            // Ensure at least one post-catch-up finalization event arrives. On
+            // the old prunable-only gap-tracking path, that event drove a
+            // Hybrid::put that evicted the tiny archive below reth's finalized
+            // watermark and exposed the repair livelock. The detector above
+            // turns any recurrence into a quick failing test.
+            wait_for_height(&context, &validators[0], target_height + 2).await;
+
+            assert!(
+                wait_for_consensus_height_bounded(&context, &follower, target_height, 200).await,
+                "follower marshal did not dispatch backfilled blocks after reth finalized beyond \
+                the hybrid cache window"
+            );
+        });
     });
 }
 
