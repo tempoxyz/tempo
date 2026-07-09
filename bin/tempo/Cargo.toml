@@ -136,6 +136,7 @@ keccak-cache-global = [
 
 otlp = [
 	"reth-ethereum-cli/otlp",
+	# Enables reth's opentelemetry-appender-tracing experimental span attributes.
 	"reth-ethereum-cli/otlp-logs",
 	"reth-ethereum/otlp",
 	"tempo-node/otlp",
