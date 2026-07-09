@@ -163,22 +163,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          resolve_digest_ref() {
+            local image="$1"
+            local repository="${image%:*}"
+            local digest
+
+            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r '.digest // empty')"
+            if [ -z "$digest" ]; then
+              echo "Failed to resolve digest for $image" >&2
+              return 1
+            fi
+
+            printf '%s@%s\n' "$repository" "$digest"
+          }
+
           sign_image() {
             local image="$1"
+            local digest_ref="$2"
             local attempt
 
             for attempt in 1 2 3; do
-              if cosign sign --yes --recursive "$image"; then
+              if cosign sign --yes --recursive "$digest_ref"; then
                 return 0
               fi
 
               if [ "$attempt" -eq 3 ]; then
-                echo "Failed to sign $image after $attempt attempts" >&2
+                echo "Failed to sign $image ($digest_ref) after $attempt attempts" >&2
                 return 1
               fi
 
               sleep_seconds=$((attempt * 15))
-              echo "cosign sign failed for $image; retrying in ${sleep_seconds}s (attempt $((attempt + 1))/3)" >&2
+              echo "cosign sign failed for $image ($digest_ref); retrying in ${sleep_seconds}s (attempt $((attempt + 1))/3)" >&2
               sleep "$sleep_seconds"
             done
           }
@@ -191,7 +206,8 @@ jobs:
           for tags in "${images[@]}"; do
             while IFS= read -r image; do
               [ -n "$image" ] || continue
-              sign_image "$image"
+              digest_ref="$(resolve_digest_ref "$image")"
+              sign_image "$image" "$digest_ref"
             done <<< "$tags"
           done
 
