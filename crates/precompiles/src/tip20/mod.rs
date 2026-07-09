@@ -1374,7 +1374,7 @@ impl TIP20Token {
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 #[derive(Debug, PartialEq)]
-pub(crate) struct Recipient {
+pub struct Recipient {
     /// The effective (resolved) address where the balance is credited.
     pub(crate) target: Address,
     /// The virtual address, if registered.
