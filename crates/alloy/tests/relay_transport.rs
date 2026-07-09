@@ -17,8 +17,10 @@ use tempo_alloy::{
     TempoNetwork, fillers::Random2DNonceFiller, provider::TempoProviderBuilderExt,
     rpc::TempoTransactionRequest,
 };
+use tokio::time::{Duration, sleep};
 
 const SPONSOR_URL: &str = "https://sponsor.moderato.tempo.xyz";
+const MAX_SEND_ATTEMPTS: u32 = 5;
 
 /// Account index 9 from "test test test ... junk" mnemonic.
 const TEST_PRIVATE_KEY: &str = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6";
@@ -33,6 +35,10 @@ fn non_empty_env_var(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+fn is_rate_limited(err: &str) -> bool {
+    err.contains("error code -32005") && err.contains("rate limited")
 }
 
 /// Test that the RelayTransport correctly routes reads to the default transport
@@ -69,7 +75,20 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
     tx.set_kind(TxKind::Call(sender));
     tx.set_value(U256::ZERO);
 
-    let result = provider.send_transaction(tx).await;
+    let mut attempt = 1;
+    let result = loop {
+        let result = provider.send_transaction(tx.clone()).await;
+        let Err(err) = &result else { break result };
+
+        if !is_rate_limited(&err.to_string()) || attempt == MAX_SEND_ATTEMPTS {
+            break result;
+        }
+
+        let delay = Duration::from_millis(250 * 2u64.pow(attempt - 1));
+        println!("Sponsor relay rate limited attempt {attempt}; retrying in {delay:?}");
+        sleep(delay).await;
+        attempt += 1;
+    };
 
     match result {
         Ok(pending) => {
