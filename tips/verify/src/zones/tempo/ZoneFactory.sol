@@ -3,7 +3,6 @@ pragma solidity ^0.8.13;
 
 import { IZoneFactory, ZoneInfo } from "../interfaces/IZone.sol";
 import { Verifier } from "./Verifier.sol";
-import { ZoneMessenger } from "./ZoneMessenger.sol";
 import { ZonePortal } from "./ZonePortal.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
@@ -26,7 +25,6 @@ contract ZoneFactory is IZoneFactory {
 
     mapping(uint32 => ZoneInfo) internal _zones;
     mapping(address => bool) internal _isZonePortal;
-    mapping(address => bool) internal _isZoneMessenger;
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
 
@@ -66,32 +64,16 @@ contract ZoneFactory is IZoneFactory {
         if (zoneId == type(uint32).max) revert ZoneIdOverflow();
         _nextZoneId = zoneId + 1;
 
-        // We deploy messenger first, then portal.
-        // Messenger needs portal's address at construction (immutable).
-        // Solution: predict portal's address based on CREATE address formula.
-        //
-        // CREATE addresses: address = keccak256(rlp([sender, nonce]))[12:]
-        // - messenger will be at nonce N
-        // - portal will be at nonce N+1
-        //
-        // We track our own nonce since contract nonce isn't accessible.
-
         uint256 currentNonce = _deploymentNonce;
-        _deploymentNonce += 2; // We'll deploy 2 contracts
+        _deploymentNonce += 1; // We'll deploy 1 contract
 
-        // Compute portal's address (will be deployed at nonce+1)
-        address predictedPortal = _computeCreateAddress(address(this), currentNonce + 1);
+        address predictedPortal = _computeCreateAddress(address(this), currentNonce);
 
-        // Deploy messenger with predicted portal address (no token needed -- portal grants approval per-token)
-        ZoneMessenger messengerContract = new ZoneMessenger(predictedPortal);
-        address messengerAddress = address(messengerContract);
-
-        // Deploy portal with messenger address and initial token
+        // Deploy portal with initial token
         // The portal constructor enables the initial token automatically
         ZonePortal portalContract = new ZonePortal(
             zoneId,
             params.initialToken,
-            messengerAddress,
             params.admin,
             params.sequencer,
             params.verifier,
@@ -108,7 +90,6 @@ contract ZoneFactory is IZoneFactory {
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
-            messenger: messengerAddress,
             initialToken: params.initialToken,
             admin: params.admin,
             sequencer: params.sequencer,
@@ -120,12 +101,10 @@ contract ZoneFactory is IZoneFactory {
         });
 
         _isZonePortal[portal] = true;
-        _isZoneMessenger[messengerAddress] = true;
 
         emit ZoneCreated(
             zoneId,
             portal,
-            messengerAddress,
             params.initialToken,
             params.admin,
             params.sequencer,
@@ -179,10 +158,6 @@ contract ZoneFactory is IZoneFactory {
 
     function isZonePortal(address portal) external view returns (bool) {
         return _isZonePortal[portal];
-    }
-
-    function isZoneMessenger(address messenger) external view returns (bool) {
-        return _isZoneMessenger[messenger];
     }
 
     function isValidVerifier(address v) external view returns (bool) {
