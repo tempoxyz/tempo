@@ -22,7 +22,7 @@ fn signature_verification(c: &mut Criterion) {
     let (signature, _) = signing_key
         .sign_prehash_recoverable(hash.as_slice())
         .expect("P256 signing succeeds");
-    let mut p256_signature = Vec::with_capacity(130);
+    let mut p256_signature = Vec::new();
     p256_signature.push(SIGNATURE_TYPE_P256);
     p256_signature.extend_from_slice(&signature.r().to_bytes());
     let normalized_s = normalize_p256_s(&signature.s().to_bytes()).expect("valid P256 s");
