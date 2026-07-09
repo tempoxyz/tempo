@@ -29,8 +29,8 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
-    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    NITRO_ATTESTATION_VERIFIER_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -580,6 +580,9 @@ where
         }
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
+        }
+        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(NITRO_ATTESTATION_VERIFIER_ADDRESS)?;
         }
 
         Ok(())
@@ -1886,6 +1889,25 @@ mod tests {
         drop(executor);
 
         let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_nitro_attestation_verifier_code() {
+        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db
+            .load_cache_account(NITRO_ATTESTATION_VERIFIER_ADDRESS)
+            .unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }

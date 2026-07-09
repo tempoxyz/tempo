@@ -1,0 +1,21 @@
+[package]
+name = "tempo-nitro-attestation"
+description = "Consensus-critical AWS Nitro attestation parsing and verification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+minicbor = { version = "=2.2.2", default-features = false, features = ["alloc"] }
+sha2.workspace = true
+x509-cert = { version = "=0.2.5", default-features = false }

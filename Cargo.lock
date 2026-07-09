@@ -3822,8 +3822,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
+ "der_derive",
+ "flagset",
  "pem-rfc7468",
  "zeroize",
+]
+
+[[package]]
+name = "der_derive"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4440,6 +4453,12 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"
@@ -6719,6 +6738,12 @@ dependencies = [
  "mime",
  "unicase",
 ]
+
+[[package]]
+name = "minicbor"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b7a5041e12946f8b7d3f5a9d96383a19d694b9335457c522be7815b9abafb02"
 
 [[package]]
 name = "minimal-lexical"
@@ -13216,6 +13241,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-nitro-attestation"
+version = "1.10.1"
+dependencies = [
+ "minicbor",
+ "sha2 0.10.9",
+ "x509-cert",
+]
+
+[[package]]
 name = "tempo-node"
 version = "1.10.1"
 dependencies = [
@@ -13352,6 +13386,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "aws-lc-rs",
+ "base64 0.22.1",
  "bitflags 2.11.1",
  "codspeed-criterion-compat",
  "commonware-codec",
@@ -13370,11 +13406,13 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
+ "tempo-nitro-attestation",
  "tempo-precompiles-macros",
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
  "tracing",
+ "x509-cert",
 ]
 
 [[package]]
@@ -15532,6 +15570,17 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "x509-cert"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
+dependencies = [
+ "const-oid",
+ "der",
+ "spki",
 ]
 
 [[package]]

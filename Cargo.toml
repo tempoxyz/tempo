@@ -11,6 +11,7 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
+exclude = ["crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",
@@ -27,6 +28,7 @@ members = [
   "crates/e2e",
   "crates/faucet",
   "crates/node",
+  "crates/nitro-attestation",
   "crates/payload/builder",
   "crates/payload/types",
   "crates/precompiles",
@@ -125,6 +127,7 @@ incremental = false
 [workspace.dependencies]
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
+tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
@@ -258,6 +261,7 @@ arbitrary = { version = "1.4", features = ["derive"] }
 async-lock = "3.4.2"
 async-trait = "0.1"
 auto_impl = "1"
+aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 axum = "0.8.8"
 base64 = { version = "0.22", features = ["alloc"], default-features = false }
 blake3 = "1.8.5"

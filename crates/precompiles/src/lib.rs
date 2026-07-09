@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod nitro_attestation;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -35,6 +36,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
+    nitro_attestation::NitroAttestationVerifier,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -66,11 +68,11 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    DEFAULT_FEE_TOKEN, NITRO_ATTESTATION_VERIFIER_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -162,9 +164,9 @@ pub fn tempo_precompiles(
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
 /// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
-/// AccountKeychain, ValidatorConfigV2, and CurrentCommittee. Each precompile is wrapped via the
-/// `tempo_precompile!` macro which enforces direct-call-only (no delegatecall) and sets up the
-/// storage context.
+/// AccountKeychain, ValidatorConfigV2, CurrentCommittee, and NitroAttestationVerifier. Each
+/// precompile is wrapped via the `tempo_precompile!` macro which enforces direct-call-only (no
+/// delegatecall) and sets up the storage context.
 ///
 /// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
 pub fn extend_tempo_precompiles(
@@ -206,6 +208,8 @@ pub fn extend_tempo_precompiles(
             Some(StorageCredits::create_precompile(&env))
         } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t8() {
             Some(CurrentCommittee::create_precompile(&env))
+        } else if *address == NITRO_ATTESTATION_VERIFIER_ADDRESS && env.cfg.spec.is_t9() {
+            Some(NitroAttestationVerifier::create_precompile(&env))
         } else {
             None
         }
@@ -340,6 +344,13 @@ impl CurrentCommittee {
     }
 }
 
+impl NitroAttestationVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("NitroAttestationVerifier", env: env, |input| { Self::new() })
+    }
+}
+
 impl SignatureVerifier {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
@@ -390,6 +401,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        nitro_attestation::{BASE_GAS_COST, NitroAttestationVerifier, P384_VERIFY_GAS_COST},
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         tip20::TIP20Token,
     };
@@ -401,12 +413,15 @@ mod tests {
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
     };
+    use base64::Engine;
     use revm::{
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         state::{AccountInfo, Bytecode},
     };
-    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+    use tempo_contracts::precompiles::{
+        INitroAttestationVerifier, ITIP20, UnknownFunctionSelector,
+    };
 
     fn test_tempo_precompiles(cfg_env: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
         tempo_precompiles(
@@ -414,6 +429,68 @@ mod tests {
             StorageActions::disabled(),
             Rc::new(RefCell::new(NonCreditableSlots::empty())),
         )
+    }
+
+    fn call_nitro_with_gas(calldata: &Bytes, gas: u64) -> PrecompileResult {
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
+        let precompile = tempo_precompile!("NitroAttestationVerifier", &cfg, |input| {
+            NitroAttestationVerifier::new()
+        });
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let tx = TxEnv::default();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+        let input = PrecompileInput {
+            data: calldata,
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas,
+            value: U256::ZERO,
+            is_static: true,
+            target_address: NITRO_ATTESTATION_VERIFIER_ADDRESS,
+            bytecode_address: NITRO_ATTESTATION_VERIFIER_ADDRESS,
+            reservoir: 0,
+        };
+        AlloyEvmPrecompile::call(&precompile, input)
+    }
+
+    #[test]
+    fn test_nitro_attestation_staged_out_of_gas() {
+        let invalid_calldata = Bytes::from(
+            INitroAttestationVerifier::verifyAttestationCall {
+                document: Bytes::from_static(&[0xa0]),
+            }
+            .abi_encode(),
+        );
+        let base_gas = input_cost(invalid_calldata.len()) + BASE_GAS_COST;
+        let base_oog = call_nitro_with_gas(&invalid_calldata, base_gas - 1)
+            .expect("OOG is returned as a halt output");
+        assert!(base_oog.is_halt(), "base charge should halt OOG");
+
+        let fixture_base64: String =
+            include_str!("nitro_attestation/testdata/aws_attestation_2026_01_03.b64")
+                .split_whitespace()
+                .collect();
+        let document = base64::engine::general_purpose::STANDARD
+            .decode(fixture_base64)
+            .expect("valid fixture base64");
+        let calldata = Bytes::from(
+            INitroAttestationVerifier::verifyAttestationCall {
+                document: document.into(),
+            }
+            .abi_encode(),
+        );
+        let five_signatures_gas = 5 * P384_VERIFY_GAS_COST;
+        let signature_stage_gas = input_cost(calldata.len()) + BASE_GAS_COST + five_signatures_gas;
+        let signature_oog = call_nitro_with_gas(&calldata, signature_stage_gas - 1)
+            .expect("OOG is returned as a halt output");
+        assert!(
+            signature_oog.is_halt(),
+            "per-signature charge should halt OOG"
+        );
     }
 
     #[test]
@@ -1109,6 +1186,27 @@ mod tests {
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
+        );
+    }
+
+    #[test]
+    fn test_nitro_attestation_verifier_registered_at_t9_only() {
+        let mut t8 = CfgEnv::<TempoHardfork>::default();
+        t8.set_spec_and_mainnet_gas_params(TempoHardfork::T8);
+        assert!(
+            test_tempo_precompiles(&t8)
+                .get(&NITRO_ATTESTATION_VERIFIER_ADDRESS)
+                .is_none(),
+            "Nitro attestation verifier should NOT be registered at T8"
+        );
+
+        let mut t9 = CfgEnv::<TempoHardfork>::default();
+        t9.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
+        assert!(
+            test_tempo_precompiles(&t9)
+                .get(&NITRO_ATTESTATION_VERIFIER_ADDRESS)
+                .is_some(),
+            "Nitro attestation verifier should be registered at T9"
         );
     }
 

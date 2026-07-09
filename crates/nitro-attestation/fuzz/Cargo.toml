@@ -1,0 +1,25 @@
+[package]
+name = "tempo-nitro-attestation-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rustls-pki-types = "1.14"
+rustls-webpki = "0.103"
+sha2 = { version = "0.10", default-features = false }
+tempo-nitro-attestation = { path = ".." }
+x509-parser = "0.18"
+
+[[bin]]
+name = "parse_attestation"
+path = "fuzz_targets/parse_attestation.rs"
+test = false
+doc = false
+bench = false

@@ -20,10 +20,11 @@ use revm::{
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError, NonceError,
-    ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
-    StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+    AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
+    NitroAttestationError, NonceError, ReceivePolicyGuardError, RolesAuthError,
+    SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
+    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+    ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -107,6 +108,10 @@ pub enum TempoPrecompileError {
     #[error("Current committee error: {0:?}")]
     CurrentCommitteeError(CurrentCommitteeError),
 
+    /// Error from the TIP-1090 Nitro attestation verifier precompile
+    #[error("Nitro attestation verifier error: {0:?}")]
+    NitroAttestationError(NitroAttestationError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -171,6 +176,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
+            Self::NitroAttestationError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
@@ -202,6 +208,7 @@ impl TempoPrecompileError {
             | Self::ReceivePolicyGuardError(_)
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
+            | Self::NitroAttestationError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -264,6 +271,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
+            Self::NitroAttestationError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -334,6 +342,9 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
+    // Register Nitro first: InvalidFormat and InvalidSignature intentionally share selectors with
+    // SignatureVerifier, whose existing decoder attribution must retain precedence.
+    add_errors_to_registry(&mut registry, TempoPrecompileError::NitroAttestationError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
