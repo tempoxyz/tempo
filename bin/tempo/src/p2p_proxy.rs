@@ -473,6 +473,11 @@ async fn run_p2p_network(
             IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
+            // The proxy never negotiates snap/2, so no inbound snap requests are expected;
+            // dropping the sender cancels the request.
+            IncomingEthRequest::GetSnap { response, .. } => {
+                drop(response);
+            }
         }
     }
 
