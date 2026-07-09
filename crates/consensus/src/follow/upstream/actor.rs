@@ -10,7 +10,7 @@ use futures::{
 };
 use jsonrpsee::{
     core::{client, client::Subscription},
-    ws_client::{WsClient, WsClientBuilder},
+    ws_client::{PingConfig, WsClient, WsClientBuilder},
 };
 use rand_08::Rng as _;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
@@ -30,6 +30,16 @@ pub(super) type EventStream =
 const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
 const RECONNECT_JITTER: Duration = Duration::from_secs(1);
+
+/// How often websocket pings are sent to keep the connection to the upstream
+/// node alive (and to detect dead connections, triggering a reconnect).
+const PING_INTERVAL: Duration = Duration::from_secs(5);
+/// How long the connection may stay inactive (no pongs or other messages)
+/// before it is considered dead and closed.
+const PING_INACTIVE_LIMIT: Duration = Duration::from_secs(10);
+/// How many times the connection may exceed the inactivity limit before it is
+/// closed.
+const PING_MAX_FAILURES: usize = 1;
 
 /// Manages the connection to the upstream node.
 ///
@@ -204,6 +214,12 @@ fn connect(url: &'static Url, attempts: u64) -> BoxFuture<'static, (u64, eyre::R
         (
             attempts,
             WsClientBuilder::default()
+                .enable_ws_ping(
+                    PingConfig::new()
+                        .ping_interval(PING_INTERVAL)
+                        .inactive_limit(PING_INACTIVE_LIMIT)
+                        .max_failures(PING_MAX_FAILURES),
+                )
                 .build(url)
                 .await
                 .map_err(Report::new),
