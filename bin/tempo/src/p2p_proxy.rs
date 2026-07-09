@@ -18,7 +18,8 @@ use reth_eth_wire_types::{
 use reth_ethereum::{
     network::{
         NetworkConfig, NetworkEventListenerProvider, NetworkInfo, NetworkManager, PeersConfig,
-        PeersInfo, eth_requests::IncomingEthRequest, transactions::NetworkTransactionEvent,
+        PeersInfo, eth_requests::IncomingEthRequest, p2p::error::RequestError,
+        transactions::NetworkTransactionEvent,
     },
     tasks::Runtime,
 };
@@ -472,6 +473,9 @@ async fn run_p2p_network(
             }
             IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
+            }
+            IncomingEthRequest::GetSnap { response, .. } => {
+                let _ = response.send(Err(RequestError::UnsupportedCapability));
             }
         }
     }
