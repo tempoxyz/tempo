@@ -4,11 +4,13 @@ use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     network_identity::NetworkIdentity,
 };
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
-use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_genesis::{Genesis, GenesisAccount};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+#[cfg(feature = "reth")]
+use commonware_codec::ReadExt as _;
 use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
@@ -21,6 +23,10 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
+#[cfg(feature = "reth")]
+use tempo_contracts::precompiles::CURRENT_COMMITTEE_ADDRESS;
+#[cfg(feature = "reth")]
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_hardfork::TempoHardfork;
 use tempo_primitives::TempoHeader;
 
@@ -225,9 +231,10 @@ impl TempoChainSpec {
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
-    pub fn from_genesis(genesis: Genesis) -> Self {
+    pub fn from_genesis(mut genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
         let info = TempoGenesisInfo::extract_from(&genesis);
+        seed_current_committee_at_genesis(&mut genesis, &info);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -282,6 +289,52 @@ impl TempoChainSpec {
         PRESTO.as_ref().clone()
     }
 }
+
+#[cfg(feature = "reth")]
+fn seed_current_committee_at_genesis(genesis: &mut Genesis, info: &TempoGenesisInfo) {
+    if info.fork_time(TempoHardfork::T8) != Some(0) {
+        return;
+    }
+
+    let Ok(outcome) = OnchainDkgOutcome::read(&mut genesis.extra_data.as_ref()) else {
+        return;
+    };
+
+    let account = genesis
+        .alloc
+        .entry(CURRENT_COMMITTEE_ADDRESS)
+        .or_insert_with(|| GenesisAccount {
+            nonce: Some(0),
+            balance: U256::ZERO,
+            code: Some(Bytes::from_static(&[0xef])),
+            storage: Some(BTreeMap::new()),
+            private_key: None,
+        });
+    account
+        .code
+        .get_or_insert_with(|| Bytes::from_static(&[0xef]));
+
+    let storage = account.storage.get_or_insert_with(BTreeMap::new);
+    storage.insert(
+        B256::ZERO,
+        B256::from(U256::from(outcome.epoch.get()).to_be_bytes::<32>()),
+    );
+    storage.insert(
+        B256::from(U256::from(1)),
+        B256::from(U256::from(outcome.players().len()).to_be_bytes::<32>()),
+    );
+
+    let public_keys_data_slot = U256::from_be_bytes(keccak256(U256::from(1).to_be_bytes::<32>()).0);
+    for (index, key) in outcome.players().iter().enumerate() {
+        storage.insert(
+            B256::from(public_keys_data_slot + U256::from(index)),
+            B256::from_slice(key.as_ref()),
+        );
+    }
+}
+
+#[cfg(not(feature = "reth"))]
+fn seed_current_committee_at_genesis(_genesis: &mut Genesis, _info: &TempoGenesisInfo) {}
 
 // Required by reth's e2e-test-utils for integration tests.
 // The test utilities need to convert from standard ChainSpec to custom chain specs.
@@ -476,7 +529,7 @@ mod tests {
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
     use alloy_primitives::hex;
-    use commonware_codec::Encode as _;
+    use commonware_codec::{Encode as _, ReadExt as _};
     use reth_chainspec::EthChainSpec;
     #[cfg(feature = "cli")]
     use reth_chainspec::{ForkCondition, Hardforks};
@@ -579,6 +632,75 @@ mod tests {
 
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert!(chainspec.network_identity.is_none());
+    }
+
+    #[test]
+    fn t8_at_genesis_seeds_current_committee_storage_from_genesis_extra_data() {
+        let mut genesis_json: serde_json::Value =
+            serde_json::from_str(include_str!("./genesis/presto.json"))
+                .expect("presto genesis must be valid json");
+        genesis_json["config"]["t8Time"] = serde_json::json!(0);
+
+        let genesis: alloy_genesis::Genesis =
+            serde_json::from_value(genesis_json).expect("modified presto genesis must deserialize");
+        let outcome =
+            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut genesis.extra_data.as_ref())
+                .expect("presto genesis contains a DKG outcome");
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        let account = chainspec
+            .genesis()
+            .alloc
+            .get(&tempo_contracts::precompiles::CURRENT_COMMITTEE_ADDRESS)
+            .expect("current committee account should be seeded at genesis");
+        let storage = account
+            .storage
+            .as_ref()
+            .expect("current committee account should have storage");
+
+        assert_eq!(account.code.as_deref(), Some(&[0xef][..]));
+        assert_eq!(
+            storage.get(&B256::ZERO),
+            Some(&B256::from(
+                U256::from(outcome.epoch.get()).to_be_bytes::<32>()
+            ))
+        );
+        assert_eq!(
+            storage.get(&B256::from(U256::from(1))),
+            Some(&B256::from(
+                U256::from(outcome.players().len()).to_be_bytes::<32>()
+            ))
+        );
+
+        let public_keys_data_slot =
+            U256::from_be_bytes(keccak256(U256::from(1).to_be_bytes::<32>()).0);
+        for (index, key) in outcome.players().iter().enumerate() {
+            assert_eq!(
+                storage.get(&B256::from(public_keys_data_slot + U256::from(index))),
+                Some(&B256::from_slice(key.as_ref()))
+            );
+        }
+    }
+
+    #[test]
+    fn t8_at_genesis_tolerates_non_dkg_genesis_extra_data() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "t8Time": 0
+            },
+            "extraData": "0x74656d706f2d67656e65736973",
+            "alloc": {}
+        }))
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        assert!(
+            !chainspec
+                .genesis()
+                .alloc
+                .contains_key(&tempo_contracts::precompiles::CURRENT_COMMITTEE_ADDRESS)
+        );
     }
 
     #[test]

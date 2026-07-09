@@ -17,6 +17,7 @@ publish = true
 workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
 tempo-hardfork.workspace = true
 tempo-primitives.workspace = true
 
