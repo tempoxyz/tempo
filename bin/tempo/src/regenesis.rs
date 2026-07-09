@@ -301,7 +301,14 @@ fn genesis_account_replacement(
         bytecode_hash: bytecode.as_ref().map(|(hash, _)| *hash),
     };
     let storage = genesis_storage_entries(genesis_account);
-    let hashed_storage = hashed_genesis_storage_entries(genesis_account);
+    let mut hashed_storage = storage
+        .iter()
+        .map(|entry| StorageEntry {
+            key: keccak256(entry.key),
+            value: entry.value,
+        })
+        .collect::<Vec<_>>();
+    hashed_storage.sort_unstable_by_key(|entry| entry.key);
 
     Ok(GenesisAccountReplacement {
         address,
@@ -580,19 +587,6 @@ fn genesis_storage_entries(account: &GenesisAccount) -> Vec<StorageEntry> {
     entries
 }
 
-fn hashed_genesis_storage_entries(account: &GenesisAccount) -> Vec<StorageEntry> {
-    let mut entries = genesis_storage_entries(account)
-        .into_iter()
-        .map(|entry| StorageEntry {
-            key: keccak256(entry.key),
-            value: entry.value,
-        })
-        .collect::<Vec<_>>();
-
-    entries.sort_unstable_by_key(|entry| entry.key);
-    entries
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn hashed_genesis_storage_entries_hashes_slots_and_skips_zeroes() {
+    fn genesis_account_replacement_hashes_slots_and_skips_zeroes() {
         let raw_slot = B256::repeat_byte(0x11);
         let zero_slot = B256::repeat_byte(0x22);
         let value = B256::repeat_byte(0x33);
@@ -652,11 +646,14 @@ mod tests {
             ..Default::default()
         };
 
-        let entries = hashed_genesis_storage_entries(&account);
+        let replacement = genesis_account_replacement(Address::ZERO, &account).unwrap();
 
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].key, keccak256(raw_slot));
-        assert_eq!(entries[0].value, U256::from_be_slice(value.as_slice()));
+        assert_eq!(replacement.hashed_storage.len(), 1);
+        assert_eq!(replacement.hashed_storage[0].key, keccak256(raw_slot));
+        assert_eq!(
+            replacement.hashed_storage[0].value,
+            U256::from_be_slice(value.as_slice())
+        );
     }
 
     #[test]
