@@ -12,15 +12,17 @@ use alloy::{
     network::{EthereumWallet, ReceiptResponse, TransactionBuilder},
     primitives::{TxKind, U256},
     providers::{Provider, ProviderBuilder, fillers::RecommendedFillers},
+    rpc::client::RpcClient,
+    transports::{TransportConnect, layers::RetryBackoffLayer},
 };
 use tempo_alloy::{
-    TempoNetwork, fillers::Random2DNonceFiller, provider::TempoProviderBuilderExt,
+    TempoNetwork,
+    fillers::{Random2DNonceFiller, SponsorFiller},
     rpc::TempoTransactionRequest,
+    transport::RelayConnector,
 };
-use tokio::time::{Duration, sleep};
 
 const SPONSOR_URL: &str = "https://sponsor.moderato.tempo.xyz";
-const MAX_SEND_ATTEMPTS: u32 = 5;
 
 /// Account index 9 from "test test test ... junk" mnemonic.
 const TEST_PRIVATE_KEY: &str = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6";
@@ -35,10 +37,6 @@ fn non_empty_env_var(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
-}
-
-fn is_rate_limited(err: &str) -> bool {
-    err.contains("error code -32005") && err.contains("rate limited")
 }
 
 /// Test that the RelayTransport correctly routes reads to the default transport
@@ -56,13 +54,19 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
     let signer: alloy_signer_local::PrivateKeySigner = TEST_PRIVATE_KEY.parse()?;
     let sender = signer.address();
 
+    let connector = RelayConnector::http(&rpc_url, &sponsor_url)?;
+    let is_local = connector.is_local();
+    let transport = connector.get_transport().await?;
+    let client = RpcClient::builder()
+        .layer(RetryBackoffLayer::new(4, 250, u64::MAX))
+        .transport(transport, is_local);
+
     let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+        .filler(SponsorFiller)
         .filler(Random2DNonceFiller)
         .filler(<TempoNetwork as RecommendedFillers>::recommended_fillers())
         .wallet(EthereumWallet::from(signer))
-        .sponsor(sponsor_url)
-        .connect(&rpc_url)
-        .await?;
+        .connect_client(client);
 
     // Reads should work via the default transport.
     let chain_id = provider.get_chain_id().await?;
@@ -75,20 +79,7 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
     tx.set_kind(TxKind::Call(sender));
     tx.set_value(U256::ZERO);
 
-    let mut attempt = 1;
-    let result = loop {
-        let result = provider.send_transaction(tx.clone()).await;
-        let Err(err) = &result else { break result };
-
-        if !is_rate_limited(&err.to_string()) || attempt == MAX_SEND_ATTEMPTS {
-            break result;
-        }
-
-        let delay = Duration::from_millis(250 * 2u64.pow(attempt - 1));
-        println!("Sponsor relay rate limited attempt {attempt}; retrying in {delay:?}");
-        sleep(delay).await;
-        attempt += 1;
-    };
+    let result = provider.send_transaction(tx).await;
 
     match result {
         Ok(pending) => {
