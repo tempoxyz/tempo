@@ -22,7 +22,6 @@ use crate::utils::TestNodeBuilder;
 struct BlockedTransfer {
     receiver: Address,
     receipt: Bytes,
-    blocked_at: u64,
     gas_used: u64,
 }
 
@@ -128,7 +127,6 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     Ok(BlockedTransfer {
         receiver,
         receipt: receipt_bytes,
-        blocked_at: decoded_receipt.blockedAt,
         gas_used: receipt.gas_used,
     })
 }
@@ -168,16 +166,7 @@ async fn claim_blocked<P: Provider + Clone>(
         .await?;
     assert!(receipt.status(), "claim failed");
 
-    // `blockedAt` is copied into the claim calldata. Normalize its non-zero-byte
-    // premium so the snapshot does not depend on the wall-clock timestamp.
-    let non_zero_timestamp_bytes = blocked
-        .blocked_at
-        .to_be_bytes()
-        .into_iter()
-        .filter(|byte| *byte != 0)
-        .count() as u64;
-
-    Ok(receipt.gas_used - non_zero_timestamp_bytes * 12)
+    Ok(receipt.gas_used)
 }
 
 fn transfer_blocked(
@@ -195,7 +184,12 @@ fn transfer_blocked(
 async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    // `blockedAt` is copied into claim calldata, whose intrinsic gas depends on
+    // zero bytes. Pin the clock so this gas snapshot is independent of wall time.
+    let setup = TestNodeBuilder::new()
+        .with_initial_block_timestamp(0x0101_0101)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let [
