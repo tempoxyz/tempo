@@ -426,9 +426,9 @@ where
             .map(Height::new)
             .unwrap_or_default();
 
-        // If Reth contains this value, we simply need to check if the prunable archive
+        // If reth contains this value, we simply need to check if the prunable archive
         // extends this covered range by checking `execution_finalized_height+1`. Otherwise
-        // Archive::next_gap will report is missing.
+        // Archive::next_gap will report it as missing.
         let value_covered_by_execution = value <= execution_finalized_height;
         let query = if value_covered_by_execution {
             execution_finalized_height.next()
