@@ -307,6 +307,35 @@ fn gap_tracking_treats_reth_finalized_as_covered_prefix() {
 }
 
 #[test_traced]
+fn gap_tracking_merges_prunable_run_overlapping_reth_watermark() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // Reth covers 1..=5 and the prunable archive holds 3..=7 plus a
+        // detached 10 — the production shape, where the retention window
+        // overlaps reth coverage. `next_gap`'s probe at `watermark + 1`
+        // (height 6) lands mid-run, so the merged covered range must be
+        // reported as 1..=7 with the next run starting at 10.
+        provider.set_reth_finalized(5);
+        let blocks = make_chain(3, 8); // heights 3..=10
+        for offset in [0, 1, 2, 3, 4, 7] {
+            hybrid.put(blocks[offset].clone()).await.expect("put block");
+        }
+
+        assert_eq!(
+            hybrid.next_gap(Height::new(1)),
+            (Some(Height::new(7)), Some(Height::new(10)))
+        );
+        assert_eq!(
+            hybrid.missing_items(Height::new(1), 8),
+            vec![Height::new(8), Height::new(9)]
+        );
+        assert_eq!(hybrid.last_index(), Some(Height::new(10)));
+    });
+}
+
+#[test_traced]
 fn gap_tracking_works_when_only_reth_has_blocks() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
