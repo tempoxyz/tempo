@@ -7,7 +7,11 @@
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
-use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
+use commonware_consensus::{
+    Heightable as _,
+    marshal::Update,
+    types::{Epoch, Height, Round, View},
+};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics as RuntimeMetrics, Pacer, Spawner, spawn_cell,
@@ -232,13 +236,17 @@ where
 
     async fn run(mut self) {
         if let Err(error) = self.backfill_to_finalized_floor().await {
-            error_span!("shutdown").in_scope(|| {
-                error!(
-                    %error,
-                    "executor failed startup backfill",
-                )
-            });
-            return;
+            warn!(%error, "height-based startup backfill failed; falling back to ancestry walk");
+
+            if let Err(error) = self.recover_startup_backfill().await {
+                error_span!("shutdown").in_scope(|| {
+                    error!(
+                        %error,
+                        "executor failed startup backfill",
+                    )
+                });
+                return;
+            }
         }
 
         info_span!("start").in_scope(|| {
@@ -351,6 +359,155 @@ where
                 format!(
                     "failed forwarding backfilled finalized block at height `{height}` \
                     to execution layer"
+                )
+            })? {
+                self.last_canonicalized = canonicalized;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn recover_startup_backfill(&mut self) -> eyre::Result<()> {
+        if let Some((round, digest)) = self.finalized_floor_anchor().await {
+            match self.backfill_ancestry(round, digest, None).await {
+                Ok(()) => {
+                    if let Err(error) = self.backfill_to_finalized_floor().await {
+                        warn!(
+                            %error,
+                            %round,
+                            %digest,
+                            "startup backfill still has gaps after certificate-anchored ancestry walk; waiting for the next finalized block"
+                        );
+                    } else {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        %error,
+                        %round,
+                        %digest,
+                        "certificate-anchored ancestry backfill failed; waiting for the next finalized block"
+                    );
+                }
+            }
+        } else {
+            warn!(
+                finalized_floor = %self.finalized_floor,
+                "marshal had no finalization certificate near the startup floor; waiting for the next finalized block"
+            );
+        }
+
+        self.backfill_from_next_finalized_block().await
+    }
+
+    async fn finalized_floor_anchor(&mut self) -> Option<(Round, Digest)> {
+        let floor = self.finalized_floor.get();
+        let tip = self.latest_observed_finalized_tip.0.get().max(floor);
+        let lower_bound = self.last_canonicalized.finalized_height.get() + 1;
+
+        for height in floor..=tip {
+            if let Some(finalization) = self.marshal.get_finalization(Height::new(height)).await {
+                return Some((finalization.proposal.round, finalization.proposal.payload));
+            }
+        }
+
+        for height in (lower_bound..floor).rev() {
+            if let Some(finalization) = self.marshal.get_finalization(Height::new(height)).await {
+                return Some((finalization.proposal.round, finalization.proposal.payload));
+            }
+        }
+
+        None
+    }
+
+    async fn backfill_from_next_finalized_block(&mut self) -> eyre::Result<()> {
+        while let Some(message) = self.mailbox.next().await {
+            let Message { cause, command } = message;
+            match command {
+                Command::Finalize(finalized) => match *finalized {
+                    Update::Block(block, acknowledgment) => {
+                        let (round, digest) = block_anchor(&block)?;
+                        self.backfill_ancestry(round, digest, Some(block)).await?;
+                        acknowledgment.acknowledge();
+                        return self.backfill_to_finalized_floor().await;
+                    }
+                    Update::Tip(_, height, digest) => {
+                        self.latest_observed_finalized_tip = (height, digest);
+                    }
+                },
+                command => self.handle_message(Message { cause, command })?,
+            }
+        }
+
+        bail!("executor mailbox closed while waiting for a finalized backfill anchor")
+    }
+
+    async fn backfill_ancestry(
+        &mut self,
+        round: Round,
+        digest: Digest,
+        block: Option<Block>,
+    ) -> eyre::Result<()> {
+        let mut blocks = Vec::new();
+        let mut block = match block {
+            Some(block) => block,
+            None => subscribe_block(&self.marshal, round, digest).await?,
+        };
+        ensure!(
+            block.digest() == digest,
+            "marshal returned block `{}` for requested digest `{digest}`",
+            block.digest()
+        );
+
+        loop {
+            let (parent_round, parent_digest) = parent_anchor(&block)?;
+            blocks.push(block);
+
+            if self
+                .execution_node
+                .provider
+                .find_sealed_or_recovered_block(parent_digest.0, BlockSource::Any)
+                .wrap_err_with(|| {
+                    format!("failed querying execution layer for ancestor `{parent_digest}`")
+                })?
+                .is_some()
+            {
+                break;
+            }
+
+            block = subscribe_block(&self.marshal, parent_round, parent_digest).await?;
+        }
+
+        info!(
+            count = blocks.len(),
+            anchor_round = %round,
+            anchor_digest = %digest,
+            "forwarding ancestry backfill to execution layer"
+        );
+
+        for block in blocks.into_iter().rev() {
+            let height = block.height();
+            let (acknowledgment, _wait) = Exact::handle();
+            let request = FinalizedBlockRequest {
+                cause: info_span!("backfill_ancestry", %height),
+                block,
+                acknowledgment,
+            };
+
+            if let Some(canonicalized) = forward_finalized(
+                &self.context,
+                self.execution_node.clone(),
+                self.public_key.clone(),
+                self.metrics.clone(),
+                self.last_canonicalized,
+                request,
+            )
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed forwarding ancestry-backfilled block at height `{height}` to execution layer"
                 )
             })? {
                 self.last_canonicalized = canonicalized;
@@ -528,6 +685,40 @@ async fn get_block(
     };
 
     Ok(Block::from_execution_block_unchecked(block, None))
+}
+
+fn block_anchor(block: &Block) -> eyre::Result<(Round, Digest)> {
+    let context = block
+        .header()
+        .consensus_context
+        .ok_or_else(|| eyre::eyre!("finalized block did not contain consensus context"))?;
+    Ok((
+        Round::new(Epoch::new(context.epoch), View::new(context.view)),
+        block.digest(),
+    ))
+}
+
+fn parent_anchor(block: &Block) -> eyre::Result<(Round, Digest)> {
+    let context = block
+        .header()
+        .consensus_context
+        .ok_or_else(|| eyre::eyre!("backfill block did not contain consensus context"))?;
+    Ok((
+        Round::new(Epoch::new(context.epoch), View::new(context.parent_view)),
+        block.parent_digest(),
+    ))
+}
+
+async fn subscribe_block(
+    marshal: &crate::alias::marshal::Mailbox,
+    round: Round,
+    digest: Digest,
+) -> eyre::Result<Block> {
+    marshal
+        .subscribe_by_digest(Some(round), digest)
+        .await
+        .await
+        .map_err(|_| eyre::eyre!("marshal dropped block subscription for `{digest}`"))
 }
 
 enum ExecutionRequest {
@@ -931,5 +1122,64 @@ impl std::fmt::Display for HeadOrFinalized {
             Self::Finalized => "finalized",
         };
         f.write_str(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+    use commonware_consensus::types::{Epoch, Round, View};
+    use reth_primitives_traits::SealedBlock;
+    use tempo_primitives::{
+        Block as TempoBlock, TempoConsensusContext, TempoHeader, ed25519::PublicKey,
+    };
+
+    use super::{Block, Digest, block_anchor, parent_anchor};
+
+    fn block_with_context(context: Option<TempoConsensusContext>, parent_hash: B256) -> Block {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    parent_hash,
+                    number: 42,
+                    ..Default::default()
+                },
+                consensus_context: context,
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        Block::from_execution_block_unchecked(execution_block, None)
+    }
+
+    #[test]
+    fn derives_block_and_parent_anchors_from_consensus_context() {
+        let parent_digest = Digest(B256::repeat_byte(0x42));
+        let block = block_with_context(
+            Some(TempoConsensusContext {
+                epoch: 7,
+                view: 11,
+                parent_view: 9,
+                proposer: PublicKey::from_seed([1; 32]),
+            }),
+            parent_digest.0,
+        );
+
+        assert_eq!(
+            block_anchor(&block).unwrap(),
+            (Round::new(Epoch::new(7), View::new(11)), block.digest())
+        );
+        assert_eq!(
+            parent_anchor(&block).unwrap(),
+            (Round::new(Epoch::new(7), View::new(9)), parent_digest)
+        );
+    }
+
+    #[test]
+    fn rejects_backfill_anchor_without_consensus_context() {
+        let block = block_with_context(None, B256::ZERO);
+
+        assert!(block_anchor(&block).is_err());
+        assert!(parent_anchor(&block).is_err());
     }
 }
