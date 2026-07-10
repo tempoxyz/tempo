@@ -17,14 +17,16 @@ name: bench
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 jobs:
   tempo-bench-ack:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
     name: tempo-bench-ack
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     outputs:
       pr: ${{ steps.args.outputs.pr }}
       actor: ${{ steps.args.outputs.actor }}
