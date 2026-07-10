@@ -899,9 +899,13 @@ impl Worker {
                 };
 
                 // Fast path: copy reveal nodes straight out of the records —
-                // no proof reconstruction. Falls back to the generic proof
-                // walk on any error (e.g. opaque storage) or under overlays.
-                if overlay.is_none() && fast_reveal() {
+                // no proof reconstruction. Sound even when the follower lags
+                // (overlay in place): a path still blinded in the pooled trie
+                // is untouched by the un-applied blocks, so its nodes are
+                // byte-identical at the flat's older root. The follower's
+                // per-block root cross-check remains the loud gate. Falls
+                // back to the generic walk on any reveal error.
+                if fast_reveal() {
                     match direct_reveal(&guard.db, &acct_targets, &storage_targets) {
                         Ok(p) => vec![p],
                         Err(e) if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
