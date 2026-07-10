@@ -1,7 +1,8 @@
 //! EVM storage abstraction layer for Tempo precompile contracts.
 //!
 //! Provides traits and types for reading/writing contract state from EVM storage,
-//! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
+//! including persistent (SLOAD/SSTORE), transient (TLOAD/TSTORE), and TIP-1040
+//! [`temporary`] operations.
 
 pub mod actions;
 pub use actions::{StorageAction, StorageActions};
