@@ -7,6 +7,8 @@ use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
 mod actor;
 mod ingress;
+#[cfg(test)]
+mod test;
 
 pub(crate) use actor::Actor;
 use eyre::WrapErr as _;
@@ -16,12 +18,13 @@ use tempo_node::TempoFullNode;
 
 use crate::consensus::Digest;
 
-pub(crate) fn init<TContext>(
+pub(crate) fn init<TContext, TExecutionLayer>(
     context: TContext,
-    config: Config,
-) -> eyre::Result<(Actor<TContext>, Mailbox)>
+    config: Config<TExecutionLayer>,
+) -> eyre::Result<(Actor<TContext, TExecutionLayer>, Mailbox)>
 where
     TContext: Clock + Metrics + Pacer + Spawner,
+    TExecutionLayer: actor::ExecutionLayer,
 {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox { inner: tx };
@@ -29,10 +32,10 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config {
+pub(crate) struct Config<TExecutionLayer = Arc<TempoFullNode>> {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    pub(crate) execution_node: Arc<TempoFullNode>,
+    pub(crate) execution_node: TExecutionLayer,
 
     /// Marshal sync floor. This is the sync target the executor actor will try
     /// to reach because the marshal actor will only send finalized heights

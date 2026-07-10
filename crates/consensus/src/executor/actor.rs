@@ -6,7 +6,7 @@
 
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadId, PayloadStatus};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -29,7 +29,6 @@ use futures::{
 };
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
-use reth_node_builder::PayloadKind;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
@@ -100,12 +99,91 @@ impl LastCanonicalized {
     }
 }
 
-pub(crate) struct Actor<TContext> {
+pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
+    fn initial_state(&self) -> eyre::Result<(BlockNumHash, BlockNumHash)>;
+
+    fn find_block(&self, digest: Digest) -> eyre::Result<Option<Block>>;
+
+    fn fork_choice_updated(
+        &self,
+        state: ForkchoiceState,
+        attrs: Option<TempoPayloadAttributes>,
+    ) -> impl Future<Output = eyre::Result<ForkchoiceResponse>> + Send;
+
+    fn new_payload(
+        &self,
+        data: TempoExecutionData,
+    ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send;
+
+    fn resolve_payload(
+        &self,
+        payload_id: PayloadId,
+    ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send;
+}
+
+pub(crate) struct ForkchoiceResponse {
+    pub(crate) payload_status: PayloadStatus,
+    pub(crate) payload_id: Option<PayloadId>,
+}
+
+impl ExecutionLayer for Arc<TempoFullNode> {
+    fn initial_state(&self) -> eyre::Result<(BlockNumHash, BlockNumHash)> {
+        let canonical_state = self.provider.canonical_in_memory_state();
+        let head: BlockNumHash = canonical_state.chain_info().into();
+        let finalized = canonical_state
+            .get_finalized_num_hash()
+            .unwrap_or_else(|| BlockNumHash::new(0, self.chain_spec().genesis_hash()));
+        Ok((head, finalized))
+    }
+
+    fn find_block(&self, digest: Digest) -> eyre::Result<Option<Block>> {
+        Ok(self
+            .provider
+            .find_sealed_or_recovered_block(digest.0, BlockSource::Any)?
+            .map(|block| Block::from_execution_block_unchecked(block, None)))
+    }
+
+    async fn fork_choice_updated(
+        &self,
+        state: ForkchoiceState,
+        attrs: Option<TempoPayloadAttributes>,
+    ) -> eyre::Result<ForkchoiceResponse> {
+        let response = self
+            .add_ons_handle
+            .beacon_engine_handle
+            .fork_choice_updated(state, attrs)
+            .await?;
+        Ok(ForkchoiceResponse {
+            payload_status: response.payload_status,
+            payload_id: response.payload_id,
+        })
+    }
+
+    async fn new_payload(&self, data: TempoExecutionData) -> eyre::Result<PayloadStatus> {
+        Ok(self
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(data)
+            .await?)
+    }
+
+    async fn resolve_payload(
+        &self,
+        payload_id: PayloadId,
+    ) -> Option<eyre::Result<TempoBuiltPayload>> {
+        self.payload_builder_handle
+            .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
+            .await
+            .map(|result| result.map_err(Report::new))
+    }
+}
+
+pub(crate) struct Actor<TContext, TExecutionLayer = Arc<TempoFullNode>> {
     context: ContextCell<TContext>,
 
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
 
     /// Highest finalized height the executor should backfill to on startup so
     /// that CL and EL have a consistent view.
@@ -176,13 +254,14 @@ impl Metrics {
     }
 }
 
-impl<TContext> Actor<TContext>
+impl<TContext, TExecutionLayer> Actor<TContext, TExecutionLayer>
 where
     TContext: Clock + RuntimeMetrics + Pacer + Spawner,
+    TExecutionLayer: ExecutionLayer,
 {
     pub(super) fn init(
         context: TContext,
-        config: super::Config,
+        config: super::Config<TExecutionLayer>,
         mailbox: UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
         let Config {
@@ -195,12 +274,7 @@ where
         } = config;
         let metrics = Metrics::init(&context);
 
-        let canonical_state = execution_node.provider.canonical_in_memory_state();
-
-        let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
-        let execution_finalized_num_hash = canonical_state
-            .get_finalized_num_hash()
-            .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
+        let (head_num_hash, execution_finalized_num_hash) = execution_node.initial_state()?;
 
         Ok(Self {
             context: ContextCell::new(context),
@@ -467,8 +541,7 @@ where
 
             if self
                 .execution_node
-                .provider
-                .find_sealed_or_recovered_block(parent_digest.0, BlockSource::Any)
+                .find_block(parent_digest)
                 .wrap_err_with(|| {
                     format!("failed querying execution layer for ancestor `{parent_digest}`")
                 })?
@@ -649,9 +722,9 @@ where
 }
 
 #[instrument(skip_all, fields(height), err)]
-async fn get_block(
+async fn get_block<TExecutionLayer: ExecutionLayer>(
     marshal: crate::alias::marshal::Mailbox,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
     height: Height,
 ) -> eyre::Result<Block> {
     if let Some(block) = marshal.get_block(height).await {
@@ -670,12 +743,9 @@ async fn get_block(
         %digest,
         "found finalized digest for block height; checking execution layer",
     );
-    let Some(block) = execution_node
-        .provider
-        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
-        .wrap_err_with(|| {
-            format!("failed querying execution layer for backfill block `{digest}`")
-        })?
+    let Some(block) = execution_node.find_block(digest).wrap_err_with(|| {
+        format!("failed querying execution layer for backfill block `{digest}`")
+    })?
     else {
         warn!(%digest, "execution layer did not have missing backfill block");
         bail!(
@@ -684,7 +754,7 @@ async fn get_block(
         );
     };
 
-    Ok(Block::from_execution_block_unchecked(block, None))
+    Ok(block)
 }
 
 fn block_anchor(block: &Block) -> eyre::Result<(Round, Digest)> {
@@ -772,9 +842,9 @@ struct StartPayloadJob {
     response: oneshot::Sender<TempoBuiltPayload>,
 }
 
-async fn execute_request<TContext>(
+async fn execute_request<TContext, TExecutionLayer>(
     context: ContextCell<TContext>,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
     public_key: Option<PublicKey>,
     metrics: Metrics,
     canonicalized: LastCanonicalized,
@@ -782,6 +852,7 @@ async fn execute_request<TContext>(
 ) -> ExecutionTaskResult
 where
     TContext: Pacer,
+    TExecutionLayer: ExecutionLayer,
 {
     match request {
         ExecutionRequest::Heartbeat { cause } => {
@@ -840,9 +911,9 @@ where
         head_or_finalized = %head_or_finalized,
     ),
 )]
-async fn run_canonicalize_task<TContext: Pacer>(
+async fn run_canonicalize_task<TContext: Pacer, TExecutionLayer: ExecutionLayer>(
     context: &TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
     canonicalized: LastCanonicalized,
     Canonicalize {
         cause,
@@ -932,9 +1003,9 @@ async fn run_canonicalize_task<TContext: Pacer>(
     parent = &cause,
     fields(%payload_id),
 )]
-async fn run_payload_job<TContext: Pacer>(
+async fn run_payload_job<TContext: Pacer, TExecutionLayer: ExecutionLayer>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
     StartPayloadJob {
         cause,
         payload_id,
@@ -943,8 +1014,7 @@ async fn run_payload_job<TContext: Pacer>(
 ) {
     let payload = select! {
         payload = execution_node
-            .payload_builder_handle
-            .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .resolve_payload(payload_id)
             .pace(&context, Duration::from_millis(20))
         => payload,
 
@@ -967,7 +1037,7 @@ async fn run_payload_job<TContext: Pacer>(
         }
         Some(Err(error)) => {
             warn!(
-                error = %eyre::Report::new(error),
+                %error,
                 "payload build job failed",
             );
         }
@@ -988,8 +1058,8 @@ async fn run_payload_job<TContext: Pacer>(
         ?kind,
     ),
 )]
-async fn submit_forkchoice_update<TContext: Pacer>(
-    execution_node: &TempoFullNode,
+async fn submit_forkchoice_update<TContext: Pacer, TExecutionLayer: ExecutionLayer>(
+    execution_node: &TExecutionLayer,
     context: &TContext,
     cause: Span,
     canonicalized: LastCanonicalized,
@@ -997,15 +1067,13 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     kind: ForkchoiceUpdateKind,
 ) -> eyre::Result<Option<PayloadId>> {
     let fcu_response = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
         .fork_choice_updated(canonicalized.forkchoice, attrs)
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
     if kind == ForkchoiceUpdateKind::Heartbeat {
-        if fcu_response.is_invalid() {
+        if fcu_response.payload_status.is_invalid() {
             warn!(
                 payload_status = %fcu_response.payload_status,
                 "execution layer reported FCU status",
@@ -1023,7 +1091,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
         );
     }
 
-    if fcu_response.is_invalid() {
+    if fcu_response.payload_status.is_invalid() {
         return Err(Report::msg(fcu_response.payload_status)
             .wrap_err("execution layer responded with error for forkchoice-update"));
     }
@@ -1041,9 +1109,9 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     err(level = Level::WARN),
     ret,
 )]
-async fn forward_finalized<TContext: Pacer>(
+async fn forward_finalized<TContext: Pacer, TExecutionLayer: ExecutionLayer>(
     context: &TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
     public_key: Option<PublicKey>,
     metrics: Metrics,
     canonicalized: LastCanonicalized,
@@ -1075,8 +1143,6 @@ async fn forward_finalized<TContext: Pacer>(
     let (block, block_access_list) = block.into_parts();
     let consensus_context = block.header().consensus_context;
     let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
