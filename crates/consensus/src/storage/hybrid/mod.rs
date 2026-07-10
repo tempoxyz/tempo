@@ -119,9 +119,11 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
     /// Look up a finalized block by height in reth.
     ///
     /// Implementations MUST return `None` for any `height` above
-    /// [`Self::finalized_height`] (and unconditionally when
-    /// [`Self::finalized_height`] is `None`); the marshal relies on
-    /// [`Hybrid`] only serving blocks reth has marked as finalized.
+    /// [`Self::finalized_height`]; the marshal relies on [`Hybrid`] only
+    /// serving blocks reth has marked as finalized. Genesis (height 0) is
+    /// the one exception: it is implicitly finalized (it can never be
+    /// reorged), so it may be served even when [`Self::finalized_height`]
+    /// is `None`.
     fn block_by_height(&self, height: u64) -> ProviderResult<Option<Block>>;
 
     /// Look up a finalized block by hash in reth.
@@ -161,11 +163,11 @@ where
         // happily return a block that is canonical-but-not-yet-finalized
         // (or even a block reth has accepted past its finalized tip),
         // violating [`Blocks`]'s "finalized only" contract.
-        let Some(finalized) = self.finalized_height() else {
-            // Reth has not finalized anything yet — nothing below the
-            // (nonexistent) finalized watermark is reachable.
-            return Ok(None);
-        };
+        //
+        // An unset watermark still covers genesis: height 0 is implicitly
+        // finalized (it can never be reorged), which is also how the
+        // gap-tracking methods interpret an unset watermark.
+        let finalized = self.finalized_height().unwrap_or_default();
         if height > finalized {
             return Ok(None);
         }
@@ -393,6 +395,9 @@ where
     }
 
     fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
+        // An unset watermark maps to height 0: genesis is implicitly
+        // finalized, so reth's covered prefix is never empty (see
+        // [`FinalizedBlocksProvider::block_by_height`]).
         let execution_finalized_height = self
             .execution_block_provider
             .finalized_height()
@@ -412,6 +417,9 @@ where
     }
 
     fn next_gap(&self, value: Height) -> (Option<Height>, Option<Height>) {
+        // An unset watermark maps to height 0: genesis is implicitly
+        // finalized, so reth's covered prefix is never empty (see
+        // [`FinalizedBlocksProvider::block_by_height`]).
         let execution_finalized_height = self
             .execution_block_provider
             .finalized_height()

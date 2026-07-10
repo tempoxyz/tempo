@@ -140,8 +140,8 @@ fn get_by_height_skips_reth_blocks_above_reth_finalized_watermark() {
     // The reth provider seeded a canonical-but-not-yet-finalized
     // block; the marshal must never see it. `block_by_height` is
     // gated on reth's finalized watermark — heights above it (and
-    // every height when the watermark is unset) miss, regardless of
-    // what is in reth's canonical chain.
+    // everything but genesis when the watermark is unset) miss,
+    // regardless of what is in reth's canonical chain.
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
         let (hybrid, provider) = SetupHybrid::default().build(&context).await;
@@ -320,6 +320,33 @@ fn gap_tracking_works_when_only_reth_has_blocks() {
             (Some(Height::new(5)), None)
         );
         assert_eq!(hybrid.last_index(), Some(Height::new(5)));
+    });
+}
+
+#[test_traced]
+fn genesis_is_implicitly_finalized_when_reth_watermark_is_unset() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // Reth's finalized watermark is unset (fresh chain), but genesis
+        // can never be reorged: `get` serves it and gap tracking reports
+        // it as covered, keeping both views of coverage consistent.
+        let genesis = make_block(0, B256::ZERO);
+        provider.add_block(&genesis);
+
+        let fetched = hybrid
+            .get(Identifier::Index(0))
+            .await
+            .expect("get genesis")
+            .expect("genesis is implicitly finalized");
+        assert_eq!(fetched, genesis);
+
+        assert_eq!(
+            hybrid.next_gap(Height::zero()),
+            (Some(Height::zero()), None)
+        );
+        assert_eq!(hybrid.missing_items(Height::zero(), 8), Vec::new());
     });
 }
 

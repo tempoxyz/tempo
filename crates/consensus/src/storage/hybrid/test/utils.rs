@@ -153,13 +153,11 @@ impl FinalizedBlocksProvider for StubProvider {
             return err;
         }
         // Mirror the production [`BlockchainProvider`] impl: only
-        // blocks at or below reth's finalized watermark are reachable.
-        // Heights above the watermark (or every height when the
-        // watermark is unset) miss, regardless of what was seeded via
-        // [`Self::add_block`].
-        let Some(finalized) = *self.reth_finalized.lock() else {
-            return Ok(None);
-        };
+        // blocks at or below reth's finalized watermark are reachable,
+        // regardless of what was seeded via [`Self::add_block`]. An
+        // unset watermark still covers genesis (height 0), which is
+        // implicitly finalized.
+        let finalized = self.reth_finalized.lock().unwrap_or_default();
         if height > finalized {
             return Ok(None);
         }
