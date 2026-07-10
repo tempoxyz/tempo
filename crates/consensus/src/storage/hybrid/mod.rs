@@ -64,6 +64,14 @@
 //! This prevents marshal from repeatedly trying to repair blocks that reth
 //! already finalized after the prunable cache evicted them.
 //!
+//! One nuance: if reth itself prunes history, heights below its pruning
+//! window are still reported as covered even though [`Blocks::get`] can no
+//! longer serve them. Repairing them here would be futile anyway — the
+//! prunable cache has evicted them too, so the re-fetched block's put would
+//! be silently absorbed (see "Stale puts") and the gap would reappear on
+//! the next repair tick. The marshal never asks for such heights; see
+//! "Why reth pruning is not a concern" below.
+//!
 //! # Why reth pruning is not a concern
 //!
 //! Reth may be configured to retain only a window of recent history,
@@ -119,9 +127,11 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
     /// Look up a finalized block by height in reth.
     ///
     /// Implementations MUST return `None` for any `height` above
-    /// [`Self::finalized_height`] (and unconditionally when
-    /// [`Self::finalized_height`] is `None`); the marshal relies on
-    /// [`Hybrid`] only serving blocks reth has marked as finalized.
+    /// [`Self::finalized_height`]; the marshal relies on [`Hybrid`] only
+    /// serving blocks reth has marked as finalized. Genesis (height 0) is
+    /// the one exception: it is implicitly finalized (it can never be
+    /// reorged), so it may be served even when [`Self::finalized_height`]
+    /// is `None`.
     fn block_by_height(&self, height: u64) -> ProviderResult<Option<Block>>;
 
     /// Look up a finalized block by hash in reth.
@@ -161,11 +171,11 @@ where
         // happily return a block that is canonical-but-not-yet-finalized
         // (or even a block reth has accepted past its finalized tip),
         // violating [`Blocks`]'s "finalized only" contract.
-        let Some(finalized) = self.finalized_height() else {
-            // Reth has not finalized anything yet — nothing below the
-            // (nonexistent) finalized watermark is reachable.
-            return Ok(None);
-        };
+        //
+        // An unset watermark still covers genesis: height 0 is implicitly
+        // finalized (it can never be reorged), which is also how the
+        // gap-tracking methods interpret an unset watermark.
+        let finalized = self.finalized_height().unwrap_or_default();
         if height > finalized {
             return Ok(None);
         }
@@ -393,6 +403,9 @@ where
     }
 
     fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
+        // An unset watermark maps to height 0: genesis is implicitly
+        // finalized, so reth's covered prefix is never empty (see
+        // [`FinalizedBlocksProvider::block_by_height`]).
         let execution_finalized_height = self
             .execution_block_provider
             .finalized_height()
@@ -412,15 +425,18 @@ where
     }
 
     fn next_gap(&self, value: Height) -> (Option<Height>, Option<Height>) {
+        // An unset watermark maps to height 0: genesis is implicitly
+        // finalized, so reth's covered prefix is never empty (see
+        // [`FinalizedBlocksProvider::block_by_height`]).
         let execution_finalized_height = self
             .execution_block_provider
             .finalized_height()
             .map(Height::new)
             .unwrap_or_default();
 
-        // If Reth contains this value, we simply need to check if the prunable archive
+        // If reth contains this value, we simply need to check if the prunable archive
         // extends this covered range by checking `execution_finalized_height+1`. Otherwise
-        // Archive::next_gap will report is missing.
+        // Archive::next_gap will report it as missing.
         let value_covered_by_execution = value <= execution_finalized_height;
         let query = if value_covered_by_execution {
             execution_finalized_height.next()
