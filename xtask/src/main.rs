@@ -4,9 +4,10 @@ use std::net::SocketAddr;
 use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
-    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
-    identity_transitions::GetIdentityTransitions,
+    generate_localnet::GenerateLocalnet,
+    generate_neobank_reward_claims::GenerateNeobankRewardClaims,
+    generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
+    get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -19,6 +20,7 @@ mod check_abi;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
+mod generate_neobank_reward_claims;
 mod generate_shadowfork;
 mod generate_state_bloat;
 mod genesis_args;
@@ -53,6 +55,9 @@ async fn main() -> eyre::Result<()> {
             .run()
             .wrap_err("failed to bootstrap shadow fork configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::GenerateNeobankRewardClaims(args) => args
+            .run()
+            .wrap_err("failed to generate neobank reward claims"),
         Action::GenerateStateBloat(args) => args
             .run()
             .await
@@ -81,6 +86,7 @@ enum Action {
     GenerateShadowfork(GenerateShadowfork),
     BootstrapShadowfork(BootstrapShadowfork),
     GenerateAddPeer(GenerateAddPeer),
+    GenerateNeobankRewardClaims(GenerateNeobankRewardClaims),
     GenerateStateBloat(GenerateStateBloat),
 }
 
