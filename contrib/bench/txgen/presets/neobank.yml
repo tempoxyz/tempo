@@ -169,6 +169,9 @@ templates:
     from:
       pool: users
       select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
     gas_limit: 8000000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
@@ -182,6 +185,9 @@ templates:
     from:
       pool: users
       select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
     gas_limit: 8000000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
