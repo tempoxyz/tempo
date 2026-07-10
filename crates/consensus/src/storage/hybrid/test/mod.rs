@@ -352,6 +352,66 @@ fn gap_tracking_works_when_only_reth_has_blocks() {
     });
 }
 
+/// Walks every case of [`Blocks::next_gap`]'s documented `# Behavior`
+/// section against [`Hybrid`]'s merged view of coverage, where reth's
+/// finalized watermark forms a range starting at genesis and the prunable
+/// archive contributes the ranges above it.
+#[test_traced]
+fn next_gap_upholds_blocks_trait_behavior_contract() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // "If the store is empty, both will be `None`." (Height 0 is the
+        // one exception — genesis is implicitly covered; see
+        // `genesis_is_implicitly_finalized_when_reth_watermark_is_unset`.)
+        assert_eq!(hybrid.next_gap(Height::new(1)), (None, None));
+
+        // "If `value` is before all ranges in the store,
+        // `current_range_end` will be `None`" — and `next_range_start`
+        // points at the first range.
+        let blocks = make_chain(4, 6); // heights 4..=9
+        hybrid.put(blocks[4].clone()).await.expect("put 8");
+        hybrid.put(blocks[5].clone()).await.expect("put 9");
+        assert_eq!(
+            hybrid.next_gap(Height::new(2)),
+            (None, Some(Height::new(8)))
+        );
+
+        // Coverage is now [0..=5] (reth 0..=3 merged with prunable 4..=5)
+        // and [8..=9].
+        provider.set_reth_finalized(3);
+        hybrid.put(blocks[0].clone()).await.expect("put 4");
+        hybrid.put(blocks[1].clone()).await.expect("put 5");
+
+        // "If `value` falls within an existing range `[r_start, r_end]`,
+        // `current_range_end` will be `Some(r_end)`."
+        assert_eq!(
+            hybrid.next_gap(Height::new(2)),
+            (Some(Height::new(5)), Some(Height::new(8)))
+        );
+
+        // "If `value` falls in a gap between two ranges `[..., prev_end]`
+        // and `[next_start, ...]`, `current_range_end` will be `None` and
+        // `next_range_start` will be `Some(next_start)`."
+        assert_eq!(
+            hybrid.next_gap(Height::new(6)),
+            (None, Some(Height::new(8)))
+        );
+
+        // "If `value` is [...] within the last range, `next_range_start`
+        // will be `None`."
+        assert_eq!(
+            hybrid.next_gap(Height::new(8)),
+            (Some(Height::new(9)), None)
+        );
+
+        // "If `value` is after all ranges in the store [...]" — no range
+        // contains it and none starts after it, so both are `None`.
+        assert_eq!(hybrid.next_gap(Height::new(11)), (None, None));
+    });
+}
+
 #[test_traced]
 fn genesis_is_implicitly_finalized_when_reth_watermark_is_unset() {
     let executor = deterministic::Runner::default();
