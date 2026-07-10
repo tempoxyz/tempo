@@ -412,10 +412,24 @@ where
                     chain_spec.inner.genesis_header().state_root(),
                 )
             }) {
-                state_provider = Box::new(flat_reads::FlatReadProvider {
-                    inner: state_provider,
-                    shadow,
-                });
+                // Reads must reflect the exact parent state: take a lock-free
+                // snapshot only when the flat is at the parent; otherwise
+                // (follower lagging, rebuild race) this block reads from MDBX.
+                let snap = {
+                    let g = shadow.read();
+                    g.at_parent(parent_header.state_root()).then(|| g.snapshot())
+                };
+                match snap {
+                    Some(snap) => {
+                        state_provider = Box::new(flat_reads::FlatReadProvider {
+                            inner: state_provider,
+                            snap,
+                        });
+                    }
+                    None => {
+                        debug!(target: "flatmpt", "flat not at parent; MDBX reads this block");
+                    }
+                }
             }
         }
         if let Some(execution_cache) = &execution_cache {

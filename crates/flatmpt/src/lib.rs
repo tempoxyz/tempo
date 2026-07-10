@@ -25,6 +25,7 @@ mod stream;
 pub use follower::{follower, Follower};
 pub use sparse::{sparse_enabled, SparseStats, SparseWorker};
 pub use stream::{stream_enabled, FlatStream};
+pub use mpt_flat_poc::FlatSnapshot;
 
 use alloy_primitives::{keccak256, B256, U256};
 use alloy_rlp::Decodable as _;
@@ -322,6 +323,11 @@ impl FlatShadow {
         B256::from(self.db.root())
     }
 
+    /// O(1) lock-free read snapshot of the flat store (Arc-COW frontier).
+    pub fn snapshot(&self) -> mpt_flat_poc::FlatSnapshot {
+        self.db.snapshot()
+    }
+
     /// True when the live flat state is the given parent. The bloat/golden
     /// exception mirrors `unwind_to`'s anchor escape: at block 1 the genesis
     /// header still carries the pre-dump root, and the post-dump live state
@@ -409,6 +415,18 @@ impl FlatShadow {
         let _storage_root = B256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
         let code_hash = B256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(Some((nonce, balance, code_hash.0)))
+    }
+
+    /// Decode an account leaf RLP into (nonce, balance, code_hash).
+    pub fn decode_account_rlp(rlp: &[u8]) -> anyhow::Result<(u64, U256, [u8; 32])> {
+        let mut buf = rlp;
+        let header = alloy_rlp::Header::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        anyhow::ensure!(header.list, "account leaf is not a list");
+        let nonce = u64::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let balance = U256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let _storage_root = B256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let code_hash = B256::decode(&mut buf).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((nonce, balance, code_hash.0))
     }
 
     /// Point-read a storage slot (present value; `None`/zero absent).

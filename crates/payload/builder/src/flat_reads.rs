@@ -36,7 +36,10 @@ pub(crate) fn flat_reads_enabled() -> bool {
 
 pub(crate) struct FlatReadProvider {
     pub inner: reth_storage_api::StateProviderBox,
-    pub shadow: &'static RwLock<FlatShadow>,
+    /// Lock-free snapshot of the flat store, pinned at the block's parent
+    /// state for the whole build — reads never wait on the writer and never
+    /// observe mid-block flat advances.
+    pub snap: tempo_flatmpt::FlatSnapshot,
 }
 
 fn other(e: anyhow::Error) -> reth_errors::ProviderError {
@@ -45,7 +48,14 @@ fn other(e: anyhow::Error) -> reth_errors::ProviderError {
 
 impl AccountReader for FlatReadProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        let read = self.shadow.read().read_account(&address.0 .0).map_err(other)?;
+        let key = alloy_primitives::keccak256(address.0 .0);
+        let read = self
+            .snap
+            .get_value(&key.0)
+            .map_err(|e| other(anyhow::anyhow!("{e:#}")))?
+            .map(|rlp| tempo_flatmpt::FlatShadow::decode_account_rlp(rlp.as_slice()))
+            .transpose()
+            .map_err(other)?;
         Ok(read.map(|(nonce, balance, code_hash)| Account {
             nonce,
             balance,
@@ -61,10 +71,17 @@ impl StateProvider for FlatReadProvider {
         account: Address,
         storage_key: alloy_primitives::StorageKey,
     ) -> ProviderResult<Option<alloy_primitives::StorageValue>> {
+        let acct_key = alloy_primitives::keccak256(account.0 .0);
+        let slot_key = alloy_primitives::keccak256(storage_key.0);
         let read = self
-            .shadow
-            .read()
-            .read_slot(&account.0 .0, &storage_key.0)
+            .snap
+            .get_storage(&acct_key.0, &slot_key.0)
+            .map_err(|e| other(anyhow::anyhow!("{e:#}")))?
+            .map(|rlp| {
+                <alloy_primitives::U256 as alloy_rlp::Decodable>::decode(&mut rlp.as_slice())
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .transpose()
             .map_err(other)?;
         Ok(read)
     }
