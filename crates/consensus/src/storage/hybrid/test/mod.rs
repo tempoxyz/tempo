@@ -253,7 +253,7 @@ fn put_trims_prunable_archive_to_retention() {
 }
 
 #[test_traced]
-fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
+fn gap_tracking_treats_reth_finalized_as_covered_prefix() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid {
@@ -270,23 +270,56 @@ fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
             provider.add_block(block);
         }
 
-        // Put a non-contiguous set of heights (10 and 12) into prunable.
-        let blocks = make_chain(10, 3); // heights 10, 11, 12
-        hybrid.put(blocks[0].clone()).await.expect("put 10");
-        hybrid.put(blocks[2].clone()).await.expect("put 12");
+        provider.set_reth_finalized(5);
 
-        // Even though reth has 1..=5, missing_items starting at 9 only
-        // reports gaps in the prunable archive's view of the world.
-        let missing = hybrid.missing_items(Height::new(9), 8);
-        assert_eq!(missing, vec![Height::new(9), Height::new(11)]);
+        // Put a non-contiguous tail into prunable. Heights 6 and 7
+        // extend reth's covered prefix, while 10 and 12 leave real
+        // gaps above the execution layer's finalized watermark.
+        let blocks = make_chain(6, 7); // heights 6..=12
+        for offset in [0, 1, 4, 6] {
+            let block = blocks[offset].clone();
+            hybrid.put(block).await.expect("put block");
+        }
 
-        // next_gap reports the contiguous run around the queried height.
+        // Heights 1..=5 are covered by reth and 6..=7 by prunable, so
+        // only gaps above that merged range are reported.
+        let missing = hybrid.missing_items(Height::new(1), 8);
+        assert_eq!(
+            missing,
+            vec![Height::new(8), Height::new(9), Height::new(11)]
+        );
+
+        let (current_end, next_start) = hybrid.next_gap(Height::new(1));
+        assert_eq!(current_end, Some(Height::new(7)));
+        assert_eq!(next_start, Some(Height::new(10)));
+
+        let (current_end, next_start) = hybrid.next_gap(Height::new(8));
+        assert_eq!(current_end, None);
+        assert_eq!(next_start, Some(Height::new(10)));
+
         let (current_end, next_start) = hybrid.next_gap(Height::new(10));
         assert_eq!(current_end, Some(Height::new(10)));
         assert_eq!(next_start, Some(Height::new(12)));
 
-        // last_index reflects prunable, not reth.
+        // last_index reports the highest covered block from either source.
         assert_eq!(hybrid.last_index(), Some(Height::new(12)));
+    });
+}
+
+#[test_traced]
+fn gap_tracking_works_when_only_reth_has_blocks() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        provider.set_reth_finalized(5);
+
+        assert_eq!(hybrid.missing_items(Height::new(1), 8), Vec::new());
+        assert_eq!(
+            hybrid.next_gap(Height::new(1)),
+            (Some(Height::new(5)), None)
+        );
+        assert_eq!(hybrid.last_index(), Some(Height::new(5)));
     });
 }
 
