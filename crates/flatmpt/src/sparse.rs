@@ -1559,3 +1559,46 @@ mod overlay_tests {
         assert_eq!(shadow.read().current_root(), g);
     }
 }
+
+#[cfg(test)]
+mod finishpath_bench {
+    use super::tests::*;
+    use super::*;
+
+    /// Measure the builder's serial finish-path costs at monster-block scale:
+    /// bundle-shaped op construction (keccak per address+slot), canonical
+    /// sort, and the memo fingerprint (run twice today: queue_apply +
+    /// validator).
+    #[test]
+    #[ignore]
+    fn finish_path_costs() {
+        for n_tx in [18_000usize, 28_000, 40_000] {
+            // tip20-shaped: sender+recipient account op + 2 slots per tx.
+            let t = Instant::now();
+            let mut ops: Vec<(Key, StateOp)> = Vec::with_capacity(n_tx * 4);
+            for i in 0..n_tx {
+                let a = keccak256(format!("addr-{i}")).0; // stands in for keccak(address)
+                let s1 = keccak256(format!("slot-a-{i}")).0; // keccak(slot)
+                let s2 = keccak256(format!("slot-b-{i}")).0;
+                ops.push((a, StateOp::SetAccount { nonce: i as u64, balance: alloy_primitives::U256::from(i), code_hash: [0u8; 32] }));
+                ops.push((a, StateOp::SetStorage { slot: s1, value: vec![1, 2, 3] }));
+                ops.push((a, StateOp::SetStorage { slot: s2, value: vec![4, 5, 6] }));
+            }
+            let build_ms = t.elapsed().as_micros() as f64 / 1000.0;
+
+            let t = Instant::now();
+            ops.sort_by(|a, b| a.0.cmp(&b.0));
+            let sort_ms = t.elapsed().as_micros() as f64 / 1000.0;
+
+            let t = Instant::now();
+            let _fp = crate::ops_fingerprint(&ops);
+            let fp_ms = t.elapsed().as_micros() as f64 / 1000.0;
+
+            eprintln!(
+                "n_tx={n_tx:6} ops={:6}: build(keccaks)={build_ms:7.1}ms sort={sort_ms:6.1}ms fingerprint={fp_ms:6.1}ms  (fp runs 2x today; serial total ≈ {:.0}ms)",
+                ops.len(),
+                build_ms + sort_ms + 2.0 * fp_ms
+            );
+        }
+    }
+}

@@ -78,41 +78,60 @@ struct Entry {
     inverse: Vec<Vec<(Key, StateOp)>>,
 }
 
-/// Canonical fingerprint of a key-sorted op list.
+/// Canonical fingerprint of a key-sorted op list. Chunk-parallel
+/// (hash-of-chunk-hashes): the serial stream cost ~24ms at gas-cap blocks
+/// on the builder's hot thread.
 pub(crate) fn ops_fingerprint(ops: &[(Key, StateOp)]) -> [u8; 32] {
+    const PAR_MIN: usize = 16_384;
+    let threads = std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4);
+    if ops.len() < PAR_MIN || threads < 2 {
+        return fingerprint_chunk(ops);
+    }
+    let chunk = ops.len().div_ceil(threads);
+    let hashes: Vec<[u8; 32]> = std::thread::scope(|sc| {
+        ops.chunks(chunk)
+            .map(|c| sc.spawn(move || fingerprint_chunk(c)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().expect("fingerprint chunk panicked"))
+            .collect()
+    });
     let mut h = alloy_primitives::Keccak256::new();
-    for (key, op) in ops {
-        h.update(key);
-        h.update(&bincode_op(op));
+    for ch in &hashes {
+        h.update(ch);
     }
     h.finalize().0
 }
 
-/// Stable byte encoding of one op for fingerprinting.
-fn bincode_op(op: &StateOp) -> Vec<u8> {
-    match op {
-        StateOp::SetAccount { nonce, balance, code_hash } => {
-            let mut v = vec![0u8];
-            v.extend_from_slice(&nonce.to_be_bytes());
-            v.extend_from_slice(&balance.to_be_bytes::<32>());
-            v.extend_from_slice(code_hash);
-            v
-        }
-        StateOp::DeleteAccount => vec![1u8],
-        StateOp::WipeStorage => vec![2u8],
-        StateOp::SetStorage { slot, value } => {
-            let mut v = vec![3u8];
-            v.extend_from_slice(slot);
-            v.extend_from_slice(value);
-            v
-        }
-        StateOp::DeleteStorage { slot } => {
-            let mut v = vec![4u8];
-            v.extend_from_slice(slot);
-            v
+fn fingerprint_chunk(ops: &[(Key, StateOp)]) -> [u8; 32] {
+    // Field-direct hashing: the old per-op `bincode_op` Vec allocation made
+    // this allocation-bound (~22ms/120k ops regardless of parallelism).
+    let mut h = alloy_primitives::Keccak256::new();
+    for (key, op) in ops {
+        h.update(key);
+        match op {
+            StateOp::SetAccount { nonce, balance, code_hash } => {
+                h.update([0u8]);
+                h.update(nonce.to_be_bytes());
+                h.update(balance.to_be_bytes::<32>());
+                h.update(code_hash);
+            }
+            StateOp::DeleteAccount => h.update([1u8]),
+            StateOp::WipeStorage => h.update([2u8]),
+            StateOp::SetStorage { slot, value } => {
+                h.update([3u8]);
+                h.update(slot);
+                h.update(value);
+            }
+            StateOp::DeleteStorage { slot } => {
+                h.update([4u8]);
+                h.update(slot);
+            }
         }
     }
+    h.finalize().0
 }
+
 
 pub struct FlatShadow {
     db: FlatMpt,
@@ -601,8 +620,31 @@ pub fn genesis_to_ops(genesis: &alloy_genesis::Genesis) -> Vec<(Key, StateOp)> {
 /// Same semantics as the mainnet ExEx: `was_destroyed` → wipe, `info: None`
 /// without destruction → EIP-158 clear, zero-valued slots → deletions.
 pub fn bundle_to_ops(bundle: &revm::database::BundleState) -> Vec<(Key, StateOp)> {
+    // The keccaks (one per address + one per touched slot) dominate this
+    // fn at monster blocks (~34ms serial at 120k ops); fan the per-account
+    // work across threads and concatenate.
+    let accounts: Vec<_> = bundle.state.iter().collect();
+    let threads = std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4);
+    if accounts.len() >= 1024 && threads > 1 {
+        let chunk = accounts.len().div_ceil(threads);
+        return std::thread::scope(|sc| {
+            accounts
+                .chunks(chunk)
+                .map(|c| sc.spawn(move || bundle_chunk_to_ops(c)))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flat_map(|h| h.join().expect("bundle_to_ops chunk panicked"))
+                .collect()
+        });
+    }
+    bundle_chunk_to_ops(&accounts)
+}
+
+fn bundle_chunk_to_ops(
+    accounts: &[(&alloy_primitives::Address, &revm::database::BundleAccount)],
+) -> Vec<(Key, StateOp)> {
     let mut ops: Vec<(Key, StateOp)> = Vec::new();
-    for (address, acct) in &bundle.state {
+    for (address, acct) in accounts.iter().copied() {
         let key: Key = keccak256(address.as_slice()).0;
         let destroyed = acct.status.was_destroyed();
         if destroyed {
