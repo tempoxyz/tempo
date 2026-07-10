@@ -595,7 +595,14 @@ where
         let root_hook: Option<Box<dyn OnStateHook>> = if let Some(handle) = &trie_handle {
             Some(Box::new(handle.state_hook()))
         } else if let Some(worker) = &flat_sparse {
-            Some(Box::new(worker.hook()))
+            // TEMPO_FLATMPT_NO_HOOK=1: skip per-tx state cloning into the
+            // worker (prewarming off; finish reveals everything) — isolates
+            // the hook's cost on the packing rate.
+            if std::env::var("TEMPO_FLATMPT_NO_HOOK").as_deref() == Ok("1") {
+                None
+            } else {
+                Some(Box::new(worker.hook()))
+            }
         } else if let Some(stream) = &flat_stream {
             Some(Box::new(stream.hook()))
         } else {
