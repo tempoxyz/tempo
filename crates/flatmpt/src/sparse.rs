@@ -326,7 +326,7 @@ fn to_v2_nodes(nodes: Vec<mpt_flat_poc::reveal::RevealNode>) -> anyhow::Result<V
 /// path (no proof reconstruction). Storage of an absent/opaque account
 /// reveals as an empty trie.
 fn direct_reveal(
-    db: &mpt_flat_poc::FlatMpt,
+    db: &mpt_flat_poc::FlatSnapshot,
     acct_targets: &B256Map<u8>,
     storage_targets: &B256Map<B256Map<u8>>,
 ) -> anyhow::Result<DecodedMultiProofV2> {
@@ -565,6 +565,13 @@ impl SparseWorker {
 struct Worker {
     shadow: &'static RwLock<FlatShadow>,
     parent_root: B256,
+    /// Lock-free read snapshot of the flat store, refreshed opportunistically
+    /// (try_read); reveals run against it and never wait behind the
+    /// follower's write-locked applies. Sound at any lineage root when the
+    /// pooled trie carried over (blinded ⇒ untouched); a fresh trie
+    /// (pool miss) requires the snapshot to be exactly at the parent.
+    snap: Option<mpt_flat_poc::FlatSnapshot>,
+    snap_at_parent: bool,
     trie: SparseStateTrie,
     account_updates: B256Map<LeafUpdate>,
     storage_updates: B256Map<B256Map<LeafUpdate>>,
@@ -594,6 +601,8 @@ impl Worker {
         Self {
             shadow,
             parent_root,
+            snap: None,
+            snap_at_parent: false,
             trie,
             account_updates: B256Map::default(),
             storage_updates: B256Map::default(),
@@ -789,6 +798,20 @@ impl Worker {
         Ok((root, self.stats))
     }
 
+    /// Refresh the read snapshot if the writer isn't busy; keep the old one
+    /// otherwise (stale snapshots stay sound on pool-hit blocks).
+    fn refresh_snap(&mut self, block: bool) {
+        let guard = if block {
+            Some(self.shadow.read())
+        } else {
+            self.shadow.try_read()
+        };
+        if let Some(g) = guard {
+            self.snap_at_parent = g.at_parent(self.parent_root);
+            self.snap = Some(g.db().snapshot());
+        }
+    }
+
     /// One reveal pass: run `update_leaves` over all pending maps, fetch a
     /// multiproof over the flat cursors for any blinded targets, reveal, and
     /// retry until drained. Returns Ok(false) if deferred because the flat
@@ -877,7 +900,40 @@ impl Worker {
             let t_proof = Instant::now();
             let n_acct = acct_targets.len() as u64;
             let n_storage = storage_targets.values().map(|p| p.len()).sum::<usize>() as u64;
-            let proofs = {
+            // Lock-free fast path first: refresh the snapshot if the writer
+            // is idle, and reveal from it without ever waiting on the lock.
+            // Pool-hit blocks are sound at any lineage root; pool-miss
+            // (fresh trie) requires a snapshot taken at the parent.
+            let mut direct: Option<DecodedMultiProofV2> = None;
+            if fast_reveal() {
+                self.refresh_snap(false);
+                if self.snap.is_none() || (!self.stats.pool_hit && !self.snap_at_parent) {
+                    self.refresh_snap(true);
+                }
+                if let Some(snap) = &self.snap {
+                    if self.stats.pool_hit || self.snap_at_parent {
+                        match direct_reveal(snap, &acct_targets, &storage_targets) {
+                            Ok(p) => direct = Some(p),
+                            Err(e)
+                                if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
+                                    == Ok("1") =>
+                            {
+                                return Err(anyhow::anyhow!("direct reveal failed (strict): {e:#}"));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "flatmpt",
+                                    err = %format!("{e:#}"),
+                                    "direct reveal failed; using proof walk"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let proofs = if let Some(p) = direct {
+                vec![p]
+            } else {
                 let guard = self.shadow.read();
                 // Fast path: flat is at the parent. Otherwise proofs run
                 // against flat-at-its-current-root plus the overlay stack of
@@ -898,33 +954,7 @@ impl Worker {
                     continue;
                 };
 
-                // Fast path: copy reveal nodes straight out of the records —
-                // no proof reconstruction. Sound even when the follower lags
-                // (overlay in place): a path still blinded in the pooled trie
-                // is untouched by the un-applied blocks, so its nodes are
-                // byte-identical at the flat's older root. The follower's
-                // per-block root cross-check remains the loud gate. Falls
-                // back to the generic walk on any reveal error.
-                if fast_reveal() {
-                    match direct_reveal(&guard.db, &acct_targets, &storage_targets) {
-                        Ok(p) => vec![p],
-                        Err(e) if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
-                            == Ok("1") =>
-                        {
-                            return Err(anyhow::anyhow!("direct reveal failed (strict): {e:#}"));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "flatmpt",
-                                err = %format!("{e:#}"),
-                                "direct reveal failed; using proof walk"
-                            );
-                            chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?
-                        }
-                    }
-                } else {
-                    chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?
-                }
+                chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?
             };
             self.stats.proof_ms += t_proof.elapsed().as_millis() as u64;
 
