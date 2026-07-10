@@ -679,8 +679,21 @@ mod tests {
 
         let preset = include_str!("../../contrib/bench/txgen/presets/neobank.yml");
         assert!(preset.contains(root.trim_start_matches("0x")));
-        assert!(preset.contains("1000000000000"));
+        assert!(preset.contains("\"1000000000000\""));
         assert!(preset.contains("artifact: MerklBenchmarkDistributor"));
+
+        let directswap_seed = preset
+            .split_once("- id: directswap_seed_token0")
+            .unwrap()
+            .1
+            .split("\n    - id:")
+            .next()
+            .unwrap();
+        assert!(directswap_seed.contains("pool: users"));
+        assert!(directswap_seed.contains("function: mint"));
+        assert!(directswap_seed.contains("{ var: setup.directswap.address }"));
+        assert!(directswap_seed.contains("\"100000000000000\""));
+
         let deployment_ids = [
             "- id: reward_access_control",
             "- id: reward_distributor_implementation",

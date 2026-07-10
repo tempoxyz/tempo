@@ -36,7 +36,6 @@ artifacts:
   ERC20: ../erc20.abi.json
   DirectSwapABI: ../directswap.abi.json
   ERC4626Vault: ../erc4626-vault.abi.json
-  MerklDistributor: ../neobank-rewards/artifacts/distributor.json
   MerklBenchmarkDistributor: ../neobank-rewards/artifacts/benchmark-distributor.json
   MerklProxy: ../neobank-rewards/artifacts/erc1967-proxy.json
   MerklPullWrapper: ../neobank-rewards/artifacts/pull-token-wrapper.json
@@ -168,19 +167,21 @@ setup:
             - { var: setup.directswap_route.address }
             - 100000000000
     - id: directswap_seed_token0
+      # users[0] is the devnet TIP20 issuer. Minting the reserve directly keeps
+      # swap liquidity independent of the per-account faucet allocation.
       tx:
         type: eip1559
         from:
-          pool: fee_payers
+          pool: users
           select: { index: 0 }
         gas_limit: 1000000
         call:
           to: "0x20c0000000000000000000000000000000000000"
           abi: ERC20
-          function: transfer
+          function: mint
           args:
             - { var: setup.directswap.address }
-            - 100000000000
+            - "100000000000000"
     # Reward contracts use a dedicated deployer so their CREATE addresses stay
     # stable when the principal-flow setup changes. The committed Merkle leaves
     # bind to reward_wrapper at CREATE(reward_admin, 4).
@@ -252,7 +253,7 @@ setup:
         gas_limit: 1000000
         call:
           to: { var: setup.reward_distributor.address }
-          abi: MerklDistributor
+          abi: MerklBenchmarkDistributor
           function: initialize
           args:
             - { var: setup.reward_access_control.address }
@@ -265,7 +266,7 @@ setup:
         gas_limit: 1000000
         call:
           to: { var: setup.reward_distributor.address }
-          abi: MerklDistributor
+          abi: MerklBenchmarkDistributor
           function: setEpochDuration
           args: [1]
     - id: update_reward_tree
