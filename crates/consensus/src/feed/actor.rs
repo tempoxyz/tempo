@@ -209,7 +209,7 @@ impl<TContext: Spawner> Actor<TContext> {
         let certified = CertifiedBlock {
             epoch: round.epoch().get(),
             view: round.view().get(),
-            block,
+            block: Some(block),
             digest,
             certificate: hex::encode(certificate),
         };
@@ -226,7 +226,12 @@ impl<TContext: Spawner> Actor<TContext> {
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
 
         // Update state and broadcast events
-        let height = certified.block.inner.number;
+        let height = certified
+            .block
+            .as_ref()
+            .expect("feed events always include the resolved block")
+            .inner
+            .number;
         let subscribers = self.state.events_tx().receiver_count();
         match activity {
             Activity::Notarization(_) => {

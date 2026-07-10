@@ -71,14 +71,14 @@ async fn consensus_subscribe_and_query_finalization() {
 
         match event {
             Event::Notarized { block, .. } => {
-                let height = block.block.inner.number;
+                let height = block.block.as_ref().unwrap().inner.number;
                 assert!(height > notarized_height);
 
                 notarized_height = height;
                 saw_notarized = true;
             }
             Event::Finalized { block, .. } => {
-                let height = block.block.inner.number;
+                let height = block.block.as_ref().unwrap().inner.number;
                 assert!(height > finalized_height);
 
                 let queried_block = http_client

@@ -4,7 +4,7 @@ use std::fmt::Display;
 
 use alloy_primitives::B256;
 use futures::Future;
-use reth_primitives_traits::SealedOrRecoveredBlock;
+use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use serde::{Deserialize, Serialize};
 use tempo_payload_types::serde_sealed_or_recovered_block;
 use tempo_primitives::Block;
@@ -21,9 +21,36 @@ pub struct CertifiedBlock {
     /// Hex-encoded full notarization or finalization.
     pub certificate: String,
 
-    /// The Tempo block.
-    #[serde(with = "serde_sealed_or_recovered_block")]
-    pub block: SealedOrRecoveredBlock<Block>,
+    /// The Tempo block, if available.
+    #[serde(with = "optional_block")]
+    pub block: Option<SealedOrRecoveredBlock<Block>>,
+}
+
+mod optional_block {
+    use super::*;
+
+    pub fn serialize<S>(
+        block: &Option<SealedOrRecoveredBlock<Block>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match block {
+            Some(block) => serde_sealed_or_recovered_block::serialize(block, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<SealedOrRecoveredBlock<Block>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Option::<Block>::deserialize(deserializer)
+            .map(|block| block.map(|block| SealedBlock::seal_slow(block).into()))
+    }
 }
 
 impl Display for CertifiedBlock {
@@ -176,6 +203,22 @@ mod tests {
                     "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
                 }
             }
+        });
+
+        let certified: CertifiedBlock = serde_json::from_value(fixture.clone()).unwrap();
+        let roundtripped = serde_json::to_value(certified).unwrap();
+
+        assert_eq!(roundtripped, fixture);
+    }
+
+    #[test]
+    fn certified_block_roundtrips_missing_block_json() {
+        let fixture = serde_json::json!({
+            "epoch": 7,
+            "view": 11,
+            "digest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "certificate": "0x1234",
+            "block": null
         });
 
         let certified: CertifiedBlock = serde_json::from_value(fixture.clone()).unwrap();

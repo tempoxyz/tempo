@@ -313,8 +313,11 @@ where
             })
             .wrap_err("event contained a malformed finalization certificate")?;
 
-        let height = Height::new(certified.block.number());
-        let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
+        let block = certified
+            .block
+            .ok_or_else(|| eyre::eyre!("finalization event did not include a block"))?;
+        let height = Height::new(block.number());
+        let consensus_block = Block::from_execution_block_unchecked(block, None);
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"

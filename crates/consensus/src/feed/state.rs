@@ -118,14 +118,15 @@ impl ConsensusFeed for FeedStateHandle {
                 let Some(finalization) = marshal.get_finalization(height).await else {
                     break 'process Response::Missing("certificate");
                 };
-                let Some(block) = marshal.get_block(height).await else {
-                    break 'process Response::Missing("block");
-                };
+                let block = marshal
+                    .get_block(height)
+                    .await
+                    .map(|block| block.into_execution_block());
 
                 Response::Success(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
-                    block: block.into_execution_block(),
+                    block,
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.encode()),
                 })
