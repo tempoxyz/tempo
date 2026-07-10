@@ -336,22 +336,46 @@ fn direct_reveal(
     keys.sort_unstable();
     keys.dedup();
     let account_proofs = to_v2_nodes(db.reveal_account_paths(&keys)?)?;
-    let mut storage_proofs = B256Map::default();
+    // Storage reveals fan out across threads: the walk is cheap CPU but the
+    // record preads still gain from oversubscription (measured 14k/s @1t →
+    // 411k/s @48t on cold 1B targets).
+    let mut jobs: Vec<(B256, Vec<Key>)> = Vec::new();
     for (acct, per) in storage_targets {
         if per.is_empty() {
             continue;
         }
         let mut slots: Vec<Key> = per.keys().map(|k| k.0).collect();
         slots.sort_unstable();
-        let nodes = match db.reveal_storage_paths(&acct.0, &slots)? {
-            Some(n) => to_v2_nodes(n)?,
-            None => vec![ProofTrieNodeV2 {
-                path: Nibbles::default(),
-                node: TrieNodeV2::EmptyRoot,
-                masks: None,
-            }],
-        };
-        storage_proofs.insert(*acct, nodes);
+        let threads = proof_threads();
+        let chunk = slots.len().div_ceil(threads).max(64);
+        for c in slots.chunks(chunk) {
+            jobs.push((*acct, c.to_vec()));
+        }
+    }
+    let results: Vec<anyhow::Result<(B256, Vec<ProofTrieNodeV2>)>> = std::thread::scope(|s| {
+        jobs.into_iter()
+            .map(|(acct, slots)| {
+                s.spawn(move || {
+                    let nodes = match db.reveal_storage_paths(&acct.0, &slots)? {
+                        Some(n) => to_v2_nodes(n)?,
+                        None => vec![ProofTrieNodeV2 {
+                            path: Nibbles::default(),
+                            node: TrieNodeV2::EmptyRoot,
+                            masks: None,
+                        }],
+                    };
+                    Ok((acct, nodes))
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().expect("reveal thread panicked"))
+            .collect()
+    });
+    let mut storage_proofs: B256Map<Vec<ProofTrieNodeV2>> = B256Map::default();
+    for r in results {
+        let (acct, nodes) = r?;
+        storage_proofs.entry(acct).or_default().extend(nodes);
     }
     Ok(DecodedMultiProofV2 { account_proofs, storage_proofs })
 }
@@ -1381,7 +1405,7 @@ mod proofbench {
 
         // Direct reveal (fast path), same shape: fresh random targets per
         // round, single-threaded then chunk-parallel.
-        for (round, threads) in [(100usize, 1usize), (101, 8), (102, 32)] {
+        for (round, threads) in [(100usize, 1usize), (101, 8), (102, 16), (103, 24), (104, 32), (105, 48), (106, 64)] {
             let keys: Vec<mpt_flat_poc::Key> = (0..K)
                 .map(|i| keccak256(format!("proofbench-{round}-{i}")).0)
                 .collect();
