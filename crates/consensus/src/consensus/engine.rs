@@ -289,11 +289,13 @@ where
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node,
+                chain: dkg::manager::FullNodeChainView {
+                    execution_node,
+                    marshal: marshal_mailbox,
+                },
                 initial_share: self.share.clone(),
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
@@ -354,7 +356,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, dkg::manager::FullNodeChainView>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Acts as the glue between the consensus and execution layers implementing
