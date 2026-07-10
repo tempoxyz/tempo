@@ -64,6 +64,14 @@
 //! This prevents marshal from repeatedly trying to repair blocks that reth
 //! already finalized after the prunable cache evicted them.
 //!
+//! One nuance: if reth itself prunes history, heights below its pruning
+//! window are still reported as covered even though [`Blocks::get`] can no
+//! longer serve them. Repairing them here would be futile anyway — the
+//! prunable cache has evicted them too, so the re-fetched block's put would
+//! be silently absorbed (see "Stale puts") and the gap would reappear on
+//! the next repair tick. The marshal never asks for such heights; see
+//! "Why reth pruning is not a concern" below.
+//!
 //! # Why reth pruning is not a concern
 //!
 //! Reth may be configured to retain only a window of recent history,
