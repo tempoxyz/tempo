@@ -458,9 +458,11 @@ fn proof_threads() -> usize {
         std::env::var("TEMPO_FLATMPT_PROOF_THREADS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism().map(|n| n.get() * 3 / 2).unwrap_or(48)
-            })
+            // In-node default: a small pool — reveals are fast enough at 8
+            // threads (~65k targets/s) and execution must keep its cores
+            // (48 reveal threads measurably starved the EVM: run43 12.5k tps
+            // vs run44 17.7k with 8). Benches oversubscribe explicitly.
+            .unwrap_or(8)
             .clamp(1, 128)
     })
 }
