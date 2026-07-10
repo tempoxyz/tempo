@@ -1,0 +1,5 @@
+merge:
+  templates:
+    tip20_transfer:
+      expiring_nonce: true
+      valid_for_secs: 5

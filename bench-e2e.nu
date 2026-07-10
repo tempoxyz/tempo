@@ -1341,11 +1341,20 @@ def "main summarize" [
     e2e-generate-summary $results_dir
 }
 
+def "main render-txgen-spec" [
+    --preset: string = ""                              # Txgen preset name or scenario expression
+    --out-dir: string = ""                             # Directory for rendered scenario specs
+] {
+    let spec = (txgen-resolve-bench-spec $preset $out_dir)
+    print $spec.spec_path
+}
+
 # Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
     --preset: string = ""                               # Txgen preset name
+    --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
@@ -1393,7 +1402,21 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
-    let preset_path = (txgen-preset-path $preset)
+    let preset_spec = if $preset_path == "" {
+        txgen-resolve-bench-spec $preset
+    } else {
+        {
+            kind: pre_rendered
+            scenario_id: $preset
+            spec_path: ($preset_path | path expand)
+            rendered: true
+        }
+    }
+    let preset_path = $preset_spec.spec_path
+    if not ($preset_path | path exists) {
+        print $"Error: txgen preset file not found: ($preset_path)"
+        exit 1
+    }
     txgen-validate-bench-args $bench_args
     let general_gas_limit = if $general_gas_limit == "" and (txgen-spec-has-keychain-setup $preset_path) {
         $gas_limit
@@ -1587,6 +1610,7 @@ def "main e2e" [
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
     print $"BENCH_RESULTS_DIR=($results_dir)"
+    cp $preset_path $"($results_dir)/txgen-spec.yml"
 
     git worktree prune
     mkdir $BENCH_WORKTREES_DIR

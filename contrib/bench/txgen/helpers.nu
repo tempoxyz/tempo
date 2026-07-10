@@ -3,12 +3,8 @@ const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = [
-    "tip20_existing_recipients"
-    "tip20_2d_nonces"
-    "tip20_protocol_nonces"
-    "tip20_keychain_existing_recipients"
-]
+const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
+const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = ["dex"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
@@ -18,6 +14,196 @@ const TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
 const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
+const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
+const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
+const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
+
+def txgen-tip20-default-scenario [] {
+    {
+        workload: "tip20"
+        recipient: "users"
+        auth: "direct"
+        nonce: "expiring"
+        fee_token: "pathusd"
+    }
+}
+
+def txgen-tip20-scenario-alias [name: string] {
+    if $name in ["default" "tip20"] {
+        return (txgen-tip20-default-scenario)
+    }
+
+    # Legacy preset names remain accepted, but active workflows should use scenario strings.
+    if $name == "tip20_random_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_existing_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain" {
+        return ((txgen-tip20-default-scenario) | merge { auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain_random_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "random", auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain_existing_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_key_authorization" {
+        return ((txgen-tip20-default-scenario) | merge { auth: "key_authorization", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_protocol_nonces" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", nonce: "protocol", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_2d_nonces" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", nonce: "2d", fee_token: "any_tip20" })
+    }
+
+    null
+}
+
+def txgen-scenario-field-name [field: string] {
+    $field | str trim | str replace -a "-" "_"
+}
+
+def txgen-parse-tip20-scenario [preset: string] {
+    let preset_name = ($preset | str trim)
+    let alias = (txgen-tip20-scenario-alias $preset_name)
+    if $alias != null {
+        return $alias
+    }
+
+    if not ($preset_name | str starts-with "tip20:") {
+        return null
+    }
+
+    let body = ($preset_name | str replace --regex '^tip20:' '')
+    mut scenario = (txgen-tip20-default-scenario)
+    if ($body | str trim) != "" {
+        for raw_part in ($body | split row "," | each { |part| $part | str trim } | where { |part| $part != "" }) {
+            let kv = ($raw_part | split row "=")
+            if ($kv | length) != 2 {
+                error make { msg: $"invalid tip20 scenario component '($raw_part)'; expected key=value" }
+            }
+
+            let key = (txgen-scenario-field-name ($kv | get 0))
+            let value = (($kv | get 1) | str trim)
+            if $key not-in ["recipient" "auth" "nonce" "fee_token"] {
+                error make { msg: $"unknown tip20 scenario field '($key)'" }
+            }
+            if $value == "" {
+                error make { msg: $"tip20 scenario field '($key)' must not be empty" }
+            }
+
+            $scenario = ($scenario | upsert $key $value)
+        }
+    }
+
+    txgen-validate-tip20-scenario $scenario
+    $scenario
+}
+
+def txgen-ensure-one-of [field: string, value: string, allowed: list<string>] {
+    if $value not-in $allowed {
+        error make { msg: $"invalid ($field)=($value); expected one of: ($allowed | str join ', ')" }
+    }
+}
+
+def txgen-validate-tip20-scenario [scenario: record] {
+    txgen-ensure-one-of "recipient" $scenario.recipient ["users" "random" "existing"]
+    txgen-ensure-one-of "auth" $scenario.auth ["direct" "keychain" "key_authorization"]
+    txgen-ensure-one-of "nonce" $scenario.nonce ["expiring" "protocol" "2d"]
+    txgen-ensure-one-of "fee_token" $scenario.fee_token ["pathusd" "any_tip20"]
+
+    if $scenario.auth != "direct" and $scenario.nonce != "expiring" {
+        error make { msg: $"auth=($scenario.auth) currently supports only nonce=expiring" }
+    }
+}
+
+def txgen-tip20-scenario-id [scenario: record] {
+    $"tip20:recipient=($scenario.recipient),auth=($scenario.auth),nonce=($scenario.nonce),fee_token=($scenario.fee_token)"
+}
+
+def txgen-scenario-file-stem [scenario_id: string] {
+    $scenario_id
+        | str replace -a ":" "-"
+        | str replace -a "," "-"
+        | str replace -a "=" "-"
+        | str replace -a "/" "-"
+}
+
+def txgen-tip20-uses-fee-amm [scenario: record] {
+    $scenario.fee_token == "any_tip20"
+}
+
+def txgen-tip20-pieces-dir [] {
+    [ (txgen-repo-root) $TXGEN_HELPER_TIP20_PIECES_DIR ] | path join
+}
+
+def txgen-tip20-piece-path [piece: string] {
+    [ (txgen-tip20-pieces-dir) $"($piece).yml" ] | path join
+}
+
+def txgen-tip20-piece-path-checked [piece: string] {
+    let piece_path = (txgen-tip20-piece-path $piece)
+    if not ($piece_path | path exists) {
+        error make { msg: $"missing tip20 txgen piece: ($piece)" }
+    }
+
+    $piece_path
+}
+
+def txgen-tip20-piece-name [dimension: string, value: string] {
+    $"($dimension)-($value | str replace -a '_' '-')"
+}
+
+def txgen-tip20-scenario-pieces [scenario: record] {
+    mut pieces = [
+        (txgen-tip20-piece-name "recipient" $scenario.recipient)
+        (txgen-tip20-piece-name "fee-token" $scenario.fee_token)
+    ]
+
+    if (txgen-tip20-uses-fee-amm $scenario) {
+        $pieces = ($pieces | append "fee-amm-liquidity")
+    }
+
+    $pieces = ($pieces | append (txgen-tip20-piece-name "auth" $scenario.auth))
+    $pieces = ($pieces | append (txgen-tip20-piece-name "nonce" $scenario.nonce))
+    $pieces
+}
+
+# Write a scenario spec that lists its pieces via txgen's native `include`
+# directive; txgen resolves the merge/append sections in each piece itself.
+def txgen-render-tip20-spec [scenario: record, out_dir: string] {
+    let out_dir = if ($out_dir | str trim) == "" {
+        [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR ] | path join
+    } else {
+        $out_dir | path expand
+    }
+    mkdir $out_dir
+
+    let uses_fee_amm = (txgen-tip20-uses-fee-amm $scenario)
+    let pieces = (["base"] | append (txgen-tip20-scenario-pieces $scenario))
+    let piece_paths = ($pieces | each { |piece| txgen-tip20-piece-path-checked $piece })
+
+    let scenario_id = (txgen-tip20-scenario-id $scenario)
+    let spec_path = ([ $out_dir $"(txgen-scenario-file-stem $scenario_id).yml" ] | path join)
+    [$"# ($scenario_id)" "include:"]
+        | append ($piece_paths | each { |piece_path| $"  - ($piece_path)" })
+        | append ""
+        | str join "\n"
+        | save -f $spec_path
+
+    {
+        kind: generated
+        scenario_id: $scenario_id
+        spec_path: ($spec_path | path expand)
+        rendered: true
+        requires_existing_recipients: ($scenario.recipient == "existing")
+        requires_keychain_setup: ($scenario.auth == "keychain")
+        uses_fee_amm: $uses_fee_amm
+    }
+}
 
 def txgen-tip20-token-address [token_id: int] {
     ^printf "0x20c000000000000000000000%016x" $token_id
@@ -97,6 +283,17 @@ def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
     $env.TXGEN_KEY_AUTHORIZATION_GAS_LIMIT = (txgen-key-authorization-gas-limit $token_count)
 }
 
+# 2D-nonce specs mint deeper FeeAMM liquidity, matching the removed
+# tip20_2d_nonces preset. `nonce_key:` only appears in 2D-nonce specs.
+def --env txgen-configure-fee-amm-env [spec_path: string] {
+    let amount = if (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*nonce_key:\s*$' {
+        $TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT
+    } else {
+        $TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT
+    }
+    $env.TXGEN_FEE_AMM_LIQUIDITY_AMOUNT = ($amount | into string)
+}
+
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
     let escaped = ($s | str replace -a "'" "'\"'\"'")
@@ -153,12 +350,14 @@ def txgen-presets-dir [] {
 def txgen-available-presets [] {
     let presets_dir = (txgen-presets-dir)
     if not ($presets_dir | path exists) {
-        return []
+        return $TXGEN_HELPER_TIP20_SCENARIO_PRESETS
     }
 
-    glob ([ $presets_dir "*.yml" ] | path join)
+    let static_presets = (glob ([ $presets_dir "*.yml" ] | path join)
         | each { |preset_path| $preset_path | path basename | str replace --regex '\.yml$' '' }
-        | sort
+    )
+
+    $static_presets | append $TXGEN_HELPER_TIP20_SCENARIO_PRESETS | uniq | sort
 }
 
 def txgen-available-presets-message [] {
@@ -166,11 +365,11 @@ def txgen-available-presets-message [] {
     if ($presets | is-empty) {
         "none"
     } else {
-        $presets | str join ", "
+        $"($presets | str join ', '), or tip20:<field>=<value>,..."
     }
 }
 
-def txgen-preset-path [preset: string] {
+def txgen-static-preset-path [preset: string] {
     let preset_name = ($preset | str trim)
     if $preset_name == "" {
         error make { msg: $"--preset is required; available txgen presets: (txgen-available-presets-message)" }
@@ -186,6 +385,29 @@ def txgen-preset-path [preset: string] {
     }
 
     $spec_path
+}
+
+def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
+    let preset_name = ($preset | str trim)
+    let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
+    if $tip20_scenario != null {
+        return (txgen-render-tip20-spec $tip20_scenario $out_dir)
+    }
+
+    let spec_path = (txgen-static-preset-path $preset_name)
+    {
+        kind: static
+        scenario_id: $preset_name
+        spec_path: $spec_path
+        rendered: false
+        requires_existing_recipients: false
+        requires_keychain_setup: (txgen-spec-has-keychain-setup $spec_path)
+        uses_fee_amm: false
+    }
+}
+
+def txgen-preset-path [preset: string] {
+    (txgen-resolve-bench-spec $preset).spec_path
 }
 
 def txgen-account-mnemonic [] {
@@ -212,8 +434,41 @@ def txgen-validate-bench-args [bench_args: string] {
     txgen-parse-bench-args $bench_args | ignore
 }
 
+# Return the spec text with `include` entries expanded, so content checks see
+# included pieces. Pieces do not nest includes, so one level is enough.
+def txgen-spec-effective-text [spec_path: string] {
+    let path = ($spec_path | path expand)
+    let raw = (open --raw $path)
+    let doc = (try { $raw | from yaml } catch { null })
+    if $doc == null or not (($doc | describe) | str starts-with "record") {
+        return $raw
+    }
+
+    let include_value = ($doc | get -o include | default ($doc | get -o includes))
+    let includes = if $include_value == null {
+        []
+    } else if (($include_value | describe) == "string") {
+        [$include_value]
+    } else {
+        $include_value
+    }
+
+    let base_dir = ($path | path dirname)
+    $includes
+        | each { |include_path|
+            let resolved = if ($include_path | str starts-with "/") {
+                $include_path
+            } else {
+                [ $base_dir $include_path ] | path join
+            }
+            open --raw $resolved
+        }
+        | append $raw
+        | str join "\n"
+}
+
 def txgen-spec-has-keychain-setup [spec_path: string] {
-    (open --raw $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
+    (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
 }
 
 def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
@@ -236,7 +491,12 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
 
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
-    if $preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS {
+    let spec_uses_existing_recipients = if ($preset_path | path exists) {
+        (txgen-spec-effective-text $preset_path) =~ '(?m)^\s*existing_recipients:\s*$'
+    } else {
+        false
+    }
+    if not $spec_uses_existing_recipients {
         return
     }
 
@@ -358,6 +618,7 @@ def txgen-run-preset-pipeline [
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-keychain-env $accounts $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    txgen-configure-fee-amm-env $spec_path
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)

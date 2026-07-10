@@ -30,23 +30,10 @@ on:
         required: false
         default: ""
       preset:
-        description: Benchmark preset.
-        type: choice
+        description: Benchmark preset or scenario, e.g. default or tip20:recipient=existing,auth=keychain.
+        type: string
         required: true
-        default: tip20_existing_recipients
-        options:
-          - tip20
-          - tip20_2d_nonces
-          - tip20_protocol_nonces
-          - tip20_random_recipients
-          - tip20_existing_recipients
-          - tip20_keychain
-          - tip20_keychain_random_recipients
-          - tip20_keychain_existing_recipients
-          - tip20_key_authorization
-          - mpp
-          - mix
-          - dex
+        default: default
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -172,7 +159,7 @@ on:
       preset:
         type: string
         required: false
-        default: tip20_existing_recipients
+        default: default
       duration:
         type: string
         required: false
@@ -514,6 +501,20 @@ jobs:
           path: valscope
           persist-credentials: false
           token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+
+      - name: Render txgen spec
+        run: |
+          rm -rf .bench-tmp/txgen-specs
+          spec_path="$(nu bench-e2e.nu render-txgen-spec --preset "$BENCH_PRESET" --out-dir ".bench-tmp/txgen-specs" | tail -n 1)"
+          if [ -z "$spec_path" ] || [ ! -f "$spec_path" ]; then
+            echo "::error::failed to render txgen spec for preset '$BENCH_PRESET'"
+            exit 1
+          fi
+
+          echo "BENCH_TXGEN_SPEC_PATH=$spec_path" >> "$GITHUB_ENV"
+          echo "::group::Rendered txgen spec ($BENCH_PRESET)"
+          cat "$spec_path"
+          echo "::endgroup::"
 
       - name: Resolve Tracy capture offset
         if: env.BENCH_TRACY != 'off'
@@ -903,6 +904,7 @@ jobs:
             --features "$BENCH_FEATURES"
             --skip-summary
           )
+          [ -n "$BENCH_TXGEN_SPEC_PATH" ] && cmd+=(--preset-path "$BENCH_TXGEN_SPEC_PATH")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
