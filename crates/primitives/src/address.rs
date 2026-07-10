@@ -4,11 +4,16 @@ use tempo_contracts::{
     precompiles::{SYSTEM_PRECOMPILES, TEMPORARY_STORAGE_ADDRESS},
 };
 
+/// Number of blocks per [TIP-1040] epoch, approximately 24 hours at 500ms slot times.
+///
+/// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+pub const TEMPORARY_STORAGE_EPOCH_LENGTH: u64 = 172_800;
+
 /// A [TIP-1040] per-epoch temporary storage account: `TEMPORARY_STORAGE_ADDRESS + epoch + 1`.
 ///
-/// Only constructible via [`Self::for_epoch`], so holding one is proof the address is a
-/// temporary storage account. Code that only has a raw [`Address`] can classify it with
-/// [`TempoAddressExt::is_temporary_storage_account`].
+/// Only constructible via [`Self::for_block`]/[`Self::for_epoch`], so holding one is proof
+/// the address is a temporary storage account. Code that only has a raw [`Address`] can
+/// classify it with [`TempoAddressExt::is_temporary_storage_account`].
 ///
 /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,6 +24,11 @@ impl TemporaryStorageAccount {
     /// cannot drop their storage. These bytes are the preimage of TIP-1040's
     /// `EPOCH_ACCOUNT_CODE_HASH`.
     pub const MARKER_CODE: &'static [u8] = b"tempo.tip1040.epoch_account";
+
+    /// Returns the account storing the data of the epoch containing `block_number`.
+    pub fn for_block(block_number: u64) -> Self {
+        Self::for_epoch(block_number / TEMPORARY_STORAGE_EPOCH_LENGTH)
+    }
 
     /// Returns the account storing epoch `epoch`'s data.
     ///

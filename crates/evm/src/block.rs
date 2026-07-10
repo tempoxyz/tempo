@@ -32,7 +32,6 @@ use tempo_contracts::precompiles::{
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TEMPORARY_STORAGE_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_precompiles::temporary_storage::EPOCH_LENGTH;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     TemporaryStorageAccount, subblock::PartialValidatorKey,
@@ -599,7 +598,7 @@ where
             // Keep the TIP-1040 epoch account non-empty so EIP-161 state clear can't drop it.
             // The marker bytes are the preimage of the spec's `EPOCH_ACCOUNT_CODE_HASH`.
             let block_number = self.evm().block().number.saturating_to::<u64>();
-            let epoch_account = TemporaryStorageAccount::for_epoch(block_number / EPOCH_LENGTH);
+            let epoch_account = TemporaryStorageAccount::for_block(block_number);
             self.deploy_marker_at_boundary(
                 epoch_account.address(),
                 Bytecode::new_legacy(TemporaryStorageAccount::MARKER_CODE.into()),

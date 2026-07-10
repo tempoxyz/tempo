@@ -5,14 +5,13 @@ use alloy::{
 use alloy_evm::{Database, EvmInternals};
 use revm::{
     context::{CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint},
-    interpreter::{SStoreResult, StateLoad},
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
 use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
+use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     Precompile,
@@ -167,14 +166,15 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
-    /// Journal SSTORE into a TIP-1040 temporary storage account, charging no gas.
-    pub fn temporary_sstore(
-        &mut self,
-        account: TemporaryStorageAccount,
-        key: U256,
-        value: U256,
-    ) -> Result<StateLoad<SStoreResult>> {
-        Self::try_with_storage(|s| s.temporary_sstore(account, key, value))
+    /// Stores `value` for `namespace` under `key` in TIP-1040 temporary storage.
+    pub fn temporary_store(&mut self, namespace: Address, key: B256, value: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.temporary_store(namespace, key, value))
+    }
+
+    /// Loads `namespace`'s TIP-1040 temporary storage value for `key`, checking the
+    /// current epoch and falling back to the previous one.
+    pub fn temporary_load(&self, namespace: Address, key: B256) -> Result<U256> {
+        Self::try_with_storage(|s| s.temporary_load(namespace, key))
     }
 
     /// Increments a persistent storage slot by `delta`.

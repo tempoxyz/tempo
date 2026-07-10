@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
-use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use revm::{
@@ -478,14 +478,12 @@ where
         unreachable!("'sstore' not supported in read-only context")
     }
 
-    fn temporary_sstore(
-        &mut self,
-        _: tempo_primitives::TemporaryStorageAccount,
-        _: U256,
-        _: U256,
-    ) -> TempoResult<revm::interpreter::StateLoad<revm::interpreter::SStoreResult>> {
-        unreachable!("'temporary_sstore' not supported in read-only context")
+    fn temporary_store(&mut self, _: Address, _: B256, _: U256) -> TempoResult<()> {
+        unreachable!("'temporary_store' not supported in read-only context")
     }
+
+    // `temporary_load` keeps the trait's default implementation but is unusable here
+    // until `block_env` is implemented for the read-only context.
 
     fn set_code(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
         unreachable!("'set_code' not supported in read-only context")

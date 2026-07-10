@@ -9,6 +9,7 @@ pub use actions::{StorageAction, StorageActions};
 pub mod evm;
 pub use evm::SstoreTransitionFlags;
 pub mod hashmap;
+pub mod temporary;
 
 pub mod thread_local;
 use alloy::primitives::keccak256;
@@ -24,10 +25,7 @@ pub use types::mapping as slots;
 use alloy::primitives::{Address, B256, LogData, Signature, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
-    interpreter::{
-        SStoreResult, StateLoad,
-        gas::{KECCAK256, KECCAK256WORD},
-    },
+    interpreter::gas::{KECCAK256, KECCAK256WORD},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -72,19 +70,36 @@ pub trait PrecompileStorageProvider {
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
 
-    /// Journal SSTORE into a TIP-1040 temporary storage account, charging no gas and
-    /// returning the value transition and whether the slot was cold.
+    /// Stores `value` for `namespace` under `key` in [TIP-1040] temporary storage.
     ///
-    /// Callers meter gas themselves per the TIP-1040 schedule. Bypasses TIP-1060
-    /// storage-credit accounting (expiring storage must neither mint nor spend credits).
-    /// Like [`sstore`](Self::sstore), static-call protection is the dispatcher's job
-    /// (`mutate`/`mutate_void`), not this method's.
-    fn temporary_sstore(
-        &mut self,
-        account: TemporaryStorageAccount,
-        key: U256,
-        value: U256,
-    ) -> Result<StateLoad<SStoreResult>>;
+    /// A complete TIP-1040 store: writes `keccak256(namespace || key)` in the current
+    /// epoch's account and charges the TIP-1040 gas schedule (see [`temporary`]).
+    /// Bypasses TIP-1060 storage-credit accounting (expiring storage must neither mint
+    /// nor spend credits). Like [`sstore`](Self::sstore), static-call protection is the
+    /// dispatcher's job (`mutate`/`mutate_void`), not this method's.
+    ///
+    /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+    fn temporary_store(&mut self, namespace: Address, key: B256, value: U256) -> Result<()>;
+
+    /// Loads `namespace`'s [TIP-1040] temporary storage value for `key`, checking the
+    /// current epoch and falling back to the previous one. Returns zero if the key is
+    /// unset in both. Each accessed slot is charged standard SLOAD pricing.
+    ///
+    /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+    fn temporary_load(&mut self, namespace: Address, key: B256) -> Result<U256> {
+        let slot = temporary::slot(namespace, key);
+        let block_number = self.block_env().number.saturating_to::<u64>();
+        let epoch = block_number / tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH;
+
+        let value = self.sload(TemporaryStorageAccount::for_epoch(epoch).address(), slot)?;
+        if !value.is_zero() || epoch == 0 {
+            return Ok(value);
+        }
+        self.sload(
+            TemporaryStorageAccount::for_epoch(epoch - 1).address(),
+            slot,
+        )
+    }
 
     /// Increments a persistent storage slot by `delta`.
     ///

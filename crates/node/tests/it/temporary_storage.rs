@@ -10,7 +10,7 @@ use alloy::{
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::ITemporaryStorage;
-use tempo_precompiles::{TEMPORARY_STORAGE_ADDRESS, temporary_storage::EPOCH_LENGTH};
+use tempo_precompiles::TEMPORARY_STORAGE_ADDRESS;
 use tempo_primitives::TemporaryStorageAccount;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -81,7 +81,7 @@ async fn test_temporary_storage_survives_block_commit() -> eyre::Result<()> {
 
     // The boundary hook deployed the 0xEF marker to the precompile and the TIP-1040
     // marker to the current epoch's account, and the value sits in that account's storage.
-    let epoch_account = TemporaryStorageAccount::for_epoch(store_block / EPOCH_LENGTH).address();
+    let epoch_account = TemporaryStorageAccount::for_block(store_block).address();
     assert_eq!(
         provider
             .get_code_at(TEMPORARY_STORAGE_ADDRESS)

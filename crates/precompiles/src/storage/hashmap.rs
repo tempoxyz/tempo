@@ -11,7 +11,7 @@ use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, SstoreTransitionFlags},
+    storage::{PrecompileStorageProvider, SstoreTransitionFlags, temporary},
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -158,30 +158,21 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    /// NOTE: always reports `is_cold: false` — cold/warm gas assertions must run against
-    /// the journal-backed [`EvmPrecompileStorageProvider`](super::evm::EvmPrecompileStorageProvider).
-    fn temporary_sstore(
+    /// NOTE: unmetered like all `HashMapStorageProvider` operations — gas assertions
+    /// must run against the journal-backed
+    /// [`EvmPrecompileStorageProvider`](super::evm::EvmPrecompileStorageProvider).
+    fn temporary_store(
         &mut self,
-        account: TemporaryStorageAccount,
-        key: U256,
+        namespace: Address,
+        key: alloy::primitives::B256,
         value: U256,
-    ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
-        let address = account.address();
+    ) -> Result<(), TempoPrecompileError> {
+        let slot = temporary::slot(namespace, key);
+        let block_number = self.block_env.number.saturating_to::<u64>();
+        let address = TemporaryStorageAccount::for_block(block_number).address();
         self.counter_sstore += 1;
-        let present = self
-            .internals
-            .get(&(address, key))
-            .copied()
-            .unwrap_or(U256::ZERO);
-        self.internals.insert((address, key), value);
-        Ok(StateLoad::new(
-            SStoreResult {
-                original_value: present,
-                present_value: present,
-                new_value: value,
-            },
-            false,
-        ))
+        self.internals.insert((address, slot), value);
+        Ok(())
     }
 
     fn tstore(

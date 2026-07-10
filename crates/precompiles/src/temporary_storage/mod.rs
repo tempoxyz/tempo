@@ -10,30 +10,18 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::ITemporaryStorage;
 use tempo_precompiles_macros::contract;
-use tempo_primitives::TemporaryStorageAccount;
+pub use tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH as EPOCH_LENGTH;
 
 use crate::{TEMPORARY_STORAGE_ADDRESS, error::Result};
-use alloy::primitives::{Address, B256, U256, keccak256};
-
-/// Number of blocks per TIP-1040 epoch, approximately 24 hours at 500ms slot times.
-pub const EPOCH_LENGTH: u64 = 172_800;
-
-/// Gas cost for `temporaryStore` when the slot is zero in the current epoch.
-const TEMPORARY_STORE_GAS_NEW: u64 = 40_000;
-
-/// Gas cost for `temporaryStore` when the slot is nonzero in the current epoch and cold
-/// (`COLD_SLOAD_COST` + `SSTORE_RESET_GAS`).
-const TEMPORARY_STORE_GAS_EXISTING_COLD: u64 = 2_100 + 5_000;
-
-/// Gas cost for `temporaryStore` when the slot is nonzero in the current epoch and warm
-/// (`WARM_STORAGE_READ_COST` + `SSTORE_WRITE_GAS_DELTA`).
-const TEMPORARY_STORE_GAS_EXISTING_WARM: u64 = 200;
+use alloy::primitives::{Address, B256};
 
 /// TIP-1040 temporary storage precompile.
 ///
-/// `temporaryLoad` gas follows the standard EIP-2929 SLOAD pricing; `temporaryStore`
-/// uses the TIP-1040 pricing above, metered by this precompile on top of the unmetered
-/// [`temporary_sstore`](crate::storage::StorageCtx::temporary_sstore).
+/// A thin ABI shell: the complete storage operations (slot derivation, epoch routing,
+/// fallback reads, and gas) live on the storage provider's
+/// [`temporary_store`](crate::storage::StorageCtx::temporary_store)/
+/// [`temporary_load`](crate::storage::StorageCtx::temporary_load), with `msg.sender` as
+/// the namespace.
 #[contract(addr = TEMPORARY_STORAGE_ADDRESS)]
 pub struct TemporaryStorage {}
 
@@ -43,79 +31,33 @@ impl TemporaryStorage {
         self.__initialize()
     }
 
-    /// Returns the TIP-1040 epoch containing the current block.
-    pub fn current_epoch(&self) -> u64 {
-        self.storage.block_number() / EPOCH_LENGTH
-    }
-
-    /// Derives the storage slot for a `(sender, key)` pair: `keccak256(sender || key)`.
-    ///
-    /// Unmetered, like [`Mapping`](crate::storage::Mapping) slot derivation; TIP-1040 prices
-    /// the hash into the flat operation costs.
-    fn slot(sender: Address, key: B256) -> U256 {
-        let mut buf = [0u8; 52];
-        buf[..20].copy_from_slice(sender.as_slice());
-        buf[20..].copy_from_slice(key.as_slice());
-        keccak256(buf).into()
-    }
-
-    /// Stores `value` at the derived slot in the current epoch's account.
+    /// Stores `value` for `sender` under `key` in the current epoch.
     pub fn temporary_store(
         &mut self,
         sender: Address,
         call: ITemporaryStorage::temporaryStoreCall,
     ) -> Result<()> {
-        let slot = Self::slot(sender, call.key);
-        let account = TemporaryStorageAccount::for_epoch(self.current_epoch());
-
-        // Pre-charge the minimum store cost before touching storage to avoid cheap useless
-        // work, mirroring the metered SSTORE path.
-        self.storage.deduct_gas(TEMPORARY_STORE_GAS_EXISTING_WARM)?;
-        let result = self
-            .storage
-            .temporary_sstore(account, slot, call.value.into())?;
-        let gas = if result.data.present_value.is_zero() {
-            TEMPORARY_STORE_GAS_NEW
-        } else if result.is_cold {
-            TEMPORARY_STORE_GAS_EXISTING_COLD
-        } else {
-            TEMPORARY_STORE_GAS_EXISTING_WARM
-        };
         self.storage
-            .deduct_gas(gas - TEMPORARY_STORE_GAS_EXISTING_WARM)
+            .temporary_store(sender, call.key, call.value.into())
     }
 
-    /// Loads the value for the derived slot, checking the current epoch first and falling
+    /// Loads `sender`'s value for `key`, checking the current epoch first and falling
     /// back to the previous epoch. Returns zero if the key is unset in both.
     pub fn temporary_load(
         &self,
         sender: Address,
         call: ITemporaryStorage::temporaryLoadCall,
     ) -> Result<B256> {
-        let slot = Self::slot(sender, call.key);
-        let epoch = self.current_epoch();
-
-        let value = self
-            .storage
-            .sload(TemporaryStorageAccount::for_epoch(epoch).address(), slot)?;
-        if !value.is_zero() || epoch == 0 {
-            return Ok(value.into());
-        }
-        Ok(self
-            .storage
-            .sload(
-                TemporaryStorageAccount::for_epoch(epoch - 1).address(),
-                slot,
-            )?
-            .into())
+        Ok(self.storage.temporary_load(sender, call.key)?.into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::primitives::{address, keccak256};
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider, temporary};
+    use alloy::primitives::{U256, address, keccak256};
+    use tempo_primitives::TemporaryStorageAccount;
 
     const SENDER: Address = address!("0x1111111111111111111111111111111111111111");
 
@@ -395,7 +337,7 @@ mod tests {
             // Read back through the database, as the next block would.
             Ok(evm
                 .db_mut()
-                .storage(epoch_account, TemporaryStorage::slot(SENDER, key))?)
+                .storage(epoch_account, temporary::slot(SENDER, key))?)
         };
 
         assert_eq!(
