@@ -13560,6 +13560,7 @@ version = "1.10.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
+ "alloy-eips",
  "alloy-json-abi",
  "alloy-primitives",
  "bytes",
