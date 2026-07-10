@@ -10,7 +10,6 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::ITemporaryStorage;
 use tempo_precompiles_macros::contract;
-pub use tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH as EPOCH_LENGTH;
 
 use crate::{TEMPORARY_STORAGE_ADDRESS, error::Result};
 use alloy::primitives::{Address, B256};
@@ -57,7 +56,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider, temporary};
     use alloy::primitives::{U256, address, keccak256};
-    use tempo_primitives::TemporaryStorageAccount;
+    use tempo_primitives::{TEMPORARY_STORAGE_EPOCH_LENGTH, TemporaryStorageAccount};
 
     const SENDER: Address = address!("0x1111111111111111111111111111111111111111");
 
@@ -109,7 +108,7 @@ mod tests {
     #[test]
     fn test_value_stored_in_epoch_account() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        storage.set_block_number(5 * EPOCH_LENGTH);
+        storage.set_block_number(5 * TEMPORARY_STORAGE_EPOCH_LENGTH);
         StorageCtx::enter(&mut storage, || {
             let key = B256::repeat_byte(0x01);
             store(SENDER, key, B256::repeat_byte(0x02))
@@ -136,12 +135,15 @@ mod tests {
         let value = B256::repeat_byte(0x02);
 
         // Write in the last block of epoch 0.
-        storage.set_block_number(EPOCH_LENGTH - 1);
+        storage.set_block_number(TEMPORARY_STORAGE_EPOCH_LENGTH - 1);
         StorageCtx::enter(&mut storage, || store(SENDER, key, value))?;
 
         // Readable throughout epoch 1 via the previous-epoch fallback; the first block
         // of epoch 1 is where the "no previous epoch" guard flips off.
-        for block in [EPOCH_LENGTH, 2 * EPOCH_LENGTH - 1] {
+        for block in [
+            TEMPORARY_STORAGE_EPOCH_LENGTH,
+            2 * TEMPORARY_STORAGE_EPOCH_LENGTH - 1,
+        ] {
             storage.set_block_number(block);
             StorageCtx::enter(&mut storage, || {
                 assert_eq!(load(SENDER, key).unwrap(), value)
@@ -149,7 +151,7 @@ mod tests {
         }
 
         // Unreachable from epoch 2 onward.
-        storage.set_block_number(2 * EPOCH_LENGTH);
+        storage.set_block_number(2 * TEMPORARY_STORAGE_EPOCH_LENGTH);
         StorageCtx::enter(&mut storage, || {
             assert_eq!(load(SENDER, key).unwrap(), B256::ZERO)
         });
@@ -163,10 +165,10 @@ mod tests {
         let old = B256::repeat_byte(0x02);
         let new = B256::repeat_byte(0x03);
 
-        storage.set_block_number(3 * EPOCH_LENGTH);
+        storage.set_block_number(3 * TEMPORARY_STORAGE_EPOCH_LENGTH);
         StorageCtx::enter(&mut storage, || store(SENDER, key, old))?;
 
-        storage.set_block_number(4 * EPOCH_LENGTH);
+        storage.set_block_number(4 * TEMPORARY_STORAGE_EPOCH_LENGTH);
         StorageCtx::enter(&mut storage, || {
             // Fallback still returns the epoch-3 value until overwritten.
             assert_eq!(load(SENDER, key)?, old);
@@ -184,10 +186,10 @@ mod tests {
         let key = B256::repeat_byte(0x01);
         let value = B256::repeat_byte(0x02);
 
-        storage.set_block_number(3 * EPOCH_LENGTH);
+        storage.set_block_number(3 * TEMPORARY_STORAGE_EPOCH_LENGTH);
         StorageCtx::enter(&mut storage, || store(SENDER, key, value))?;
 
-        storage.set_block_number(4 * EPOCH_LENGTH);
+        storage.set_block_number(4 * TEMPORARY_STORAGE_EPOCH_LENGTH);
         StorageCtx::enter(&mut storage, || {
             store(SENDER, key, B256::ZERO)?;
             assert_eq!(load(SENDER, key)?, value);
@@ -272,7 +274,7 @@ mod tests {
         // account, charging both slots independently: 2 * 2,100.
         let block_epoch_1 = TempoBlockEnv {
             inner: revm::context::BlockEnv {
-                number: U256::from(EPOCH_LENGTH),
+                number: U256::from(TEMPORARY_STORAGE_EPOCH_LENGTH),
                 ..Default::default()
             },
             ..Default::default()

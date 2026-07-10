@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, U256};
 use revm::{
     context::{BlockEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::GasParams,
@@ -164,7 +164,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn temporary_store(
         &mut self,
         namespace: Address,
-        key: alloy::primitives::B256,
+        key: B256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         let slot = temporary::slot(namespace, key);

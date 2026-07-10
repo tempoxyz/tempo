@@ -3,7 +3,7 @@ use crate::{
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction, temporary},
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use bitflags::bitflags;
 use revm::{
@@ -391,7 +391,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn temporary_store(
         &mut self,
         namespace: Address,
-        key: alloy::primitives::B256,
+        key: B256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         let slot = temporary::slot(namespace, key);
