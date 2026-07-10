@@ -554,7 +554,7 @@ jobs:
                   gh pr comment "$PR_NUMBER" --body "$BENCH_COMMAND"
                 fi
 
-                CYCLOPS_COMMAND="cyclops audit fast"
+                CYCLOPS_COMMAND='cyclops audit fast note="Review every upstream reth commit included in the revision diff."'
                 echo "Posting Cyclops command on PR #${PR_NUMBER}"
                 gh pr comment "$PR_NUMBER" --body "$CYCLOPS_COMMAND"
                 exit 0
