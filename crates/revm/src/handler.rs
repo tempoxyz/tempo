@@ -1408,23 +1408,23 @@ where
                 return Err(match err {
                     TempoPrecompileError::TIPFeeAMMError(
                         TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => match fee_manager.get_validator_token(
-                        journal,
-                        block.beneficiary(),
-                        cfg.spec,
-                        StorageActions::disabled(),
-                    ) {
-                        Ok(validator_token) => FeePaymentError::InsufficientAmmLiquidityForPair {
-                            user_token: fee_token,
+                    ) => {
+                        let validator_token = fee_manager
+                            .get_validator_token(
+                                journal,
+                                block.beneficiary(),
+                                cfg.spec,
+                                StorageActions::disabled(),
+                            )
+                            .ok();
+
+                        FeePaymentError::InsufficientAmmLiquidity {
+                            user_token: validator_token.map(|_| fee_token),
                             validator_token,
                             fee: gas_balance_spending,
                         }
-                        .into(),
-                        Err(_) => FeePaymentError::InsufficientAmmLiquidity {
-                            fee: gas_balance_spending,
-                        }
-                        .into(),
-                    },
+                        .into()
+                    }
 
                     TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
                         InsufficientBalance { available, .. },
@@ -2867,15 +2867,12 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
-                    FeePaymentError::InsufficientAmmLiquidityForPair {
-                        user_token: reported_user_token,
-                        validator_token: reported_validator_token,
-                        fee: reported_fee,
+                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(ref err)))
+                    if *err == FeePaymentError::InsufficientAmmLiquidity {
+                        user_token: Some(user_token),
+                        validator_token: Some(validator_token),
+                        fee,
                     }
-                ))) if reported_user_token == user_token
-                    && reported_validator_token == validator_token
-                    && reported_fee == fee
             ),
             "expected pair-aware insufficient liquidity error, got: {result:?}"
         );
@@ -2916,9 +2913,12 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(
-                    FeePaymentError::InsufficientAmmLiquidity { fee: reported_fee }
-                ))) if reported_fee == fee
+                Err(EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTx(ref err)))
+                    if *err == FeePaymentError::InsufficientAmmLiquidity {
+                        user_token: None,
+                        validator_token: None,
+                        fee,
+                    }
             ),
             "expected generic insufficient liquidity error when pair lookup fails, got: {result:?}"
         );
