@@ -22,6 +22,7 @@ use crate::utils::TestNodeBuilder;
 struct BlockedTransfer {
     receiver: Address,
     receipt: Bytes,
+    blocked_at: u64,
     gas_used: u64,
 }
 
@@ -127,6 +128,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     Ok(BlockedTransfer {
         receiver,
         receipt: receipt_bytes,
+        blocked_at: decoded_receipt.blockedAt,
         gas_used: receipt.gas_used,
     })
 }
@@ -166,7 +168,16 @@ async fn claim_blocked<P: Provider + Clone>(
         .await?;
     assert!(receipt.status(), "claim failed");
 
-    Ok(receipt.gas_used)
+    // `blockedAt` is copied into the claim calldata. Normalize its non-zero-byte
+    // premium so the snapshot does not depend on the wall-clock timestamp.
+    let non_zero_timestamp_bytes = blocked
+        .blocked_at
+        .to_be_bytes()
+        .into_iter()
+        .filter(|byte| *byte != 0)
+        .count() as u64;
+
+    Ok(receipt.gas_used - non_zero_timestamp_bytes * 12)
 }
 
 fn transfer_blocked(
