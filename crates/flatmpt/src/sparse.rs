@@ -110,6 +110,12 @@ pub struct SparseStats {
 static TRIE_POOL: parking_lot::Mutex<Option<(B256, SparseStateTrie)>> =
     parking_lot::Mutex::new(None);
 
+/// The last flat snapshot any worker held, carried across blocks like the
+/// trie pool: a worker on a pool-hit block can reveal from ANY lineage root,
+/// so it never needs to wait for the shadow lock to get a snapshot.
+static SNAP_POOL: parking_lot::Mutex<Option<mpt_flat_poc::FlatSnapshot>> =
+    parking_lot::Mutex::new(None);
+
 /// One committed-but-not-yet-applied block's effect on the trie, kept so
 /// proof fetches for descendants can run against flat-at-an-older-root plus
 /// this overlay stack instead of waiting for the background follower
@@ -799,7 +805,8 @@ impl Worker {
     }
 
     /// Refresh the read snapshot if the writer isn't busy; keep the old one
-    /// otherwise (stale snapshots stay sound on pool-hit blocks).
+    /// otherwise (stale snapshots stay sound on pool-hit blocks). Falls back
+    /// to the cross-block snapshot pool before ever considering blocking.
     fn refresh_snap(&mut self, block: bool) {
         let guard = if block {
             Some(self.shadow.read())
@@ -808,7 +815,12 @@ impl Worker {
         };
         if let Some(g) = guard {
             self.snap_at_parent = g.at_parent(self.parent_root);
-            self.snap = Some(g.db().snapshot());
+            let snap = g.db().snapshot();
+            *SNAP_POOL.lock() = Some(snap.clone());
+            self.snap = Some(snap);
+        } else if self.snap.is_none() {
+            self.snap = SNAP_POOL.lock().clone();
+            self.snap_at_parent = false;
         }
     }
 
