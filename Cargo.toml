@@ -198,6 +198,7 @@ reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "1bf23
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
