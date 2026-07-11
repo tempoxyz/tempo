@@ -15,28 +15,30 @@
 
 # Tempo
 
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/tempoxyz/tempo?utm_source=badge)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/tempoxyz/tempo)
 
 The blockchain for payments at scale.
 
-[Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
+General-purpose blockchains were not designed around the volume and reliability requirements of stablecoin payments. Tempo serves fintechs, payment processors, and enterprises that need predictable payment infrastructure at scale.
 
-You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
+[Tempo](https://tempo.xyz/), incubated by [Stripe](https://stripe.com) and [Paradigm](https://www.paradigm.xyz), is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
+
+You can get started today by integrating with the [Tempo testnet](https://tempo.xyz/developers/docs/quickstart/integrate-tempo), [running a Tempo node](https://tempo.xyz/developers/docs/guide/node), reading the [Tempo protocol specs](https://tempo.xyz/developers/docs/protocol), or [building with Tempo SDKs](https://tempo.xyz/developers/docs/sdk).
 
 ## What makes Tempo different
 
-- [TIP‑20 token standard](https://docs.tempo.xyz/protocol/tip20/overview) (enshrined ERC‑20 extensions)
+- [TIP‑20 token standard](https://tempo.xyz/developers/docs/protocol/tip20/overview) (enshrined ERC‑20 extensions)
 
   - Predictable payment throughput via dedicated payment lanes reserved for TIP‑20 transfers (eliminates noisy‑neighbor contention).
   - Native reconciliation with on‑transfer memos and commitment patterns (hash/locator) for off‑chain PII and large data.
-  - Built‑in compliance through [TIP‑403 Policy Registry](https://docs.tempo.xyz/protocol/tip403/overview): single policy shared across multiple tokens, updated once and enforced everywhere.
+  - Built‑in compliance through [TIP‑403 Policy Registry](https://tempo.xyz/developers/docs/protocol/tip403/overview): single policy shared across multiple tokens, updated once and enforced everywhere.
 
-- Low, predictable fees in [stablecoins](https://docs.tempo.xyz/learn/stablecoins)
+- Low, predictable fees in [stablecoins](https://tempo.xyz/learn/what-are-stablecoins/)
 
-  - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://docs.tempo.xyz/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
-  - TIP‑20 transfers target sub‑millidollar costs (<$0.001).
+  - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://tempo.xyz/developers/docs/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
+  - TIP‑20 transfers target sub-cent fees.
 
-- [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) (native “smart accounts”)
+- [Tempo Transactions](https://tempo.xyz/developers/docs/guide/tempo-transaction) (native “smart accounts”)
 
   - Batched payments: atomic multi‑operation payouts (payroll, settlements, refunds).
   - Fee sponsorship: apps can pay users' gas to streamline onboarding and flows.
@@ -47,6 +49,10 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
   - Built on the [Reth SDK](https://github.com/paradigmxyz/reth), the most performant and flexible EVM (Ethereum Virtual Machine) execution client.
   - Simplex Consensus (via [Commonware](https://commonware.xyz/)): fast, sub‑second finality in normal conditions; graceful degradation under adverse networks.
+
+- [Machine Payments Protocol (MPP)](https://mpp.dev)
+
+  - Tempo is a payment method for MPP, an open standard co-authored by Tempo and Stripe. MPP enables AI agents and applications to pay for resources within an HTTP request, without requiring a billing account or checkout flow in advance.
 
 - Coming soon
 
@@ -59,7 +65,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 - Deploy and interact with smart contracts using the same tools, languages, and frameworks used on Ethereum, such as Solidity, Foundry, and Hardhat.
 - All Ethereum JSON-RPC methods work out of the box.
 
-While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://docs.tempo.xyz/quickstart/evm-compatibility).
+While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://tempo.xyz/developers/docs/quickstart/evm-compatibility).
 
 ## Getting Started
 
@@ -76,7 +82,7 @@ You can connect to Tempo's public testnet using the following details:
 | **WebSocket URL**  | `wss://rpc.moderato.tempo.xyz`     |
 | **Block Explorer** | `https://explore.tempo.xyz`        |
 
-Next, grab some stablecoins to test with from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
+Next, grab some stablecoins to test with from Tempo's [Faucet](https://tempo.xyz/developers/docs/quickstart/faucet#faucet).
 
 Alternatively, use [`cast`](https://github.com/foundry-rs/foundry):
 
@@ -88,20 +94,20 @@ cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.moderato.tempo.xyz
 
 We provide three different installation paths: installing a pre-built binary, building from source or using our provided Docker image.
 
-- [Pre-built Binary](https://docs.tempo.xyz/guide/node/installation#pre-built-binary)
-- [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
-- [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
+- [Pre-built Binary](https://tempo.xyz/developers/docs/guide/node/installation#pre-built-binary)
+- [Build from Source](https://tempo.xyz/developers/docs/guide/node/installation#build-from-source)
+- [Docker](https://tempo.xyz/developers/docs/guide/node/installation#docker)
 
-See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
+See the [Tempo documentation](https://tempo.xyz/developers/docs/guide/node) for instructions on how to install and run Tempo.
 
 ### As a developer
 
 Tempo has several SDKs to help you get started building on Tempo:
 
-- [TypeScript](https://docs.tempo.xyz/sdk/typescript)
-- [Rust](https://docs.tempo.xyz/sdk/rust)
-- [Go](https://docs.tempo.xyz/sdk/go)
-- [Foundry](https://docs.tempo.xyz/sdk/foundry)
+- [TypeScript](https://tempo.xyz/developers/docs/sdk/typescript)
+- [Rust](https://tempo.xyz/developers/docs/sdk/rust)
+- [Go](https://tempo.xyz/developers/docs/sdk/go)
+- [Foundry](https://tempo.xyz/developers/docs/sdk/foundry)
 
 Want to contribute?
 
@@ -144,6 +150,13 @@ Start a `localnet`:
 just localnet
 ```
 
+## Related projects
+
+- [`tempoxyz/tempo-apps`](https://github.com/tempoxyz/tempo-apps): Developer applications and hosted services for Tempo, including the explorer and network tooling.
+- [`tempoxyz/tidx`](https://github.com/tempoxyz/tidx): Chain indexer for querying Tempo blocks, transactions, and logs.
+- [`tempoxyz/wallet-cli`](https://github.com/tempoxyz/wallet-cli): Command-line wallet and HTTP client for Tempo and MPP-enabled services.
+- [`tempoxyz/mpp`](https://github.com/tempoxyz/mpp): Documentation, protocol explainers, and service directory for MPP.
+
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
@@ -156,9 +169,9 @@ See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Not
 
 Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum) and `.asc` (GPG signature), and is also covered by Sigstore-signed SLSA build provenance.
 
-The [`tempoup`](./tempoup) installer performs these checks automatically on every install. To verify manually, pick **one** of the two paths below — both prove the archive came from the tagged commit, signed by tempoxyz.
+The [`tempoup`](./tempoup) installer performs these checks automatically on every install. To verify manually, pick **one** of the two paths below. Both prove the archive came from the tagged commit, signed by tempoxyz.
 
-**Path A — offline / no GitHub auth required (checksum + GPG):**
+**Path A: offline / no GitHub auth required (checksum + GPG):**
 
 ```bash
 TAG=v1.6.0
@@ -170,11 +183,11 @@ gh release download "$TAG" --repo tempoxyz/tempo \
 sha256sum -c "$ARCHIVE.sha256"
 
 # Public key + fingerprint:
-# https://docs.tempo.xyz/guide/node/installation#verifying-releases
+# https://tempo.xyz/developers/docs/guide/node/installation#verifying-releases
 gpg --verify "$ARCHIVE.asc" "$ARCHIVE"
 ```
 
-**Path B — Sigstore (requires `gh` installed and authenticated):**
+**Path B: Sigstore (requires `gh` installed and authenticated):**
 
 ```bash
 TAG=v1.6.0
