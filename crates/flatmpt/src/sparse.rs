@@ -99,6 +99,16 @@ pub struct SparseStats {
     pub trie_mem_mb: u64,
     /// Prewarm batches dropped because the hook channel was full.
     pub hook_dropped: u64,
+    /// Finish sub-phases (all inside `finish_ms`): net-change map build,
+    /// storage-leaf drain, account promote (incl. storage roots), final
+    /// account drain + root hash, overlay build+push.
+    pub fin_netmap_ms: u64,
+    pub fin_drain_ms: u64,
+    pub fin_promote_ms: u64,
+    /// Portion of `fin_promote_ms` spent hashing storage subtries.
+    pub fin_sroot_ms: u64,
+    pub fin_root_ms: u64,
+    pub fin_overlay_ms: u64,
 }
 
 /// The revealed sparse trie carried across blocks, tagged with the state root
@@ -121,11 +131,15 @@ static SNAP_POOL: parking_lot::Mutex<Option<mpt_flat_poc::FlatSnapshot>> =
 /// this overlay stack instead of waiting for the background follower
 /// (reth's engine-tree pattern). Pushed at sparse finish, pruned as the
 /// follower advances; a rebuilt candidate truncates its abandoned sibling.
+type OverlayContent = std::sync::Arc<parking_lot::RwLock<Option<(TrieUpdatesSorted, HashedPostState)>>>;
+
 struct OverlayBlock {
     parent_root: B256,
     root: B256,
-    trie: TrieUpdatesSorted,
-    post: HashedPostState,
+    /// Filled by the finish thread's async overlay build; `None` until then.
+    /// The entry itself is pushed synchronously so deque order (and the
+    /// supersede-on-same-parent rule) stays deterministic.
+    content: OverlayContent,
 }
 
 static OVERLAYS: parking_lot::Mutex<std::collections::VecDeque<OverlayBlock>> =
@@ -135,21 +149,27 @@ static OVERLAYS: parking_lot::Mutex<std::collections::VecDeque<OverlayBlock>> =
 /// fetches for deep descendants degrade to waiting for the follower.
 const OVERLAY_CAP: usize = 8;
 
-fn push_overlay(o: OverlayBlock) {
+/// Register a block's overlay slot (synchronously, preserving order); the
+/// returned handle is filled by the async overlay build.
+fn push_overlay_pending(parent_root: B256, root: B256) -> OverlayContent {
+    let content: OverlayContent = std::sync::Arc::new(parking_lot::RwLock::new(None));
     let mut q = OVERLAYS.lock();
     // A candidate rebuilding on the same parent supersedes the abandoned one
     // (and anything stacked on it).
-    if let Some(i) = q.iter().position(|e| e.parent_root == o.parent_root) {
+    if let Some(i) = q.iter().position(|e| e.parent_root == parent_root) {
         q.truncate(i);
     }
-    q.push_back(o);
+    q.push_back(OverlayBlock { parent_root, root, content: content.clone() });
     while q.len() > OVERLAY_CAP {
         q.pop_front();
     }
+    content
 }
 
 /// Merged overlays covering `flat_root` → `parent_root`, if a complete chain
-/// is tracked. `None` with equal roots means "no overlay needed".
+/// is tracked. `None` with equal roots means "no overlay needed". Waits
+/// briefly for in-flight overlay builds (a ~10ms async fill); timing out
+/// degrades to the caller's wait-for-parent path.
 fn overlay_chain(
     flat_root: B256,
     parent_root: B256,
@@ -157,18 +177,38 @@ fn overlay_chain(
     if flat_root == parent_root {
         return None;
     }
-    let q = OVERLAYS.lock();
+    let entries: Vec<(B256, B256, OverlayContent)> = OVERLAYS
+        .lock()
+        .iter()
+        .map(|o| (o.parent_root, o.root, o.content.clone()))
+        .collect();
     let mut trie = TrieUpdates::default();
     let mut post = HashedPostState::default();
     let mut at = flat_root;
     let mut found = false;
-    for o in q.iter() {
-        if o.parent_root != at {
+    for (o_parent, o_root, content) in &entries {
+        if *o_parent != at {
             continue;
         }
-        trie.extend_from_sorted(&o.trie);
-        post.extend(o.post.clone());
-        at = o.root;
+        let mut ready = false;
+        for _ in 0..2_000 {
+            {
+                let g = content.read();
+                if let Some((t, p)) = g.as_ref() {
+                    trie.extend_from_sorted(t);
+                    post.extend(p.clone());
+                    ready = true;
+                }
+            }
+            if ready {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if !ready {
+            return None; // build still in flight after 2s — degrade to waiting
+        }
+        at = *o_root;
         if at == parent_root {
             found = true;
             break;
@@ -595,6 +635,11 @@ struct Worker {
     fetched_storage: B256Map<B256Map<u8>>,
     /// Keys touched since the last reveal pass (pass trigger).
     fresh: usize,
+    /// Slot values streamed from the state hook and handed to the trie
+    /// (last write wins, mirroring the ops encoding exactly). Finish skips
+    /// any op whose value matches — the hook already applied it — so at
+    /// steady state the finish drain is only the hook's dropped batches.
+    streamed_storage: B256Map<B256Map<Vec<u8>>>,
     stats: SparseStats,
 }
 
@@ -623,6 +668,7 @@ impl Worker {
             fetched_accounts: B256Map::default(),
             fetched_storage: B256Map::default(),
             fresh: 0,
+            streamed_storage: B256Map::default(),
             stats,
         }
     }
@@ -642,8 +688,12 @@ impl Worker {
         }
     }
 
-    /// Execution-time prewarming: record touched keys as `Touched` leaf
-    /// updates so reveal passes pull their trie paths in while the EVM runs.
+    /// Execution-time streaming: apply touched slots as real `Changed` leaf
+    /// updates (post-tx values, last write wins) so exec passes do the leaf
+    /// walks while the EVM runs; account paths are prewarmed as `Touched`
+    /// (their leaves need the storage root, encoded at promote). Values
+    /// mirror the ops encoding exactly so finish can skip matching ops.
+    /// Lossy by design: a dropped batch only means finish applies those ops.
     fn on_state(&mut self, state: revm::state::EvmState) {
         for (address, account) in &state {
             if !account.is_touched() {
@@ -657,6 +707,9 @@ impl Worker {
                 self.fresh += 1;
             }
             if account.is_selfdestructed() {
+                // Values streamed earlier for this account are stale; finish
+                // removes a destroyed account's storage updates wholesale and
+                // the skip-compare consults ops only, so no cleanup needed.
                 continue;
             }
             for (slot, s) in &account.storage {
@@ -664,17 +717,28 @@ impl Worker {
                     continue;
                 }
                 let slot_key = keccak256(slot.to_be_bytes::<32>());
-                let fetched =
-                    self.fetched_storage.get(&acct).is_some_and(|f| f.contains_key(&slot_key));
-                let pending = self
+                let value = if s.present_value.is_zero() {
+                    Vec::new()
+                } else {
+                    mpt_flat_poc::eth::storage_value_rlp(s.present_value)
+                };
+                let newly = !self
                     .storage_updates
                     .get(&acct)
-                    .is_some_and(|u| u.contains_key(&slot_key));
-                if !fetched && !pending {
-                    self.storage_updates
-                        .entry(acct)
-                        .or_default()
-                        .insert(slot_key, LeafUpdate::Touched);
+                    .is_some_and(|u| u.contains_key(&slot_key))
+                    && !self
+                        .fetched_storage
+                        .get(&acct)
+                        .is_some_and(|f| f.contains_key(&slot_key));
+                self.streamed_storage
+                    .entry(acct)
+                    .or_default()
+                    .insert(slot_key, value.clone());
+                self.storage_updates
+                    .entry(acct)
+                    .or_default()
+                    .insert(slot_key, LeafUpdate::Changed(value));
+                if newly {
                     self.fresh += 1;
                 }
             }
@@ -690,24 +754,24 @@ impl Worker {
             self.pool_put(parent);
             return Ok((parent, self.stats));
         }
-        let overlay_post = ops_to_post_state(&ops);
-
+        let t_phase = Instant::now();
         // Net-change maps from the ops (ordered; SetAccount precedes its slot
-        // ops, DeleteAccount precedes a recreate's SetAccount).
+        // ops, DeleteAccount precedes a recreate's SetAccount). Borrows `ops`:
+        // the vec is handed to the async overlay build after the root.
         let mut pending_accounts: B256Map<Option<TrieAccount>> = B256Map::default();
         let mut destroyed: B256Set = B256Set::default();
-        for (key, op) in ops {
-            let acct = B256::from(key);
+        for (key, op) in &ops {
+            let acct = B256::from(*key);
             self.account_updates.entry(acct).or_insert(LeafUpdate::Touched);
             match op {
                 StateOp::SetAccount { nonce, balance, code_hash } => {
                     pending_accounts.insert(
                         acct,
                         Some(TrieAccount {
-                            nonce,
-                            balance,
+                            nonce: *nonce,
+                            balance: *balance,
                             storage_root: EMPTY_ROOT_HASH, // patched at promote
-                            code_hash: B256::from(code_hash),
+                            code_hash: B256::from(*code_hash),
                         }),
                     );
                 }
@@ -716,16 +780,37 @@ impl Worker {
                     pending_accounts.insert(acct, None);
                 }
                 StateOp::SetStorage { slot, value } => {
+                    let slot = B256::from(*slot);
+                    // Skip ops the hook already streamed with this exact
+                    // value: the leaf is either applied or pending with the
+                    // right value — either way the drain need not redo it.
+                    if self
+                        .streamed_storage
+                        .get(&acct)
+                        .and_then(|s| s.get(&slot))
+                        .is_some_and(|v| v == value)
+                    {
+                        continue;
+                    }
                     self.storage_updates
                         .entry(acct)
                         .or_default()
-                        .insert(B256::from(slot), LeafUpdate::Changed(value));
+                        .insert(slot, LeafUpdate::Changed(value.clone()));
                 }
                 StateOp::DeleteStorage { slot } => {
+                    let slot = B256::from(*slot);
+                    if self
+                        .streamed_storage
+                        .get(&acct)
+                        .and_then(|s| s.get(&slot))
+                        .is_some_and(|v| v.is_empty())
+                    {
+                        continue;
+                    }
                     self.storage_updates
                         .entry(acct)
                         .or_default()
-                        .insert(B256::from(slot), LeafUpdate::Changed(Vec::new()));
+                        .insert(slot, LeafUpdate::Changed(Vec::new()));
                 }
                 StateOp::WipeStorage => {
                     // Wiping under already-revealed storage nodes is the same
@@ -756,44 +841,96 @@ impl Worker {
         // follower here turns a transient apply lag into a cadence spiral
         // (run34: wait_parent 61→1610ms while proof_ms stayed 0). The fetch
         // path inside reveal_pass waits iff a proof is actually needed.
+        self.stats.fin_netmap_ms = t_phase.elapsed().as_millis() as u64;
         let t_wait = Instant::now();
         if !self.reveal_pass(true)? {
             anyhow::bail!("finish reveal pass deferred despite wait");
         }
         self.stats.wait_parent_ms = t_wait.elapsed().as_millis() as u64;
+        self.stats.fin_drain_ms = self.stats.wait_parent_ms;
 
         // Promote: encode every changed account leaf with its storage root.
-        for (acct, account) in pending_accounts {
-            if destroyed.contains(&acct) && account.is_none() {
-                self.account_updates.insert(acct, LeafUpdate::Changed(Vec::new()));
-                continue;
-            }
-            let Some(mut account) = account else {
-                self.account_updates.insert(acct, LeafUpdate::Changed(Vec::new()));
-                continue;
-            };
-            account.storage_root = if destroyed.contains(&acct) {
-                EMPTY_ROOT_HASH
-            } else if self.fetched_storage.contains_key(&acct)
-                || self.trie.storage_trie_ref(&acct).is_some()
+        // Storage roots that need hashing (accounts whose storage tries live
+        // in this trie) go first — `storage_root` needs `&mut`. The bulk —
+        // tens of thousands of EOA leaves whose storage root comes from the
+        // stored leaf (read-only walk + decode + encode) — fans out across
+        // threads; the serial version was the largest finish phase (~28ms of
+        // 67 at 110k ops).
+        let t_phase = Instant::now();
+        let t_sroot = Instant::now();
+        let mut hashed_sroots: B256Map<B256> = B256Map::default();
+        for (acct, account) in &pending_accounts {
+            if account.is_some()
+                && !destroyed.contains(acct)
+                && (self.fetched_storage.contains_key(acct)
+                    || self.trie.storage_trie_ref(acct).is_some())
             {
-                self.trie
-                    .storage_root(&acct)
-                    .ok_or_else(|| anyhow::anyhow!("storage root unavailable for {acct}"))?
-            } else if let Some(value) = self.trie.get_account_value(&acct) {
-                TrieAccount::decode(&mut value.as_slice())
-                    .map_err(|e| anyhow::anyhow!("stored account rlp: {e}"))?
-                    .storage_root
-            } else {
-                EMPTY_ROOT_HASH
-            };
-            let mut buf = Vec::with_capacity(128);
-            account.encode(&mut buf);
+                let r = self
+                    .trie
+                    .storage_root(acct)
+                    .ok_or_else(|| anyhow::anyhow!("storage root unavailable for {acct}"))?;
+                hashed_sroots.insert(*acct, r);
+            }
+        }
+        self.stats.fin_sroot_ms = t_sroot.elapsed().as_millis() as u64;
+
+        let entries: Vec<(B256, Option<TrieAccount>)> = pending_accounts.into_iter().collect();
+        let trie = &self.trie;
+        let destroyed_ref = &destroyed;
+        let sroots_ref = &hashed_sroots;
+        let encode_chunk = |chunk: &[(B256, Option<TrieAccount>)]| -> anyhow::Result<Vec<(B256, Vec<u8>)>> {
+            let mut out = Vec::with_capacity(chunk.len());
+            for (acct, account) in chunk {
+                let Some(account) = account else {
+                    out.push((*acct, Vec::new()));
+                    continue;
+                };
+                let mut account = account.clone();
+                account.storage_root = if destroyed_ref.contains(acct) {
+                    EMPTY_ROOT_HASH
+                } else if let Some(r) = sroots_ref.get(acct) {
+                    *r
+                } else if let Some(value) = trie.get_account_value(acct) {
+                    TrieAccount::decode(&mut value.as_slice())
+                        .map_err(|e| anyhow::anyhow!("stored account rlp: {e}"))?
+                        .storage_root
+                } else {
+                    EMPTY_ROOT_HASH
+                };
+                let mut buf = Vec::with_capacity(128);
+                account.encode(&mut buf);
+                out.push((*acct, buf));
+            }
+            Ok(out)
+        };
+        let threads =
+            std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4);
+        let encoded: Vec<(B256, Vec<u8>)> = if entries.len() >= 2048 && threads > 1 {
+            let chunk = entries.len().div_ceil(threads);
+            std::thread::scope(|sc| {
+                entries
+                    .chunks(chunk)
+                    .map(|c| sc.spawn(move || encode_chunk(c)))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|h| h.join().expect("promote chunk panicked"))
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })?
+            .into_iter()
+            .flatten()
+            .collect()
+        } else {
+            encode_chunk(&entries)?
+        };
+        for (acct, buf) in encoded {
             self.account_updates.insert(acct, LeafUpdate::Changed(buf));
         }
 
+        self.stats.fin_promote_ms = t_phase.elapsed().as_millis() as u64;
+
         // Final account-trie drain (paths are pre-revealed; deletions may
         // still pull sibling reveals) and the root.
+        let t_phase = Instant::now();
         if !self.reveal_pass(true)? {
             anyhow::bail!("final reveal pass deferred despite wait");
         }
@@ -801,12 +938,21 @@ impl Worker {
             .trie
             .root_with_updates()
             .map_err(|e| anyhow::anyhow!("sparse root: {e}"))?;
-        push_overlay(OverlayBlock {
-            parent_root: self.parent_root,
-            root,
-            trie: trie_updates.into_sorted(),
-            post: overlay_post,
-        });
+        self.stats.fin_root_ms = t_phase.elapsed().as_millis() as u64;
+        // Overlay build (post-state from ops + sorted trie updates) is only
+        // needed by proof fetches of descendant blocks, which at warm state
+        // are rare and, when they race this thread, fall back to the safe
+        // wait-for-parent path — so it leaves the critical path entirely.
+        let t_phase = Instant::now();
+        let slot = push_overlay_pending(self.parent_root, root);
+        std::thread::Builder::new()
+            .name("flatmpt-overlay".into())
+            .spawn(move || {
+                let built = (trie_updates.into_sorted(), ops_to_post_state(&ops));
+                *slot.write() = Some(built);
+            })
+            .map_err(|e| anyhow::anyhow!("spawn overlay build: {e}"))?;
+        self.stats.fin_overlay_ms = t_phase.elapsed().as_millis() as u64;
         self.pool_put(root);
         self.stats.finish_ms = t_finish.elapsed().as_millis() as u64;
         Ok((root, self.stats))
@@ -1370,6 +1516,92 @@ mod stall_tests {
             parent_number += 1;
         }
     }
+
+    /// Streaming path: hook-fed `Changed` values applied during execution
+    /// must leave the trie exactly where the ops drain would — including
+    /// intra-block churn (slot rewritten across txs) and A→B→A reverts
+    /// (bundle nets present==original but keeps the entry, so the op
+    /// restores the streamed intermediate). Exec passes run between batches
+    /// like the worker loop does.
+    #[test]
+    fn sparse_streaming_matches_flat_apply() {
+        use alloy_primitives::U256;
+        use revm::state::{Account as EvmAccount, AccountInfo, AccountStatus, EvmStorageSlot};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stream.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = Vec::new();
+        for a in 0..100u8 {
+            genesis.push(set_acct(a, 1));
+            for s in 0..4u16 {
+                genesis.push(set_slot(a, s, 100 + s as u64));
+            }
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        drop(oracle);
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        let addr = |b: u8| alloy_primitives::Address::from([b; 20]);
+        let slot_u = |s: u16| U256::from(s);
+        let evm_state = |b: u8, writes: &[(u16, u64, u64)]| {
+            // (slot, original, present) per write
+            let mut storage = revm::primitives::StorageKeyMap::default();
+            for (sl, orig, pres) in writes {
+                storage.insert(
+                    slot_u(*sl),
+                    EvmStorageSlot {
+                        original_value: U256::from(*orig),
+                        present_value: U256::from(*pres),
+                        ..Default::default()
+                    },
+                );
+            }
+            let mut acct = EvmAccount::from(AccountInfo {
+                nonce: 2,
+                balance: U256::from(5000u64),
+                ..Default::default()
+            });
+            acct.storage = storage;
+            acct.status = AccountStatus::Touched;
+            acct.mark_touch();
+            let mut st = revm::state::EvmState::default();
+            st.insert(addr(b), acct);
+            st
+        };
+
+        let mut w = Worker::new(shadow, g);
+        // tx batch 1: every account writes slot0 100→7777 (intermediate) and
+        // slot1 101→11.
+        for a in 0..100u8 {
+            w.on_state(evm_state(a, &[(0, 100, 7777), (1, 101, 11)]));
+        }
+        w.reveal_pass(false).unwrap();
+        // tx batch 2: slot0 reverts 7777→100 (A→B→A), slot2 102→22,
+        // slot3 cleared 103→0.
+        for a in 0..100u8 {
+            w.on_state(evm_state(a, &[(0, 7777, 100), (2, 102, 22), (3, 103, 0)]));
+        }
+        w.reveal_pass(false).unwrap();
+
+        // Net ops, as bundle_to_ops would emit them: A→B→A keeps its entry.
+        let mut ops: Vec<(Key, StateOp)> = Vec::new();
+        for a in 0..100u8 {
+            ops.push(set_acct(a, 2));
+            ops.push(set_slot(a, 0, 100));
+            ops.push(set_slot(a, 1, 11));
+            ops.push(set_slot(a, 2, 22));
+            ops.push(del_slot(a, 3));
+        }
+        let (sparse_root, _) = w.finish(ops.clone()).unwrap();
+        let flat_root = shadow.write().root_for(0, g, ops).unwrap();
+        assert_eq!(sparse_root, flat_root, "streamed values diverge from ops drain");
+    }
 }
 
 #[cfg(test)]
@@ -1570,6 +1802,103 @@ mod overlay_tests {
 mod finishpath_bench {
     use super::tests::*;
     use super::*;
+    use alloy_primitives::U256;
+    use mpt_flat_poc::eth::{storage_value_rlp, EMPTY_CODE_HASH};
+    use mpt_flat_poc::FlatMpt;
+
+    /// Split worker.finish() into its phases at real 30k-TPS block shape:
+    /// ~55k EOA account updates + ~55k slot updates on one hot contract
+    /// (r57-flat-b: 29.6k txs, ~110k ops, finish_ms ≈ 69 warm). Block 1 is
+    /// cold (proof fetches), blocks 2-3 run on the pooled trie = steady state.
+    #[test]
+    #[ignore]
+    fn finish_phase_split() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phase-split.flat");
+        let path = path.to_str().unwrap();
+
+        const EOAS: usize = 55_000;
+        const SLOTS: u16 = 55_000u16 as u16;
+        let contract: u8 = 251;
+
+        let mut genesis: Vec<(Key, StateOp)> = Vec::new();
+        for i in 0..EOAS {
+            let a = keccak256(format!("eoa-{i}")).0;
+            genesis.push((
+                a,
+                StateOp::SetAccount {
+                    nonce: 1,
+                    balance: U256::from(1_000_000u64),
+                    code_hash: EMPTY_CODE_HASH.0,
+                },
+            ));
+        }
+        genesis.push(set_acct(contract, 1));
+        let ckey = akey(contract);
+        for s in 0..SLOTS {
+            let slot_key = keccak256(U256::from(s).to_be_bytes::<32>()).0;
+            genesis.push((
+                ckey,
+                StateOp::SetStorage { slot: slot_key, value: storage_value_rlp(U256::from(7u64)) },
+            ));
+        }
+
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        drop(oracle);
+        let g = B256::from(genesis_root);
+
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        let mut parent = g;
+        let mut parent_number = 0u64;
+        for round in 1..=3u64 {
+            let mut ops: Vec<(Key, StateOp)> = Vec::with_capacity(EOAS + SLOTS as usize);
+            for i in 0..EOAS {
+                let a = keccak256(format!("eoa-{i}")).0;
+                ops.push((
+                    a,
+                    StateOp::SetAccount {
+                        nonce: 1 + round,
+                        balance: U256::from(1_000_000u64 + round),
+                        code_hash: EMPTY_CODE_HASH.0,
+                    },
+                ));
+            }
+            ops.push(set_acct(contract, 1 + round));
+            for s in 0..SLOTS {
+                let slot_key = keccak256(U256::from(s).to_be_bytes::<32>()).0;
+                ops.push((
+                    ckey,
+                    StateOp::SetStorage {
+                        slot: slot_key,
+                        value: storage_value_rlp(U256::from(100 + round)),
+                    },
+                ));
+            }
+            ops.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let worker = SparseWorker::begin(shadow, parent);
+            let t = Instant::now();
+            let (root, st) = worker.finish(ops.clone()).unwrap();
+            let total = t.elapsed().as_millis();
+            eprintln!(
+                "block {round} ({} ops, pool_hit={}): finish={total}ms  \
+                 netmap={} drain={} promote={} (sroot={}) root={} overlay={}  (proof={} reveal={})",
+                ops.len(), st.pool_hit, st.fin_netmap_ms, st.fin_drain_ms,
+                st.fin_promote_ms, st.fin_sroot_ms, st.fin_root_ms, st.fin_overlay_ms,
+                st.proof_ms, st.reveal_ms,
+            );
+
+            // keep the flat store in step so the next round's parent is applied
+            let expect = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            assert_eq!(root, expect, "sparse/flat divergence in bench");
+            parent = root;
+            parent_number += 1;
+        }
+    }
 
     /// Measure the builder's serial finish-path costs at monster-block scale:
     /// bundle-shaped op construction (keccak per address+slot), canonical
