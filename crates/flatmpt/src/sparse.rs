@@ -189,19 +189,25 @@ pub(crate) fn prune_overlays(flat_root: B256) {
 }
 
 /// Map a block's net ops to the `HashedPostState` overlay reth's cursors
-/// understand (keys are already hashed in flat-MPT ops).
-fn ops_to_post_state(ops: &[(Key, StateOp)]) -> HashedPostState {
+/// understand (keys are already hashed in flat-MPT ops). Also serves the
+/// payload builder as the block's hashed state: the ops already carry every
+/// hashed key, so this avoids re-keccaking the whole bundle on the hot path.
+pub fn ops_to_post_state(ops: &[(Key, StateOp)]) -> HashedPostState {
     let mut post = HashedPostState::default();
     for (key, op) in ops {
         let acct = B256::from(*key);
         match op {
             StateOp::SetAccount { nonce, balance, code_hash } => {
+                let code_hash = B256::from(*code_hash);
                 post.accounts.insert(
                     acct,
                     Some(reth_primitives_traits::Account {
                         nonce: *nonce,
                         balance: *balance,
-                        bytecode_hash: Some(B256::from(*code_hash)),
+                        // Same normalization as reth's AccountInfo→Account:
+                        // the empty code hash is represented as None.
+                        bytecode_hash: (code_hash != mpt_flat_poc::eth::EMPTY_CODE_HASH)
+                            .then_some(code_hash),
                     }),
                 );
             }

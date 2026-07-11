@@ -1097,8 +1097,12 @@ where
             let (prefetched_ops, passes) = stream.finish();
             debug!(target: "flatmpt", prefetched_ops, passes, "prefetch joined");
         }
-        let flat_root = if let Some(shadow) = flat_shadow {
+        let (flat_root, flat_hashed_state) = if let Some(shadow) = flat_shadow {
             let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
+            // The ops already carry every hashed key, so the block's hashed
+            // state comes from them for free — the stock derivation below
+            // re-keccaks the whole bundle on the hot path.
+            let hashed = tempo_flatmpt::ops_to_post_state(&ops);
             // Sparse overlay: root from the sparse trie (read-only against the
             // flat store), apply queued to the background follower which
             // cross-checks the flat engine's root against ours. Any sparse
@@ -1126,12 +1130,6 @@ where
                             follower_queue = tempo_flatmpt::follower(shadow).depth(),
                             "sparse commitment"
                         );
-                        tempo_flatmpt::follower(shadow).queue_apply(
-                            parent_header.number(),
-                            parent_header.state_root(),
-                            ops.clone(),
-                            root,
-                        );
                         Some(root)
                     }
                     Err(e) => {
@@ -1146,15 +1144,23 @@ where
                 }
             });
             let root = match sparse_root {
-                Some(root) => root,
+                Some(root) => {
+                    tempo_flatmpt::follower(shadow).queue_apply(
+                        parent_header.number(),
+                        parent_header.state_root(),
+                        ops,
+                        root,
+                    );
+                    root
+                }
                 None => shadow
                     .write()
                     .root_for(parent_header.number(), parent_header.state_root(), ops)
                     .map_err(|e| PayloadBuilderError::Other(e.into()))?,
             };
-            Some(root)
+            (Some(root), Some(hashed))
         } else {
-            None
+            (None, None)
         };
         let flat_is_root =
             flat_root.is_some() && tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root;
@@ -1162,7 +1168,11 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state = if let Some(hashed) = flat_hashed_state.filter(|_| flat_is_root) {
+            // Root mode: the ops-derived hashed state is authoritative and
+            // already computed; skip the bundle re-hash entirely.
+            hashed
+        } else if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx().recv())
         {

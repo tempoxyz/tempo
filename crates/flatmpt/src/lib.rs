@@ -23,7 +23,7 @@ pub mod follower;
 mod sparse;
 mod stream;
 pub use follower::{follower, Follower};
-pub use sparse::{sparse_enabled, SparseStats, SparseWorker};
+pub use sparse::{ops_to_post_state, sparse_enabled, SparseStats, SparseWorker};
 pub use stream::{stream_enabled, FlatStream};
 pub use mpt_flat_poc::FlatSnapshot;
 
@@ -772,5 +772,123 @@ mod tests {
         assert_eq!(r1, r1b, "memo hit unaffected by stale prefetch");
         let r2 = s.root_for(1, r1, vec![acct(4, 2)]).unwrap();
         assert_ne!(r1, r2);
+    }
+
+    /// The builder hands `ops_to_post_state(bundle_to_ops(bundle))` to the
+    /// engine as the block's hashed state (persisted to the hashed tables and
+    /// served from the in-memory overlay), so it must agree with reth's own
+    /// bundle derivation on every op shape: create, update, EOA vs contract,
+    /// selfdestruct, destroy-then-recreate, touched-and-cleared (EIP-158),
+    /// slot set / clear.
+    #[test]
+    fn ops_hashed_state_matches_reth_bundle_derivation() {
+        use alloy_primitives::{Address, KECCAK256_EMPTY};
+        use revm::database::states::bundle_state::BundleState;
+        use revm::database::{AccountStatus, BundleAccount};
+        use revm::state::AccountInfo;
+
+        let addr = |b: u8| Address::from([b; 20]);
+        let info = |nonce: u64, code: Option<B256>| AccountInfo {
+            nonce,
+            balance: U256::from(1000 + nonce),
+            code_hash: code.unwrap_or(KECCAK256_EMPTY),
+            ..Default::default()
+        };
+        let slot = |k: u64, orig: u64, present: u64| {
+            (
+                U256::from(k),
+                revm::database::states::StorageSlot::new_changed(
+                    U256::from(orig),
+                    U256::from(present),
+                ),
+            )
+        };
+
+        let mut state: alloy_primitives::map::AddressMap<BundleAccount> = Default::default();
+        // Plain EOA update.
+        state.insert(
+            addr(1),
+            BundleAccount::new(None, Some(info(7, None)), Default::default(), AccountStatus::Changed),
+        );
+        // Contract with slot writes and a slot cleared to zero.
+        state.insert(
+            addr(2),
+            BundleAccount::new(
+                Some(info(1, Some(B256::repeat_byte(0xcc)))),
+                Some(info(2, Some(B256::repeat_byte(0xcc)))),
+                [slot(1, 0, 42), slot(2, 9, 0), slot(3, 0, 5)].into_iter().collect(),
+                AccountStatus::Changed,
+            ),
+        );
+        // Selfdestructed.
+        state.insert(
+            addr(3),
+            BundleAccount::new(
+                Some(info(3, None)),
+                None,
+                Default::default(),
+                AccountStatus::Destroyed,
+            ),
+        );
+        // Destroyed then recreated with fresh storage.
+        state.insert(
+            addr(4),
+            BundleAccount::new(
+                Some(info(4, Some(B256::repeat_byte(0xdd)))),
+                Some(info(1, Some(B256::repeat_byte(0xdd)))),
+                [slot(7, 0, 11)].into_iter().collect(),
+                AccountStatus::DestroyedChanged,
+            ),
+        );
+        // Touched and cleared (EIP-158): present info None, not destroyed.
+        state.insert(
+            addr(5),
+            BundleAccount::new(
+                Some(info(0, None)),
+                None,
+                Default::default(),
+                AccountStatus::LoadedNotExisting,
+            ),
+        );
+        let bundle = BundleState { state, ..Default::default() };
+
+        let ops = bundle_to_ops(&bundle);
+        let ours = ops_to_post_state(&ops);
+        let reths = reth_trie::HashedPostState::from_bundle_state::<
+            reth_trie::KeccakKeyHasher,
+        >(&bundle.state);
+
+        // Account maps must agree exactly (reth normalizes the empty code
+        // hash to None; ops_to_post_state mirrors that).
+        assert_eq!(ours.accounts, reths.accounts, "account maps diverge");
+
+        // Storage: compare effective semantics per account touched by either
+        // side — wiped flag for live accounts, and every slot's effective
+        // value (wiped + absent ⇒ zero).
+        let all: std::collections::BTreeSet<B256> =
+            ours.storages.keys().chain(reths.storages.keys()).copied().collect();
+        for acct in all {
+            let o = ours.storages.get(&acct);
+            let r = reths.storages.get(&acct);
+            let deleted = matches!(ours.accounts.get(&acct), Some(None));
+            if !deleted {
+                assert_eq!(
+                    o.map(|s| s.wiped).unwrap_or(false),
+                    r.map(|s| s.wiped).unwrap_or(false),
+                    "wiped flag diverges for live account {acct}"
+                );
+            }
+            let keys: std::collections::BTreeSet<B256> = o
+                .map(|s| s.storage.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .chain(r.map(|s| s.storage.keys().copied().collect::<Vec<_>>()).unwrap_or_default())
+                .collect();
+            for k in keys {
+                let ov = o.and_then(|s| s.storage.get(&k).copied()).unwrap_or_default();
+                let rv = r.and_then(|s| s.storage.get(&k).copied()).unwrap_or_default();
+                assert_eq!(ov, rv, "slot {k} of {acct} diverges");
+            }
+        }
     }
 }
