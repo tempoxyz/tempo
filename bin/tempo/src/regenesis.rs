@@ -283,6 +283,12 @@ struct StaticChangesetFile {
     offset: ChangesetOffset,
 }
 
+struct OpenStaticChangesetFile {
+    jar: NippyJar<SegmentHeader>,
+    reader: Arc<DataReader>,
+    offset: ChangesetOffset,
+}
+
 #[derive(Clone, Debug)]
 struct StaticTailReplacementPlan {
     path: PathBuf,
@@ -517,9 +523,9 @@ where
 
         let mut replacement_changes = replacement_account_changes.into_iter().peekable();
 
-        if let Some((jar, reader, offset)) = old_account_file.as_ref() {
-            let mut cursor = StaticFileCursor::new(jar, Arc::clone(reader))?;
-            for row in offset.changeset_range() {
+        if let Some(file) = old_account_file.as_ref() {
+            let mut cursor = StaticFileCursor::new(&file.jar, Arc::clone(&file.reader))?;
+            for row in file.offset.changeset_range() {
                 let Some(change) = cursor.get_one::<AccountChangesetMask>(row.into())? else {
                     continue;
                 };
@@ -549,9 +555,9 @@ where
 
         let mut replacement_changes = replacement_storage_changes.into_iter().peekable();
 
-        if let Some((jar, reader, offset)) = old_storage_file.as_ref() {
-            let mut cursor = StaticFileCursor::new(jar, Arc::clone(reader))?;
-            for row in offset.changeset_range() {
+        if let Some(file) = old_storage_file.as_ref() {
+            let mut cursor = StaticFileCursor::new(&file.jar, Arc::clone(&file.reader))?;
+            for row in file.offset.changeset_range() {
                 let Some(change) = cursor.get_one::<StorageChangesetMask>(row.into())? else {
                     continue;
                 };
@@ -597,11 +603,15 @@ fn block_zero_static_changeset_file<N: NodePrimitives>(
 
 fn open_static_changeset_file(
     file: Option<&StaticChangesetFile>,
-) -> eyre::Result<Option<(NippyJar<SegmentHeader>, Arc<DataReader>, ChangesetOffset)>> {
+) -> eyre::Result<Option<OpenStaticChangesetFile>> {
     file.map(|file| -> eyre::Result<_> {
         let jar = NippyJar::load(&file.path)?;
         let reader = Arc::new(jar.open_data_reader()?);
-        Ok((jar, reader, file.offset.clone()))
+        Ok(OpenStaticChangesetFile {
+            jar,
+            reader,
+            offset: file.offset.clone(),
+        })
     })
     .transpose()
 }
