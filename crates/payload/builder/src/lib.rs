@@ -404,14 +404,24 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if flat_reads::flat_reads_enabled() {
+        // Flat shadow + sparse worker come first: the read provider hands its
+        // walk's reveal nodes to the worker, so they must share the block.
+        let flat_shadow = if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Off {
             let chain_spec = self.provider.chain_spec();
-            if let Some(shadow) = tempo_flatmpt::shadow(|| {
+            tempo_flatmpt::shadow(|| {
                 (
                     tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
                     chain_spec.inner.genesis_header().state_root(),
                 )
-            }) {
+            })
+        } else {
+            None
+        };
+        let flat_sparse = (tempo_flatmpt::sparse_enabled())
+            .then(|| flat_shadow.map(|s| tempo_flatmpt::SparseWorker::begin(s, parent_header.state_root())))
+            .flatten();
+        if flat_reads::flat_reads_enabled() {
+            if let Some(shadow) = flat_shadow {
                 // Reads must reflect the exact parent state: take a lock-free
                 // snapshot only when the flat is at the parent; otherwise
                 // (follower lagging, rebuild race) this block reads from MDBX.
@@ -424,6 +434,9 @@ where
                         state_provider = Box::new(flat_reads::FlatReadProvider {
                             inner: state_provider,
                             snap,
+                            reveal: flat_sparse
+                                .as_ref()
+                                .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
                         });
                     }
                     None => {
@@ -443,25 +456,8 @@ where
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
 
-        // Flat-MPT commitment workers (root mode). Preferred: the sparse-trie
-        // overlay — reth's SparseStateTrie pre-reveals trie paths during
-        // execution via multiproofs over the flat cursors, computes the root
-        // at finish, and the flat store is only written by the background
-        // follower. Fallback: the prefetch stream ahead of an inline apply.
-        let flat_shadow = if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Off {
-            let chain_spec = self.provider.chain_spec();
-            tempo_flatmpt::shadow(|| {
-                (
-                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
-                    chain_spec.inner.genesis_header().state_root(),
-                )
-            })
-        } else {
-            None
-        };
-        let flat_sparse = (tempo_flatmpt::sparse_enabled())
-            .then(|| flat_shadow.map(|s| tempo_flatmpt::SparseWorker::begin(s, parent_header.state_root())))
-            .flatten();
+        // Fallback commitment worker: the prefetch stream ahead of an inline
+        // apply (used only when the sparse-trie overlay is off).
         let flat_stream = if tempo_flatmpt::stream_enabled() && flat_sparse.is_none() {
             flat_shadow.map(tempo_flatmpt::FlatStream::begin)
         } else {

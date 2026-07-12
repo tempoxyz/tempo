@@ -23,7 +23,7 @@ pub mod follower;
 mod sparse;
 mod stream;
 pub use follower::{follower, Follower};
-pub use sparse::{ops_to_post_state, sparse_enabled, SparseStats, SparseWorker};
+pub use sparse::{ops_to_post_state, sparse_enabled, RevealSink, SparseStats, SparseWorker};
 pub use stream::{stream_enabled, FlatStream};
 pub use mpt_flat_poc::FlatSnapshot;
 

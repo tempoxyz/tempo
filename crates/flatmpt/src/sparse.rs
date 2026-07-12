@@ -526,7 +526,40 @@ fn trie_mem_cap() -> usize {
 
 enum Msg {
     State(revm::state::EvmState),
+    Reveal(RevealBatch),
     Finish(Vec<(Key, StateOp)>),
+}
+
+/// Path nodes captured by an execution-time state read (the read walks the
+/// exact records a reveal needs — one fetch serves both consumers).
+pub enum RevealBatch {
+    Account { key: B256, nodes: Vec<mpt_flat_poc::reveal::RevealNode> },
+    Storage { account: B256, slot: B256, nodes: Vec<mpt_flat_poc::reveal::RevealNode> },
+}
+
+/// Lossy handle for feeding execution-read reveals to the sparse worker.
+/// Dropped batches only mean the worker fetches those paths itself.
+#[derive(Clone)]
+pub struct RevealSink {
+    tx: mpsc::SyncSender<Msg>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl RevealSink {
+    pub fn account(&self, key: B256, nodes: Vec<mpt_flat_poc::reveal::RevealNode>) {
+        if self.tx.try_send(Msg::Reveal(RevealBatch::Account { key, nodes })).is_err() {
+            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    pub fn storage(&self, account: B256, slot: B256, nodes: Vec<mpt_flat_poc::reveal::RevealNode>) {
+        if self
+            .tx
+            .try_send(Msg::Reveal(RevealBatch::Storage { account, slot, nodes }))
+            .is_err()
+        {
+            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// Handle to an in-flight sparse commitment build. Dropping it (cancelled
@@ -558,6 +591,7 @@ impl SparseWorker {
                     loop {
                         match msg.take() {
                             Some(Msg::State(state)) => w.on_state(state),
+                            Some(Msg::Reveal(batch)) => w.on_reveal(batch),
                             Some(Msg::Finish(ops)) => {
                                 w.stats.hook_dropped =
                                     dropped_w.load(std::sync::atomic::Ordering::Relaxed);
@@ -601,6 +635,14 @@ impl SparseWorker {
             if tx.try_send(Msg::State(state)).is_err() {
                 dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Lossy handle for execution-read reveals (see [`RevealSink`]).
+    pub fn reveal_sink(&self) -> RevealSink {
+        RevealSink {
+            tx: self.tx.as_ref().expect("worker active").clone(),
+            dropped: self.dropped.clone(),
         }
     }
 
@@ -740,6 +782,37 @@ impl Worker {
                     .insert(slot_key, LeafUpdate::Changed(value));
                 if newly {
                     self.fresh += 1;
+                }
+            }
+        }
+    }
+
+    /// Reveal path nodes captured by an execution-time read: the read already
+    /// fetched the records, so the trie is revealed without its own fetch.
+    /// Failures just leave the target for the normal fetch flow.
+    fn on_reveal(&mut self, batch: RevealBatch) {
+        match batch {
+            RevealBatch::Account { key, nodes } => {
+                if self.fetched_accounts.contains_key(&key) {
+                    return;
+                }
+                let Ok(v2) = to_v2_nodes(nodes) else { return };
+                let proof =
+                    DecodedMultiProofV2 { account_proofs: v2, storage_proofs: B256Map::default() };
+                if self.trie.reveal_decoded_multiproof_v2(proof).is_ok() {
+                    self.fetched_accounts.insert(key, 0);
+                }
+            }
+            RevealBatch::Storage { account, slot, nodes } => {
+                if self.fetched_storage.get(&account).is_some_and(|f| f.contains_key(&slot)) {
+                    return;
+                }
+                let Ok(v2) = to_v2_nodes(nodes) else { return };
+                let mut storage_proofs: B256Map<Vec<ProofTrieNodeV2>> = B256Map::default();
+                storage_proofs.insert(account, v2);
+                let proof = DecodedMultiProofV2 { account_proofs: Vec::new(), storage_proofs };
+                if self.trie.reveal_decoded_multiproof_v2(proof).is_ok() {
+                    self.fetched_storage.entry(account).or_default().insert(slot, 0);
                 }
             }
         }
@@ -1515,6 +1588,70 @@ mod stall_tests {
             parent = sparse_root;
             parent_number += 1;
         }
+    }
+
+    /// Execution-read reveals: a fresh worker fed exclusively by
+    /// `get_value_reveal` / `get_storage_reveal` node captures (the flat_reads
+    /// path) must commit without fetching a single proof target itself —
+    /// the single-read invariant. Deletions still pull sibling reveals via
+    /// the normal fetch flow (mixed coverage is expected there).
+    #[test]
+    fn sparse_reveals_from_execution_reads() {
+        use alloy_primitives::U256;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("execreveal.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = Vec::new();
+        for a in 0..200u8 {
+            genesis.push(set_acct(a, 1));
+            for s in 0..6u16 {
+                genesis.push(set_slot(a, s, 100 + s as u64));
+            }
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        drop(oracle);
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        let snap = shadow.read().db().snapshot();
+        let mut w = Worker::new(shadow, g);
+        assert!(!w.stats.pool_hit, "fresh worker expected");
+
+        // The "block": update accounts 0..200 and slots 0..2 of each. Feed the
+        // worker exactly what flat_reads would: the read-walk's nodes.
+        let mut ops: Vec<(Key, StateOp)> = Vec::new();
+        for a in 0..200u8 {
+            let acct = B256::from(akey(a));
+            let (v, nodes) = snap.get_value_reveal(&acct.0).unwrap();
+            assert!(v.is_some());
+            w.on_reveal(RevealBatch::Account { key: acct, nodes });
+            ops.push(set_acct(a, 9));
+            for s in 0..2u16 {
+                let slot_key = keccak256(U256::from(s).to_be_bytes::<32>());
+                let (v, nodes) = snap.get_storage_reveal(&acct.0, &slot_key.0).unwrap();
+                assert!(v.is_some());
+                w.on_reveal(RevealBatch::Storage {
+                    account: acct,
+                    slot: slot_key,
+                    nodes: nodes.expect("transparent storage"),
+                });
+                ops.push(set_slot(a, s, 5000 + s as u64));
+            }
+        }
+        ops.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let (root, stats) = w.finish(ops.clone()).unwrap();
+        let expect = shadow.write().root_for(0, g, ops).unwrap();
+        assert_eq!(root, expect, "sink-revealed commit diverges");
+        assert_eq!(
+            (stats.account_targets, stats.storage_targets),
+            (0, 0),
+            "worker fetched targets despite execution-read reveals"
+        );
     }
 
     /// Streaming path: hook-fed `Changed` values applied during execution
