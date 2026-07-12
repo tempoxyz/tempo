@@ -1331,6 +1331,27 @@ pub(super) mod tests {
         keccak256([b; 20]).0
     }
 
+    /// Clear the process-wide worker statics on entry and exit: tests that
+    /// pollute TRIE_POOL / SNAP_POOL / OVERLAYS (cross-block carry) would
+    /// otherwise poison concurrently-running worker tests.
+    pub(super) fn worker_statics_guard() -> impl Drop {
+        static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        fn clear() {
+            *super::TRIE_POOL.lock() = None;
+            *super::SNAP_POOL.lock() = None;
+            super::OVERLAYS.lock().clear();
+        }
+        struct G(#[allow(dead_code)] parking_lot::MutexGuard<'static, ()>);
+        impl Drop for G {
+            fn drop(&mut self) {
+                clear();
+            }
+        }
+        let g = LOCK.lock();
+        clear();
+        G(g)
+    }
+
     pub(super) fn set_acct(b: u8, nonce: u64) -> (Key, StateOp) {
         (
             akey(b),
@@ -1357,6 +1378,7 @@ pub(super) mod tests {
     /// including a second block whose proofs walk the post-block-1 flat state.
     #[test]
     fn sparse_commitment_matches_flat_apply() {
+        let _guard = worker_statics_guard();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sparse-gate.flat");
         let path = path.to_str().unwrap();
@@ -1563,6 +1585,7 @@ mod stall_tests {
     /// the live-bench stall was isolated to the giant TIP20 contract.
     #[test]
     fn sparse_over_promoted_account_storage() {
+        let _guard = worker_statics_guard();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("promoted.flat");
         let path = path.to_str().unwrap();
@@ -1608,6 +1631,7 @@ mod stall_tests {
     /// inserts stacked over three blocks (the live-bench stall shape).
     #[test]
     fn sparse_survives_slot_churn() {
+        let _guard = worker_statics_guard();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("churn.flat");
         let path = path.to_str().unwrap();
@@ -1666,6 +1690,7 @@ mod stall_tests {
     /// the normal fetch flow (mixed coverage is expected there).
     #[test]
     fn sparse_reveals_from_execution_reads() {
+        let _guard = worker_statics_guard();
         use alloy_primitives::U256;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("execreveal.flat");
@@ -1731,6 +1756,7 @@ mod stall_tests {
     /// like the worker loop does.
     #[test]
     fn sparse_streaming_matches_flat_apply() {
+        let _guard = worker_statics_guard();
         use alloy_primitives::U256;
         use revm::state::{Account as EvmAccount, AccountInfo, AccountStatus, EvmStorageSlot};
 
@@ -1956,6 +1982,7 @@ mod overlay_tests {
     /// an oracle that applies the same blocks for real.
     #[test]
     fn sparse_commits_ahead_of_lagging_follower() {
+        let _guard = tests::worker_statics_guard();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("overlay.flat");
         let path = path.to_str().unwrap();
@@ -2012,6 +2039,10 @@ mod overlay_tests {
     /// worker for every subsequent block.
     #[test]
     fn sparse_survives_overlay_created_storage() {
+        // The worker machinery shares process-wide statics (TRIE_POOL,
+        // OVERLAYS, SNAP_POOL); this test both consumes and pollutes them,
+        // so isolate it from concurrently-running worker tests.
+        let _guard = tests::worker_statics_guard();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ovlnew.flat");
         let path = path.to_str().unwrap();
