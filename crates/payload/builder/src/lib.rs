@@ -434,8 +434,15 @@ where
                         state_provider = Box::new(flat_reads::FlatReadProvider {
                             inner: state_provider,
                             snap,
+                            // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
+                            // feed (A/B: exec-thread reveal-walk cost vs the
+                            // worker fetching its own reveals).
                             reveal: flat_sparse
                                 .as_ref()
+                                .filter(|_| {
+                                    std::env::var("TEMPO_FLATMPT_READ_REVEAL").as_deref()
+                                        != Ok("0")
+                                })
                                 .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
                         });
                     }
