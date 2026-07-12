@@ -787,6 +787,27 @@ impl Worker {
         }
     }
 
+    /// Drop storage tries that a failed reveal left blind (created by
+    /// `reveal_decoded_multiproof_v2` before the per-trie reveal ran, then
+    /// orphaned by its error). A blind trie in the map panics reth's
+    /// `storage_trie_updates` unwrap at finish — this is the tolerance
+    /// guarantee that a bad proof degrades to a refetch, never a dead worker.
+    fn drop_blind_storage_tries(&mut self, accounts: impl Iterator<Item = B256>) {
+        for acct in accounts {
+            if let Some(t) = self.trie.take_storage_trie(&acct) {
+                if matches!(t, reth_trie_sparse::RevealableSparseTrie::Revealed(_)) {
+                    self.trie.insert_storage_trie(acct, t);
+                } else {
+                    tracing::warn!(
+                        target: "flatmpt",
+                        acct = %acct,
+                        "dropped blind storage trie after failed reveal"
+                    );
+                }
+            }
+        }
+    }
+
     /// Reveal path nodes captured by an execution-time read: the read already
     /// fetched the records, so the trie is revealed without its own fetch.
     /// Failures just leave the target for the normal fetch flow.
@@ -813,6 +834,8 @@ impl Worker {
                 let proof = DecodedMultiProofV2 { account_proofs: Vec::new(), storage_proofs };
                 if self.trie.reveal_decoded_multiproof_v2(proof).is_ok() {
                     self.fetched_storage.entry(account).or_default().insert(slot, 0);
+                } else {
+                    self.drop_blind_storage_tries(std::iter::once(account));
                 }
             }
         }
@@ -1007,6 +1030,18 @@ impl Worker {
         if !self.reveal_pass(true)? {
             anyhow::bail!("final reveal pass deferred despite wait");
         }
+        // Last line of defense: any storage trie still blind here would panic
+        // reth's storage_trie_updates inside root_with_updates. Reaching this
+        // point with one is sound to drop: a blind trie with pending updates
+        // would have stalled the drain above, so a blind survivor carries no
+        // updates and its account leaf took the stored storage root.
+        let touched: Vec<B256> = self
+            .fetched_storage
+            .keys()
+            .chain(self.streamed_storage.keys())
+            .copied()
+            .collect();
+        self.drop_blind_storage_tries(touched.into_iter());
         let (root, trie_updates) = self
             .trie
             .root_with_updates()
@@ -1198,10 +1233,44 @@ impl Worker {
             self.stats.proof_ms += t_proof.elapsed().as_millis() as u64;
 
             let t_reveal = Instant::now();
-            for proof in proofs {
-                self.trie
-                    .reveal_decoded_multiproof_v2(proof)
-                    .map_err(|e| anyhow::anyhow!("reveal_decoded_multiproof_v2: {e}"))?;
+            for mut proof in proofs {
+                // An empty storage node list can't reveal a blind trie, but it
+                // means "empty trie" — normalize (belt-and-braces for every
+                // proof producer; the engine walker normalizes at source).
+                for nodes in proof.storage_proofs.values_mut() {
+                    if nodes.is_empty() {
+                        nodes.push(ProofTrieNodeV2 {
+                            path: Nibbles::default(),
+                            node: TrieNodeV2::EmptyRoot,
+                            masks: None,
+                        });
+                    }
+                }
+                let accts: Vec<B256> = proof.storage_proofs.keys().copied().collect();
+                // Cheap shape summary, kept for the failure diagnostic: the
+                // first node's path depth per trie (a rootless proof — first
+                // path non-empty on a blind trie — is the classic Blind).
+                let acct_first = proof.account_proofs.first().map(|p| p.path.len());
+                let stor_first: Vec<(B256, Option<usize>)> = proof
+                    .storage_proofs
+                    .iter()
+                    .map(|(a, n)| (*a, n.first().map(|p| p.path.len())))
+                    .collect();
+                if let Err(e) = self.trie.reveal_decoded_multiproof_v2(proof) {
+                    tracing::warn!(
+                        target: "flatmpt",
+                        err = %e,
+                        ?acct_first,
+                        storage_first_paths = ?stor_first,
+                        "reveal failed — proof shape"
+                    );
+                    // A failed reveal can leave freshly-created storage tries
+                    // blind; a blind trie PANICS reth's storage_trie_updates
+                    // at finish. Drop them — the targets stay pending and go
+                    // through the next fetch round.
+                    self.drop_blind_storage_tries(accts.iter().copied());
+                    return Err(anyhow::anyhow!("reveal_decoded_multiproof_v2: {e}"));
+                }
             }
             self.stats.reveal_ms += t_reveal.elapsed().as_millis() as u64;
             self.stats.account_targets += n_acct;
@@ -1932,6 +2001,59 @@ mod overlay_tests {
         }
         // The shadow really did lag the whole time.
         assert_eq!(shadow.read().current_root(), g);
+    }
+
+    /// The r65/66 killer: a contract whose storage exists ONLY in un-applied
+    /// overlay blocks (created at block 1, follower lagging), proven by a
+    /// pool-miss worker at block 2. The overlay's TrieUpdates carry no root
+    /// node for that storage trie, so the proof historically arrived rootless
+    /// and reveal errored "sparse trie is blind" — leaving a blind trie whose
+    /// finish PANICKED (reth storage_trie_updates unwrap) and killing the
+    /// worker for every subsequent block.
+    #[test]
+    fn sparse_survives_overlay_created_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ovlnew.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = (0..64u8).map(|i| set_acct(i, 1)).collect();
+        for sl in 0..100u16 {
+            genesis.push(set_slot(2, sl, 1 + sl as u64));
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        // Block 1: contract 201 is born WITH storage. Follower never applies.
+        let mut ops1: Vec<(Key, StateOp)> = vec![set_acct(201, 1)];
+        for sl in 0..8u16 {
+            ops1.push(set_slot(201, sl, 900 + sl as u64));
+        }
+        ops1.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut w1 = Worker::new(shadow, g);
+        let (root1, _) = w1.finish(ops1.clone()).unwrap();
+        let (o1, _) = oracle.apply_block(ops1).unwrap();
+        assert_eq!(root1, B256::from(o1));
+
+        // Cancelled candidate: the pooled trie is gone; block 2's worker is
+        // fresh and must prove 201's slots through the overlay chain.
+        *TRIE_POOL.lock() = None;
+        let mut ops2: Vec<(Key, StateOp)> = vec![set_acct(201, 2), set_acct(3, 7)];
+        for sl in 0..4u16 {
+            ops2.push(set_slot(201, sl, 7000 + sl as u64));
+        }
+        ops2.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut w2 = Worker::new(shadow, root1);
+        assert!(!w2.stats.pool_hit, "block 2 must be a pool miss");
+        let (root2, _) = w2
+            .finish(ops2.clone())
+            .unwrap_or_else(|e| panic!("overlay-created storage proof failed: {e:#}"));
+        let (o2, _) = oracle.apply_block(ops2).unwrap();
+        assert_eq!(root2, B256::from(o2), "root diverges");
+        assert_eq!(shadow.read().current_root(), g, "follower must have lagged");
     }
 }
 
