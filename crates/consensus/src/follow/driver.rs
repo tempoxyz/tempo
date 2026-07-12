@@ -39,6 +39,7 @@ use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
     feed,
+    follow::upstream,
 };
 
 pub(super) fn try_init<TContext>(
@@ -75,6 +76,7 @@ pub(super) fn try_init<TContext>(
     } else {
         Height::zero()
     };
+
     let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
         &mut config
             .execution_node
@@ -130,6 +132,8 @@ pub(super) struct Config {
 
     pub(super) marshal: crate::alias::marshal::Mailbox,
     pub(super) feed: feed::Mailbox,
+    pub(super) upstream: upstream::Mailbox,
+
     pub(super) epoch_strategy: FixedEpocher,
 }
 
@@ -294,6 +298,49 @@ where
         Ok(())
     }
 
+    async fn sync_floor(&mut self, finalized_tip: Height) -> eyre::Result<()> {
+        let epoch_info = self
+            .config
+            .epoch_strategy
+            .containing(finalized_tip)
+            .expect("strategy valid for all heights");
+        let last_boundary = epoch_info
+            .epoch()
+            .previous()
+            .and_then(|e| self.config.epoch_strategy.last(e))
+            .expect("floor is only synced for future epoch. Must be > 0.");
+
+        let certified = self
+            .config
+            .upstream
+            .get_finalization(last_boundary)
+            .await
+            .ok_or_eyre("upstream should retain the last boundary from the tip")?;
+        let finalization = alloy_primitives::hex::decode(&certified.certificate)
+            .map_err(Report::new)
+            .and_then(|bytes| {
+                Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes)
+                    .map_err(Report::new)
+            })
+            .wrap_err("boundary contained a malformed finalization certificate")?;
+
+        // When syncing the floor, we're not gauranteed that we have the outcome locally so we
+        // defer to the network identity to validate this intermediate boundary certificate.
+        ensure!(
+            finalization.verify(&mut self.context, &self.network_scheme, &Sequential),
+            "Failed to verify finalized boundary {last_boundary} via the network identity. Update the binary."
+        );
+
+        let round = finalization.round();
+        let activity = Activity::Finalization(finalization);
+        let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
+
+        let _ = self.config.marshal.verified(round, consensus_block).await;
+        self.config.marshal.report(activity).await;
+        self.config.marshal.set_floor(last_boundary).await;
+        Ok(())
+    }
+
     #[instrument(skip_all, err(Display))]
     async fn process_event(&mut self, event: Event) -> eyre::Result<()> {
         let Event::Finalized {
@@ -313,47 +360,13 @@ where
             .wrap_err("event contained a malformed finalization certificate")?;
 
         let height = Height::new(certified.block.number());
+        let finalization_epoch = finalization.epoch();
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
+
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"
         );
-
-        let finalization_epoch = finalization.epoch();
-        if finalization_epoch > self.current_epoch {
-            let stub_peers =
-                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
-
-            let boundary_height = self
-                .config
-                .epoch_strategy
-                .last(self.current_epoch)
-                .expect("strategy is valid for all epochs and heights");
-
-            debug!(
-                %self.current_epoch,
-                %boundary_height,
-                "hinting to sync system that a finalization certificate might be \
-                available for our current epoch",
-            );
-
-            // In the event our network identity cannot verify this finalization,
-            // hint the boundary of the current epoch to progress.
-            //
-            // The floor is intentionally not advanced to the boundary: marshal
-            // must only skip past blocks it (or the finalized execution layer)
-            // actually stores. The gap up to the boundary is healed by
-            // marshal's gap-repair resolver as reth syncs the blocks via P2P.
-            self.config
-                .marshal
-                .hint_finalized(boundary_height, stub_peers.clone())
-                .await;
-
-            let network_identity = self.config.network_identity.clone();
-            if finalization_epoch.get() < network_identity.from_epoch {
-                return Ok(());
-            }
-        }
 
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
@@ -368,26 +381,23 @@ where
             ),
         };
 
-        // If we can accept this cert, hand it to marshal. Marshal stores the
-        // block and its finalization, gap repairing any blocks below via the resolver.
-        // The floor is intentionally never advanced here: jumping it past blocks that
-        // are not yet stored leaves a hole below which we expect to be able to backfill
-        // to on startup
-        if finalization.verify(&mut self.context, &scheme, &Sequential) {
-            let round = finalization.round();
-            let activity = Activity::Finalization(finalization);
-            if !self.config.marshal.verified(round, consensus_block).await {
-                warn_span!("follow_driver").in_scope(
-                    || warn!(?round, %height, "marshal refused to persist the verified block"),
-                )
-            }
+        ensure!(
+            finalization.verify(&mut self.context, &scheme, &Sequential),
+            "Failed to verify finalization for height {height}. Update the binary with an updated network identity"
+        );
 
-            self.config.marshal.report(activity.clone()).await;
-            self.config.feed.report(activity).await;
-        } else {
-            debug!(%finalization_epoch, %height, "failed finalization certificate verification")
+        // If the node has been offline for more than an epoch, we try sync to the last boundary from the tip
+        // triggering a EL sync which is is more likely to have the required historical blocks across peers.
+        if finalization_epoch > self.current_epoch.next() {
+            self.sync_floor(height).await?;
         }
 
+        let round = finalization.round();
+        let activity = Activity::Finalization(finalization);
+
+        let _ = self.config.marshal.verified(round, consensus_block).await;
+        self.config.marshal.report(activity.clone()).await;
+        self.config.feed.report(activity).await;
         Ok(())
     }
 
