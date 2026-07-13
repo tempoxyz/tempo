@@ -462,14 +462,20 @@ where
     P: StaticFileProviderFactory,
 {
     let static_file_provider = provider_rw.static_file_provider();
-    let old_account_static_provider =
-        static_file_provider.get_maybe_segment_provider(StaticFileSegment::AccountChangeSets, 0)?;
-    let old_account_static =
-        block_zero_static_changeset_file(old_account_static_provider.as_ref())?;
-    let old_storage_static_provider =
-        static_file_provider.get_maybe_segment_provider(StaticFileSegment::StorageChangeSets, 0)?;
-    let old_storage_static =
-        block_zero_static_changeset_file(old_storage_static_provider.as_ref())?;
+    // A jar provider holds a shard read guard on the provider's jar cache (a dashmap). Acquiring
+    // another segment's provider can insert into that map via `entry()`, which takes a shard
+    // write lock and self-deadlocks whenever both cache keys land in the same shard. Extract the
+    // owned metadata and drop each provider before touching the cache again.
+    let old_account_static = {
+        let provider = static_file_provider
+            .get_maybe_segment_provider(StaticFileSegment::AccountChangeSets, 0)?;
+        block_zero_static_changeset_file(provider.as_ref())?
+    };
+    let old_storage_static = {
+        let provider = static_file_provider
+            .get_maybe_segment_provider(StaticFileSegment::StorageChangeSets, 0)?;
+        block_zero_static_changeset_file(provider.as_ref())?
+    };
 
     let replacement_account_changes = replacement_account_changeset_entries(replacements);
     let replacement_storage_changes = replacement_storage_changeset_entries(replacements);
@@ -484,8 +490,6 @@ where
         synced_addresses,
         &replacement_storage_changes,
     )?;
-    drop(old_account_static_provider);
-    drop(old_storage_static_provider);
 
     if let (Some(account_plan), Some(storage_plan)) = (fast_account_plan, fast_storage_plan) {
         static_file_provider.remove_cached_provider(
@@ -1006,6 +1010,102 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// Regression test for a probabilistic self-deadlock.
+    ///
+    /// `replace_block_zero_static_changesets` used to hold the AccountChangeSets jar provider —
+    /// a dashmap shard read guard on the static-file jar cache — while acquiring the
+    /// StorageChangeSets provider, whose first load inserts into the same dashmap via `entry()`
+    /// (a shard write lock). When both cache keys hashed to the same shard the thread blocked
+    /// on itself forever.
+    ///
+    /// The jar cache hasher is foldhash, whose seed mixes a thread-local chain that only
+    /// advances on the constructing thread, so the fresh provider for each iteration must be
+    /// built on the test thread for the shard assignment to re-roll (each regenesis process
+    /// re-rolls it via ASLR). Only the call under test runs on a watchdogged worker thread.
+    #[test]
+    fn replace_block_zero_static_changesets_does_not_self_deadlock() {
+        use std::{sync::mpsc, time::Duration};
+
+        let iterations = 512;
+        let (sender, receiver) = mpsc::channel();
+
+        for iteration in 0..iterations {
+            let synced_address = Address::repeat_byte(0x22);
+            let static_dir = tempfile::tempdir().unwrap();
+            {
+                let provider: StaticFileProvider<TempoPrimitives> =
+                    StaticFileProviderBuilder::read_write(static_dir.path())
+                        .build()
+                        .unwrap();
+                {
+                    let mut writer = provider
+                        .get_writer(0, StaticFileSegment::AccountChangeSets)
+                        .unwrap();
+                    writer
+                        .append_account_changeset(
+                            vec![AccountBeforeTx {
+                                address: synced_address,
+                                info: None,
+                            }],
+                            0,
+                        )
+                        .unwrap();
+                }
+                {
+                    let mut writer = provider
+                        .get_writer(0, StaticFileSegment::StorageChangeSets)
+                        .unwrap();
+                    writer
+                        .append_storage_changeset(
+                            vec![StorageBeforeTx {
+                                address: synced_address,
+                                key: B256::repeat_byte(0x33),
+                                value: U256::ZERO,
+                            }],
+                            0,
+                        )
+                        .unwrap();
+                }
+                provider.commit().unwrap();
+            }
+
+            // A fresh provider has an empty jar cache with a fresh hasher seed, matching a
+            // regenesis process opening a cached snapshot.
+            let provider: StaticFileProvider<TempoPrimitives> =
+                StaticFileProviderBuilder::read_write(static_dir.path())
+                    .build()
+                    .unwrap();
+            let replacement = genesis_account_replacement(
+                synced_address,
+                &GenesisAccount {
+                    storage: Some(BTreeMap::from([(
+                        B256::repeat_byte(0x55),
+                        B256::repeat_byte(0x77),
+                    )])),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            let sender = sender.clone();
+            let handle = std::thread::spawn(move || {
+                replace_block_zero_static_changesets(
+                    &StaticOnlyProvider { provider },
+                    &BTreeSet::from([synced_address]),
+                    &[replacement],
+                )
+                .unwrap();
+                drop(static_dir);
+                sender.send(iteration).unwrap();
+            });
+
+            if receiver.recv_timeout(Duration::from_secs(30)).is_err() {
+                panic!("replace_block_zero_static_changesets deadlocked on iteration {iteration}");
+            }
+            handle.join().unwrap();
+        }
     }
 
     #[test]
