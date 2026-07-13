@@ -17,6 +17,8 @@ name: bench
 
 permissions:
   contents: read
+  issues: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows
+  pull-requests: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows
 
 jobs:
   tempo-bench-ack:

@@ -1128,8 +1128,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
-    let tps_k = ($ctx.tps // 1000)
-    let scenario = $"($ctx.preset)-($tps_k)k"
+    let scenario = $ctx.preset
     let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
         $ctx.clickhouse_url
     } else {
