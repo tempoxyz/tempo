@@ -635,7 +635,7 @@ where
         .and_then(|log| {
             log.check(round.info())
                 .map(|(dealer, _)| dealer)
-                .ok_or_eyre("not a dealer in the current round")
+                .ok_or_eyre("dealer log signature is invalid")
         })
         .inspect(|_| {
             self.metrics.dealings_read.inc();
