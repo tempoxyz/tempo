@@ -22,7 +22,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use rand_core::CryptoRngCore;
-use reth_ethereum::storage::{BlockIdReader, BlockNumReader};
+use reth_ethereum::storage::BlockIdReader;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
 

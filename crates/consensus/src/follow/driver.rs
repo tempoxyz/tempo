@@ -331,19 +331,6 @@ where
         let activity = Activity::Finalization(finalization);
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
 
-        let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-            &mut consensus_block.header().extra_data().as_ref(),
-        )
-        .wrap_err("boundary block contained no or a malformed DKG outcome")?;
-        self.config.scheme_provider.register(
-            onchain_outcome.epoch,
-            Scheme::certificate_verifier(
-                crate::config::NAMESPACE,
-                *onchain_outcome.network_identity(),
-            ),
-        );
-        self.current_epoch = onchain_outcome.epoch;
-
         let _ = self.config.marshal.verified(round, consensus_block).await;
         self.config.marshal.report(activity).await;
 
@@ -403,7 +390,7 @@ where
 
         ensure!(
             finalization.verify(&mut self.context, &scheme, &Sequential),
-            "failed to verify finalization for height {height}. Update the binary with an updated network identity"
+            "failed to verify finalization certificate"
         );
 
         let round = finalization.round();
