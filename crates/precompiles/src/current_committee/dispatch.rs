@@ -35,10 +35,14 @@ mod tests {
     use crate::{
         expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage_credits::StorageCredits,
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{primitives::B256, sol_types::SolCall};
-    use tempo_contracts::precompiles::{CurrentCommitteeError, ICurrentCommittee};
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{
+        CURRENT_COMMITTEE_ADDRESS, CurrentCommitteeError, ICurrentCommittee,
+    };
 
     #[test]
     fn test_current_committee_selector_coverage() -> eyre::Result<()> {
@@ -110,6 +114,34 @@ mod tests {
             let ret = committee.get_committee_members()?;
             assert_eq!(ret.epoch, 2);
             assert_eq!(ret.publicKeys, vec![B256::repeat_byte(0x33)]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_committee_members_does_not_mint_storage_credits() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut committee = CurrentCommittee::new();
+            committee.set_committee_members(
+                Address::ZERO,
+                ICurrentCommittee::setCommitteeMembersCall {
+                    epoch: 1,
+                    publicKeys: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
+                },
+            )?;
+            committee.set_committee_members(
+                Address::ZERO,
+                ICurrentCommittee::setCommitteeMembersCall {
+                    epoch: 2,
+                    publicKeys: vec![B256::repeat_byte(0x33)],
+                },
+            )?;
+
+            assert_eq!(
+                StorageCredits::new().balance_of(CURRENT_COMMITTEE_ADDRESS)?,
+                0
+            );
             Ok(())
         })
     }

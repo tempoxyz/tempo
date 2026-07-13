@@ -36,8 +36,14 @@ impl CurrentCommittee {
             return Err(CurrentCommitteeError::unauthorized().into());
         }
 
-        self.epoch.write(call.epoch)?;
-        self.ids.write(call.publicKeys)?;
-        Ok(())
+        // System writes are free and must not mint or consume TIP-1060 storage credits.
+        self.storage.set_tip1060_storage_credits(false);
+        let result = (|| {
+            self.epoch.write(call.epoch)?;
+            self.ids.write(call.publicKeys)?;
+            Ok(())
+        })();
+        self.storage.set_tip1060_storage_credits(true);
+        result
     }
 }
