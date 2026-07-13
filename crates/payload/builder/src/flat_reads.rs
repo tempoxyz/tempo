@@ -40,11 +40,32 @@ pub(crate) struct FlatReadProvider {
     /// state for the whole build — reads never wait on the writer and never
     /// observe mid-block flat advances.
     pub snap: tempo_flatmpt::FlatSnapshot,
+    /// Per-block keccak(address) memo shared by all reading threads.
+    pub hashed: HashedKeyMemo,
     /// When a sparse commitment worker is active, first-touch reads walk the
     /// same records its reveals need — capture the path nodes during the read
     /// and hand them over, so the worker never re-fetches them (lossy; a
     /// dropped batch only means the worker fetches that path itself).
     pub reveal: Option<RevealFeed>,
+}
+
+/// Per-block memo of `keccak(address)` — the provider is hit by ~30 prewarm
+/// threads plus the exec thread, mostly for the same few thousand senders and
+/// recycled contracts; hashing per read costs the hot path for nothing.
+#[derive(Default)]
+pub(crate) struct HashedKeyMemo {
+    accounts: parking_lot::RwLock<alloy_primitives::map::AddressMap<B256>>,
+}
+
+impl HashedKeyMemo {
+    fn account(&self, address: &Address) -> B256 {
+        if let Some(k) = self.accounts.read().get(address) {
+            return *k;
+        }
+        let k = keccak256(address.0 .0);
+        self.accounts.write().insert(*address, k);
+        k
+    }
 }
 
 pub(crate) struct RevealFeed {
@@ -105,7 +126,7 @@ impl FlatReadProvider {
 
 impl AccountReader for FlatReadProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        let key = alloy_primitives::keccak256(address.0 .0);
+        let key = self.hashed.account(address);
         let read = self
             .read_account_rlp(&key)?
             .map(|rlp| tempo_flatmpt::FlatShadow::decode_account_rlp(rlp.as_slice()))
@@ -126,7 +147,7 @@ impl StateProvider for FlatReadProvider {
         account: Address,
         storage_key: alloy_primitives::StorageKey,
     ) -> ProviderResult<Option<alloy_primitives::StorageValue>> {
-        let acct_key = alloy_primitives::keccak256(account.0 .0);
+        let acct_key = self.hashed.account(&account);
         let slot_key = alloy_primitives::keccak256(storage_key.0);
         let read = self
             .read_storage_rlp(&acct_key, &slot_key)?

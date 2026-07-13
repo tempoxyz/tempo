@@ -434,6 +434,7 @@ where
                         state_provider = Box::new(flat_reads::FlatReadProvider {
                             inner: state_provider,
                             snap,
+                            hashed: Default::default(),
                             // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
                             // feed (A/B: exec-thread reveal-walk cost vs the
                             // worker fetching its own reveals).
