@@ -340,7 +340,7 @@ templates:
     calls: []
 
   neobank_reward_claim:
-    type: eip1559
+    type: tempo
     from:
       pool: reward_claimants
       select: { index: 0 }
@@ -349,6 +349,8 @@ templates:
     gas_limit: 1500000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
+    expiring_nonce: true
+    valid_for_secs: 10
 
 sequences:
   neobank_swaps:
