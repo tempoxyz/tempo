@@ -143,6 +143,21 @@ where
             .await
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
+    // Contiguous run of blocks starting at the prunable archive's first index.
+    let start_range = prunable.first_index().and_then(|first| {
+        prunable
+            .next_gap(first)
+            .0
+            .map(|end| format!("{first}..={end}"))
+    });
+
+    info!(
+        consensus_cache.start_range = start_range,
+        consensus_cache.last_block = prunable.last_index(),
+        execution_layer.finalized_height = provider.finalized_height(),
+        "initialized finalized blocks store",
+    );
+
     Ok(Hybrid::new(hybrid::Config {
         prunable,
         execution_block_provider: provider,

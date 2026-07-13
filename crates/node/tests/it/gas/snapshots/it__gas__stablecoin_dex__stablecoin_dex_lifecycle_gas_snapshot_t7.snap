@@ -22,6 +22,10 @@ place_ask_wallet:
   gas: 2355385
   storage_credits: "user2: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 9 -> 9"
+place_bid_append_same_level:
+  gas: 1619869
+  storage_credits: "user16: 0 -> 0; user15: 0 -> 0"
+  pooled_storage_credits: "DEX TIP-1060: 3 -> 3"
 place_bid_cross_user_after_cancel_credits:
   gas: 1856169
   storage_credits: "user7: 0 -> 0; user6: 5 -> 5"

@@ -6,6 +6,7 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
+use std::ops::Deref;
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
@@ -102,6 +103,37 @@ pub struct TickLevel {
     pub total_liquidity: u128,
 }
 
+/// 1-based ID assigned to an orderbook's `book_keys` vector index; zero means unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BookId(u32);
+
+impl BookId {
+    pub(crate) const UNSET: Self = Self(0);
+
+    pub(crate) fn from_index(index: u32) -> Self {
+        Self(index + 1)
+    }
+
+    /// Returns the zero-based `book_keys` vector index, if this ID is set.
+    pub(crate) fn index(self) -> Option<u32> {
+        self.0.checked_sub(1)
+    }
+}
+
+impl From<u32> for BookId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl Deref for BookId {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
@@ -144,7 +176,7 @@ impl From<TickLevel> for IStablecoinDEX::PriceLevel {
 
 /// Orderbook for token pair with price-time priority
 /// Uses tick-based pricing with bitmaps for price discovery
-#[derive(Storable, Default)]
+#[derive(Storable)]
 pub struct Orderbook {
     /// Base token address
     pub base: Address,
@@ -156,10 +188,12 @@ pub struct Orderbook {
     /// Ask orders by tick
     #[allow(dead_code)]
     asks: Mapping<i16, TickLevel>,
-    /// Best bid tick for highest bid price
-    pub best_bid_tick: i16,
-    /// Best ask tick for lowest ask price
-    pub best_ask_tick: i16,
+    /// Best bid tick for highest bid price.
+    pub(crate) best_bid_tick: i16,
+    /// Best ask tick for lowest ask price.
+    pub(crate) best_ask_tick: i16,
+    /// (+T8) 1-based book ID; zero means unset.
+    pub(crate) book_id: u32,
     #[allow(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
     bid_bitmap: Mapping<i16, U256>,
@@ -176,8 +210,26 @@ impl Orderbook {
             quote,
             best_bid_tick: i16::MIN,
             best_ask_tick: i16::MAX,
-            ..Default::default()
+            book_id: *BookId::UNSET,
+            bids: Mapping::default(),
+            asks: Mapping::default(),
+            bid_bitmap: Mapping::default(),
+            ask_bitmap: Mapping::default(),
         }
+    }
+
+    /// Creates a new orderbook with its zero-based `book_keys` vector index.
+    pub fn new_with_index(base: Address, quote: Address, index: u32) -> Self {
+        let id = BookId::from_index(index);
+        Self {
+            book_id: *id,
+            ..Self::new(base, quote)
+        }
+    }
+
+    /// Returns this orderbook's 1-based book ID.
+    pub(crate) fn id(&self) -> BookId {
+        BookId::from(self.book_id)
     }
 
     /// Returns true if this orderbook is initialized

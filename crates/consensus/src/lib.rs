@@ -42,7 +42,7 @@ pub use args::{Args, PositiveDuration};
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
-const PARTITION_PREFIX: &str = "engine";
+pub const PARTITION_PREFIX: &str = "engine";
 
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,

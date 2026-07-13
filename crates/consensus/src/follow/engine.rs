@@ -148,8 +148,6 @@ impl<TUpstream> Config<TUpstream> {
         let (feed_actor, feed_mailbox) = feed::init(
             context.with_label("feed"),
             marshal_mailbox.clone(),
-            epoch_strategy.clone(),
-            self.execution_node.clone(),
             self.feed_state,
         );
 

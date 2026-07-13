@@ -6,9 +6,9 @@
 # completed this scheduled e2e workflow successfully.
 # Release tag runs compare the pushed v*.*.* tag against the previous v*.*.* tag.
 #
-# Usage: bench-e2e-scheduled-refs.sh <force> [preset]
+# Usage: bench-e2e-scheduled-refs.sh <force> [state-key]
 #   force - "true" to run even if no new main commit is available
-#   preset - txgen preset name used to scope persisted nightly state
+#   state-key - filesystem-safe key used to scope persisted nightly state
 #
 # Outputs (via GITHUB_OUTPUT):
 #   baseline-ref
@@ -25,19 +25,19 @@
 set -euo pipefail
 
 FORCE="${1:-false}"
-PRESET="${2:-${BENCH_E2E_PRESET:-tip20}}"
+STATE_KEY="${2:-${BENCH_E2E_STATE_KEY:-${BENCH_E2E_PRESET:-default}}}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
 STATE_REPO="${BENCH_E2E_STATE_REPO:-decofe/tempo-bench-charts}"
 
-if [[ ! "$PRESET" =~ ^[A-Za-z0-9_-]+$ ]]; then
-  echo "::error::Invalid preset name: $PRESET"
+if [[ ! "$STATE_KEY" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "::error::Invalid benchmark state key: $STATE_KEY"
   exit 1
 fi
 
-STATE_FILE="${BENCH_E2E_STATE_FILE:-state/e2e-nightly-${PRESET}-last-feature-ref}"
+STATE_FILE="${BENCH_E2E_STATE_FILE:-state/e2e-nightly-${STATE_KEY}-last-feature-ref}"
 
 echo "Force: $FORCE"
-echo "Preset: $PRESET"
+echo "State key: $STATE_KEY"
 echo "Repository: $REPO"
 echo "State file: $STATE_FILE"
 
@@ -57,7 +57,7 @@ write_outputs() {
     echo "is-stale=$IS_STALE"
     echo "stale-age-hours=$AGE_HOURS"
     echo "nightly-created=$CREATED_AT"
-    echo "preset=$PRESET"
+    echo "state-key=$STATE_KEY"
     echo "state-file=$STATE_FILE"
   } >> "$GITHUB_OUTPUT"
 }
@@ -140,9 +140,9 @@ LAST_FEATURE_REF=""
 STATE_URL="https://raw.githubusercontent.com/${STATE_REPO}/state/${STATE_FILE}"
 if RAW="$(curl -sfL -H "Authorization: token ${DEREK_TOKEN:-}" "$STATE_URL")"; then
   LAST_FEATURE_REF="$(echo "$RAW" | tr -d '[:space:]')"
-  echo "Previous e2e feature ref for $PRESET: $LAST_FEATURE_REF"
+  echo "Previous e2e feature ref for $STATE_KEY: $LAST_FEATURE_REF"
 else
-  echo "No persisted e2e state found for $PRESET"
+  echo "No persisted e2e state found for $STATE_KEY"
 fi
 echo "::endgroup::"
 

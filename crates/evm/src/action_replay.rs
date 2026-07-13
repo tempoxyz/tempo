@@ -121,31 +121,25 @@ where
                         .sstore_exact(db, address, key, sload_value, value)?;
                 }
                 StorageAction::Sinc(address, key, sload_value, delta) => {
-                    let current = self.replay_state.sload_current_or_expected(
-                        db,
-                        address,
-                        key,
-                        sload_value,
-                    )?;
+                    let current =
+                        self.replay_state
+                            .sload_current_or(db, address, key, sload_value)?;
                     let value = current
                         .checked_add(delta)
                         .ok_or(StorageActionReplayError::Overflow)?;
                     self.replay_state.sstore(address, key, value)?;
                 }
                 StorageAction::Sdec(address, key, sload_value, delta) => {
-                    let current = self.replay_state.sload_current_or_expected(
-                        db,
-                        address,
-                        key,
-                        sload_value,
-                    )?;
+                    let current =
+                        self.replay_state
+                            .sload_current_or(db, address, key, sload_value)?;
                     let value = current
                         .checked_sub(delta)
                         .ok_or(StorageActionReplayError::Underflow)?;
                     self.replay_state.sstore(address, key, value)?;
                 }
                 StorageAction::FeeAmmSwap(key, sload_value, amount_in) => {
-                    let pool_slot = self.replay_state.sload_current_or_expected(
+                    let pool_slot = self.replay_state.sload_current_or(
                         db,
                         action.address(),
                         key,
@@ -169,7 +163,7 @@ where
                     amount_out,
                     has_enough_liquidity,
                 ) => {
-                    let pool_slot = self.replay_state.sload_current_or_expected(
+                    let pool_slot = self.replay_state.sload_current_or(
                         db,
                         action.address(),
                         key,
@@ -515,20 +509,18 @@ impl StorageActionReplayState {
 
     /// Returns the current slot value for semantic replay.
     ///
-    /// Like [`Self::sload_exact`], but returns the current value even when it does not match
-    /// `expected`, allowing semantic actions to rebase onto compatible prior writes.
-    /// Falls back to `expected` when the current value is not already known.
-    fn sload_current_or_expected<DB: Database>(
+    /// Falls back to `fallback` when the current value is not already known.
+    fn sload_current_or<DB: Database>(
         &mut self,
         db: &mut State<DB>,
         address: Address,
         slot: U256,
-        expected: U256,
+        fallback: U256,
     ) -> Result<U256, BlockExecutionError> {
         match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => Ok(change.get().current),
             Entry::Vacant(change) => {
-                let current = Self::cached_storage_value(db, address, slot).unwrap_or(expected);
+                let current = Self::cached_storage_value(db, address, slot).unwrap_or(fallback);
                 change.insert(SlotChange {
                     original: current,
                     current,
@@ -692,7 +684,7 @@ mod tests {
 
         assert_eq!(
             replay_state
-                .sload_current_or_expected(&mut db, address, slot, U256::from(10))
+                .sload_current_or(&mut db, address, slot, U256::from(10))
                 .expect("uncached semantic sload should use recorded value"),
             U256::from(10),
         );
@@ -792,7 +784,7 @@ mod tests {
         let mut replay_state = StorageActionReplayState::default();
 
         let current = replay_state
-            .sload_current_or_expected(&mut db, address, slot, U256::from(10))
+            .sload_current_or(&mut db, address, slot, U256::from(10))
             .expect("load current storage");
         replay_state
             .sstore(address, slot, current + U256::from(3))

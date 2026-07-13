@@ -239,7 +239,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
             return;
         };
-        let _ = self.build_time_multiplier.fetch_update(
+        let _ = self.build_time_multiplier.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(decay_build_time_multiplier(current, observed)),
@@ -1021,7 +1021,7 @@ where
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
+            .map(|rx| rx.take_hashed_state_rx().recv())
         {
             hashed_state
         } else {
@@ -1076,16 +1076,24 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if self.config.skip_state_root {
-            (parent_header.state_root(), Arc::new(Default::default()))
+        let (state_root, trie_updates, changed_paths) = if self.config.skip_state_root {
+            (
+                parent_header.state_root(),
+                Arc::new(Default::default()),
+                None,
+            )
         } else if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
+            (
+                outcome.state_root,
+                outcome.trie_updates,
+                outcome.changed_paths,
+            )
         } else {
             let (state_root, trie_updates) = finish_provider
                 .state_root_with_updates(hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
 
-            (state_root, Arc::new(trie_updates))
+            (state_root, Arc::new(trie_updates), None)
         };
 
         let RootsTaskResult {
@@ -1289,7 +1297,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates,
-            changed_paths: None,
+            changed_paths,
         };
 
         let payload = TempoBuiltPayload::new(

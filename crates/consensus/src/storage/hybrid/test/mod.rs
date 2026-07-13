@@ -140,8 +140,8 @@ fn get_by_height_skips_reth_blocks_above_reth_finalized_watermark() {
     // The reth provider seeded a canonical-but-not-yet-finalized
     // block; the marshal must never see it. `block_by_height` is
     // gated on reth's finalized watermark — heights above it (and
-    // every height when the watermark is unset) miss, regardless of
-    // what is in reth's canonical chain.
+    // everything but genesis when the watermark is unset) miss,
+    // regardless of what is in reth's canonical chain.
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
         let (hybrid, provider) = SetupHybrid::default().build(&context).await;
@@ -253,7 +253,7 @@ fn put_trims_prunable_archive_to_retention() {
 }
 
 #[test_traced]
-fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
+fn gap_tracking_treats_reth_finalized_as_covered_prefix() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
         let (mut hybrid, provider) = SetupHybrid {
@@ -270,23 +270,172 @@ fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
             provider.add_block(block);
         }
 
-        // Put a non-contiguous set of heights (10 and 12) into prunable.
-        let blocks = make_chain(10, 3); // heights 10, 11, 12
-        hybrid.put(blocks[0].clone()).await.expect("put 10");
-        hybrid.put(blocks[2].clone()).await.expect("put 12");
+        provider.set_reth_finalized(5);
 
-        // Even though reth has 1..=5, missing_items starting at 9 only
-        // reports gaps in the prunable archive's view of the world.
-        let missing = hybrid.missing_items(Height::new(9), 8);
-        assert_eq!(missing, vec![Height::new(9), Height::new(11)]);
+        // Put a non-contiguous tail into prunable. Heights 6 and 7
+        // extend reth's covered prefix, while 10 and 12 leave real
+        // gaps above the execution layer's finalized watermark.
+        let blocks = make_chain(6, 7); // heights 6..=12
+        for offset in [0, 1, 4, 6] {
+            let block = blocks[offset].clone();
+            hybrid.put(block).await.expect("put block");
+        }
 
-        // next_gap reports the contiguous run around the queried height.
+        // Heights 1..=5 are covered by reth and 6..=7 by prunable, so
+        // only gaps above that merged range are reported.
+        let missing = hybrid.missing_items(Height::new(1), 8);
+        assert_eq!(
+            missing,
+            vec![Height::new(8), Height::new(9), Height::new(11)]
+        );
+
+        let (current_end, next_start) = hybrid.next_gap(Height::new(1));
+        assert_eq!(current_end, Some(Height::new(7)));
+        assert_eq!(next_start, Some(Height::new(10)));
+
+        let (current_end, next_start) = hybrid.next_gap(Height::new(8));
+        assert_eq!(current_end, None);
+        assert_eq!(next_start, Some(Height::new(10)));
+
         let (current_end, next_start) = hybrid.next_gap(Height::new(10));
         assert_eq!(current_end, Some(Height::new(10)));
         assert_eq!(next_start, Some(Height::new(12)));
 
-        // last_index reflects prunable, not reth.
+        // last_index reports the highest covered block from either source.
         assert_eq!(hybrid.last_index(), Some(Height::new(12)));
+    });
+}
+
+#[test_traced]
+fn gap_tracking_merges_prunable_run_overlapping_reth_watermark() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // Reth covers 1..=5 and the prunable archive holds 3..=7 plus a
+        // detached 10 — the production shape, where the retention window
+        // overlaps reth coverage. `next_gap`'s probe at `watermark + 1`
+        // (height 6) lands mid-run, so the merged covered range must be
+        // reported as 1..=7 with the next run starting at 10.
+        provider.set_reth_finalized(5);
+        let blocks = make_chain(3, 8); // heights 3..=10
+        for offset in [0, 1, 2, 3, 4, 7] {
+            hybrid.put(blocks[offset].clone()).await.expect("put block");
+        }
+
+        assert_eq!(
+            hybrid.next_gap(Height::new(1)),
+            (Some(Height::new(7)), Some(Height::new(10)))
+        );
+        assert_eq!(
+            hybrid.missing_items(Height::new(1), 8),
+            vec![Height::new(8), Height::new(9)]
+        );
+        assert_eq!(hybrid.last_index(), Some(Height::new(10)));
+    });
+}
+
+#[test_traced]
+fn gap_tracking_works_when_only_reth_has_blocks() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        provider.set_reth_finalized(5);
+
+        assert_eq!(hybrid.missing_items(Height::new(1), 8), Vec::new());
+        assert_eq!(
+            hybrid.next_gap(Height::new(1)),
+            (Some(Height::new(5)), None)
+        );
+        assert_eq!(hybrid.last_index(), Some(Height::new(5)));
+    });
+}
+
+/// Walks every case of [`Blocks::next_gap`]'s documented `# Behavior`
+/// section against [`Hybrid`]'s merged view of coverage, where reth's
+/// finalized watermark forms a range starting at genesis and the prunable
+/// archive contributes the ranges above it.
+#[test_traced]
+fn next_gap_upholds_blocks_trait_behavior_contract() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // "If the store is empty, both will be `None`." (Height 0 is the
+        // one exception — genesis is implicitly covered; see
+        // `genesis_is_implicitly_finalized_when_reth_watermark_is_unset`.)
+        assert_eq!(hybrid.next_gap(Height::new(1)), (None, None));
+
+        // "If `value` is before all ranges in the store,
+        // `current_range_end` will be `None`" — and `next_range_start`
+        // points at the first range.
+        let blocks = make_chain(4, 6); // heights 4..=9
+        hybrid.put(blocks[4].clone()).await.expect("put 8");
+        hybrid.put(blocks[5].clone()).await.expect("put 9");
+        assert_eq!(
+            hybrid.next_gap(Height::new(2)),
+            (None, Some(Height::new(8)))
+        );
+
+        // Coverage is now [0..=5] (reth 0..=3 merged with prunable 4..=5)
+        // and [8..=9].
+        provider.set_reth_finalized(3);
+        hybrid.put(blocks[0].clone()).await.expect("put 4");
+        hybrid.put(blocks[1].clone()).await.expect("put 5");
+
+        // "If `value` falls within an existing range `[r_start, r_end]`,
+        // `current_range_end` will be `Some(r_end)`."
+        assert_eq!(
+            hybrid.next_gap(Height::new(2)),
+            (Some(Height::new(5)), Some(Height::new(8)))
+        );
+
+        // "If `value` falls in a gap between two ranges `[..., prev_end]`
+        // and `[next_start, ...]`, `current_range_end` will be `None` and
+        // `next_range_start` will be `Some(next_start)`."
+        assert_eq!(
+            hybrid.next_gap(Height::new(6)),
+            (None, Some(Height::new(8)))
+        );
+
+        // "If `value` is [...] within the last range, `next_range_start`
+        // will be `None`."
+        assert_eq!(
+            hybrid.next_gap(Height::new(8)),
+            (Some(Height::new(9)), None)
+        );
+
+        // "If `value` is after all ranges in the store [...]" — no range
+        // contains it and none starts after it, so both are `None`.
+        assert_eq!(hybrid.next_gap(Height::new(11)), (None, None));
+    });
+}
+
+#[test_traced]
+fn genesis_is_implicitly_finalized_when_reth_watermark_is_unset() {
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // Reth's finalized watermark is unset (fresh chain), but genesis
+        // can never be reorged: `get` serves it and gap tracking reports
+        // it as covered, keeping both views of coverage consistent.
+        let genesis = make_block(0, B256::ZERO);
+        provider.add_block(&genesis);
+
+        let fetched = hybrid
+            .get(Identifier::Index(0))
+            .await
+            .expect("get genesis")
+            .expect("genesis is implicitly finalized");
+        assert_eq!(fetched, genesis);
+
+        assert_eq!(
+            hybrid.next_gap(Height::zero()),
+            (Some(Height::zero()), None)
+        );
+        assert_eq!(hybrid.missing_items(Height::zero(), 8), Vec::new());
     });
 }
 

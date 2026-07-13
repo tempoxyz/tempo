@@ -1140,14 +1140,18 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Check whether a user is authorized by the token's [`TIP403Registry`] policy for a given role.
+    /// Check whether users are authorized by the token's [`TIP403Registry`] policy for the given
+    /// roles.
     ///
     /// # Errors
-    /// - `PolicyForbids` — user is not authorized for the requested role by the active transfer policy
-    pub fn ensure_authorized_as(&self, user: Address, role: AuthRole) -> Result<()> {
+    /// - `PolicyForbids` — a user is not authorized for the requested role by the active transfer policy
+    pub fn ensure_authorized_as(&self, user_auth: &[(Address, AuthRole)]) -> Result<()> {
         let policy_id = self.transfer_policy_id()?;
-        if !TIP403Registry::new().is_authorized_as(policy_id, user, role)? {
-            return Err(TIP20Error::policy_forbids().into());
+        let registry = TIP403Registry::new();
+        for &(user, role) in user_auth {
+            if !registry.is_authorized_as(policy_id, user, role)? {
+                return Err(TIP20Error::policy_forbids().into());
+            }
         }
         Ok(())
     }
@@ -1274,7 +1278,7 @@ impl TIP20Token {
                 self.check_and_update_spending_limit(addr, amount)?;
             }
         } else {
-            self.ensure_authorized_as(destination.target, AuthRole::recipient())?;
+            self.ensure_authorized_as(&[(destination.target, AuthRole::recipient())])?;
         }
 
         self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
