@@ -3,7 +3,7 @@
 # E2E benchmarks run `nu bench-e2e.nu e2e` against the dual-schelk runner.
 # Replay benchmarks use `nu tempo.nu bench-replay`.
 #
-# Trigger via PR comment (`@decofe bench` or `derek bench`).
+# Trigger via PR comment (`@decofe bench`, `derek bench`, or `derek clear`).
 
 on:
   issue_comment:
@@ -19,6 +19,80 @@ permissions:
   contents: read
 
 jobs:
+  clear-bench-comments:
+    if: >-
+      github.event.issue.pull_request &&
+      (github.event.comment.body == 'derek clear' ||
+      github.event.comment.body == '@decofe clear')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check org membership and clear benchmark comments
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          script: |
+            const org = 'tempoxyz';
+            const checkMembership = async (username) => {
+              try {
+                const { status } = await github.rest.orgs.checkMembershipForUser({ org, username });
+                return status === 204 || status === 302;
+              } catch {
+                return false;
+              }
+            };
+
+            const commenter = context.payload.comment.user.login;
+            if (!await checkMembership(commenter)) {
+              core.setFailed(`@${commenter} is not a member of ${org}`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            if (!await checkMembership(pr.user.login)) {
+              core.setFailed(`PR author @${pr.user.login} is not a member of ${org}`);
+              return;
+            }
+
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            let hidden = 0;
+            for (const comment of comments) {
+              const body = comment.body.trim();
+              const shouldHide = comment.user.login === 'decofe' ||
+                body.startsWith('derek') || body.startsWith('@decofe');
+              if (!shouldHide) continue;
+
+              await github.graphql(`
+                mutation($subjectId: ID!) {
+                  minimizeComment(input: {subjectId: $subjectId, classifier: OUTDATED}) {
+                    minimizedComment { isMinimized }
+                  }
+                }
+              `, { subjectId: comment.node_id });
+              hidden += 1;
+            }
+
+            core.notice(`Hid ${hidden} Derek comment(s).`);
+
   tempo-bench-ack:
     if: >-
       github.event_name == 'issue_comment' &&
