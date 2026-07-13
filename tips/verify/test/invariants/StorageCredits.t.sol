@@ -93,6 +93,20 @@ contract StorageCreditsHarness {
         _assertRevert(success, result, bytes(""));
     }
 
+    function assertAtomicRevert(
+        uint256 slot,
+        uint256 value,
+        IStorageCredits.Mode mode,
+        uint64 budget,
+        bool useBudget
+    )
+        external
+    {
+        (bool success, bytes memory result) = address(this)
+            .call(abi.encodeCall(this.mutate, (slot, value, mode, budget, useBudget, true)));
+        _assertRevert(success, result, abi.encodeWithSelector(ForcedRevert.selector));
+    }
+
     function _assertRevert(bool success, bytes memory actual, bytes memory expected) internal pure {
         require(!success, "expected Storage Credits call to revert");
         require(keccak256(actual) == keccak256(expected), "unexpected Storage Credits revert");
@@ -273,12 +287,9 @@ contract StorageCreditsInvariantTest is InvariantBase {
         IStorageCredits.Mode mode = IStorageCredits.Mode(modeSeed % 3);
 
         bytes memory data = abi.encodeCall(
-            StorageCreditsHarness.mutate, (slot, newValue, mode, uint64(1), false, true)
+            StorageCreditsHarness.assertAtomicRevert, (slot, newValue, mode, uint64(1), false)
         );
-        bytes memory reason = _execute(actorSeed, data, false);
-        assertEq(
-            bytes4(reason), StorageCreditsHarness.ForcedRevert.selector, "wrong revert selector"
-        );
+        _execute(actorSeed, data, true);
         _hit(BRANCH_REVERT_ATOMICITY, "revert/atomicity");
 
         // The storage transition, credit update, and transient mode change must all unwind.
@@ -405,13 +416,10 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _hit(BRANCH_KNOWN_ERRORS, "revert/known-errors");
 
         bytes memory revertData = abi.encodeCall(
-            StorageCreditsHarness.mutate,
-            (uint256(9), uint256(1), IStorageCredits.Mode.Direct, uint64(1), true, true)
+            StorageCreditsHarness.assertAtomicRevert,
+            (uint256(9), uint256(1), IStorageCredits.Mode.Direct, uint64(1), true)
         );
-        bytes memory reason = _execute(actorSeed, revertData, false);
-        assertEq(
-            bytes4(reason), StorageCreditsHarness.ForcedRevert.selector, "wrong revert selector"
-        );
+        _execute(actorSeed, revertData, true);
         _hit(BRANCH_REVERT_ATOMICITY, "revert/atomicity");
     }
 
@@ -512,14 +520,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         assertGt(branch_hits[branch], 0, string.concat("unexercised branch: ", label));
     }
 
-    function _execute(
-        uint256 actorSeed,
-        bytes memory data,
-        bool expectSuccess
-    )
-        internal
-        returns (bytes memory reason)
-    {
+    function _execute(uint256 actorSeed, bytes memory data, bool expectSuccess) internal {
         uint256 actorIndex = actorSeed % actors.length;
         address actor = actors[actorIndex];
         uint64 nonce = uint64(vm.getNonce(actor));
@@ -531,9 +532,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         bool succeeded;
         try vmExec.executeTransaction(signedTx) {
             succeeded = true;
-        } catch (bytes memory revertData) {
-            reason = revertData;
-        }
+        } catch { }
 
         assertEq(succeeded, expectSuccess, "TIP-1060 transaction result differed from expectation");
     }
