@@ -374,10 +374,17 @@ impl From<KeychainVersionError> for TempoInvalidTransaction {
 pub enum FeePaymentError {
     /// Insufficient liquidity in the FeeAMM pool to perform fee token swap.
     ///
-    /// This indicates the user's fee token cannot be swapped for the native token
-    /// because there's insufficient liquidity in the AMM pool.
-    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee})")]
+    /// This indicates the user's fee token cannot be swapped to at least one recent
+    /// validator token because there's insufficient liquidity in the relevant AMM pool.
+    #[error(
+        "insufficient liquidity in FeeAMM pool to swap fee tokens{pair} (required: {fee})",
+        pair = liquidity_pair_msg(.user_token, .validator_token)
+    )]
     InsufficientAmmLiquidity {
+        /// The fee payer's fee token (the token being swapped from), when known.
+        user_token: Option<Address>,
+        /// The validator's preferred token (the token being swapped to), when known.
+        validator_token: Option<Address>,
         /// The required fee amount that couldn't be swapped.
         fee: U256,
     },
@@ -414,6 +421,15 @@ impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransactio
     }
 }
 
+fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Address>) -> String {
+    if let (Some(user_token), Some(validator_token)) = (user_token, validator_token) {
+        return format!(" for pair {user_token} -> {validator_token}");
+    } else if let Some(user_token) = user_token {
+        return format!(" for user token {user_token}");
+    }
+    String::new()
+}
+
 /// Tempo-specific halt reason.
 ///
 /// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment error.
@@ -439,6 +455,7 @@ impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,12 +469,23 @@ mod tests {
         );
 
         let err = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: None,
+            validator_token: None,
             fee: U256::from(1000),
         };
-        assert!(
-            err.to_string()
-                .contains("insufficient liquidity in FeeAMM pool")
-        );
+        assert!(err.to_string().contains("required: 1000"));
+
+        let user_token = Address::with_last_byte(0x11);
+        let validator_token = Address::with_last_byte(0x22);
+        let err = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: Some(user_token),
+            validator_token: Some(validator_token),
+            fee: U256::from(1000),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("insufficient liquidity in FeeAMM pool"));
+        assert!(msg.contains(&format!("{user_token} -> {validator_token}")));
+        assert!(msg.contains("required: 1000"));
 
         let err = FeePaymentError::InsufficientFeeTokenBalance {
             fee: U256::from(1000),
@@ -515,6 +543,8 @@ mod tests {
     #[test]
     fn test_fee_payment_error() {
         let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
+            user_token: None,
+            validator_token: None,
             fee: U256::from(1000),
         }
         .into();
