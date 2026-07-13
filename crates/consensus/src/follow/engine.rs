@@ -10,7 +10,7 @@
 //! The archive format is shared with the consensus engine running in validator mode
 //! so nodes can switch between validator and follower modes without data migration.
 
-use std::{num::NonZeroU64, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{Reporters, types::FixedEpocher};
@@ -72,13 +72,6 @@ pub struct Config<TUpstream> {
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
 
-    /// Section size for the finalized-blocks prunable archive.
-    ///
-    /// This is an archive-layout setting. Production callers should use the
-    /// default storage value; tests may lower it to exercise cache-window
-    /// behavior without producing thousands of blocks.
-    pub finalized_blocks_items_per_section: NonZeroU64,
-
     /// Require startup to use the consensus finalization archive as the
     /// finalized floor.
     pub strict_startup: bool,
@@ -128,7 +121,6 @@ impl<TUpstream> Config<TUpstream> {
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
                 max_pending_acks: NZUsize!(1),
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                finalized_blocks_items_per_section: self.finalized_blocks_items_per_section,
                 strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),

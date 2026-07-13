@@ -209,7 +209,6 @@ pub async fn run_follow_stack(
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
-        finalized_blocks_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
         strict_startup: config.strict_startup,
     };
 

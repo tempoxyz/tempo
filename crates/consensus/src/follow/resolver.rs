@@ -13,7 +13,7 @@ use commonware_consensus::{
     types::Height,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::{ContextCell, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{
     channel::{fallible::FallibleExt as _, mpsc},
     futures::{AbortablePool, Aborter},
@@ -99,7 +99,7 @@ pub(crate) struct Resolver<TContext> {
 
 impl<TContext> Resolver<TContext>
 where
-    TContext: Spawner,
+    TContext: Clock + Spawner,
 {
     async fn run(mut self) {
         loop {
@@ -178,13 +178,14 @@ where
         if !self.requests.contains_key(&key) {
             let aborter = match &key {
                 handler::Request::Block(digest) => {
+                    let context = self.context.clone();
                     let execution_node = self.config.execution_node.clone();
                     let upstream = self.config.upstream.clone();
                     let digest = *digest;
                     let key = key.clone();
                     self.fetches.push(async move {
                         if retry {
-                            tokio::time::sleep(RETRY_DELAY).await;
+                            context.sleep(RETRY_DELAY).await;
                         }
 
                         let response = resolve_block(&execution_node, upstream, digest).await;
@@ -192,12 +193,13 @@ where
                     })
                 }
                 handler::Request::Finalized { height } => {
+                    let context = self.context.clone();
                     let upstream = self.config.upstream.clone();
                     let height = *height;
                     let key = key.clone();
                     self.fetches.push(async move {
                         if retry {
-                            tokio::time::sleep(RETRY_DELAY).await;
+                            context.sleep(RETRY_DELAY).await;
                         }
                         let response = resolve_finalized(upstream, height).await;
                         (key, response)

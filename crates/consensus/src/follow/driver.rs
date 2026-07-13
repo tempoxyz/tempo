@@ -331,9 +331,27 @@ where
         let activity = Activity::Finalization(finalization);
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
 
+        let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+            &mut consensus_block.header().extra_data().as_ref(),
+        )
+        .wrap_err("boundary block contained no or a malformed DKG outcome")?;
+        self.config.scheme_provider.register(
+            onchain_outcome.epoch,
+            Scheme::certificate_verifier(
+                crate::config::NAMESPACE,
+                *onchain_outcome.network_identity(),
+            ),
+        );
+        self.current_epoch = onchain_outcome.epoch;
+
         let _ = self.config.marshal.verified(round, consensus_block).await;
         self.config.marshal.report(activity).await;
-        self.config.marshal.set_floor(last_boundary).await;
+
+        // We want to replay the boundary block to parse it's dkg outcome.
+        if let Some(one_before_boundary) = last_boundary.previous() {
+            self.config.marshal.set_floor(one_before_boundary).await;
+        }
+
         Ok(())
     }
 
@@ -364,6 +382,12 @@ where
             "mismatch in finalization and block digest"
         );
 
+        // If the node has been offline for more than an epoch, we try sync to the last boundary from the
+        // tip triggering a EL sync for any of the required historical blocks.
+        if finalization_epoch > self.current_epoch.next() {
+            self.sync_floor(height).await?;
+        }
+
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
@@ -379,14 +403,8 @@ where
 
         ensure!(
             finalization.verify(&mut self.context, &scheme, &Sequential),
-            "Failed to verify finalization for height {height}. Update the binary with an updated network identity"
+            "failed to verify finalization for height {height}. Update the binary with an updated network identity"
         );
-
-        // If the node has been offline for more than an epoch, we try sync to the last boundary from the tip
-        // triggering a EL sync which is is more likely to have the required historical blocks across peers.
-        if finalization_epoch > self.current_epoch.next() {
-            self.sync_floor(height).await?;
-        }
 
         let round = finalization.round();
         let activity = Activity::Finalization(finalization);

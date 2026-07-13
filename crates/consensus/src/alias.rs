@@ -2,10 +2,7 @@
 //! (primarily commonware) types.
 
 pub(crate) mod marshal {
-    use std::{
-        num::{NonZeroU64, NonZeroUsize},
-        sync::Arc,
-    };
+    use std::{num::NonZeroUsize, sync::Arc};
 
     use commonware_consensus::{
         marshal::{self, core, standard::Standard},
@@ -68,11 +65,6 @@ pub(crate) mod marshal {
         /// Number of recently finalized blocks retained in the prunable
         /// archive. Older blocks are served from reth via [`Hybrid`].
         pub finalized_blocks_retention: u64,
-
-        /// Section size for the finalized-blocks prunable archive. This is
-        /// part of the on-disk archive layout; production callers should use
-        /// [`storage::PRUNABLE_ITEMS_PER_SECTION`].
-        pub finalized_blocks_items_per_section: NonZeroU64,
 
         /// Require startup to use the consensus finalization archive as its
         /// finalized floor instead of falling back to the execution layer.
@@ -173,7 +165,6 @@ pub(crate) mod marshal {
             page_cache.clone(),
             execution_node.provider.clone(),
             config.finalized_blocks_retention,
-            config.finalized_blocks_items_per_section,
         )
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
