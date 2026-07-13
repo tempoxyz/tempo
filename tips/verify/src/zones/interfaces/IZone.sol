@@ -329,7 +329,7 @@ interface IZoneTxContext {
                 ZONE PORTAL STORAGE SLOT CONSTANTS
 //////////////////////////////////////////////////////////////*/
 
-// ZonePortal storage layout (non-immutable variables only):
+// ZonePortal storage layout:
 //   slot 0: sequencer (address)
 //   slot 1: admin (address)
 //   slot 2: pendingSequencer (address)
@@ -346,6 +346,9 @@ interface IZoneTxContext {
 //   slot 13: _withdrawalQueue.slots (mapping(uint256 => bytes32))
 //   slot 14: rpcUrl (string)
 //   slot 15: pendingAdmin (address)
+//   slot 16: _withdrawalReentrancyStatus (uint256)
+//   slot 17: zoneId (uint32) + messenger (address) [packed]
+//   slot 18: verifier (address) + genesisTempoBlockNumber (uint64) [packed]
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneConfig and ZoneInbox use them to read portal state via

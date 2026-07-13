@@ -68,11 +68,6 @@ contract ZonePortal is IZonePortal {
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    uint32 public immutable zoneId;
-    address public immutable verifier;
-    address public immutable messenger;
-    uint64 public immutable genesisTempoBlockNumber;
-
     /// @notice Current sequencer address
     address public sequencer;
 
@@ -132,6 +127,14 @@ contract ZonePortal is IZonePortal {
 
     /// @notice Reentrancy guard for withdrawal delivery.
     uint256 internal _withdrawalReentrancyStatus;
+
+    /// @notice Zone metadata stored after the cross-domain layout.
+    /// @dev These values must remain in account storage so each delegatecall proxy observes its
+    ///      own metadata. Keep them after the established slots read directly by zone contracts.
+    uint32 public zoneId;
+    address public messenger;
+    address public verifier;
+    uint64 public genesisTempoBlockNumber;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
