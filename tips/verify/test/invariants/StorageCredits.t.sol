@@ -20,12 +20,14 @@ contract StorageCreditsHarness {
 
     mapping(uint256 slot => uint256 value) public values;
 
+    /// @dev Seeds occupied slots for deterministic clear/create scenarios.
     constructor(uint256 seededSlots) {
         for (uint256 slot = 0; slot < seededSlots; slot++) {
             values[slot] = slot + 1;
         }
     }
 
+    /// @dev Applies one transition after verifying transaction-local state was reset.
     function mutate(
         uint256 slot,
         uint256 value,
@@ -160,6 +162,7 @@ contract StorageCreditsHarness {
         _assertRevert(success, result, bytes(""));
     }
 
+    /// @dev Reverts an inner mutation and verifies the outer mode and budget are restored.
     function assertAtomicRevert(
         uint256 slot,
         uint256 value,
@@ -178,6 +181,7 @@ contract StorageCreditsHarness {
         _assertTransientState(IStorageCredits.Mode.Preserve, 0);
     }
 
+    /// @dev Applies mode and storage changes that must unwind with this call frame.
     function revertingMutation(
         uint256 slot,
         uint256 value,
@@ -198,6 +202,7 @@ contract StorageCreditsHarness {
         require(keccak256(actual) == keccak256(expected), "unexpected Storage Credits revert");
     }
 
+    /// @dev Selects bounded or unbounded mode and verifies the resulting transient state.
     function _setMode(IStorageCredits.Mode mode, uint64 budget, bool useBudget) internal {
         bytes memory data = useBudget
             ? abi.encodeCall(IStorageCredits.setBudget, (budget))
@@ -215,10 +220,12 @@ contract StorageCreditsHarness {
         _assertTransientState(expectedMode, expectedBudget);
     }
 
+    /// @dev Checks the per-account mode and budget at the start of a production-path transaction.
     function _assertDefaultTransientState() internal view {
         _assertTransientState(IStorageCredits.Mode.Refund, 0);
     }
 
+    /// @dev Asserts transient mode and budget for this storage-owning account.
     function _assertTransientState(
         IStorageCredits.Mode expectedMode,
         uint64 expectedBudget
@@ -243,13 +250,18 @@ contract StorageCreditsInvariantTest is InvariantBase {
 
     IStorageCredits internal constant CREDITS = IStorageCredits(PC.STORAGE_CREDITS_ADDRESS);
 
+    // General transitions and revert atomicity.
     StorageCreditsHarness internal harness;
+    // Nested-call account locality.
     StorageCreditsHarness internal peerHarness;
+    // Bounded Direct budget consumption.
     StorageCreditsHarness internal budgetHarness;
+    // Deferred Refund settlement.
     StorageCreditsHarness internal refundHarness;
 
     mapping(address owner => mapping(uint256 slot => uint256 value)) internal ghost_values;
     mapping(address owner => uint64 credits) internal ghost_credits;
+    // Start of the currently occupied pair in refundHarness.
     uint256 internal refund_activeStart;
 
     function setUp() public override {
@@ -284,6 +296,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
                                 HANDLERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Fuzzes one top-level transition across every storage-credit mode.
     function handler_mutate(
         uint256 actorSeed,
         uint256 slotSeed,
@@ -296,6 +309,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _handlerMutation(harness, false, actorSeed, slotSeed, valueSeed, modeSeed, budgetSeed);
     }
 
+    /// @dev Fuzzes the same transition through an intermediate caller to test account locality.
     function handler_nestedMutation(
         uint256 actorSeed,
         uint256 slotSeed,
@@ -308,6 +322,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _handlerMutation(peerHarness, true, actorSeed, slotSeed, valueSeed, modeSeed, budgetSeed);
     }
 
+    /// @dev Executes a direct or nested mutation and advances the selected owner's ghost model.
     function _handlerMutation(
         StorageCreditsHarness owner,
         bool nested,
@@ -349,6 +364,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _assertModels();
     }
 
+    /// @dev Fuzzes dirty x->0->y recreation accounting within one transaction.
     function handler_recreate(
         uint256 actorSeed,
         uint256 slotSeed,
@@ -383,6 +399,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _assertModels();
     }
 
+    /// @dev Fuzzes two Direct consumptions to expose budget decrement and exhaustion.
     function handler_directBudget(
         uint256 actorSeed,
         uint256 valueSeed,
@@ -408,6 +425,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _assertModels();
     }
 
+    /// @dev Creates before clearing so Refund settlement must use credits minted later.
     function handler_refundCreateThenClear(uint256 actorSeed, uint256 valueSeed) external {
         address owner = address(refundHarness);
         uint256 fromStart = refund_activeStart;
@@ -428,6 +446,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _assertModels();
     }
 
+    /// @dev Forces a zero-boundary mutation in a reverted child frame and checks full rollback.
     function handler_revertingMutation(
         uint256 actorSeed,
         uint256 slotSeed,
@@ -464,6 +483,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _invariantAccountLocality();
     }
 
+    /// @dev Checks every independently exercised storage owner against its ghost state.
     function _assertModels() internal view {
         _assertModel(harness, NUM_SLOTS);
         _assertModel(peerHarness, NUM_SLOTS);
@@ -471,6 +491,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         _assertModel(refundHarness, 4);
     }
 
+    /// @dev Compares one owner's persistent credit balance and storage with its ghost model.
     function _assertModel(StorageCreditsHarness owner, uint256 slots) internal view {
         address ownerAddress = address(owner);
         assertEq(
@@ -488,6 +509,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         }
     }
 
+    /// @dev Ensures transaction senders never receive credits for contract-owned storage.
     function _invariantAccountLocality() internal view {
         for (uint256 i = 0; i < actors.length; i++) {
             assertEq(
@@ -502,6 +524,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
                                 HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Models one present-to-new zero-boundary transition independently of the implementation.
     function _expectedAfterTransition(
         uint64 credits,
         uint256 oldValue,
@@ -521,6 +544,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         return credits;
     }
 
+    /// @dev Executes a signed actor call through the production transaction executor.
     function _execute(uint256 actorSeed, address target, bytes memory data) internal {
         uint256 actorIndex = actorSeed % actors.length;
         address actor = actors[actorIndex];
