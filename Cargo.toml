@@ -290,6 +290,7 @@ once_cell = { version = "1.19", default-features = false, features = ["critical-
 p256 = { version = "0.13", default-features = false }
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"
+sysinfo = { version = "0.38.4", default-features = false, features = ["disk", "system"] }
 proptest = "1.9"
 proptest-arbitrary-interop = "0.1.0"
 rand = "0.9"

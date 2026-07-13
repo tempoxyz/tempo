@@ -7,9 +7,66 @@
 use commonware_runtime::{Metrics as _, Spawner as _, tokio::Context};
 use eyre::WrapErr as _;
 use jiff::SignedDuration;
+use prometheus_client::{
+    encoding::{EncodeLabelSet, text::encode},
+    metrics::info::Info,
+    registry::Registry,
+};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_tracing::tracing;
+use sysinfo::{Disks, System};
 use url::Url;
+
+#[derive(Clone, Debug, EncodeLabelSet, Hash, PartialEq, Eq)]
+struct HardwareInfo {
+    cpu_vendor: String,
+    cpu_brand: String,
+    physical_core_count: usize,
+    logical_core_count: usize,
+    total_memory_bytes: u64,
+    disk_count: usize,
+    disk_total_bytes: u64,
+    disk_file_systems: String,
+}
+
+/// Collects non-identifying hardware metadata and encodes it as a Prometheus info metric.
+///
+/// Disk names and mount sources are deliberately not collected because they can expose internal
+/// infrastructure details for network-mounted filesystems.
+fn hardware_metrics() -> eyre::Result<String> {
+    let system = System::new_all();
+    let cpu = system.cpus().first();
+    let disks = Disks::new_with_refreshed_list();
+    let mut disk_file_systems = disks
+        .iter()
+        .map(|disk| disk.file_system().to_string_lossy().into_owned())
+        .filter(|file_system| !file_system.is_empty())
+        .collect::<Vec<_>>();
+    disk_file_systems.sort_unstable();
+    disk_file_systems.dedup();
+
+    let labels = HardwareInfo {
+        cpu_vendor: cpu.map_or_else(String::new, |cpu| cpu.vendor_id().to_owned()),
+        cpu_brand: cpu.map_or_else(String::new, |cpu| cpu.brand().to_owned()),
+        physical_core_count: System::physical_core_count().unwrap_or_default(),
+        logical_core_count: system.cpus().len(),
+        total_memory_bytes: system.total_memory(),
+        disk_count: disks.len(),
+        disk_total_bytes: disks.iter().map(|disk| disk.total_space()).sum(),
+        disk_file_systems: disk_file_systems.join(","),
+    };
+
+    let mut registry = Registry::default();
+    registry.register(
+        "tempo_hardware",
+        "Static, non-identifying hardware information for the Tempo node",
+        Info::new(labels),
+    );
+
+    let mut encoded = String::new();
+    encode(&mut encoded, &registry).wrap_err("failed to encode hardware metrics")?;
+    Ok(encoded)
+}
 
 /// Configuration for Prometheus metrics push export.
 pub struct PrometheusMetricsConfig {
@@ -53,6 +110,7 @@ pub fn install_prometheus_metrics(
     let url = endpoint.to_string();
     let client = reqwest::Client::new();
     let auth_header = config.auth_header;
+    let hardware_metrics = hardware_metrics()?;
 
     let reth_recorder = install_prometheus_recorder();
     context.spawn(move |context| async move {
@@ -65,7 +123,7 @@ pub fn install_prometheus_metrics(
 
             let consensus_metrics = context.encode();
             let reth_metrics = reth_recorder.handle().render();
-            let body = format!("{consensus_metrics}\n{reth_metrics}");
+            let body = format!("{consensus_metrics}\n{reth_metrics}\n{hardware_metrics}");
 
             // Push to Victoria Metrics
             let mut request = client
