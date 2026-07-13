@@ -178,7 +178,7 @@ setup:
           function: mint
           args:
             - { var: setup.directswap.address }
-            - "100000000000000"
+            - "1000000000000000000"
     # Reward contracts use a dedicated deployer so their CREATE addresses stay
     # stable when the principal-flow setup changes. The committed Merkle leaves
     # bind to reward_wrapper at CREATE(reward_admin, 4).
