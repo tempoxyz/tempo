@@ -11,7 +11,7 @@ use alloy_evm::{
     Evm as _, EvmEnv,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory, TxResult as AlloyTxResult},
 };
-use alloy_primitives::{keccak256, Address, B256, Bytes, Log, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
 use core::ffi::c_int;
 use reth_chainspec::ForkCondition;
 use reth_consensus::Consensus as _;
@@ -19,30 +19,57 @@ use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction};
 use revm::{
     bytecode::Bytecode,
-    context::CfgEnv,
     database::{EmptyDB, in_memory_db::CacheDB},
     state::AccountInfo,
 };
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
 use tempo_fuzz_types::{
-    AccountDiff, AccountInput, BlockContextInput, BlockExecutionResultOutput, BlockInput,
-    BlockPayload, BlockResult, ChainSpecInput, ErrorClass, ExecutedBlockOutput,
-    FUZZ_ACCEPT, FUZZ_REJECT, HarnessInputKind, LogOutput, NonEmpty, StateDiff, StateInput,
-    StorageInput, TYPED_HARNESS_SCHEMA_VERSION, TempoExecutionOutcome, TempoHarnessCapabilities,
+    AccountInput, BlockContextInput, ChainSpecInput, ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT,
+    HarnessInputKind, LogOutput, NonEmpty, StateDiff, StateInput, StorageInput,
+    TYPED_HARNESS_SCHEMA_VERSION, TempoExecutionOutcome, TempoHarnessCapabilities,
     TempoHarnessInput, TempoHarnessOutcome, TransactionOutcome, TxReceiptOutput,
 };
-use tempo_precompiles::tempo_precompiles;
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 
 const PINNED_CHAIN_ID: u64 = 42431;
-const SYNTHETIC_PRECOMPILE_CONTRACT_CODE: &[u8] = &[0xef];
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct BlockInput {
+    chain_spec: ChainSpecInput,
+    pre_state: StateInput,
+    blocks: Vec<BlockPayload>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+struct BlockPayload {
+    context: BlockContextInput,
+    txs: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct BlockResult {
+    receipts: Vec<TxReceiptOutput>,
+    final_state: StateInput,
+    state_diff: StateDiff,
+    error: ErrorClass,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct BlockExecutionResultOutput {
+    blocks: Vec<ExecutedBlockOutput>,
+    storage_changes: Vec<tempo_fuzz_types::StorageChangeOutput>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ExecutedBlockOutput {
+    block_index: u64,
+    receipts: Vec<TxReceiptOutput>,
+    gas_used: u64,
+    blob_gas_used: u64,
+}
 
 struct DecodedBlock {
     context: BlockContextInput,
@@ -123,7 +150,9 @@ fn execute_typed_input(input: TempoHarnessInput) -> Result<TempoHarnessOutcome, 
                     txs: vec![input.tx],
                 }],
             })?;
-            Ok(TempoHarnessOutcome::State(tempo_execution_outcome(response)))
+            Ok(TempoHarnessOutcome::State(tempo_execution_outcome(
+                response,
+            )))
         }
         TempoHarnessInput::Blockchain(input) => {
             let blocks = input
@@ -161,8 +190,7 @@ fn tempo_execution_outcome(response: BlockResult) -> TempoExecutionOutcome {
 
 fn decode_tx(input: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
     let mut tx_slice = input;
-    let tx =
-        TempoTxEnvelope::decode_2718(&mut tx_slice).map_err(|_| ErrorClass::RlpDecode)?;
+    let tx = TempoTxEnvelope::decode_2718(&mut tx_slice).map_err(|_| ErrorClass::RlpDecode)?;
     if !tx_slice.is_empty() {
         return Err(ErrorClass::RlpDecode);
     }
@@ -925,7 +953,12 @@ fn encode_state_overlay(db: &CacheDB<EmptyDB>, base: &StateInput) -> StateInput 
     for (address, info, account) in accounts {
         let mut address_bytes = [0u8; 20];
         address_bytes.copy_from_slice(address.as_slice());
-        let view = account_views.entry(address_bytes).or_default();
+        let view = match account_views.entry(address_bytes) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(AccountView::default())
+            }
+        };
         view.balance = info.balance;
         view.nonce = info.nonce;
         view.code = match info.code.as_ref() {
@@ -958,162 +991,6 @@ fn encode_state_overlay(db: &CacheDB<EmptyDB>, base: &StateInput) -> StateInput 
         .collect();
 
     StateInput { accounts }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FixtureCheckError {
-    Read,
-    Decode,
-    Panic,
-    MissingExpectedResult,
-    Mismatch,
-}
-
-pub fn conformance_fixture_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut files = Vec::new();
-    collect_fixture_files(dir, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-pub fn check_conformance_fixture(path: &Path) -> Result<(), FixtureCheckError> {
-    let fixture: tempo_fuzz_types::Fixture =
-        bincode::deserialize(&fs::read(path).map_err(|_| FixtureCheckError::Read)?)
-            .map_err(|_| FixtureCheckError::Decode)?;
-    let actual = std::panic::catch_unwind(|| execute_concrete_block(&fixture.input));
-    let actual = match actual {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => BlockResult {
-            receipts: Vec::new(),
-            final_state: StateInput::default(),
-            state_diff: StateDiff::default(),
-            error,
-        },
-        Err(_) => return Err(FixtureCheckError::Panic),
-    };
-    let expected = fixture
-        .expected
-        .as_ref()
-        .ok_or(FixtureCheckError::MissingExpectedResult)?;
-    if results_equivalent(expected, &actual, &fixture.input) {
-        Ok(())
-    } else {
-        Err(FixtureCheckError::Mismatch)
-    }
-}
-
-fn results_equivalent(expected: &BlockResult, actual: &BlockResult, request: &BlockInput) -> bool {
-    let mut expected = expected.clone();
-    let mut actual = actual.clone();
-    normalize_result(&mut expected, request);
-    normalize_result(&mut actual, request);
-    if expected.error != ErrorClass::None
-        && actual.error != ErrorClass::None
-        && is_protocol_rejection_error(expected.error)
-        && is_protocol_rejection_error(actual.error)
-    {
-        return true;
-    }
-    expected.error == actual.error
-        && expected.receipts == actual.receipts
-        && expected.final_state == actual.final_state
-}
-
-fn normalize_result(response: &mut BlockResult, request: &BlockInput) {
-    response
-        .receipts
-        .sort_by_key(|receipt| (receipt.block_index, receipt.tx_index));
-    response
-        .final_state
-        .accounts
-        .sort_by_key(|account| account.address);
-    for account in &mut response.final_state.accounts {
-        account.storage.sort_by_key(|entry| entry.slot);
-        account.storage.retain(|entry| entry.value != [0; 32]);
-    }
-    response.final_state.accounts.retain(|account| {
-        !is_empty_final_account(account)
-            && !is_synthetic_precompile_contract_marker_account(account, request)
-    });
-    response
-        .state_diff
-        .accounts
-        .sort_by_key(|account| account.address);
-    response
-        .state_diff
-        .accounts
-        .retain(|diff| !is_synthetic_precompile_contract_marker_diff(diff, request));
-    response
-        .state_diff
-        .storage
-        .sort_by_key(|entry| (entry.address, entry.slot));
-}
-
-fn is_protocol_rejection_error(error: ErrorClass) -> bool {
-    matches!(
-        error,
-        ErrorClass::InvalidInput | ErrorClass::RlpDecode | ErrorClass::Rejected
-    )
-}
-
-fn is_synthetic_precompile_contract_marker_account(
-    account: &AccountInput,
-    request: &BlockInput,
-) -> bool {
-    is_active_precompile_address(&account.address, request)
-        && account.balance == [0; 32]
-        && account.nonce == 0
-        && account.storage.is_empty()
-        && account.code.as_slice() == SYNTHETIC_PRECOMPILE_CONTRACT_CODE
-}
-
-fn is_empty_final_account(account: &AccountInput) -> bool {
-    account.balance == [0; 32]
-        && account.nonce == 0
-        && account.code.is_empty()
-        && account.storage.is_empty()
-}
-
-fn is_synthetic_precompile_contract_marker_diff(diff: &AccountDiff, request: &BlockInput) -> bool {
-    is_active_precompile_address(&diff.address, request)
-        && diff.balance.is_none()
-        && diff.nonce.is_none()
-        && diff
-            .code
-            .as_ref()
-            .is_some_and(|code| code == SYNTHETIC_PRECOMPILE_CONTRACT_CODE)
-}
-
-fn is_active_precompile_address(address: &[u8; 20], request: &BlockInput) -> bool {
-    let address = Address::from(*address);
-    request.blocks.iter().any(|block| {
-        precompiles_for_hardfork(block.context.hardfork)
-            .get(&address)
-            .is_some()
-    })
-}
-
-fn precompiles_for_hardfork(hardfork: u8) -> alloy_evm::precompiles::PrecompilesMap {
-    let mut cfg = CfgEnv::<TempoHardfork>::default();
-    cfg.set_spec_and_mainnet_gas_params(
-        hardfork_from_u8(hardfork).expect("fixture hardfork must be supported by harness"),
-    );
-    tempo_precompiles(&cfg)
-}
-
-fn collect_fixture_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_fixture_files(&path, files)?;
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension == "fixture")
-        {
-            files.push(path);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1204,15 +1081,29 @@ mod tests {
     #[test]
     fn execute_block_input_runs_transactions() {
         let tx = legacy_tx(0, 0);
-        let request = block_input_with_txs(&[tx.clone()]);
-        let response = execute_block_result(&serialized_block_input_with_txs(&[tx]))
-            .expect("block input executes");
+        let txs = encoded_txs(&[tx]);
+        let response = execute_typed_input(TempoHarnessInput::Blockchain(
+            tempo_fuzz_types::TempoBlockchainInput {
+                chain_spec: ChainSpecInput::default(),
+                pre_state: StateInput::default(),
+                blocks: NonEmpty::new(vec![tempo_fuzz_types::TempoBlock {
+                    context: BlockContextInput {
+                        hardfork: 4,
+                        ..Default::default()
+                    },
+                    txs,
+                }])
+                .expect("test blockchain input has one block"),
+            },
+        ))
+        .expect("typed blockchain input executes");
+        let TempoHarnessOutcome::Blockchain(response) = response else {
+            panic!("expected blockchain outcome");
+        };
 
         assert!(matches!(response.error, ErrorClass::None));
         assert_eq!(response.receipts.len(), 1);
         assert!(response.receipts[0].success);
-        assert_eq!(request.blocks.len(), 1);
-        assert_eq!(request.blocks[0].txs.len(), 1);
     }
 
     #[test]

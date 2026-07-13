@@ -1,8 +1,8 @@
 use std::fmt;
 
 use serde::{
-    de::{Error as DeError, SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
+    de::{Error as DeError, SeqAccess, Visitor},
 };
 
 pub type FuzzStatus = i32;
@@ -194,38 +194,6 @@ impl Default for ChainSpecInput {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Fixture {
-    pub metadata: FixtureMetadata,
-    pub input: BlockInput,
-    pub expected: Option<BlockResult>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct FixtureMetadata {
-    pub fixture_id: [u8; 32],
-    pub tempo_revision: String,
-    pub harness_revision: String,
-    pub hardfork: u8,
-    pub generator: String,
-    pub created_at: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct BlockInput {
-    pub chain_spec: ChainSpecInput,
-    pub pre_state: StateInput,
-    pub blocks: Vec<BlockPayload>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct TxInput {
-    pub chain_spec: ChainSpecInput,
-    pub pre_state: StateInput,
-    pub context: BlockContextInput,
-    pub tx: Vec<u8>,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum HarnessInputKind {
     Transaction,
@@ -266,24 +234,6 @@ pub struct TempoBlockchainInput {
 pub struct TempoBlock {
     pub context: BlockContextInput,
     pub txs: Vec<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct BlockResult {
-    pub receipts: Vec<TxReceiptOutput>,
-    pub final_state: StateInput,
-    #[serde(default)]
-    pub state_diff: StateDiff,
-    pub error: ErrorClass,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct TxResult {
-    pub receipt: Option<TxReceiptOutput>,
-    pub final_state: StateInput,
-    #[serde(default)]
-    pub state_diff: StateDiff,
-    pub error: ErrorClass,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -369,32 +319,6 @@ pub struct AccountDiff {
     pub balance: Option<[u8; 32]>,
     pub nonce: Option<u64>,
     pub code: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct BlockPayload {
-    pub context: BlockContextInput,
-    pub txs: Vec<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct BlockExecutionResultOutput {
-    pub blocks: Vec<ExecutedBlockOutput>,
-    pub storage_changes: Vec<StorageChangeOutput>,
-}
-
-impl BlockExecutionResultOutput {
-    pub fn receipts(&self) -> impl Iterator<Item = &TxReceiptOutput> {
-        self.blocks.iter().flat_map(|block| block.receipts.iter())
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ExecutedBlockOutput {
-    pub block_index: u64,
-    pub receipts: Vec<TxReceiptOutput>,
-    pub gas_used: u64,
-    pub blob_gas_used: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
