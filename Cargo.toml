@@ -26,6 +26,8 @@ members = [
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
+  "crates/fuzz-harness",
+  "crates/fuzz-types",
   "crates/node",
   "crates/payload/builder",
   "crates/payload/types",
@@ -131,6 +133,8 @@ tempo-consensus-config = { path = "crates/consensus-config", default-features = 
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-fuzz-harness = { path = "crates/fuzz-harness", default-features = false }
+tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }
