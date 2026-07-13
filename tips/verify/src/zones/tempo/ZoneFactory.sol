@@ -97,17 +97,18 @@ abstract contract ZoneFactory is IZoneFactory {
         // precompile, represented by abstract hooks here so this artifact documents
         // the required behavior without pretending it is ordinary Solidity.
         _nativeEtchPortalProxy(portal, portalProxyRuntime());
-        ZonePortal(portal).initialize(
-            zoneId,
-            params.initialToken,
-            _messenger,
-            params.admin,
-            params.sequencer,
-            params.verifier,
-            params.zoneParams.genesisBlockHash,
-            params.zoneParams.genesisTempoBlockNumber,
-            params.rpcUrl
-        );
+        ZonePortal(portal)
+            .initialize(
+                zoneId,
+                params.initialToken,
+                _messenger,
+                params.admin,
+                params.sequencer,
+                params.verifier,
+                params.zoneParams.genesisBlockHash,
+                params.zoneParams.genesisTempoBlockNumber,
+                params.rpcUrl
+            );
 
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
