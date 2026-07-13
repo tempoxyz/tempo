@@ -1,11 +1,8 @@
-# Neobank flow.
+# Neobank swap workload and shared setup for operation-specific presets.
 #
-# This preset keeps the same user and amount across the swap, deposit, and
-# withdrawal sequence. Reward claims are sampled independently because Merkl
-# accrual and root publication happen outside that sequence. It uses local
-# TIP20 token 1, AlphaUSD, for the DirectSwap leg. The setup phase deploys the
-# local protocol contracts, publishes a deterministic rewards root, and seeds
-# liquidity before measured workload starts.
+# This preset benchmarks the AlphaUSD-to-pathUSD DirectSwap transaction. The
+# deposit, withdrawal, and reward-claim presets include this file and select a
+# single operation from the shared contract setup below.
 chain_id: 1337
 
 gas:
@@ -326,7 +323,7 @@ templates:
     valid_for_secs: 25
     calls: []
 
-  neobank_vault_deposit:
+  neobank_vault_operation:
     type: tempo
     from:
       pool: users
@@ -354,7 +351,7 @@ templates:
     max_priority_fee_per_gas: 100000000000
 
 sequences:
-  neobank_full_flow:
+  neobank_swaps:
     bindings:
       user:
         account:
@@ -382,8 +379,15 @@ sequences:
                 - "0x20c0000000000000000000000000000000000001"
                 - "0x20c0000000000000000000000000000000000000"
                 - { var: amount }
-      - name: pathusd_to_neobank_vault
-        template: neobank_vault_deposit
+  neobank_deposits:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: random
+    steps:
+      - name: deposit_pathusd
+        template: neobank_vault_operation
         with:
           from: { var: user.ref }
           calls:
@@ -392,15 +396,23 @@ sequences:
               function: approve
               args:
                 - { var: setup.privy_fee_wrapper.address }
-                - { var: amount }
+                - 1
             - to: { var: setup.privy_fee_wrapper.address }
               abi: ERC4626Vault
               function: deposit
               args:
-                - { var: amount }
+                - 1
                 - { var: user.address }
-      - name: withdraw_from_neobank_vault
-        template: neobank_vault_deposit
+
+  neobank_withdrawals:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: { index: 0 }
+    steps:
+      - name: withdraw_pathusd
+        template: neobank_vault_operation
         with:
           from: { var: user.ref }
           calls:
@@ -408,7 +420,7 @@ sequences:
               abi: ERC4626Vault
               function: withdraw
               args:
-                - { var: amount }
+                - 1
                 - { var: user.address }
                 - { var: user.address }
 
@@ -429,9 +441,5 @@ sequences:
           input: { var: claim.input }
 
 mix:
-  # A flow selection emits three transactions while a claim emits one. These
-  # weights yield 3 / (19 * 3 + 3) = 5% claims in the emitted transaction mix.
-  - sequence: neobank_full_flow
-    weight: 19
-  - sequence: neobank_reward_claims
-    weight: 3
+  - sequence: neobank_swaps
+    weight: 100

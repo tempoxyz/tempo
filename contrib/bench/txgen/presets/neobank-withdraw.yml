@@ -1,0 +1,48 @@
+# Smallest-unit pathUSD withdrawals from a pre-funded neobank vault position.
+include: neobank-swap.yml
+
+append:
+  setup:
+    steps:
+      - id: seed_neobank_withdrawals
+        bindings:
+          user:
+            account:
+              pool: users
+              select: { index: 0 }
+        tx:
+          type: tempo
+          from: { var: user.ref }
+          sponsor:
+            pool: fee_payers
+            select: { index: 0 }
+          gas_limit: 8000000
+          max_fee_per_gas: 100000000000
+          max_priority_fee_per_gas: 100000000000
+          fee_token: "0x20c0000000000000000000000000000000000000"
+          expiring_nonce: true
+          valid_for_secs: 25
+          calls:
+            - to: "0x20c0000000000000000000000000000000000000"
+              abi: ERC20
+              function: mint
+              args:
+                - { var: user.address }
+                - "100000000000000"
+            - to: "0x20c0000000000000000000000000000000000000"
+              abi: ERC20
+              function: approve
+              args:
+                - { var: setup.privy_fee_wrapper.address }
+                - "100000000000000"
+            - to: { var: setup.privy_fee_wrapper.address }
+              abi: ERC4626Vault
+              function: deposit
+              args:
+                - "100000000000000"
+                - { var: user.address }
+
+merge:
+  mix:
+    - sequence: neobank_withdrawals
+      weight: 100
