@@ -129,8 +129,8 @@ contract StorageCreditsHarness {
         IStorageCredits.Mode expectedMode = useBudget ? IStorageCredits.Mode.Direct : mode;
         require(abi.decode(data, (IStorageCredits.Mode)) == expectedMode, "mode update not applied");
 
-        (success, data) = address(CREDITS)
-            .staticcall(abi.encodeCall(IStorageCredits.budgetOf, (address(this))));
+        (success, data) =
+            address(CREDITS).staticcall(abi.encodeCall(IStorageCredits.budgetOf, (address(this))));
         require(success && data.length == 32, "budgetOf failed after mode update");
         uint64 expectedBudget =
             useBudget ? budget : mode == IStorageCredits.Mode.Direct ? type(uint64).max : 0;
