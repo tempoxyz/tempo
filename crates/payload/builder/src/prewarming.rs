@@ -103,14 +103,19 @@ impl BestTransactionsPrewarming {
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
+                let warmed = (!parallel && prewarm_gate_us() > 0)
+                    .then(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
                 if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    let mut pt = PrewarmedTransaction::without_replay(tx.clone());
+                    pt.warmed = warmed.clone();
+                    let _ = ctx.transactions_tx.send(Some(pt));
                 }
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    if let Some(w) = warmed {
+                        w.store(true, std::sync::atomic::Ordering::Release);
+                    }
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -245,7 +250,7 @@ impl BestTransactionsPrewarming {
             }))
         });
 
-        PrewarmedTransaction { tx, replay }
+        PrewarmedTransaction { tx, replay, warmed: None }
     }
 }
 
@@ -265,13 +270,26 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
+        fn gate(tx: PrewarmedTransaction) -> PrewarmedTransaction {
+            if let Some(w) = &tx.warmed {
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_micros(prewarm_gate_us());
+                while !w.load(std::sync::atomic::Ordering::Acquire) {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+            }
+            tx
+        }
+        if let Ok(Some(tx)) = self.transactions_rx.try_recv().map(|o| o.map(gate)) {
             return Some(tx);
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+        self.transactions_rx.recv().ok().flatten().map(gate)
     }
 }
 
@@ -315,12 +333,26 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    /// Set by the prewarm worker when this transaction's speculative
+    /// execution (cache warming) completed. The exec side may briefly wait on
+    /// it so first-touch state reads hit the warmed cache instead of paying
+    /// cold-store latency serially (`TEMPO_PREWARM_GATE_US`).
+    pub(crate) warmed: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self { tx, replay: None, warmed: None }
     }
+}
+
+/// Microseconds the exec side waits for a transaction's prewarm before
+/// executing anyway (0 = disabled, stock behavior).
+pub(crate) fn prewarm_gate_us() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("TEMPO_PREWARM_GATE_US").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+    })
 }
 
 impl StateAwarePoolTransaction for PrewarmedTransaction {
