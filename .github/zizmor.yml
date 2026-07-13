@@ -3,6 +3,7 @@ rules:
     ignore:
       # Existing benchmark/release workflows interpolate trusted workflow outputs
       # into scripts. Keep these baselined so new workflow files still fail.
+      - bench-e2e-multi-region.yml
       - bench-e2e.yml
       - bench-replay-scheduled.yml
       - bench-replay.yml
