@@ -49,8 +49,13 @@ contract StorageCreditsHarness {
     {
         _setMode(mode, budget, useBudget);
 
-        values[slot] = 0;
+        this.clear(slot);
         values[slot] = value;
+    }
+
+    function clear(uint256 slot) external {
+        require(msg.sender == address(this), "only self");
+        values[slot] = 0;
     }
 
     /// @dev Asserts every externally reachable Storage Credits revert/halt path. `OnlyDirectCall`
