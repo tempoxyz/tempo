@@ -85,7 +85,7 @@ where
 
                 Some(update) = self.mailbox.next() => {
                     match update {
-                        Update::Block(_, acknowledgment) => acknowledgment.acknowledge(),
+                        Update::Block(_, ack) => ack.acknowledge(),
                         Update::Tip(_, height, digest) => {
                             self.observe_tip(FinalizedTip { height, digest });
                             if let Err(error) = self.complete_sync_target_if_canonical().await {
@@ -210,8 +210,12 @@ where
         info!(height = %target.height, digest = %target.digest, "sync target is canonical; advancing marshal floor");
 
         // The current commonware API accepts a height. Once the certified
-        // floor API lands, pass `finalization` here instead.
-        self.marshal.set_floor(target.height).await;
+        // floor API lands, pass `finalization` here instead. We set the floor
+        // to one-before so that the sync block is replayed (may be a boundary).
+        if let Some(one_before) = target.height.previous() {
+            self.marshal.set_floor(one_before).await;
+        }
+
         Ok(())
     }
 }

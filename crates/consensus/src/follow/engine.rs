@@ -171,7 +171,6 @@ impl<TUpstream> Config<TUpstream> {
                 last_finalized_height,
                 marshal: marshal_mailbox,
                 feed: feed_mailbox,
-                upstream: self.upstream_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
             },
         )

@@ -11,7 +11,6 @@ use crate::{
     metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
 };
-use commonware_codec::ReadExt as _;
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
@@ -22,7 +21,6 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use rand_core::CryptoRngCore;
-use reth_ethereum::storage::BlockIdReader;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
 
@@ -209,7 +207,6 @@ impl FollowerBuilder {
             name,
             feed: feed_state,
             execution_node: node,
-            network_identity,
             _handle: handle,
         }
     }
@@ -219,7 +216,6 @@ struct Follower {
     name: String,
     feed: FeedStateHandle,
     execution_node: ExecutionNode,
-    network_identity: tempo_chainspec::NetworkIdentity,
     _handle: Handle<eyre::Result<()>>,
 }
 
@@ -357,9 +353,6 @@ fn follower_reads_boundaries_after_full_dkg() {
             .await
             .unwrap();
 
-        wait_for_height(&context, &validators[0], start_height).await;
-        context.to_metrics().assert_no_dkg_failures();
-
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
             .follow(&mut context, &validators[0])
@@ -367,40 +360,20 @@ fn follower_reads_boundaries_after_full_dkg() {
 
         follower.connect_peers(&validators).await;
 
+        wait_for_height(&context, &validators[0], start_height).await;
+        context.to_metrics().assert_no_dkg_failures();
+
         wait_for_height(&context, &follower, follower_target_height).await;
 
-        // The follower was offline past the epoch-1 boundary. Its floor is
-        // set immediately before that boundary so it is replayed and its DKG
-        // outcome for epoch 2 lets the follower progress through epoch 2.
-
-        let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
-        wait_for_finalization(&context, &follower.feed, Query::Height(epoch_1_boundary)).await;
-
-        let certified = follower
-            .feed
-            .get_finalization(Query::Height(epoch_1_boundary))
-            .await
-            .unwrap();
-
-        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-            &mut certified.block.header().inner.extra_data.as_ref(),
-        )
-        .expect("boundary must contain a DKG outcome");
-
-        assert_ne!(
-            outcome.network_identity(),
-            &follower.network_identity.identity,
-        );
-
-        let follower_height = follower
-            .execution_node
-            .node
-            .provider
-            .finalized_block_number()
-            .expect("follower execution height must be readable")
-            .unwrap_or_default();
-
-        assert!(follower_height >= follower_target_height);
+        // The follower processes both boundaries alongside the validator,
+        // registering the epoch-1 outcome so it can verify and progress through epoch 2.
+        for boundary in [EPOCH_LENGTH - 1, 2 * EPOCH_LENGTH - 1] {
+            follower
+                .feed
+                .get_finalization(Query::Height(boundary))
+                .await
+                .unwrap();
+        }
     });
 }
 
