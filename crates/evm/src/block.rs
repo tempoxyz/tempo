@@ -28,7 +28,7 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, IStorageCredits,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -892,6 +892,34 @@ mod tests {
         ICurrentCommittee::getCommitteeMembersCall::abi_decode_returns(&output).unwrap()
     }
 
+    fn read_storage_credit_balance<DB, I>(
+        executor: &mut TempoBlockExecutor<'_, DB, I>,
+        account: Address,
+    ) -> u64
+    where
+        DB: StateDB,
+        I: Inspector<TempoContext<DB>>,
+    {
+        let result = executor
+            .evm_mut()
+            .transact_system_call(
+                Address::ZERO,
+                STORAGE_CREDITS_ADDRESS,
+                IStorageCredits::balanceOfCall { account }
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("unexpected balanceOf result: {result:?}"),
+        };
+        IStorageCredits::balanceOfCall::abi_decode_returns(&output).unwrap()
+    }
+
     #[test]
     fn test_build_receipt() {
         let builder = TempoReceiptBuilder;
@@ -1508,6 +1536,49 @@ mod tests {
         let committee = read_current_committee(&mut executor);
         assert_eq!(committee.epoch, outcome.epoch.get());
         assert_eq!(committee.publicKeys, expected_public_keys);
+    }
+
+    #[test]
+    fn test_current_committee_system_call_does_not_mint_storage_credits() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let outcome = create_dkg_outcome(42, 3);
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(outcome.encode().into())
+            .with_spec(TempoHardfork::T8)
+            .build(&mut db, &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)
+            .unwrap();
+        executor
+            .deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)
+            .unwrap();
+
+        for players in [3, 1, 3] {
+            let outcome = create_dkg_outcome(42, players);
+            let calldata = ICurrentCommittee::setCommitteeMembersCall {
+                epoch: outcome.epoch.get(),
+                publicKeys: outcome
+                    .players()
+                    .iter()
+                    .map(|key| B256::from_slice(key.as_ref()))
+                    .collect(),
+            }
+            .abi_encode()
+            .into();
+            let result = executor
+                .evm_mut()
+                .transact_system_call(Address::ZERO, CURRENT_COMMITTEE_ADDRESS, calldata)
+                .unwrap();
+            assert!(result.result.is_success());
+            executor.evm_mut().db_mut().commit(result.state);
+            assert_eq!(
+                read_storage_credit_balance(&mut executor, CURRENT_COMMITTEE_ADDRESS),
+                0
+            );
+        }
     }
 
     #[test]

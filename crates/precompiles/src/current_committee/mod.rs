@@ -6,7 +6,10 @@ use tempo_contracts::precompiles::CurrentCommitteeError;
 pub use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee};
 use tempo_precompiles_macros::contract;
 
-use crate::{error::Result, storage::Handler};
+use crate::{
+    error::Result,
+    storage::{Handler, StorageCtx},
+};
 use alloy::primitives::{Address, B256};
 
 #[contract(addr = CURRENT_COMMITTEE_ADDRESS)]
@@ -35,6 +38,10 @@ impl CurrentCommittee {
         if msg_sender != Address::ZERO {
             return Err(CurrentCommitteeError::unauthorized().into());
         }
+
+        // Committee updates are protocol writes performed by an end-of-block system call, not
+        // user-metered EVM execution. They must not mint, consume, or settle TIP-1060 credits.
+        StorageCtx.set_tip1060_storage_credits(false);
 
         self.epoch.write(call.epoch)?;
         self.ids.write(call.publicKeys)?;
