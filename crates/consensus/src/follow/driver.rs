@@ -320,7 +320,7 @@ where
             })
             .wrap_err("boundary contained a malformed finalization certificate")?;
 
-        // When syncing the floor, we're not gauranteed that we have the outcome locally so we
+        // When syncing the floor, we're not guaranteed that we have the outcome locally so we
         // defer to the network identity to validate this intermediate boundary certificate.
         ensure!(
             finalization.verify(&mut self.context, &self.network_scheme, &Sequential),

@@ -209,7 +209,7 @@ impl FollowerBuilder {
             name,
             feed: feed_state,
             execution_node: node,
-            network_identity: network_identity,
+            network_identity,
             _handle: handle,
         }
     }
