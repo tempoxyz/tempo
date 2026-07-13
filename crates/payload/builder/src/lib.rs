@@ -425,11 +425,29 @@ where
             if let Some(shadow) = flat_shadow {
                 // Reads must reflect the exact parent state: take a lock-free
                 // snapshot only when the flat is at the parent; otherwise
-                // (follower lagging, rebuild race) this block reads from MDBX.
-                let snap = {
+                // (follower lagging, rebuild race) this block reads from MDBX —
+                // unless the KV copy isn't persisted at all, in which case the
+                // only correct option is to wait for the follower.
+                let mut snap = {
                     let g = shadow.read();
                     g.at_parent(parent_header.state_root()).then(|| g.snapshot())
                 };
+                if snap.is_none() && flat_reads::no_state_kv_active() {
+                    let deadline = Instant::now() + std::time::Duration::from_secs(15);
+                    while snap.is_none() && Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        let g = shadow.read();
+                        snap = g.at_parent(parent_header.state_root()).then(|| g.snapshot());
+                    }
+                    if snap.is_none() {
+                        return Err(PayloadBuilderError::Other(
+                            anyhow::anyhow!(
+                                "flat store never reached parent and no state KV exists to fall back to"
+                            )
+                            .into(),
+                        ));
+                    }
+                }
                 match snap {
                     Some(snap) => {
                         let shared = std::sync::Arc::new(flat_reads::FlatReadShared {

@@ -29,6 +29,14 @@ use tempo_flatmpt::FlatShadow;
 
 /// `TEMPO_FLATMPT_READS=1` (in root mode) routes builder state reads through
 /// the flat MPT.
+/// `TEMPO_NO_STATE_KV` (set on the node): the duplicate state KV is not
+/// persisted, so reading MDBX/rocksdb state would return empty values — every
+/// fallback that would do so must wait for the flat store instead.
+pub(crate) fn no_state_kv_active() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all"))
+}
+
 pub(crate) fn flat_reads_enabled() -> bool {
     tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root
         && std::env::var("TEMPO_FLATMPT_READS").as_deref() == Ok("1")
