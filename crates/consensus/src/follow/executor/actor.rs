@@ -185,7 +185,6 @@ where
         let canonical_hash = database
             .block_hash(target.height.get())
             .wrap_err("failed reading sync target canonical hash")?;
-        drop(database);
 
         let Some(canonical_hash) = canonical_hash else {
             return Ok(());
