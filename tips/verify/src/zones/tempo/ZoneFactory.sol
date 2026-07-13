@@ -88,10 +88,9 @@ abstract contract ZoneFactory is IZoneFactory {
         //    the `portal` account. The runtime delegatecalls into
         //    ZONE_PORTAL_LOGIC_ADDRESS, the single protocol-managed ZonePortal logic
         //    implementation.
-        // 3. The protocol initializes the portal account's storage/immutable
-        //    equivalents with the same values the ZonePortal constructor would have
-        //    received: zone ID, initial token, shared messenger, admin, sequencer,
-        //    verifier, genesis block hash, genesis Tempo block number, and RPC URL.
+        // 3. The protocol initializes the portal account's storage with the zone ID,
+        //    initial token, shared messenger, admin, sequencer, verifier, genesis block
+        //    hash, genesis Tempo block number, and RPC URL.
         //
         // The exact host operations are implementation details of the Tempo
         // precompile, represented by abstract hooks here so this artifact documents
@@ -141,7 +140,7 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
-    /// @dev Native host hook: initialize state equivalent to the ZonePortal constructor.
+    /// @dev Native host hook: initialize the portal's storage-backed state.
     function _nativeInitializePortal(
         address portal,
         uint32 zoneId,
