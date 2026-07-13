@@ -247,8 +247,7 @@ def "main run" [
     let resolved_scenario = if $scenario != "" {
         $scenario
     } else {
-        let tps_k = ($tps // 1000)
-        $"($preset)-($tps_k)k"
+        txgen-benchmark-scenario-name $preset $tps
     }
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
         error make { msg: "--baseline and --feature must both be provided for txgen comparison mode" }
