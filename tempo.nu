@@ -955,6 +955,14 @@ def generate-summary [
     mut feature_builder_invalid_tx_skips = []
     mut baseline_builder_nonce_too_low_skips = []
     mut feature_builder_nonce_too_low_skips = []
+    mut baseline_builder_stop_rlp_size = []
+    mut feature_builder_stop_rlp_size = []
+    mut baseline_builder_stop_gas_limit = []
+    mut feature_builder_stop_gas_limit = []
+    mut baseline_builder_stop_pool_empty = []
+    mut feature_builder_stop_pool_empty = []
+    mut baseline_builder_stop_build_budget = []
+    mut feature_builder_stop_build_budget = []
     mut baseline_builder_fill_idle_samples = []
     mut feature_builder_fill_idle_samples = []
     mut baseline_validation_latency_values = []
@@ -1128,6 +1136,7 @@ def generate-summary [
         "reth_tempo_payload_builder_reverted_transactions_sum"
         "reth_tempo_payload_builder_reverted_transactions_count"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
+        "reth_tempo_payload_builder_block_build_stop_total"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
         "reth_tempo_payload_builder_payload_build_duration_seconds_sum"
@@ -1258,6 +1267,18 @@ def generate-summary [
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
+        let builder_stop_samples = ($metric_samples | where name == "reth_tempo_payload_builder_block_build_stop_total")
+        let builder_stops_for_reason = { |reason: string|
+            let samples = (
+                $builder_stop_samples
+                    | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
+            )
+            do $counter_delta_total $samples "reth_tempo_payload_builder_block_build_stop_total"
+        }
+        let builder_stop_rlp_size = do $builder_stops_for_reason "rlp_block_size_limit"
+        let builder_stop_gas_limit = do $builder_stops_for_reason "gas_limit"
+        let builder_stop_pool_empty = do $builder_stops_for_reason "tx_pool_empty"
+        let builder_stop_build_budget = do $builder_stops_for_reason "build_budget"
         let builder_fill_idle_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds" 1000.0)
         let validation_latency_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
@@ -1279,6 +1300,10 @@ def generate-summary [
             $baseline_builder_reverted_txs = ($baseline_builder_reverted_txs | append $builder_reverted_txs)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $baseline_builder_stop_rlp_size = ($baseline_builder_stop_rlp_size | append $builder_stop_rlp_size)
+            $baseline_builder_stop_gas_limit = ($baseline_builder_stop_gas_limit | append $builder_stop_gas_limit)
+            $baseline_builder_stop_pool_empty = ($baseline_builder_stop_pool_empty | append $builder_stop_pool_empty)
+            $baseline_builder_stop_build_budget = ($baseline_builder_stop_build_budget | append $builder_stop_build_budget)
             $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
             $baseline_validation_latency_values = ($baseline_validation_latency_values | append $validation_latency_values)
             $baseline_builder_gas_values = ($baseline_builder_gas_values | append $builder_gas_values)
@@ -1295,6 +1320,10 @@ def generate-summary [
             $feature_builder_reverted_txs = ($feature_builder_reverted_txs | append $builder_reverted_txs)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $feature_builder_stop_rlp_size = ($feature_builder_stop_rlp_size | append $builder_stop_rlp_size)
+            $feature_builder_stop_gas_limit = ($feature_builder_stop_gas_limit | append $builder_stop_gas_limit)
+            $feature_builder_stop_pool_empty = ($feature_builder_stop_pool_empty | append $builder_stop_pool_empty)
+            $feature_builder_stop_build_budget = ($feature_builder_stop_build_budget | append $builder_stop_build_budget)
             $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
             $feature_validation_latency_values = ($feature_validation_latency_values | append $validation_latency_values)
             $feature_builder_gas_values = ($feature_builder_gas_values | append $builder_gas_values)
@@ -1399,6 +1428,14 @@ def generate-summary [
     let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_nonce_too_low_skips = if ($feature_builder_nonce_too_low_skips | length) > 0 { $feature_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_stop_rlp_size = if ($baseline_builder_stop_rlp_size | length) > 0 { $baseline_builder_stop_rlp_size | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_stop_rlp_size = if ($feature_builder_stop_rlp_size | length) > 0 { $feature_builder_stop_rlp_size | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_stop_gas_limit = if ($baseline_builder_stop_gas_limit | length) > 0 { $baseline_builder_stop_gas_limit | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_stop_gas_limit = if ($feature_builder_stop_gas_limit | length) > 0 { $feature_builder_stop_gas_limit | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_stop_pool_empty = if ($baseline_builder_stop_pool_empty | length) > 0 { $baseline_builder_stop_pool_empty | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_stop_pool_empty = if ($feature_builder_stop_pool_empty | length) > 0 { $feature_builder_stop_pool_empty | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_stop_build_budget = if ($baseline_builder_stop_build_budget | length) > 0 { $baseline_builder_stop_build_budget | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_stop_build_budget = if ($feature_builder_stop_build_budget | length) > 0 { $feature_builder_stop_build_budget | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_fill_idle = do $compute_value_stats $baseline_builder_fill_idle_samples
     let f_builder_fill_idle = do $compute_value_stats $feature_builder_fill_idle_samples
     let b_validation = do $compute_value_stats $baseline_validation_latency_values
@@ -1637,6 +1674,10 @@ def generate-summary [
                 builder_reverted_txs: $b_builder_reverted_txs
                 builder_invalid_tx_skips: $b_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
+                builder_stop_rlp_size: $b_builder_stop_rlp_size
+                builder_stop_gas_limit: $b_builder_stop_gas_limit
+                builder_stop_pool_empty: $b_builder_stop_pool_empty
+                builder_stop_build_budget: $b_builder_stop_build_budget
                 builder_fill_idle_p50: $b_builder_fill_idle.p50
                 builder_fill_idle_p90: $b_builder_fill_idle.p90
                 builder_fill_idle_p99: $b_builder_fill_idle.p99
@@ -1675,6 +1716,10 @@ def generate-summary [
                 builder_reverted_txs: $f_builder_reverted_txs
                 builder_invalid_tx_skips: $f_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
+                builder_stop_rlp_size: $f_builder_stop_rlp_size
+                builder_stop_gas_limit: $f_builder_stop_gas_limit
+                builder_stop_pool_empty: $f_builder_stop_pool_empty
+                builder_stop_build_budget: $f_builder_stop_build_budget
                 builder_fill_idle_p50: $f_builder_fill_idle.p50
                 builder_fill_idle_p90: $f_builder_fill_idle.p90
                 builder_fill_idle_p99: $f_builder_fill_idle.p99
@@ -1713,6 +1758,10 @@ def generate-summary [
                 builder_reverted_txs: (do $delta $b_builder_reverted_txs $f_builder_reverted_txs)
                 builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
                 builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+                builder_stop_rlp_size: (do $delta $b_builder_stop_rlp_size $f_builder_stop_rlp_size)
+                builder_stop_gas_limit: (do $delta $b_builder_stop_gas_limit $f_builder_stop_gas_limit)
+                builder_stop_pool_empty: (do $delta $b_builder_stop_pool_empty $f_builder_stop_pool_empty)
+                builder_stop_build_budget: (do $delta $b_builder_stop_build_budget $f_builder_stop_build_budget)
                 builder_fill_idle_p50: (do $delta $b_builder_fill_idle.p50 $f_builder_fill_idle.p50)
                 builder_fill_idle_p90: (do $delta $b_builder_fill_idle.p90 $f_builder_fill_idle.p90)
                 builder_fill_idle_p99: (do $delta $b_builder_fill_idle.p99 $f_builder_fill_idle.p99)
