@@ -28,7 +28,7 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, IStorageCredits,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -793,6 +793,7 @@ mod tests {
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
+        DatabaseCommit,
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
@@ -802,7 +803,7 @@ mod tests {
     };
     use tempo_chainspec::{TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::{
-        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS,
+        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, IStorageCredits, PATH_USD_ADDRESS,
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
