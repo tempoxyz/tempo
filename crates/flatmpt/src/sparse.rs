@@ -566,6 +566,10 @@ impl RevealSink {
 /// payload) stops the worker; nothing shared was mutated.
 pub struct SparseWorker {
     tx: Option<mpsc::SyncSender<Msg>>,
+    /// Fast lane: `Finish` bypasses the (potentially hundreds of thousands
+    /// deep) state/reveal queue — the builder blocks on the result, so queue
+    /// wait here is block latency.
+    finish_tx: mpsc::Sender<Vec<(Key, StateOp)>>,
     result_rx: mpsc::Receiver<anyhow::Result<(B256, SparseStats)>>,
     dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -575,6 +579,7 @@ impl SparseWorker {
     /// `parent_root`. Read-only against the shared shadow.
     pub fn begin(shadow: &'static RwLock<FlatShadow>, parent_root: B256) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Msg>(65_536);
+        let (finish_tx, finish_rx) = mpsc::channel::<Vec<(Key, StateOp)>>();
         let (result_tx, result_rx) = mpsc::channel();
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let dropped_w = dropped.clone();
@@ -586,20 +591,38 @@ impl SparseWorker {
                 // Drain-then-pass: accumulate everything queued before deciding
                 // to run a (multi-hundred-ms) proof pass, so passes cover big
                 // batches and the channel rarely fills while one runs.
-                'outer: while let Ok(first) = rx.recv() {
+                'outer: loop {
+                    // Fast lane first: a pending Finish must never wait behind
+                    // the reveal/state backlog (the builder is blocked on it).
+                    if let Ok(ops) = finish_rx.try_recv() {
+                        w.stats.hook_dropped =
+                            dropped_w.load(std::sync::atomic::Ordering::Relaxed);
+                        let _ = result_tx.send(w.finish(ops));
+                        finished = true;
+                        break 'outer;
+                    }
+                    let first = match rx.recv_timeout(std::time::Duration::from_millis(2)) {
+                        Ok(m) => m,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break 'outer,
+                    };
                     let mut msg = Some(first);
+                    let mut in_batch = 0u32;
                     loop {
                         match msg.take() {
                             Some(Msg::State(state)) => w.on_state(state),
                             Some(Msg::Reveal(batch)) => w.on_reveal(batch),
-                            Some(Msg::Finish(ops)) => {
-                                w.stats.hook_dropped =
-                                    dropped_w.load(std::sync::atomic::Ordering::Relaxed);
-                                let _ = result_tx.send(w.finish(ops));
-                                finished = true;
-                                break 'outer;
-                            }
+                            Some(Msg::Finish(_)) => unreachable!("finish uses the fast lane"),
                             None => break,
+                        }
+                        // Re-check the fast lane periodically inside deep drains.
+                        in_batch += 1;
+                        if in_batch % 256 == 0 && let Ok(ops) = finish_rx.try_recv() {
+                            w.stats.hook_dropped =
+                                dropped_w.load(std::sync::atomic::Ordering::Relaxed);
+                            let _ = result_tx.send(w.finish(ops));
+                            finished = true;
+                            break 'outer;
                         }
                         msg = rx.try_recv().ok();
                     }
@@ -621,7 +644,7 @@ impl SparseWorker {
                 }
             })
             .expect("spawn flatmpt-sparse");
-        Self { tx: Some(tx), result_rx, dropped }
+        Self { tx: Some(tx), finish_tx, result_rx, dropped }
     }
 
     /// State hook for the executor (prewarming only — final values come from
@@ -650,7 +673,7 @@ impl SparseWorker {
     /// as produced by [`crate::bundle_to_ops`]).
     pub fn finish(mut self, ops: Vec<(Key, StateOp)>) -> anyhow::Result<(B256, SparseStats)> {
         let tx = self.tx.take().expect("worker active");
-        tx.send(Msg::Finish(ops)).map_err(|_| anyhow::anyhow!("sparse worker died"))?;
+        self.finish_tx.send(ops).map_err(|_| anyhow::anyhow!("sparse worker died"))?;
         drop(tx);
         self.result_rx
             .recv()
@@ -1174,6 +1197,24 @@ impl Worker {
             let t_proof = Instant::now();
             let n_acct = acct_targets.len() as u64;
             let n_storage = storage_targets.values().map(|p| p.len()).sum::<usize>() as u64;
+            if must_complete && n_acct + n_storage > 0 {
+                // Ceiling diagnostic: what does the finish drain still fetch
+                // despite execution-read reveals? Sample the targets.
+                let sample_a: Vec<_> = acct_targets.keys().take(3).collect();
+                let sample_s: Vec<_> = storage_targets
+                    .iter()
+                    .flat_map(|(a, per)| per.keys().take(2).map(move |k| (*a, *k)))
+                    .take(4)
+                    .collect();
+                tracing::info!(
+                    target: "flatmpt",
+                    n_acct,
+                    n_storage,
+                    ?sample_a,
+                    ?sample_s,
+                    "finish drain targets"
+                );
+            }
             // Lock-free fast path first: refresh the snapshot if the writer
             // is idle, and reveal from it without ever waiting on the lock.
             // Pool-hit blocks are sound at any lineage root; pool-miss

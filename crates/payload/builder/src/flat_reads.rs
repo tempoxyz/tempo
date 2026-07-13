@@ -92,6 +92,17 @@ pub(crate) struct RevealFeed {
     sent_slots: parking_lot::Mutex<std::collections::HashSet<(B256, B256)>>,
 }
 
+impl Drop for RevealFeed {
+    fn drop(&mut self) {
+        tracing::debug!(
+            target: "flatmpt",
+            accounts_sent = self.sent_accounts.lock().len(),
+            slots_sent = self.sent_slots.lock().len(),
+            "reveal feed retired"
+        );
+    }
+}
+
 impl RevealFeed {
     pub fn new(sink: tempo_flatmpt::RevealSink) -> Self {
         Self {
