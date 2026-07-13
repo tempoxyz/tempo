@@ -15,7 +15,7 @@ env:
 
 name: bench
 
-permissions:
+permissions: # zizmor: ignore[excessive-permissions] -- reusable workflows require these permissions
   contents: read
   issues: write
   pull-requests: write
