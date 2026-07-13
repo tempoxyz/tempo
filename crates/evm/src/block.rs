@@ -71,13 +71,20 @@ impl ReceiptBuilder for TempoReceiptBuilder {
             cumulative_gas_used,
             ..
         } = ctx;
+        let success = result.is_success();
+        let logs = if success {
+            result.into_logs()
+        } else {
+            Vec::new()
+        };
+
         TempoReceipt {
             tx_type,
             // Success flag was added in `EIP-658: Embedding transaction status code in
             // receipts`.
-            success: result.is_success(),
+            success,
             cumulative_gas_used,
-            logs: result.into_logs(),
+            logs,
         }
     }
 }
@@ -925,6 +932,37 @@ mod tests {
         assert_eq!(receipt.cumulative_gas_used, 21000);
         assert_eq!(receipt.logs.len(), 1);
         assert_eq!(receipt.logs[0].address, Address::ZERO);
+    }
+
+    #[test]
+    fn test_build_failed_receipt_drops_logs() {
+        let builder = TempoReceiptBuilder;
+        let tx = create_legacy_tx();
+        let evm = test_evm(EmptyDB::default());
+
+        let logs = vec![Log::new_unchecked(
+            Address::ZERO,
+            vec![B256::ZERO],
+            Bytes::new(),
+        )];
+        let result: ExecutionResult<TempoHaltReason> = ExecutionResult::Revert {
+            gas: ResultGas::default().with_total_gas_spent(21000),
+            logs,
+            output: Bytes::new(),
+        };
+
+        let receipt = builder.build_receipt(ReceiptBuilderCtx {
+            tx_type: tx.tx_type(),
+            evm: &evm,
+            result,
+            state: &Default::default(),
+            cumulative_gas_used: 21000,
+        });
+
+        assert_eq!(receipt.tx_type, TempoTxType::Legacy);
+        assert!(!receipt.success);
+        assert_eq!(receipt.cumulative_gas_used, 21000);
+        assert!(receipt.logs.is_empty());
     }
 
     #[test]
