@@ -30,11 +30,7 @@ contract StorageCreditsHarness {
     )
         external
     {
-        if (useBudget) {
-            CREDITS.setBudget(budget);
-        } else {
-            CREDITS.setMode(mode);
-        }
+        _setMode(mode, budget, useBudget);
 
         values[slot] = value;
         if (forceRevert) revert ForcedRevert();
@@ -51,11 +47,7 @@ contract StorageCreditsHarness {
     )
         external
     {
-        if (useBudget) {
-            CREDITS.setBudget(budget);
-        } else {
-            CREDITS.setMode(mode);
-        }
+        _setMode(mode, budget, useBudget);
 
         values[slot] = 0;
         values[slot] = value;
@@ -104,6 +96,18 @@ contract StorageCreditsHarness {
     function _assertRevert(bool success, bytes memory actual, bytes memory expected) internal pure {
         require(!success, "expected Storage Credits call to revert");
         require(keccak256(actual) == keccak256(expected), "unexpected Storage Credits revert");
+    }
+
+    function _setMode(IStorageCredits.Mode mode, uint64 budget, bool useBudget) internal {
+        bytes memory data = useBudget
+            ? abi.encodeCall(IStorageCredits.setBudget, (budget))
+            : abi.encodeCall(IStorageCredits.setMode, (mode));
+        (bool success, bytes memory reason) = address(CREDITS).call(data);
+        if (!success) {
+            assembly ("memory-safe") {
+                revert(add(reason, 0x20), mload(reason))
+            }
+        }
     }
 
 }
