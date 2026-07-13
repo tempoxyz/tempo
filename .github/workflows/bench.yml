@@ -15,10 +15,10 @@ env:
 
 name: bench
 
-permissions: # zizmor: ignore[excessive-permissions] -- reusable workflows require these permissions
+permissions:
   contents: read
-  issues: write
-  pull-requests: write
+  issues: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows
+  pull-requests: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows
 
 jobs:
   tempo-bench-ack:
