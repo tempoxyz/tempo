@@ -1,19 +1,27 @@
 use std::{sync::Arc, time::Duration};
 
+use alloy_primitives::B256;
+use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
-use eyre::{Report, WrapErr as _};
+use eyre::{Report, WrapErr as _, ensure};
 use futures::{
     FutureExt as _, StreamExt as _,
     future::{BoxFuture, Either},
     stream::{self, Fuse, FusedStream},
 };
 use jsonrpsee::{
-    core::{client, client::Subscription},
+    core::{
+        client,
+        client::{ClientT as _, Subscription},
+    },
+    rpc_params,
     ws_client::{PingConfig, WsClient, WsClientBuilder},
 };
 use rand_08::Rng as _;
+use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
+use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
 use tempo_telemetry_util::display_duration;
 use tokio::{
     select,
@@ -54,8 +62,10 @@ pub(crate) struct Actor<TContext> {
     pub(super) pending_stream:
         OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
     pub(super) event_stream: EventStream,
-    /// Requests for blocks while the actor is trying to establish a connection.
-    pub(super) waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
+    /// Requests for finalizations while the actor is trying to establish a connection.
+    pub(super) finalization_waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
+    /// Requests for execution blocks while the actor is trying to establish a connection.
+    pub(super) block_waiters: Vec<(B256, oneshot::Sender<Option<SealedOrRecoveredBlock<Block>>>)>,
 }
 
 impl<TContext> Actor<TContext>
@@ -150,7 +160,10 @@ where
                 Some(msg) = self.mailbox.recv() => {
                     match msg {
                         super::ingress::Message::GetFinalization { height, response, } => {
-                            self.waiters.push((height, response));
+                            self.finalization_waiters.push((height, response));
+                        }
+                        super::ingress::Message::GetBlock { hash, response, } => {
+                            self.block_waiters.push((hash, response));
                         }
                     }
                 }
@@ -182,7 +195,7 @@ where
         }
     }
 
-    /// Drains the waiters by fetching the finalizations they are waiting for.
+    /// Drains the waiters by fetching the data they are waiting for.
     ///
     /// Only executes if a client is present and connected.
     fn drain_waiters(&mut self) {
@@ -200,11 +213,18 @@ where
             return;
         }
 
-        for (height, response) in self.waiters.drain(..) {
+        for (height, response) in self.finalization_waiters.drain(..) {
             let client = client.clone();
             self.context
                 .with_label("get_finalization")
                 .spawn(move |_| get_finalization(client, height, response));
+        }
+
+        for (hash, response) in self.block_waiters.drain(..) {
+            let client = client.clone();
+            self.context
+                .with_label("get_block")
+                .spawn(move |_| get_block(client, hash, response));
         }
     }
 }
@@ -272,6 +292,37 @@ async fn get_finalization(
         .wrap_err("failed getting finalization")?;
     response
         .send(Some(finalization))
+        .map_err(|_| eyre::eyre!("receiver went away"))
+}
+
+/// Fetches a full execution block from the upstream node.
+#[instrument(skip_all, fields(%hash), err)]
+async fn get_block(
+    client: Arc<WsClient>,
+    hash: B256,
+    response: oneshot::Sender<Option<SealedOrRecoveredBlock<Block>>>,
+) -> eyre::Result<()> {
+    let block = client
+        .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
+            "eth_getBlockByHash",
+            rpc_params![hash, true],
+        )
+        .await
+        .wrap_err("failed getting block by hash")?
+        .map(|block| {
+            SealedOrRecoveredBlock::from(SealedBlock::seal_slow(
+                block
+                    .into_consensus_block()
+                    .map_transactions(|transaction| transaction.into_inner()),
+            ))
+        });
+
+    if let Some(block) = &block {
+        ensure!(block.hash() == hash, "mismatched block hash");
+    }
+
+    response
+        .send(block)
         .map_err(|_| eyre::eyre!("receiver went away"))
 }
 

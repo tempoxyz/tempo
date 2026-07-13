@@ -17,15 +17,11 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
-    Signer as _,
-    bls12381::primitives::variant::MinSig,
-    certificate::Provider,
-    ed25519::{self, PublicKey},
+    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
 };
-use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
-use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
+use commonware_utils::Acknowledgement;
 use rand_08::{CryptoRng, Rng};
 
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
@@ -33,7 +29,7 @@ use reth_provider::HeaderProvider as _;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn, warn_span};
+use tracing::{debug, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},

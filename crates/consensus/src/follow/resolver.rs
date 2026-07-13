@@ -3,7 +3,7 @@
 //! Implements [`Resolver`] for marshal's gap-repair machinery. Checks the
 //! local execution node first and falls back to the upstream abstraction.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use commonware_codec::{DecodeExt as _, Encode as _};
@@ -26,6 +26,8 @@ use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
+
+const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub(crate) fn try_init<TContext>(
     context: TContext,
@@ -84,6 +86,7 @@ pub(crate) struct Config {
 }
 
 type FetchPool = AbortablePool<(handler::Request<Digest>, Result<Bytes, bool>)>;
+
 pub(crate) struct Resolver<TContext> {
     context: ContextCell<TContext>,
     config: Config,
@@ -112,7 +115,7 @@ where
 
                 Some(msg) = self.mailbox.recv() => {
                     match msg {
-                        Message::Fetch { keys, } => {
+                        Message::Fetch { keys } => {
                             self.handle_fetch_request(keys);
                         }
                         Message::Cancel { key } => {
@@ -137,7 +140,7 @@ where
     #[instrument(skip_all)]
     fn handle_fetch_request(&mut self, keys: Vec<handler::Request<Digest>>) {
         for key in keys {
-            self.schedule_request(key);
+            self.schedule_request(key, false);
         }
     }
 
@@ -162,24 +165,29 @@ where
             Err(true) => {
                 debug!(%key, "fetch failed, rescheduling");
                 self.requests.remove(&key);
-                self.schedule_request(key);
+                self.schedule_request(key, true);
             }
             Err(false) => {
-                debug!(%key, "fetch failed, dropping");
+                debug!(%key, "fetch failed permanently, dropping");
                 self.requests.remove(&key);
             }
         }
     }
 
-    fn schedule_request(&mut self, key: handler::Request<Digest>) {
+    fn schedule_request(&mut self, key: handler::Request<Digest>, retry: bool) {
         if !self.requests.contains_key(&key) {
             let aborter = match &key {
                 handler::Request::Block(digest) => {
                     let execution_node = self.config.execution_node.clone();
+                    let upstream = self.config.upstream.clone();
                     let digest = *digest;
                     let key = key.clone();
                     self.fetches.push(async move {
-                        let response = resolve_block(&execution_node, digest);
+                        if retry {
+                            tokio::time::sleep(RETRY_DELAY).await;
+                        }
+
+                        let response = resolve_block(&execution_node, upstream, digest).await;
                         (key, response)
                     })
                 }
@@ -188,7 +196,10 @@ where
                     let height = *height;
                     let key = key.clone();
                     self.fetches.push(async move {
-                        let response = resolve_finalized_new(upstream, height).await;
+                        if retry {
+                            tokio::time::sleep(RETRY_DELAY).await;
+                        }
+                        let response = resolve_finalized(upstream, height).await;
                         (key, response)
                     })
                 }
@@ -205,28 +216,38 @@ where
     }
 }
 
-/// Resolves an encoded block from the local execution layer.
-#[instrument(skip(execution_node))]
-fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result<Bytes, bool> {
-    let Ok(Some(block)) = execution_node
+/// Resolves an encoded block from the execution layer, falling back to the upstream node.
+#[instrument(skip(execution_node, upstream))]
+async fn resolve_block(
+    execution_node: &TempoFullNode,
+    upstream: super::upstream::Mailbox,
+    block_digest: Digest,
+) -> Result<Bytes, bool> {
+    match execution_node
         .provider
         .find_sealed_or_recovered_block(block_digest.0, BlockSource::Any)
         .map_err(Report::new)
-        .inspect_err(
-            |error| error!(%error, "unable to communicate with execution layer to lookup block"),
-        )
-    else {
-        return Err(false);
-    };
-    // Follow-mode recovery reads from the EL database, which persists only the block.
-    // BAL is p2p side data, so it is unavailable here.
-    let consensus_block = Block::from_execution_block_unchecked(block, None);
-    Ok(consensus_block.encode())
+        .inspect_err(|error| error!(%error, "execution layer error looking up block"))
+    {
+        Err(_) => Err(true),
+        Ok(Some(block)) => {
+            let consensus_block = Block::from_execution_block_unchecked(block, None);
+            Ok(consensus_block.encode())
+        }
+        Ok(None) => {
+            let Some(block) = upstream.get_block(block_digest.0).await else {
+                return Err(true);
+            };
+
+            let consensus_block = Block::from_execution_block_unchecked(block, None);
+            Ok(consensus_block.encode())
+        }
+    }
 }
 
-/// Resolves a request for a finalized.
+/// Resolves a finalization (cert + block) by height from the upstream node.
 #[instrument(skip_all, fields(%height))]
-async fn resolve_finalized_new(
+async fn resolve_finalized(
     upstream: super::upstream::Mailbox,
     height: Height,
 ) -> Result<Bytes, bool> {

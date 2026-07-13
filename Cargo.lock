@@ -12966,6 +12966,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-client",
  "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
  "axum",
  "bytes",
  "clap",

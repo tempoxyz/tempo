@@ -66,7 +66,8 @@ pub(crate) fn init<TContext>(
         pending_connect: OptionFuture::none(),
         pending_stream: OptionFuture::none(),
         event_stream: actor::inactive_event_stream(),
-        waiters: Vec::new(),
+        finalization_waiters: Vec::new(),
+        block_waiters: Vec::new(),
     };
 
     Ok((actor, mailbox))
