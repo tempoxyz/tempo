@@ -132,15 +132,6 @@ def txgen-scenario-file-stem [scenario_id: string] {
         | str replace -a "/" "-"
 }
 
-def txgen-benchmark-scenario-name [preset: string, tps: int] {
-    if $preset == "default" {
-        "default"
-    } else {
-        let tps_k = ($tps // 1000)
-        $"($preset)-($tps_k)k"
-    }
-}
-
 def txgen-tip20-uses-fee-amm [scenario: record] {
     $scenario.fee_token == "any_tip20"
 }
