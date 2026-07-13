@@ -884,6 +884,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     function tryFirstMintBoundary(uint256 actorSeed, uint256 pairSeed) external {
         (address userToken, address validatorToken) = _selectTokenPair(pairSeed);
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
+        // T8 mint policy gates run before liquidity checks, so skip actors that cannot reach the
+        // boundary condition.
+        if (!_isAuthorized(userToken, actor)) return;
 
         bytes32 poolId = amm.getPoolId(userToken, validatorToken);
         uint256 totalSupplyBefore = amm.totalSupply(poolId);

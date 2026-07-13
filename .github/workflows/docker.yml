@@ -30,6 +30,7 @@ jobs:
     if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -140,6 +141,7 @@ jobs:
         run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker images
+        id: build-and-push
         uses: depot/bake-action@1d58c2668346981089b088b7ef36755b206b20e9 # v1.13.0
         with:
           files: |
@@ -160,6 +162,7 @@ jobs:
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Sign Docker images
+        id: sign-images
         shell: bash
         env:
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
@@ -200,6 +203,7 @@ jobs:
           done
 
       - name: Publish event (sha tag)
+        id: publish-sha-event
         if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
         shell: bash
         env:
@@ -232,6 +236,7 @@ jobs:
             }"
 
       - name: Publish event (nightly tag)
+        id: publish-nightly-event
         if: ${{ github.repository == 'tempoxyz/tempo' && (github.event_name == 'schedule' || github.event.inputs.nightly == 'true') }}
         shell: bash
         env:
@@ -269,3 +274,84 @@ jobs:
                 \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
               }
             }"
+
+      - name: Summarize Docker build
+        if: ${{ always() }}
+        shell: bash
+        env:
+          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
+          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          SHORT_SHA: ${{ steps.shortsha.outputs.shortsha }}
+          BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
+          SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
+          SHA_EVENT_OUTCOME: ${{ steps.publish-sha-event.outcome }}
+          NIGHTLY_EVENT_OUTCOME: ${{ steps.publish-nightly-event.outcome }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          job_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if command -v gh >/dev/null 2>&1; then
+            resolved_job_url="$(gh api \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+              --paginate \
+              --jq '.jobs[] | select(.name == "Build and Push Docker Images") | .html_url' \
+              | head -n 1 || true)"
+            if [ -n "$resolved_job_url" ]; then
+              job_url="$resolved_job_url"
+            fi
+          fi
+
+          {
+            echo "## Docker build"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Commit | [\`${{ github.sha }}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) |"
+            echo "| Ref | \`${{ github.ref_name }}\` |"
+            echo "| Workflow run | [run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo "| Workflow run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo "| Job summary | [Build and Push Docker Images](${job_url}) |"
+            echo "| Short SHA tag | \`sha-${SHORT_SHA}\` |"
+            echo "| Build | \`${BUILD_OUTCOME:-unknown}\` |"
+            echo "| Sign | \`${SIGN_OUTCOME:-unknown}\` |"
+            echo
+            echo "## Images"
+            echo
+            echo "| Image | Package | Tags |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summarize_tags() {
+            local image="$1"
+            local package_url="$2"
+            local tags="$3"
+            local formatted=""
+            local tag
+
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              if [ -n "$formatted" ]; then
+                formatted="${formatted}<br>${tag}"
+              else
+                formatted="$tag"
+              fi
+            done <<< "$tags"
+
+            echo "| ${image} | [GHCR package](${package_url}) | ${formatted:-None} |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          summarize_tags "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TAGS"
+          summarize_tags "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS"
+          summarize_tags "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS"
+
+          {
+            echo
+            echo "## Publish events"
+            echo
+            echo "| Event | Tag | Outcome |"
+            echo "| --- | --- | --- |"
+            echo "| registry_package | \`sha-${SHORT_SHA}\` | \`${SHA_EVENT_OUTCOME:-skipped}\` |"
+            echo "| registry_package | \`nightly\` | \`${NIGHTLY_EVENT_OUTCOME:-skipped}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
