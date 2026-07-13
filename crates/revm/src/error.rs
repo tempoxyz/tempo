@@ -424,6 +424,8 @@ impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransactio
 fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Address>) -> String {
     if let (Some(user_token), Some(validator_token)) = (user_token, validator_token) {
         return format!(" for pair {user_token} -> {validator_token}");
+    } else if let Some(user_token) = user_token {
+        return format!(" for user token {user_token}");
     }
     String::new()
 }

@@ -537,7 +537,7 @@ where
                     InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
                         TempoInvalidTransaction::CollectFeePreTx(
                             FeePaymentError::InsufficientAmmLiquidity {
-                                user_token: None,
+                                user_token: Some(validation_ctx.fee_token),
                                 validator_token: None,
                                 fee,
                             },
