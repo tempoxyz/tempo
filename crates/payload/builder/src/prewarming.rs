@@ -339,6 +339,10 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// Shared per-block flat-read context: prewarm executors read the same
+    /// flat snapshot as the builder and feed the same reveal sink, so their
+    /// speculative reads double as the commitment trie's reveals.
+    flat: Option<Arc<crate::flat_reads::FlatReadShared>>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -352,6 +356,7 @@ where
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
+        flat: Option<Arc<crate::flat_reads::FlatReadShared>>,
     ) -> Self {
         Self {
             provider,
@@ -361,6 +366,7 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            flat,
         }
     }
 
@@ -377,6 +383,16 @@ where
                 return None;
             }
         };
+
+        // Route prewarm reads through the flat snapshot: same values, but the
+        // read walk feeds the commitment worker's reveals (a prewarm thread's
+        // first touch replaces a finish-drain fetch on the critical path).
+        if let Some(flat) = &self.flat {
+            state_provider = Box::new(crate::flat_reads::FlatReadProvider {
+                inner: state_provider,
+                shared: flat.clone(),
+            });
+        }
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(

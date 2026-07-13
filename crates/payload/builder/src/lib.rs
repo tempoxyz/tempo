@@ -420,6 +420,7 @@ where
         let flat_sparse = (tempo_flatmpt::sparse_enabled())
             .then(|| flat_shadow.map(|s| tempo_flatmpt::SparseWorker::begin(s, parent_header.state_root())))
             .flatten();
+        let mut flat_read_shared: Option<std::sync::Arc<flat_reads::FlatReadShared>> = None;
         if flat_reads::flat_reads_enabled() {
             if let Some(shadow) = flat_shadow {
                 // Reads must reflect the exact parent state: take a lock-free
@@ -431,8 +432,7 @@ where
                 };
                 match snap {
                     Some(snap) => {
-                        state_provider = Box::new(flat_reads::FlatReadProvider {
-                            inner: state_provider,
+                        let shared = std::sync::Arc::new(flat_reads::FlatReadShared {
                             snap,
                             hashed: Default::default(),
                             // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
@@ -446,6 +446,11 @@ where
                                 })
                                 .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
                         });
+                        state_provider = Box::new(flat_reads::FlatReadProvider {
+                            inner: state_provider,
+                            shared: shared.clone(),
+                        });
+                        flat_read_shared = Some(shared);
                     }
                     None => {
                         debug!(target: "flatmpt", "flat not at parent; MDBX reads this block");
@@ -674,6 +679,7 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
+            flat_read_shared.clone(),
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {

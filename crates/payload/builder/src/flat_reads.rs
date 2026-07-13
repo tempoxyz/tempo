@@ -34,8 +34,11 @@ pub(crate) fn flat_reads_enabled() -> bool {
         && std::env::var("TEMPO_FLATMPT_READS").as_deref() == Ok("1")
 }
 
-pub(crate) struct FlatReadProvider {
-    pub inner: reth_storage_api::StateProviderBox,
+/// Per-block flat-read context shared by the builder's provider and every
+/// prewarm executor's provider: one snapshot, one hashed-key memo, one reveal
+/// feed — so any thread's first touch of a key feeds the commitment worker,
+/// and nobody hashes or fetches the same thing twice.
+pub(crate) struct FlatReadShared {
     /// Lock-free snapshot of the flat store, pinned at the block's parent
     /// state for the whole build — reads never wait on the writer and never
     /// observe mid-block flat advances.
@@ -47,6 +50,11 @@ pub(crate) struct FlatReadProvider {
     /// and hand them over, so the worker never re-fetches them (lossy; a
     /// dropped batch only means the worker fetches that path itself).
     pub reveal: Option<RevealFeed>,
+}
+
+pub(crate) struct FlatReadProvider {
+    pub inner: reth_storage_api::StateProviderBox,
+    pub shared: std::sync::Arc<FlatReadShared>,
 }
 
 /// Per-block memo of `keccak(address)` — the provider is hit by ~30 prewarm
@@ -94,9 +102,10 @@ impl FlatReadProvider {
     /// Account point-read; when a reveal feed is attached and this is the
     /// first touch of `key`, the read's walk doubles as the reveal.
     fn read_account_rlp(&self, key: &B256) -> ProviderResult<Option<Vec<u8>>> {
-        if let Some(feed) = &self.reveal {
+        if let Some(feed) = &self.shared.reveal {
             if feed.sent_accounts.lock().insert(*key) {
                 let (value, nodes) = self
+                    .shared
                     .snap
                     .get_value_reveal(&key.0)
                     .map_err(|e| other(anyhow::anyhow!("{e:#}")))?;
@@ -104,13 +113,14 @@ impl FlatReadProvider {
                 return Ok(value);
             }
         }
-        self.snap.get_value(&key.0).map_err(|e| other(anyhow::anyhow!("{e:#}")))
+        self.shared.snap.get_value(&key.0).map_err(|e| other(anyhow::anyhow!("{e:#}")))
     }
 
     fn read_storage_rlp(&self, acct: &B256, slot: &B256) -> ProviderResult<Option<Vec<u8>>> {
-        if let Some(feed) = &self.reveal {
+        if let Some(feed) = &self.shared.reveal {
             if feed.sent_slots.lock().insert((*acct, *slot)) {
                 let (value, nodes) = self
+                    .shared
                     .snap
                     .get_storage_reveal(&acct.0, &slot.0)
                     .map_err(|e| other(anyhow::anyhow!("{e:#}")))?;
@@ -120,13 +130,13 @@ impl FlatReadProvider {
                 return Ok(value);
             }
         }
-        self.snap.get_storage(&acct.0, &slot.0).map_err(|e| other(anyhow::anyhow!("{e:#}")))
+        self.shared.snap.get_storage(&acct.0, &slot.0).map_err(|e| other(anyhow::anyhow!("{e:#}")))
     }
 }
 
 impl AccountReader for FlatReadProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        let key = self.hashed.account(address);
+        let key = self.shared.hashed.account(address);
         let read = self
             .read_account_rlp(&key)?
             .map(|rlp| tempo_flatmpt::FlatShadow::decode_account_rlp(rlp.as_slice()))
@@ -147,7 +157,7 @@ impl StateProvider for FlatReadProvider {
         account: Address,
         storage_key: alloy_primitives::StorageKey,
     ) -> ProviderResult<Option<alloy_primitives::StorageValue>> {
-        let acct_key = self.hashed.account(&account);
+        let acct_key = self.shared.hashed.account(&account);
         let slot_key = alloy_primitives::keccak256(storage_key.0);
         let read = self
             .read_storage_rlp(&acct_key, &slot_key)?
