@@ -26,9 +26,106 @@ jobs:
     # docker.yml does not declare a workflow_call secret interface.
     secrets: inherit # zizmor: ignore[secrets-inherit]
 
+  wait_for_ci:
+    name: Wait for green CI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: read
+      statuses: read
+    outputs:
+      eligible: ${{ steps.ci.outputs.eligible }}
+    steps:
+      - name: Wait for required CI checks
+        id: ci
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          EXPECTED_CHECKS='["lint success","specs success","test success"]'
+          RUN_URL="${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${RUN_ID}/"
+          DEADLINE=$((SECONDS + 3600))
+
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            CURRENT_SHA="$(gh api "repos/${GH_REPO}/git/ref/heads/${RETH_BUMP_BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
+            if [ -z "$CURRENT_SHA" ]; then
+              echo "Unable to read ${RETH_BUMP_BRANCH}; retrying"
+              sleep 30
+              continue
+            fi
+            if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+              echo "${RETH_BUMP_BRANCH} advanced to ${CURRENT_SHA}; skipping promotion of ${EXPECTED_SHA}"
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            PR_DATA="$(gh pr list \
+              --repo "$GH_REPO" \
+              --head "$RETH_BUMP_BRANCH" \
+              --base main \
+              --state open \
+              --json number,headRefOid \
+              --jq '.[0] // empty' 2>/dev/null || true)"
+            if ! jq -e --arg sha "$EXPECTED_SHA" '.headRefOid == $sha' <<< "$PR_DATA" > /dev/null 2>&1; then
+              echo "Waiting for an open PR at ${EXPECTED_SHA}"
+              sleep 30
+              continue
+            fi
+            PR_NUMBER="$(jq -r '.number' <<< "$PR_DATA")"
+
+            STATUS="$(gh pr checks "$PR_NUMBER" \
+              --repo "$GH_REPO" \
+              --required \
+              --json bucket,link,name,state 2>/dev/null || true)"
+            if ! jq -e 'type == "array"' <<< "$STATUS" > /dev/null 2>&1; then
+              echo "Waiting for required CI checks to start"
+              sleep 30
+              continue
+            fi
+
+            CHECKS="$(jq -c --arg run_url "$RUN_URL" '
+              [ .[]
+                | select(.name != "Review")
+                | select(((.link // "") | startswith($run_url)) | not)
+              ]
+            ' <<< "$STATUS")"
+            MISSING="$(jq -r --argjson expected "$EXPECTED_CHECKS" '
+              ($expected - [.[].name]) | join(", ")
+            ' <<< "$CHECKS")"
+            NOT_GREEN="$(jq -r '
+              [ .[]
+                | select(.bucket != "pass" and .bucket != "skipping")
+                | "\(.name)=\(.state)"
+              ] | join(", ")
+            ' <<< "$CHECKS")"
+
+            if [ -z "$MISSING" ] && [ -z "$NOT_GREEN" ]; then
+              echo "Required CI is green for ${EXPECTED_SHA}"
+              echo "eligible=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            [ -z "$MISSING" ] || echo "Waiting for checks to appear: ${MISSING}"
+            [ -z "$NOT_GREEN" ] || echo "Waiting for checks to pass: ${NOT_GREEN}"
+            sleep 30
+          done
+
+          echo "::warning::Required CI did not become green within 60 minutes; leaving reth-bump unchanged"
+          echo "eligible=false" >> "$GITHUB_OUTPUT"
+
   promote:
     name: Promote current candidate
-    needs: build
+    needs:
+      - build
+      - wait_for_ci
+    if: ${{ needs.wait_for_ci.outputs.eligible == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
