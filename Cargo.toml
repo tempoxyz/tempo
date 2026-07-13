@@ -352,6 +352,7 @@ reth-e2e-test-utils = { path = "../reth/crates/e2e-test-utils" }
 reth-engine-local = { path = "../reth/crates/engine/local" }
 reth-engine-primitives = { path = "../reth/crates/engine/primitives" }
 reth-engine-tree = { path = "../reth/crates/engine/tree" }
+reth-execution-cache = { path = "../reth/crates/engine/execution-cache" }
 reth-errors = { path = "../reth/crates/errors" }
 reth-eth-wire-types = { path = "../reth/crates/net/eth-wire-types" }
 reth-ethereum = { path = "../reth/crates/ethereum/reth" }

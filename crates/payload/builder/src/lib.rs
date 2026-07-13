@@ -476,11 +476,16 @@ where
                 }
             }
         }
+        // Ceiling diagnostic: per-block exec-side cache hit rate (how much of
+        // prewarm's work actually reaches the exec thread's reads).
+        let cache_stats = std::sync::Arc::new(reth_execution_cache::CacheStats::default());
         if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
+            state_provider = Box::new(CachedStateProvider::new_with_mode(
                 state_provider,
                 execution_cache.cache().clone(),
+                reth_execution_cache::CacheFillMode::LookupOnly,
                 Some(self.cache_metrics.clone()),
+                Some(cache_stats.clone()),
             ));
         }
         if self.config.state_provider_metrics {
@@ -1091,6 +1096,14 @@ where
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
 
+        debug!(
+            target: "flatmpt",
+            acct_hits = cache_stats.account_hits(),
+            acct_miss = cache_stats.account_misses(),
+            slot_hits = cache_stats.storage_hits(),
+            slot_miss = cache_stats.storage_misses(),
+            "exec cache stats"
+        );
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
         let finish_provider = InstrumentedFinishProvider {

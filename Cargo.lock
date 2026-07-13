@@ -8637,7 +8637,7 @@ dependencies = [
  "futures-util",
  "metrics",
  "reth-chain-state",
- "reth-execution-cache 2.3.0",
+ "reth-execution-cache",
  "reth-metrics",
  "reth-payload-builder",
  "reth-payload-builder-primitives",
@@ -9305,7 +9305,7 @@ dependencies = [
  "reth-errors",
  "reth-ethereum-primitives",
  "reth-evm",
- "reth-execution-cache 2.3.0",
+ "reth-execution-cache",
  "reth-execution-types",
  "reth-metrics",
  "reth-network-p2p",
@@ -9652,7 +9652,7 @@ dependencies = [
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
- "reth-execution-cache 2.3.0",
+ "reth-execution-cache",
  "reth-payload-builder",
  "reth-payload-builder-primitives",
  "reth-payload-primitives",
@@ -9733,24 +9733,6 @@ dependencies = [
 [[package]]
 name = "reth-execution-cache"
 version = "2.3.0"
-dependencies = [
- "alloy-primitives",
- "fixed-cache",
- "metrics",
- "parking_lot",
- "reth-errors",
- "reth-metrics",
- "reth-primitives-traits",
- "reth-provider",
- "reth-revm",
- "reth-trie",
- "tracing",
-]
-
-[[package]]
-name = "reth-execution-cache"
-version = "2.3.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=8bbc5e6#8bbc5e6b7fd92988e47aa52f4d8064c71c744409"
 dependencies = [
  "alloy-primitives",
  "fixed-cache",
@@ -10462,7 +10444,7 @@ dependencies = [
  "metrics",
  "reth-chain-state",
  "reth-ethereum-engine-primitives",
- "reth-execution-cache 2.3.0",
+ "reth-execution-cache",
  "reth-metrics",
  "reth-payload-builder-primitives",
  "reth-payload-primitives",
@@ -13298,7 +13280,7 @@ dependencies = [
  "reth-ethereum-consensus",
  "reth-evm",
  "reth-evm-ethereum",
- "reth-execution-cache 2.3.0 (git+https://github.com/paradigmxyz/reth?rev=8bbc5e6)",
+ "reth-execution-cache",
  "reth-primitives-traits",
  "reth-revm",
  "reth-rpc-eth-api",
@@ -13484,6 +13466,7 @@ dependencies = [
  "reth-engine-tree",
  "reth-errors",
  "reth-evm",
+ "reth-execution-cache",
  "reth-execution-types",
  "reth-metrics",
  "reth-payload-builder",
