@@ -20,20 +20,40 @@ contract StorageCreditsHarness {
 
     mapping(uint256 slot => uint256 value) public values;
 
+    constructor(uint256 seededSlots) {
+        for (uint256 slot = 0; slot < seededSlots; slot++) {
+            values[slot] = slot + 1;
+        }
+    }
+
     function mutate(
         uint256 slot,
         uint256 value,
         IStorageCredits.Mode mode,
         uint64 budget,
-        bool useBudget,
-        bool forceRevert
+        bool useBudget
     )
         external
     {
+        _assertDefaultTransientState();
         _setMode(mode, budget, useBudget);
 
         values[slot] = value;
-        if (forceRevert) revert ForcedRevert();
+    }
+
+    /// @dev Keeps the transaction sender, intermediate caller, and storage owner distinct.
+    function mutatePeer(
+        StorageCreditsHarness peer,
+        uint256 slot,
+        uint256 value,
+        IStorageCredits.Mode mode,
+        uint64 budget,
+        bool useBudget
+    )
+        external
+    {
+        _assertDefaultTransientState();
+        peer.mutate(slot, value, mode, budget, useBudget);
     }
 
     /// @dev Exercises an x->0->y dirty recreation within one transaction. TIP-1060 accounting
@@ -47,10 +67,52 @@ contract StorageCreditsHarness {
     )
         external
     {
+        _assertDefaultTransientState();
         _setMode(mode, budget, useBudget);
 
         this.clear(slot);
         values[slot] = value;
+    }
+
+    /// @dev Starts with slot 0 occupied and slot 1 empty. Two clear/create cycles make the exact
+    ///      number of Direct consumptions and the remaining budget independently observable.
+    function exerciseDirectBudget(
+        uint256 firstValue,
+        uint256 secondValue,
+        uint64 budget,
+        bool useBudget
+    )
+        external
+    {
+        _assertDefaultTransientState();
+        _setMode(IStorageCredits.Mode.Direct, budget, useBudget);
+
+        values[0] = 0;
+        values[1] = firstValue;
+        values[1] = 0;
+        values[0] = secondValue;
+
+        uint64 expectedBudget = type(uint64).max;
+        if (useBudget) expectedBudget = budget > 2 ? budget - 2 : 0;
+        _assertTransientState(IStorageCredits.Mode.Direct, expectedBudget);
+    }
+
+    /// @dev Creates two slots before clearing two occupied slots. In default Refund mode the later
+    ///      clears must fund both earlier creations during end-of-transaction settlement.
+    function createThenClear(
+        uint256 fromStart,
+        uint256 toStart,
+        uint256 firstValue,
+        uint256 secondValue
+    )
+        external
+    {
+        _assertDefaultTransientState();
+
+        values[toStart] = firstValue;
+        values[toStart + 1] = secondValue;
+        values[fromStart] = 0;
+        values[fromStart + 1] = 0;
     }
 
     function clear(uint256 slot) external {
@@ -107,9 +169,28 @@ contract StorageCreditsHarness {
     )
         external
     {
+        _assertDefaultTransientState();
+        _setMode(IStorageCredits.Mode.Preserve, 0, false);
+
         (bool success, bytes memory result) = address(this)
-            .call(abi.encodeCall(this.mutate, (slot, value, mode, budget, useBudget, true)));
+            .call(abi.encodeCall(this.revertingMutation, (slot, value, mode, budget, useBudget)));
         _assertRevert(success, result, abi.encodeWithSelector(ForcedRevert.selector));
+        _assertTransientState(IStorageCredits.Mode.Preserve, 0);
+    }
+
+    function revertingMutation(
+        uint256 slot,
+        uint256 value,
+        IStorageCredits.Mode mode,
+        uint64 budget,
+        bool useBudget
+    )
+        external
+    {
+        require(msg.sender == address(this), "only self");
+        _setMode(mode, budget, useBudget);
+        values[slot] = value;
+        revert ForcedRevert();
     }
 
     function _assertRevert(bool success, bytes memory actual, bytes memory expected) internal pure {
@@ -128,18 +209,25 @@ contract StorageCreditsHarness {
             }
         }
 
-        (success, data) =
-            address(CREDITS).staticcall(abi.encodeCall(IStorageCredits.modeOf, (address(this))));
-        require(success && data.length == 32, "modeOf failed after mode update");
         IStorageCredits.Mode expectedMode = useBudget ? IStorageCredits.Mode.Direct : mode;
-        require(abi.decode(data, (IStorageCredits.Mode)) == expectedMode, "mode update not applied");
-
-        (success, data) =
-            address(CREDITS).staticcall(abi.encodeCall(IStorageCredits.budgetOf, (address(this))));
-        require(success && data.length == 32, "budgetOf failed after mode update");
         uint64 expectedBudget =
             useBudget ? budget : mode == IStorageCredits.Mode.Direct ? type(uint64).max : 0;
-        require(abi.decode(data, (uint64)) == expectedBudget, "budget update not applied");
+        _assertTransientState(expectedMode, expectedBudget);
+    }
+
+    function _assertDefaultTransientState() internal view {
+        _assertTransientState(IStorageCredits.Mode.Refund, 0);
+    }
+
+    function _assertTransientState(
+        IStorageCredits.Mode expectedMode,
+        uint64 expectedBudget
+    )
+        internal
+        view
+    {
+        require(CREDITS.modeOf(address(this)) == expectedMode, "unexpected transient mode");
+        require(CREDITS.budgetOf(address(this)) == expectedBudget, "unexpected transient budget");
     }
 
 }
@@ -156,24 +244,35 @@ contract StorageCreditsInvariantTest is InvariantBase {
     IStorageCredits internal constant CREDITS = IStorageCredits(PC.STORAGE_CREDITS_ADDRESS);
 
     StorageCreditsHarness internal harness;
-    StorageCreditsHarness internal untouchedHarness;
+    StorageCreditsHarness internal peerHarness;
+    StorageCreditsHarness internal budgetHarness;
+    StorageCreditsHarness internal refundHarness;
 
-    mapping(uint256 slot => uint256 value) internal ghost_values;
-    uint64 internal ghost_credits;
+    mapping(address owner => mapping(uint256 slot => uint256 value)) internal ghost_values;
+    mapping(address owner => uint64 credits) internal ghost_credits;
+    uint256 internal refund_activeStart;
 
     function setUp() public override {
         super.setUp();
 
-        harness = new StorageCreditsHarness();
-        untouchedHarness = new StorageCreditsHarness();
+        harness = new StorageCreditsHarness(0);
+        peerHarness = new StorageCreditsHarness(0);
+        budgetHarness = new StorageCreditsHarness(1);
+        refundHarness = new StorageCreditsHarness(2);
+
+        ghost_values[address(budgetHarness)][0] = 1;
+        ghost_values[address(refundHarness)][0] = 1;
+        ghost_values[address(refundHarness)][1] = 2;
 
         targetContract(address(this));
-        bytes4[] memory selectors = new bytes4[](3);
+        bytes4[] memory selectors = new bytes4[](6);
         selectors[0] = this.handler_mutate.selector;
-        selectors[1] = this.handler_recreate.selector;
-        selectors[2] = this.handler_revertingMutation.selector;
+        selectors[1] = this.handler_nestedMutation.selector;
+        selectors[2] = this.handler_recreate.selector;
+        selectors[3] = this.handler_directBudget.selector;
+        selectors[4] = this.handler_refundCreateThenClear.selector;
+        selectors[5] = this.handler_revertingMutation.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
-
     }
 
     /// @notice Asserts exact revert data for every reachable precompile error/halt path.
@@ -194,25 +293,60 @@ contract StorageCreditsInvariantTest is InvariantBase {
     )
         external
     {
+        _handlerMutation(harness, false, actorSeed, slotSeed, valueSeed, modeSeed, budgetSeed);
+    }
+
+    function handler_nestedMutation(
+        uint256 actorSeed,
+        uint256 slotSeed,
+        uint256 valueSeed,
+        uint256 modeSeed,
+        uint256 budgetSeed
+    )
+        external
+    {
+        _handlerMutation(peerHarness, true, actorSeed, slotSeed, valueSeed, modeSeed, budgetSeed);
+    }
+
+    function _handlerMutation(
+        StorageCreditsHarness owner,
+        bool nested,
+        uint256 actorSeed,
+        uint256 slotSeed,
+        uint256 valueSeed,
+        uint256 modeSeed,
+        uint256 budgetSeed
+    )
+        internal
+    {
+        address ownerAddress = address(owner);
         uint256 slot = slotSeed % NUM_SLOTS;
-        uint256 oldValue = ghost_values[slot];
+        uint256 oldValue = ghost_values[ownerAddress][slot];
         uint256 newValue = valueSeed % 4 == 0 ? 0 : bound(valueSeed, 1, type(uint128).max);
         IStorageCredits.Mode mode = IStorageCredits.Mode(modeSeed % 3);
         bool useBudget = mode == IStorageCredits.Mode.Direct && budgetSeed % 2 == 0;
         uint64 budget = uint64(budgetSeed % 3);
 
         uint64 expectedCredits = _expectedAfterTransition(
-            ghost_credits, oldValue, newValue, mode, useBudget ? budget : type(uint64).max
+            ghost_credits[ownerAddress],
+            oldValue,
+            newValue,
+            mode,
+            useBudget ? budget : type(uint64).max
         );
 
-        bytes memory data = abi.encodeCall(
-            StorageCreditsHarness.mutate, (slot, newValue, mode, budget, useBudget, false)
-        );
-        _execute(actorSeed, data, true);
+        bytes memory data = nested
+            ? abi.encodeCall(
+                StorageCreditsHarness.mutatePeer, (owner, slot, newValue, mode, budget, useBudget)
+            )
+            : abi.encodeCall(
+                StorageCreditsHarness.mutate, (slot, newValue, mode, budget, useBudget)
+            );
+        _execute(actorSeed, address(harness), data);
 
-        ghost_values[slot] = newValue;
-        ghost_credits = expectedCredits;
-        _assertModel();
+        ghost_values[ownerAddress][slot] = newValue;
+        ghost_credits[ownerAddress] = expectedCredits;
+        _assertModels();
     }
 
     function handler_recreate(
@@ -224,8 +358,9 @@ contract StorageCreditsInvariantTest is InvariantBase {
     )
         external
     {
+        address owner = address(harness);
         uint256 slot = slotSeed % NUM_SLOTS;
-        if (ghost_values[slot] == 0) return;
+        if (ghost_values[owner][slot] == 0) return;
 
         uint256 newValue = bound(valueSeed, 1, type(uint128).max);
         IStorageCredits.Mode mode = IStorageCredits.Mode(modeSeed % 3);
@@ -233,7 +368,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
         uint64 budget = uint64(budgetSeed % 3);
 
         // The clear first mints one credit. The following creation may consume it.
-        uint64 expectedCredits = ghost_credits + 1;
+        uint64 expectedCredits = ghost_credits[owner] + 1;
         expectedCredits = _expectedAfterTransition(
             expectedCredits, 0, newValue, mode, useBudget ? budget : type(uint64).max
         );
@@ -241,32 +376,82 @@ contract StorageCreditsInvariantTest is InvariantBase {
         bytes memory data = abi.encodeCall(
             StorageCreditsHarness.recreate, (slot, newValue, mode, budget, useBudget)
         );
-        _execute(actorSeed, data, true);
+        _execute(actorSeed, owner, data);
 
-        ghost_values[slot] = newValue;
-        ghost_credits = expectedCredits;
-        _assertModel();
+        ghost_values[owner][slot] = newValue;
+        ghost_credits[owner] = expectedCredits;
+        _assertModels();
+    }
+
+    function handler_directBudget(
+        uint256 actorSeed,
+        uint256 valueSeed,
+        uint256 budgetSeed
+    )
+        external
+    {
+        address owner = address(budgetHarness);
+        uint256 firstValue = bound(valueSeed, 1, type(uint128).max);
+        uint256 secondValue = firstValue == type(uint128).max ? 1 : firstValue + 1;
+        bool useBudget = budgetSeed % 2 == 0;
+        uint64 budget = uint64((budgetSeed / 2) % 4);
+        uint64 coveredCreations = useBudget && budget < 2 ? budget : 2;
+
+        bytes memory data = abi.encodeCall(
+            StorageCreditsHarness.exerciseDirectBudget, (firstValue, secondValue, budget, useBudget)
+        );
+        _execute(actorSeed, owner, data);
+
+        ghost_values[owner][0] = secondValue;
+        ghost_values[owner][1] = 0;
+        ghost_credits[owner] = ghost_credits[owner] + 2 - coveredCreations;
+        _assertModels();
+    }
+
+    function handler_refundCreateThenClear(uint256 actorSeed, uint256 valueSeed) external {
+        address owner = address(refundHarness);
+        uint256 fromStart = refund_activeStart;
+        uint256 toStart = fromStart == 0 ? 2 : 0;
+        uint256 firstValue = bound(valueSeed, 1, type(uint128).max);
+        uint256 secondValue = firstValue == type(uint128).max ? 1 : firstValue + 1;
+
+        bytes memory data = abi.encodeCall(
+            StorageCreditsHarness.createThenClear, (fromStart, toStart, firstValue, secondValue)
+        );
+        _execute(actorSeed, owner, data);
+
+        ghost_values[owner][toStart] = firstValue;
+        ghost_values[owner][toStart + 1] = secondValue;
+        ghost_values[owner][fromStart] = 0;
+        ghost_values[owner][fromStart + 1] = 0;
+        refund_activeStart = toStart;
+        _assertModels();
     }
 
     function handler_revertingMutation(
         uint256 actorSeed,
         uint256 slotSeed,
         uint256 valueSeed,
-        uint256 modeSeed
+        uint256 modeSeed,
+        uint256 budgetSeed
     )
         external
     {
         uint256 slot = slotSeed % NUM_SLOTS;
-        uint256 newValue = valueSeed % 2 == 0 ? 0 : bound(valueSeed, 1, type(uint128).max);
-        IStorageCredits.Mode mode = IStorageCredits.Mode(modeSeed % 3);
+        uint256 newValue =
+            ghost_values[address(harness)][slot] == 0 ? bound(valueSeed, 1, type(uint128).max) : 0;
+        bool useBudget = budgetSeed % 2 == 0;
+        IStorageCredits.Mode mode =
+            modeSeed % 2 == 0 ? IStorageCredits.Mode.Refund : IStorageCredits.Mode.Direct;
+        uint64 budget = uint64((budgetSeed / 2) % 3 + 1);
 
         bytes memory data = abi.encodeCall(
-            StorageCreditsHarness.assertAtomicRevert, (slot, newValue, mode, uint64(1), false)
+            StorageCreditsHarness.assertAtomicRevert, (slot, newValue, mode, budget, useBudget)
         );
-        _execute(actorSeed, data, true);
+        _execute(actorSeed, address(harness), data);
 
         // The storage transition, credit update, and transient mode change must all unwind.
-        _assertModel();
+        _assertModels();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -275,46 +460,42 @@ contract StorageCreditsInvariantTest is InvariantBase {
 
     /// @notice Runs all TIP-1060 invariant checks from one Foundry invariant entrypoint.
     function invariant_storageCreditsGlobal() public view {
-        _assertModel();
+        _assertModels();
         _invariantAccountLocality();
-        _invariantTransientStateReset();
     }
 
-    function _assertModel() internal view {
+    function _assertModels() internal view {
+        _assertModel(harness, NUM_SLOTS);
+        _assertModel(peerHarness, NUM_SLOTS);
+        _assertModel(budgetHarness, 2);
+        _assertModel(refundHarness, 4);
+    }
+
+    function _assertModel(StorageCreditsHarness owner, uint256 slots) internal view {
+        address ownerAddress = address(owner);
         assertEq(
-            CREDITS.balanceOf(address(harness)),
-            ghost_credits,
+            CREDITS.balanceOf(ownerAddress),
+            ghost_credits[ownerAddress],
             "TEMPO-SC1: persistent credit balance diverged from zero-crossing model"
         );
 
-        for (uint256 slot = 0; slot < NUM_SLOTS; slot++) {
+        for (uint256 slot = 0; slot < slots; slot++) {
             assertEq(
-                harness.values(slot),
-                ghost_values[slot],
+                owner.values(slot),
+                ghost_values[ownerAddress][slot],
                 "TEMPO-SC2: committed storage diverged from ghost state"
             );
         }
     }
 
     function _invariantAccountLocality() internal view {
-        assertEq(
-            CREDITS.balanceOf(address(untouchedHarness)),
-            0,
-            "TEMPO-SC4: credits escaped the storage-owning account"
-        );
-    }
-
-    function _invariantTransientStateReset() internal view {
-        assertEq(
-            uint256(CREDITS.modeOf(address(harness))),
-            uint256(IStorageCredits.Mode.Refund),
-            "TEMPO-SC5: mode persisted across transactions"
-        );
-        assertEq(
-            CREDITS.budgetOf(address(harness)),
-            0,
-            "TEMPO-SC5: direct budget persisted across transactions"
-        );
+        for (uint256 i = 0; i < actors.length; i++) {
+            assertEq(
+                CREDITS.balanceOf(actors[i]),
+                0,
+                "TEMPO-SC4: credits escaped to the transaction sender"
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -340,12 +521,12 @@ contract StorageCreditsInvariantTest is InvariantBase {
         return credits;
     }
 
-    function _execute(uint256 actorSeed, bytes memory data, bool expectSuccess) internal {
+    function _execute(uint256 actorSeed, address target, bytes memory data) internal {
         uint256 actorIndex = actorSeed % actors.length;
         address actor = actors[actorIndex];
         uint64 nonce = uint64(vm.getNonce(actor));
         bytes memory signedTx = TxBuilder.buildLegacyCallWithGas(
-            vmRlp, vm, address(harness), data, nonce, TX_GAS_LIMIT, actorKeys[actorIndex]
+            vmRlp, vm, target, data, nonce, TX_GAS_LIMIT, actorKeys[actorIndex]
         );
 
         vm.coinbase(validator);
@@ -354,7 +535,7 @@ contract StorageCreditsInvariantTest is InvariantBase {
             succeeded = true;
         } catch { }
 
-        assertEq(succeeded, expectSuccess, "TIP-1060 transaction result differed from expectation");
+        assertTrue(succeeded, "TIP-1060 transaction unexpectedly reverted");
     }
 
 }

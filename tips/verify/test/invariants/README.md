@@ -212,12 +212,12 @@ Tested through `vmExec.executeTransaction()` so SSTORE accounting and end-of-tra
 settlement run through the production execution path:
 
 - **TEMPO-SC1**: The persistent credit balance follows an independent zero-crossing model across
-  Refund, Preserve, Direct, and bounded-Direct modes.
+  Refund, Preserve, Direct, and bounded-Direct modes, including multi-create budget exhaustion.
 - **TEMPO-SC2**: Non-boundary writes do not change credits; committed storage always matches ghost
   state, including dirty `x -> 0 -> y` recreations.
-- **TEMPO-SC3**: Reverted storage writes atomically unwind their credit and transient-mode effects.
+- **TEMPO-SC3**: Reverted storage writes atomically unwind their credit, mode, and budget effects.
 - **TEMPO-SC4**: Credits remain local to the account whose storage changed, regardless of the
-  transaction sender.
+  transaction sender or intermediate caller.
 - **TEMPO-SC5**: Mode and Direct budget are transaction-local and reset between transactions.
 
 ## TIP-1010: Mainnet Gas Parameters (Block Limits)
