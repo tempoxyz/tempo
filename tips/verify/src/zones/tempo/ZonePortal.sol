@@ -62,8 +62,7 @@ contract ZonePortal is IZonePortal {
     uint128 public constant MAX_GAS_FEE_RATE = 1e18;
 
     /// @dev Only the enshrined factory may initialize portal proxy storage.
-    address internal constant ZONE_FACTORY_ADDRESS =
-        0x5aF2000000000000000000000000000000000000;
+    address internal constant ZONE_FACTORY_ADDRESS = 0x5aF2000000000000000000000000000000000000;
 
     /// @notice Encrypted deposit payloads always encrypt `(address to, bytes32 memo)`.
     uint256 internal constant ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE = 64;
@@ -155,7 +154,9 @@ contract ZonePortal is IZonePortal {
         bytes32 _genesisBlockHash,
         uint64 _genesisTempoBlockNumber,
         string calldata _rpcUrl
-    ) external {
+    )
+        external
+    {
         if (msg.sender != ZONE_FACTORY_ADDRESS) revert NotFactory();
         if (_initialized) revert AlreadyInitialized();
 
