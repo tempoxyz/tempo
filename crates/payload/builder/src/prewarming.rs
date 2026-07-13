@@ -112,7 +112,9 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
+                    let t0 = std::time::Instant::now();
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    prewarm_task_stats(t0.elapsed().as_micros() as u64);
                     if let Some(w) = warmed {
                         w.store(true, std::sync::atomic::Ordering::Release);
                     }
@@ -343,6 +345,32 @@ pub(crate) struct PrewarmedTransaction {
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
         Self { tx, replay: None, warmed: None }
+    }
+}
+
+/// Prewarm worker task-duration telemetry: count/sum/max per ~5s window,
+/// logged from whichever worker rolls the window (ceiling diagnostic).
+fn prewarm_task_stats(us: u64) {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static SUM: AtomicU64 = AtomicU64::new(0);
+    static MAX: AtomicU64 = AtomicU64::new(0);
+    static WINDOW: AtomicU64 = AtomicU64::new(0);
+    let c = COUNT.fetch_add(1, Relaxed) + 1;
+    SUM.fetch_add(us, Relaxed);
+    MAX.fetch_max(us, Relaxed);
+    if c.is_multiple_of(50_000) {
+        let w = WINDOW.fetch_add(1, Relaxed);
+        let sum = SUM.swap(0, Relaxed);
+        let max = MAX.swap(0, Relaxed);
+        tracing::info!(
+            target: "flatmpt",
+            window = w,
+            tasks = 50_000u64,
+            avg_us = sum / 50_000,
+            max_us = max,
+            "prewarm task stats"
+        );
     }
 }
 
