@@ -74,6 +74,7 @@ const BUILDER_DETAIL_ROWS = [
   ['Reverted Txs', 'builder_reverted_txs', v => fmtVal(v, 0), true],
   ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0), true],
   ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0), true],
+  ['Stop Reason — Gas Limit', 'builder_stop_gas_limit', v => fmtVal(v, 0), true],
   ['Stop Reason — RLP Size', 'builder_stop_rlp_size', v => fmtVal(v, 0), true],
   ['Stop Reason — Pool Empty', 'builder_stop_pool_empty', v => fmtVal(v, 0), true],
   ['Stop Reason — Build Budget', 'builder_stop_build_budget', v => fmtVal(v, 0), true],
