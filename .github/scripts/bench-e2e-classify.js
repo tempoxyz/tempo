@@ -74,6 +74,9 @@ const BUILDER_DETAIL_ROWS = [
   ['Reverted Txs', 'builder_reverted_txs', v => fmtVal(v, 0)],
   ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0)],
   ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0)],
+  ['Stop Reason — RLP Size', 'builder_stop_rlp_size', v => fmtVal(v, 0), true],
+  ['Stop Reason — Pool Empty', 'builder_stop_pool_empty', v => fmtVal(v, 0), true],
+  ['Stop Reason — Build Budget', 'builder_stop_build_budget', v => fmtVal(v, 0), true],
   ['Serialized Block Size P50 [KiB]', 'serialized_block_size_p50', fmtKiB],
   ['Serialized Block Size P90 [KiB]', 'serialized_block_size_p90', fmtKiB],
   ['Serialized Block Size P99 [KiB]', 'serialized_block_size_p99', fmtKiB],
@@ -208,9 +211,10 @@ function appendBuilderDetails(lines, summary) {
   lines.push('');
   lines.push('| Metric | Baseline | Feature | Delta |');
   lines.push('|--------|----------|---------|-------|');
-  for (const [label, axis, formatter] of BUILDER_DETAIL_ROWS) {
+  for (const [label, axis, formatter, omitIfBothZero = false] of BUILDER_DETAIL_ROWS) {
     const base = summary.results.baseline[axis];
     const feature = summary.results.feature[axis];
+    if (omitIfBothZero && base === 0 && feature === 0) continue;
     lines.push(`| ${label} | ${formatter(base)} | ${formatter(feature)} | ${fmtInfoChange(base, feature)} |`);
   }
   lines.push('');
