@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 import { IZoneFactory, ZoneInfo } from "../interfaces/IZone.sol";
+import { ZonePortal } from "./ZonePortal.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 
@@ -88,7 +89,7 @@ abstract contract ZoneFactory is IZoneFactory {
         //    the `portal` account. The runtime delegatecalls into
         //    ZONE_PORTAL_LOGIC_ADDRESS, the single protocol-managed ZonePortal logic
         //    implementation.
-        // 3. The protocol initializes the portal account's storage with the zone ID,
+        // 3. This factory calls the portal's one-time initializer with the zone ID,
         //    initial token, shared messenger, admin, sequencer, verifier, genesis block
         //    hash, genesis Tempo block number, and RPC URL.
         //
@@ -96,7 +97,17 @@ abstract contract ZoneFactory is IZoneFactory {
         // precompile, represented by abstract hooks here so this artifact documents
         // the required behavior without pretending it is ordinary Solidity.
         _nativeEtchPortalProxy(portal, portalProxyRuntime());
-        _nativeInitializePortal(portal, zoneId, params);
+        ZonePortal(portal).initialize(
+            zoneId,
+            params.initialToken,
+            _messenger,
+            params.admin,
+            params.sequencer,
+            params.verifier,
+            params.zoneParams.genesisBlockHash,
+            params.zoneParams.genesisTempoBlockNumber,
+            params.rpcUrl
+        );
 
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
@@ -139,15 +150,6 @@ abstract contract ZoneFactory is IZoneFactory {
 
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
-
-    /// @dev Native host hook: initialize the portal's storage-backed state.
-    function _nativeInitializePortal(
-        address portal,
-        uint32 zoneId,
-        CreateZoneParams calldata params
-    )
-        internal
-        virtual;
 
     /*//////////////////////////////////////////////////////////////
                                  VIEWS

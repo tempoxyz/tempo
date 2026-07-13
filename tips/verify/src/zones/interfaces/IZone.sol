@@ -348,7 +348,7 @@ interface IZoneTxContext {
 //   slot 15: pendingAdmin (address)
 //   slot 16: _withdrawalReentrancyStatus (uint256)
 //   slot 17: zoneId (uint32) + messenger (address) [packed]
-//   slot 18: verifier (address) + genesisTempoBlockNumber (uint64) [packed]
+//   slot 18: verifier (address) + genesisTempoBlockNumber (uint64) + _initialized (bool) [packed]
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneConfig and ZoneInbox use them to read portal state via
@@ -588,6 +588,8 @@ interface IZonePortal {
 
     error NotSequencer();
     error NotAdmin();
+    error NotFactory();
+    error AlreadyInitialized();
     error NotPendingSequencer();
     error NotPendingAdmin();
     error InvalidProof();
@@ -610,6 +612,18 @@ interface IZonePortal {
     error TokenAlreadyEnabled();
     error InvalidBouncebackRecipient();
     error InvalidDepositTransition();
+
+    function initialize(
+        uint32 zoneId,
+        address initialToken,
+        address messenger,
+        address admin,
+        address sequencer,
+        address verifier,
+        bytes32 genesisBlockHash,
+        uint64 genesisTempoBlockNumber,
+        string calldata rpcUrl
+    ) external;
 
     /// @notice Fixed gas value for deposit fee calculation (100,000 gas)
     function FIXED_DEPOSIT_GAS() external view returns (uint64);
