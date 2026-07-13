@@ -604,7 +604,19 @@ impl SparseWorker {
                     let first = match rx.recv_timeout(std::time::Duration::from_millis(2)) {
                         Ok(m) => m,
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break 'outer,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            // finish() sends the fast-lane message BEFORE
+                            // dropping the main-channel sender: a Disconnected
+                            // wake-up may carry a pending Finish — poll it or
+                            // the worker dies with the result unsent.
+                            if let Ok(ops) = finish_rx.try_recv() {
+                                w.stats.hook_dropped =
+                                    dropped_w.load(std::sync::atomic::Ordering::Relaxed);
+                                let _ = result_tx.send(w.finish(ops));
+                                finished = true;
+                            }
+                            break 'outer;
+                        }
                     };
                     let mut msg = Some(first);
                     let mut in_batch = 0u32;
