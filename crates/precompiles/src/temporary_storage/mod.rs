@@ -306,7 +306,7 @@ mod tests {
 
         let key = B256::repeat_byte(0x01);
         let value = B256::repeat_byte(0x02);
-        let epoch_account = TemporaryStorageAccount::for_epoch(0).address();
+        let epoch_account = TemporaryStorageAccount::for_block(0).address();
 
         let run_block = |with_marker: bool| -> eyre::Result<U256> {
             let mut cfg = CfgEnv::<TempoHardfork>::default();

@@ -1949,7 +1949,7 @@ mod tests {
         // The current epoch's storage account must also carry the marker, otherwise it is
         // an empty touched account and EIP-161 state clear drops its storage at commit.
         // Its code hash is TIP-1040's `EPOCH_ACCOUNT_CODE_HASH`.
-        let epoch_account = TemporaryStorageAccount::for_epoch(0).address();
+        let epoch_account = TemporaryStorageAccount::for_block(0).address();
         let acc = db.load_cache_account(epoch_account).unwrap();
         let info = acc.account_info().unwrap();
         assert_eq!(

@@ -90,16 +90,20 @@ pub trait PrecompileStorageProvider {
     fn temporary_load(&mut self, namespace: Address, key: B256) -> Result<U256> {
         let slot = temporary::slot(namespace, key);
         let block_number = self.block_env().number.saturating_to::<u64>();
-        let epoch = block_number / tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH;
 
-        let value = self.sload(TemporaryStorageAccount::for_epoch(epoch).address(), slot)?;
-        if !value.is_zero() || epoch == 0 {
+        let value = self.sload(
+            TemporaryStorageAccount::for_block(block_number).address(),
+            slot,
+        )?;
+        let in_first_epoch = block_number < tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH;
+        if !value.is_zero() || in_first_epoch {
             return Ok(value);
         }
-        self.sload(
-            TemporaryStorageAccount::for_epoch(epoch - 1).address(),
-            slot,
-        )
+        // One epoch length back lands in the previous epoch's account.
+        let previous = TemporaryStorageAccount::for_block(
+            block_number - tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH,
+        );
+        self.sload(previous.address(), slot)
     }
 
     /// Increments a persistent storage slot by `delta`.

@@ -11,9 +11,9 @@ pub const TEMPORARY_STORAGE_EPOCH_LENGTH: u64 = 172_800;
 
 /// A [TIP-1040] per-epoch temporary storage account: `TEMPORARY_STORAGE_ADDRESS + epoch + 1`.
 ///
-/// Only constructible via [`Self::for_block`]/[`Self::for_epoch`], so holding one is proof
-/// the address is a temporary storage account. Code that only has a raw [`Address`] can
-/// classify it with [`TempoAddressExt::is_temporary_storage_account`].
+/// Only constructible via [`Self::for_block`], so holding one is proof the address is a
+/// temporary storage account. Code that only has a raw [`Address`] can classify it with
+/// [`TempoAddressExt::is_temporary_storage_account`].
 ///
 /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,8 +34,9 @@ impl TemporaryStorageAccount {
     ///
     /// The `+ 1` offset reserves `TEMPORARY_STORAGE_ADDRESS` itself for the precompile
     /// dispatch logic. The sum cannot overflow 160 bits; `epoch + 1` fits the trailing
-    /// 8 bytes for any reachable epoch.
-    pub fn for_epoch(epoch: u64) -> Self {
+    /// 8 bytes for any epoch reachable from a block number, which is why only
+    /// [`Self::for_block`] is public.
+    fn for_epoch(epoch: u64) -> Self {
         let base: U256 = TEMPORARY_STORAGE_ADDRESS.into_word().into();
         Self(Address::from_word(B256::from(
             base + U256::from(epoch) + U256::ONE,
