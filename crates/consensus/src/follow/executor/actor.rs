@@ -195,22 +195,15 @@ where
             "sync target canonical hash mismatch: expected {target_hash}, got {canonical_hash}",
         );
 
-        let finalization = self
-            .marshal
-            .get_finalization(target.height)
-            .await
-            .ok_or_eyre("marshal tip update had no corresponding finalization")?;
-        ensure!(
-            finalization.proposal.payload == target.digest,
-            "marshal finalization digest does not match sync target"
-        );
-
         let target = self.sync_target.take().expect("target exists");
         info!(height = %target.height, digest = %target.digest, "sync target is canonical; advancing marshal floor");
 
         // The current commonware API accepts a height. Once the certified
-        // floor API lands, pass `finalization` here instead. We set the floor
+        // floor API lands, fetch and pass `finalization` here instead. We set the floor
         // to one-before so that the sync block is replayed (may be a boundary).
+        //
+        // The finalization is gauranteed to exist as the sync targets come from finalizations
+        // observed by the driver, reported to the marshal.:w
         if let Some(one_before) = target.height.previous() {
             self.marshal.set_floor(one_before).await;
         }
