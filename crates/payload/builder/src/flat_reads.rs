@@ -86,30 +86,43 @@ impl HashedKeyMemo {
 
 pub(crate) struct RevealFeed {
     pub sink: tempo_flatmpt::RevealSink,
-    /// Keys already handed over this block (reads are first-touch per key via
-    /// the execution cache, but prewarm threads race the main pass).
-    sent_accounts: parking_lot::Mutex<std::collections::HashSet<B256>>,
-    sent_slots: parking_lot::Mutex<std::collections::HashSet<(B256, B256)>>,
+    /// Lock-free probabilistic dedup of keys already handed over this block.
+    /// The previous Mutex<HashSet> stalled all ~30 prewarm workers together
+    /// whenever the 265k-entry set rehashed under the lock (5-10ms correlated
+    /// stalls — the dispatch-latch trigger). A false positive only means the
+    /// commitment worker fetches that one path itself.
+    sent_accounts: SentFilter,
+    sent_slots: SentFilter,
 }
 
-impl Drop for RevealFeed {
-    fn drop(&mut self) {
-        tracing::debug!(
-            target: "flatmpt",
-            accounts_sent = self.sent_accounts.lock().len(),
-            slots_sent = self.sent_slots.lock().len(),
-            "reveal feed retired"
-        );
+/// Fixed-size atomic bitmap: test-and-set on a hash of the key. 2^23 bits
+/// (1 MiB) per filter — at ~300k inserts/block the false-positive rate stays
+/// under ~2%. Never resizes, never locks.
+pub(crate) struct SentFilter {
+    bits: Box<[std::sync::atomic::AtomicU64]>,
+}
+
+impl Default for SentFilter {
+    fn default() -> Self {
+        Self { bits: (0..(1usize << 23) / 64).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() }
+    }
+}
+
+impl SentFilter {
+    /// True iff this key was NOT seen before (and marks it seen).
+    fn first(&self, key: &[u8]) -> bool {
+        // keys are keccak outputs — any 8 bytes are uniformly random
+        let h = u64::from_le_bytes(key[..8].try_into().unwrap());
+        let bit = (h as usize) & ((1 << 23) - 1);
+        let (word, mask) = (bit / 64, 1u64 << (bit % 64));
+        let prev = self.bits[word].fetch_or(mask, std::sync::atomic::Ordering::Relaxed);
+        prev & mask == 0
     }
 }
 
 impl RevealFeed {
     pub fn new(sink: tempo_flatmpt::RevealSink) -> Self {
-        Self {
-            sink,
-            sent_accounts: parking_lot::Mutex::new(Default::default()),
-            sent_slots: parking_lot::Mutex::new(Default::default()),
-        }
+        Self { sink, sent_accounts: Default::default(), sent_slots: Default::default() }
     }
 }
 
@@ -122,7 +135,7 @@ impl FlatReadProvider {
     /// first touch of `key`, the read's walk doubles as the reveal.
     fn read_account_rlp(&self, key: &B256) -> ProviderResult<Option<Vec<u8>>> {
         if let Some(feed) = &self.shared.reveal {
-            if feed.sent_accounts.lock().insert(*key) {
+            if feed.sent_accounts.first(&key.0) {
                 let (value, nodes) = self
                     .shared
                     .snap
@@ -137,7 +150,12 @@ impl FlatReadProvider {
 
     fn read_storage_rlp(&self, acct: &B256, slot: &B256) -> ProviderResult<Option<Vec<u8>>> {
         if let Some(feed) = &self.shared.reveal {
-            if feed.sent_slots.lock().insert((*acct, *slot)) {
+            if feed.sent_slots.first(&{
+                let mut k = [0u8; 16];
+                k[..8].copy_from_slice(&acct.0[..8]);
+                k[8..].copy_from_slice(&slot.0[..8]);
+                k
+            }) {
                 let (value, nodes) = self
                     .shared
                     .snap
