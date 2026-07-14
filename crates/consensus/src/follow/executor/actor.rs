@@ -130,10 +130,6 @@ where
 
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
-
-                            if self.latest_tip.height > self.last_fcu.height {
-                                self.start_execution_task(true);
-                            }
                         }
                         ExecutionTaskResult::NonFatal { error } => {
                             warn!(%error, "forkchoice update failed");
@@ -153,7 +149,6 @@ where
                         Update::Tip(_, height, digest) => {
                             if height > self.latest_tip.height {
                                 self.latest_tip = FinalizedTip { height, digest };
-                                self.start_execution_task(true);
                             }
                         }
                     }
@@ -182,13 +177,12 @@ where
             return;
         }
 
-        let request = if heartbeat {
+        let request = if let Some((block, ack)) = self.block_queue.pop_front() {
+            ExecutionRequest::Block(block, ack)
+        } else if self.latest_tip.height > self.last_fcu.height || heartbeat {
             ExecutionRequest::Forkchoice(self.latest_tip)
         } else {
-            let Some((block, ack)) = self.block_queue.pop_front() else {
-                return;
-            };
-            ExecutionRequest::Block(block, ack)
+            return;
         };
 
         let last_fcu = self.last_fcu;
