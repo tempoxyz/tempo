@@ -34,6 +34,12 @@ pub(crate) struct BestTransactionsPrewarming {
     /// entirely: the consumer drains the ~60-tx buffer in under a millisecond
     /// and then parks for the remainder of the stall.
     exec_driven: bool,
+    /// Consumer-side view of [`is_invalidated_buffered_transaction`] for
+    /// exec-driven mode: senders (and AA nonce-key sequences) invalidated
+    /// this block, so conflicting buffered transactions are dropped on
+    /// consumption instead of via a coordinator channel swap.
+    invalid_senders: std::collections::HashSet<alloy_primitives::Address>,
+    invalid_seq_ids: std::collections::HashSet<tempo_transaction_pool::tt_2d_pool::AASequenceId>,
 }
 
 /// `TEMPO_PREWARM_EXEC_DRIVEN=0` reverts non-parallel dispatch to
@@ -60,6 +66,8 @@ impl BestTransactionsPrewarming {
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
             exec_driven: !prewarm.parallel && exec_driven_dispatch(),
+            invalid_senders: Default::default(),
+            invalid_seq_ids: Default::default(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -155,29 +163,17 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Advance => {
                         advance(&mut ctx);
                     }
-                    BestTransactionsCommand::Invalid {
-                        invalid,
-                        old_rx,
-                        new_tx,
-                    } => {
+                    BestTransactionsCommand::Invalid { invalid, swap } => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                        ctx.transactions_tx = new_tx;
 
-                        let mut dropped = 0usize;
-                        for tx in old_rx {
-                            if let Some(tx) = tx {
-                                if is_invalidated_buffered_transaction(&invalid.tx, &tx.tx) {
-                                    dropped += 1;
-                                } else {
+                        if let Some((old_rx, new_tx)) = swap {
+                            ctx.transactions_tx = new_tx;
+                            for tx in old_rx {
+                                if let Some(tx) = tx
+                                    && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
+                                {
                                     let _ = ctx.transactions_tx.send(Some(tx));
                                 }
-                            }
-                        }
-                        if exec_driven {
-                            // Replace evicted buffer entries; with exec-driven
-                            // dispatch nobody else refills the lookahead.
-                            for _ in 0..dropped {
-                                advance(&mut ctx);
                             }
                         }
                     }
@@ -316,8 +312,17 @@ impl Iterator for BestTransactionsPrewarming {
         if self.exec_driven {
             // One dispatch per consumed transaction: the lookahead window is
             // pinned to exec's own progress, never to warm-task completions.
-            let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
-            return self.transactions_rx.recv().ok().flatten().map(gate);
+            // Buffered transactions conflicting with an earlier mark_invalid
+            // are dropped here (each drop re-advances, keeping the window
+            // full).
+            loop {
+                let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
+                let tx = self.transactions_rx.recv().ok().flatten()?;
+                if self.is_invalidated(&tx.tx) {
+                    continue;
+                }
+                return Some(gate(tx));
+            }
         }
         if let Ok(Some(tx)) = self.transactions_rx.try_recv().map(|o| o.map(gate)) {
             return Some(tx);
@@ -329,17 +334,42 @@ impl Iterator for BestTransactionsPrewarming {
     }
 }
 
+impl BestTransactionsPrewarming {
+    /// Whether `candidate` conflicts with any transaction invalidated this
+    /// block — the accumulated form of [`is_invalidated_buffered_transaction`].
+    fn is_invalidated(&self, candidate: &BestTransaction) -> bool {
+        if let Some(id) = candidate.transaction.aa_transaction_id() {
+            self.invalid_seq_ids.contains(id.seq_id())
+        } else {
+            self.invalid_senders.contains(&candidate.transaction.sender())
+        }
+    }
+}
+
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        let (new_tx, new_rx) = mpsc::channel();
-        let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+        let swap = if self.exec_driven {
+            // The consumer filters conflicting buffered transactions itself;
+            // the coordinator only needs to tell the pool.
+            if !transaction.tx.transaction.is_expiring_nonce() {
+                if let Some(id) = transaction.tx.transaction.aa_transaction_id() {
+                    self.invalid_seq_ids.insert(*id.seq_id());
+                } else {
+                    self.invalid_senders.insert(transaction.tx.transaction.sender());
+                }
+            }
+            None
+        } else {
+            let (new_tx, new_rx) = mpsc::channel();
+            let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+            Some((old_rx, new_tx))
+        };
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
                 tx: transaction.tx.clone(),
                 kind,
             },
-            old_rx,
-            new_tx,
+            swap,
         });
     }
 
@@ -535,8 +565,16 @@ enum BestTransactionsCommand {
     Advance,
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: Receiver<Option<PrewarmedTransaction>>,
-        new_tx: Sender<Option<PrewarmedTransaction>>,
+        /// `Some` swaps the consumer channel and refilters buffered
+        /// transactions on the coordinator (completion-driven mode). `None`
+        /// (exec-driven mode) only informs the pool: the consumer filters
+        /// conflicting buffered transactions itself, so a gas-capped block's
+        /// ~17k tail invalidations cost a set insert instead of a channel
+        /// swap + full buffer re-send each.
+        swap: Option<(
+            Receiver<Option<PrewarmedTransaction>>,
+            Sender<Option<PrewarmedTransaction>>,
+        )>,
     },
     NoUpdates,
     SkipBlobs(bool),
