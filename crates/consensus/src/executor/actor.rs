@@ -909,6 +909,14 @@ async fn forward_finalized<TContext: Pacer>(
             execution_finalized.number,
             canonical_hash,
         );
+        if let Some(public_key) = public_key.as_ref()
+            && block
+                .header()
+                .consensus_context
+                .is_some_and(|context| &PublicKey::from(context.proposer.get()) == public_key)
+        {
+            metrics.finalized_blocks_proposed_by_self.inc();
+        }
         info!(
             execution_finalized_height = execution_finalized.number,
             execution_finalized_hash = %execution_finalized.hash,
