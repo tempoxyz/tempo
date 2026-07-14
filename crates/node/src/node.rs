@@ -403,6 +403,87 @@ where
                 )
             });
         }
+        // TEMPO_NO_STATE_KV: the duplicate state KV is not persisted, so
+        // latest-state point reads (engine validation misses, txpool, RPC)
+        // must come from the flat store. Install the canonical-tip read hook
+        // that reth's latest-state provider consults. Correctness: these
+        // reads sit underneath the engine's in-memory overlay of unpersisted
+        // blocks, which shadows every key written after the last persisted
+        // block — so serving the canonical tip state is exact. The tip
+        // anchor (not "newest flat state") keeps not-yet-canonical candidate
+        // blocks out of the served state.
+        if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
+            let provider = ctx.node.provider().clone();
+            let chain_spec = chain_spec.clone();
+            let resolve = move || -> Result<
+                (tempo_flatmpt::FlatSnapshot, Vec<Arc<tempo_flatmpt::PendingBlock>>),
+                reth_errors::ProviderError,
+            > {
+                use reth_provider::BlockReaderIdExt as _;
+                let err = |m: &str| {
+                    reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
+                };
+                let tip_root = provider
+                    .latest_header()?
+                    .ok_or_else(|| err("no canonical head for flat tip read"))?
+                    .state_root();
+                let shadow = tempo_flatmpt::shadow(|| {
+                    (
+                        tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                        chain_spec.inner.genesis_header().state_root(),
+                    )
+                })
+                .expect("flat root mode is on");
+                // Transient gaps (publish/retire races around an apply) heal
+                // within an apply cycle; a persistent failure is loud.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
+                        && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
+                    {
+                        return Ok((snap, chain));
+                    }
+                    if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
+                        && g.at_parent(tip_root)
+                    {
+                        return Ok((g.snapshot(), Vec::new()));
+                    }
+                    if std::time::Instant::now() > deadline {
+                        return Err(err("flat store cannot serve the canonical tip state"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            };
+            let resolve_acct = Arc::new(resolve);
+            let resolve_slot = resolve_acct.clone();
+            let _ = reth_provider::providers::FLAT_STATE_READS.set(reth_provider::providers::FlatStateReads {
+                account: Box::new(move |address| {
+                    let (snap, chain) = resolve_acct()?;
+                    let key = alloy_primitives::keccak256(address);
+                    let read = tempo_flatmpt::overlay_account(&chain, &snap, &key.0)
+                        .map_err(|e| reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}"))))?;
+                    Ok(read.map(|(nonce, balance, code_hash)| reth_primitives_traits::Account {
+                        nonce,
+                        balance,
+                        bytecode_hash: (code_hash != alloy_primitives::keccak256([]).0)
+                            .then(|| B256::from(code_hash)),
+                    }))
+                }),
+                storage: Box::new(move |address, slot| {
+                    let (snap, chain) = resolve_slot()?;
+                    let acct_key = alloy_primitives::keccak256(address);
+                    let slot_key = alloy_primitives::keccak256(slot.0);
+                    tempo_flatmpt::overlay_storage(&chain, &snap, &acct_key.0, &slot_key.0)
+                        .map_err(|e| {
+                            reth_errors::ProviderError::other(std::io::Error::other(format!(
+                                "{e:#}"
+                            )))
+                        })
+                }),
+            });
+            info!(target: "flatmpt", "flat tip-state read hook installed (no state KV)");
+        }
+        let chain_spec = ctx.config.chain.clone();
         Ok(validator.with_custom_state_root(Arc::new(move |input| {
             let shadow = tempo_flatmpt::shadow(|| {
                 (

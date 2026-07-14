@@ -172,6 +172,47 @@ fn retire_pending(applied_root: B256) {
     PENDING_BLOCKS.lock().retain(|b| b.root != applied_root);
 }
 
+/// Account read at a specific state: pending-chain overlay first (newest
+/// wins), snapshot second. Returns decoded `(nonce, balance, code_hash)`.
+pub fn overlay_account(
+    chain: &[Arc<PendingBlock>],
+    snap: &mpt_flat_poc::FlatSnapshot,
+    hashed_address: &Key,
+) -> anyhow::Result<Option<(u64, alloy_primitives::U256, [u8; 32])>> {
+    for pending in chain {
+        if let Some(hit) = pending.account(hashed_address) {
+            return Ok(hit);
+        }
+    }
+    snap.get_value(hashed_address)
+        .map_err(|e| anyhow::anyhow!("{e:#}"))?
+        .map(|rlp| crate::FlatShadow::decode_account_rlp(rlp.as_slice()))
+        .transpose()
+}
+
+/// Storage read at a specific state: pending-chain overlay first (newest
+/// wins), snapshot second. Returns the decoded slot value.
+pub fn overlay_storage(
+    chain: &[Arc<PendingBlock>],
+    snap: &mpt_flat_poc::FlatSnapshot,
+    hashed_address: &Key,
+    hashed_slot: &Key,
+) -> anyhow::Result<Option<alloy_primitives::U256>> {
+    let decode = |rlp: &[u8]| {
+        <alloy_primitives::U256 as alloy_rlp::Decodable>::decode(&mut &rlp[..])
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    };
+    for pending in chain {
+        if let Some(hit) = pending.storage(hashed_address, hashed_slot) {
+            return hit.map(decode).transpose();
+        }
+    }
+    snap.get_storage(hashed_address, hashed_slot)
+        .map_err(|e| anyhow::anyhow!("{e:#}"))?
+        .map(|rlp| decode(&rlp))
+        .transpose()
+}
+
 /// The chain of pending blocks leading `snapshot_root` → `parent_root`,
 /// newest first (lookup order). `Some(vec![])` when the roots already match;
 /// `None` when no complete chain exists (gap, unwind, follower ahead).
