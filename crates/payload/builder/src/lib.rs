@@ -776,6 +776,11 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        // Exec-thread stall accounting: where this thread's fill time goes.
+        let mut next_wait = Duration::ZERO;
+        let mut next_wait_max = Duration::ZERO;
+        let mut next_hist = [0u64; 32]; // log2 µs buckets of individual next() waits
+        let mut execute_elapsed = Duration::ZERO;
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -816,7 +821,16 @@ where
                 }
             }
 
-            let Some(mut pool_tx) = best_txs.next() else {
+            let t_next = Instant::now();
+            let next_result = best_txs.next();
+            {
+                let d = t_next.elapsed();
+                next_wait += d;
+                next_wait_max = next_wait_max.max(d);
+                let us = d.as_micros() as u64;
+                next_hist[(64 - us.leading_zeros() as usize).min(31)] += 1;
+            }
+            let Some(mut pool_tx) = next_result else {
                 if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
@@ -922,6 +936,7 @@ where
                 best_txs.on_new_result(result);
             };
 
+            let t_exec = Instant::now();
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
@@ -939,6 +954,7 @@ where
                     )
                     .map(|_| ())
             };
+            execute_elapsed += t_exec.elapsed();
 
             if let Err(err) = execution_result {
                 match err {
@@ -1022,6 +1038,28 @@ where
             at_fill_end_ms = start.elapsed().as_millis() as u64,
             "build phases at fill end"
         );
+        {
+            // next_hist bucket i = waits in [2^(i-1), 2^i) µs; print sparse.
+            let hist: Vec<String> = next_hist
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| **c > 0)
+                .map(|(i, c)| format!("<{}us:{}", 1u64 << i, c))
+                .collect();
+            info!(
+                target: "flatmpt",
+                fill_ms = normal_transaction_fill_elapsed.as_millis() as u64,
+                next_wait_ms = next_wait.as_millis() as u64,
+                next_wait_max_us = next_wait_max.as_micros() as u64,
+                execute_ms = execute_elapsed.as_millis() as u64,
+                other_ms = normal_transaction_fill_elapsed
+                    .saturating_sub(next_wait)
+                    .saturating_sub(execute_elapsed)
+                    .as_millis() as u64,
+                next_hist = %hist.join(" "),
+                "exec thread fill accounting"
+            );
+        }
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);

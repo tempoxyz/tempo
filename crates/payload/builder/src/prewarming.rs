@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -18,6 +18,20 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+std::thread_local! {
+    /// Per-thread EVM for builder prewarming, in its own slot rather than the
+    /// prewarming pool's shared [`Worker`](reth_tasks::pool::Worker) state:
+    /// that slot belongs to the engine-tree prewarm, which stores a different
+    /// type there on the same pool threads and can overlap with a payload
+    /// build (its `get_or_init` panics on a type mismatch, and either side's
+    /// `pool.clear()` drops the other's state mid-flight).
+    ///
+    /// Outer `None` = not yet initialized for this build; inner `None` = EVM
+    /// construction failed and won't be retried on this thread.
+    static PREWARM_EVM: std::cell::RefCell<Option<PrewarmEvmState>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -106,7 +120,11 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                // Eagerly build this block's per-thread EVMs off the critical
+                // path, replacing anything a previous build left behind.
+                pool.broadcast(pool.current_num_threads(), |_| {
+                    PREWARM_EVM.with_borrow_mut(|slot| *slot = Some(prewarm.evm_for_ctx()));
+                });
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -192,7 +210,12 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        // Drop the per-thread EVMs (each holds a state provider). The calling
+        // thread participates in `in_place_scope`, so clear its slot too.
+        pool.broadcast(pool.current_num_threads(), |_| {
+            PREWARM_EVM.with_borrow_mut(|slot| *slot = None);
+        });
+        PREWARM_EVM.with_borrow_mut(|slot| *slot = None);
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -208,12 +231,12 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = PREWARM_EVM.with_borrow_mut(|slot| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let evm = slot.get_or_insert_with(|| prewarm.evm_for_ctx()).as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
