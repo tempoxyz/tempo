@@ -708,7 +708,7 @@ contract ZonePortal is IZonePortal {
 
         address _token = withdrawal.token;
 
-        if (withdrawal.fallbackRecipient == address(0)) {
+        if (withdrawal.fallbackNonce == 0) {
             _processDepositBounceBack(withdrawal);
             return;
         }
@@ -721,7 +721,7 @@ contract ZonePortal is IZonePortal {
         }
 
         if (withdrawal.gasLimit > MAX_WITHDRAWAL_GAS_LIMIT) {
-            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackRecipient);
+            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackNonce);
             emit WithdrawalProcessed(
                 withdrawal.to, withdrawal.senderTag, _token, withdrawal.amount, false
             );
@@ -748,7 +748,7 @@ contract ZonePortal is IZonePortal {
 
         if (!success) {
             // Callback failed: bounce back to zone (only amount, not fee)
-            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackRecipient);
+            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackNonce);
         }
         emit WithdrawalProcessed(
             withdrawal.to, withdrawal.senderTag, _token, withdrawal.amount, success
@@ -837,18 +837,12 @@ contract ZonePortal is IZonePortal {
     /// @notice Enqueue a bounce-back deposit for failed callback
     /// @param _token The token from the failed withdrawal
     /// @param amount The amount to bounce back
-    /// @param fallbackRecipient The zone address to receive the bounce-back
-    function _enqueueBounceBack(
-        address _token,
-        uint128 amount,
-        address fallbackRecipient
-    )
-        internal
-    {
+    /// @param fallbackNonce The nonce resolving to the zone bounce-back recipient
+    function _enqueueBounceBack(address _token, uint128 amount, uint64 fallbackNonce) internal {
         Deposit memory depositData = Deposit({
             token: _token,
             sender: address(this),
-            to: fallbackRecipient,
+            to: address(uint160(fallbackNonce)),
             amount: amount,
             bouncebackRecipient: address(0),
             memo: bytes32(0)
@@ -860,7 +854,7 @@ contract ZonePortal is IZonePortal {
         uint64 thisDeposit = ++depositCount;
 
         emit WithdrawalBounceBack(
-            newCurrentDepositQueueHash, fallbackRecipient, _token, amount, thisDeposit
+            newCurrentDepositQueueHash, fallbackNonce, _token, amount, thisDeposit
         );
     }
 
