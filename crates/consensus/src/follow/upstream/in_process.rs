@@ -46,8 +46,7 @@ pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Ma
             .boxed()
             .fuse(),
         mailbox: rx,
-        finalization_waiters: Vec::new(),
-        block_waiters: Vec::new(),
+        waiters: Vec::new(),
     };
     (actor, mailbox)
 }
@@ -57,9 +56,7 @@ pub struct Actor<TContext> {
     config: Config,
     event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
-
-    finalization_waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
-    block_waiters: Vec<(Digest, oneshot::Sender<Option<Block>>)>,
+    waiters: Vec<Message>,
 }
 
 impl<TContext> Actor<TContext>
@@ -115,29 +112,26 @@ where
                     }
                 }
 
-                Some(msg) = self.mailbox.recv() => {
-                    match msg {
-                        super::ingress::Message::GetFinalization { height, response, } => {
-                            self.finalization_waiters.push((height, response));
-                        }
-                        super::ingress::Message::GetBlock { digest, response, } => {
-                            self.block_waiters.push((digest, response));
-                        }
-                    }
+                Some(request) = self.mailbox.recv() => {
+                    self.waiters.push(request);
                 }
             );
             if connected {
-                for (height, response) in self.finalization_waiters.drain(..) {
-                    let feed = self.config.feed.clone();
-                    self.context
-                        .with_label("get_finalization")
-                        .spawn(move |_| get_finalization(feed, height, response));
-                }
-                for (digest, response) in self.block_waiters.drain(..) {
-                    let execution_node = self.config.execution_node.clone();
-                    self.context
-                        .with_label("get_block")
-                        .spawn(move |_| get_block(execution_node, digest, response));
+                for request in self.waiters.drain(..) {
+                    match request {
+                        Message::GetFinalization { height, response } => {
+                            let feed = self.config.feed.clone();
+                            self.context
+                                .with_label("get_finalization")
+                                .spawn(move |_| get_finalization(feed, height, response));
+                        }
+                        Message::GetBlock { digest, response } => {
+                            let execution_node = self.config.execution_node.clone();
+                            self.context
+                                .with_label("get_block")
+                                .spawn(move |_| get_block(execution_node, digest, response));
+                        }
+                    }
                 }
             }
         }

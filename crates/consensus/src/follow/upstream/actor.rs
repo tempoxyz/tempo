@@ -64,10 +64,8 @@ pub(crate) struct Actor<TContext> {
     pub(super) pending_stream:
         OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
     pub(super) event_stream: EventStream,
-    /// Requests for finalizations while the actor is trying to establish a connection.
-    pub(super) finalization_waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
-    /// Requests for consensus blocks while the actor is trying to establish a connection.
-    pub(super) block_waiters: Vec<(Digest, oneshot::Sender<Option<Block>>)>,
+    /// Requests waiting for the actor to establish a connection.
+    pub(super) waiters: Vec<super::ingress::Message>,
 }
 
 impl<TContext> Actor<TContext>
@@ -159,15 +157,8 @@ where
                     }
                 }
 
-                Some(msg) = self.mailbox.recv() => {
-                    match msg {
-                        super::ingress::Message::GetFinalization { height, response, } => {
-                            self.finalization_waiters.push((height, response));
-                        }
-                        super::ingress::Message::GetBlock { digest, response, } => {
-                            self.block_waiters.push((digest, response));
-                        }
-                    }
+                Some(request) = self.mailbox.recv() => {
+                    self.waiters.push(request);
                 }
             );
         }
@@ -215,18 +206,21 @@ where
             return;
         }
 
-        for (height, response) in self.finalization_waiters.drain(..) {
-            let client = client.clone();
-            self.context
-                .with_label("get_finalization")
-                .spawn(move |_| get_finalization(client, height, response));
-        }
-
-        for (digest, response) in self.block_waiters.drain(..) {
-            let client = client.clone();
-            self.context
-                .with_label("get_block")
-                .spawn(move |_| get_block(client, digest, response));
+        for request in self.waiters.drain(..) {
+            match request {
+                super::ingress::Message::GetFinalization { height, response } => {
+                    let client = client.clone();
+                    self.context
+                        .with_label("get_finalization")
+                        .spawn(move |_| get_finalization(client, height, response));
+                }
+                super::ingress::Message::GetBlock { digest, response } => {
+                    let client = client.clone();
+                    self.context
+                        .with_label("get_block")
+                        .spawn(move |_| get_block(client, digest, response));
+                }
+            }
         }
     }
 }
