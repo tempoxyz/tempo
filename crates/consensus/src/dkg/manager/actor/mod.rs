@@ -763,7 +763,7 @@ where
 
         let onchain_outcome =
             tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-                .expect("the last block of an epoch must contain the DKG outcome");
+                .wrap_err("the last block of an epoch must contain the DKG outcome")?;
 
         info!("reading validator from contract");
 
