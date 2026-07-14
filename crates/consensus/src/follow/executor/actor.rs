@@ -175,7 +175,7 @@ where
         // to one-before so that the sync block is replayed (may be a boundary).
         //
         // The finalization is guaranteed to exist as the sync targets come from finalizations
-        // observed by the driver, reported to the marshal.:w
+        // observed by the driver, reported to the marshal.
         if let Some(one_before) = target.height.previous() {
             self.marshal.set_floor(one_before).await;
         }

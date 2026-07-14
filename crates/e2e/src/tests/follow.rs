@@ -11,6 +11,7 @@ use crate::{
     metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
 };
+use alloy::consensus::BlockHeader as _;
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
@@ -21,6 +22,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use rand_core::CryptoRngCore;
+use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
 
@@ -291,7 +293,7 @@ fn follower_bootstraps_from_validator() {
 }
 
 #[test_traced]
-fn follower_syncs_floor() {
+fn follower_syncs_historical_state() {
     let _ = tempo_eyre::install();
 
     let start_height = 2 * EPOCH_LENGTH + 1;
@@ -317,10 +319,34 @@ fn follower_syncs_floor() {
         wait_for_height(&context, &follower, follower_target_height).await;
         wait_for_finalization(&context, &follower.feed, Query::Latest).await;
 
-        // The follower was offline through epoch 1. Syncing its floor replays
-        // the epoch-1 boundary into the follower's feed.
-        let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
-        wait_for_finalization(&context, &follower.feed, Query::Height(epoch_1_boundary)).await;
+        // The follower syncs directly to the observed finalization rather than
+        // targeting an epoch boundary. Marshal may still backfill historical
+        // boundary certificates as part of its normal gap repair.
+        // The feed and Reth finalized tip show that the follower caught up
+        // independently of those certificates.
+        let reported_finalized_height = follower
+            .feed
+            .get_finalization(Query::Latest)
+            .await
+            .unwrap()
+            .block
+            .number();
+
+        let provider = &follower.execution_node.node.provider;
+        let synced_height = loop {
+            if let Some(height) = provider
+                .finalized_block_number()
+                .expect("failed reading follower finalized height")
+                && height >= follower_target_height
+            {
+                break height;
+            }
+
+            context.sleep(Duration::from_millis(100)).await;
+        };
+
+        assert!(reported_finalized_height >= follower_target_height);
+        assert!(synced_height >= follower_target_height);
     });
 }
 
