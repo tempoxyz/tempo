@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{marshal::Update, types::Height};
+use commonware_consensus::{
+    marshal::Update,
+    types::{Height, HeightDelta},
+};
 use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{Report, WrapErr as _, ensure};
@@ -229,7 +232,9 @@ where
         );
 
         let target = self.sync_target.take().expect("target exists");
-        debug!(height = %target.height, digest = %target.digest, "sync target is canonical; advancing marshal floor");
+        let new_floor = target.height.saturating_sub(HeightDelta::new(512));
+
+        debug!(%target.height, %target.digest, %new_floor, "sync target is canonical; advancing marshal floor");
 
         // The current commonware API accepts a height. Once the certified
         // floor API lands, fetch and pass `finalization` here instead. We set the floor
@@ -237,9 +242,7 @@ where
         //
         // The finalization is guaranteed to exist as the sync targets come from finalizations
         // observed by the driver, reported to the marshal.
-        if let Some(one_before) = target.height.previous() {
-            self.marshal.set_floor(one_before).await;
-        }
+        self.marshal.set_floor(new_floor).await;
 
         Ok(())
     }
