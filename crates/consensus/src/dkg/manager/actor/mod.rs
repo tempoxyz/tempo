@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU32,
+    task::Poll,
+};
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
@@ -1056,6 +1060,7 @@ where
                 .logs_for_epoch(round.epoch())
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
+            let finalized_dealers = raw_logs.keys().cloned().collect::<BTreeSet<_>>();
 
             'ensure_enough_logs: {
                 if raw_logs.len() == round.dealers().len() {
@@ -1077,7 +1082,13 @@ where
                     if let Some(block) =
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
-                        raw_logs.extend(block.log.clone());
+                        if let Some((dealer, log)) = block.log.clone()
+                            && !finalized_dealers.contains(&dealer)
+                        {
+                            // The ancestry walk is newest-to-oldest, so older logs replace
+                            // newer ancestry duplicates while finalized logs stay authoritative.
+                            raw_logs.insert(dealer, log);
+                        }
                         height = if let Some(height) = block.height.previous() {
                             height
                         } else {
