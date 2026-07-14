@@ -49,7 +49,7 @@ pub(crate) struct Actor<TContext> {
     last_fcu: FinalizedTip,
     latest_tip: FinalizedTip,
 
-    execution_queue: VecDeque<ExecutionRequest>,
+    block_queue: VecDeque<(Block, Exact)>,
     execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
 
     fcu_heartbeat_interval: Duration,
@@ -99,7 +99,7 @@ where
 
             last_fcu: tip,
             latest_tip: tip,
-            execution_queue: VecDeque::new(),
+            block_queue: VecDeque::new(),
             execution_task: OptionFuture::none(),
 
             fcu_heartbeat_interval,
@@ -113,7 +113,12 @@ where
 
     async fn run(mut self) {
         loop {
-            self.start_next_execution_task();
+            if self.execution_task.is_none()
+                && let Some((block, ack)) = self.block_queue.pop_front()
+            {
+                self.start_execution_task(ExecutionRequest::Block(block, ack));
+            }
+
             self.update_fcu_heartbeat_timer();
 
             tokio::select! {
@@ -123,19 +128,19 @@ where
                     self.execution_task = OptionFuture::none();
                     match result {
                         ExecutionTaskResult::Completed(last_fcu) => {
-                            if last_fcu.height > self.last_fcu.height {
-                                self.last_fcu = last_fcu;
-                                if last_fcu.height > self.latest_tip.height {
-                                    self.latest_tip = last_fcu;
-                                }
-                            }
+                            self.last_fcu = last_fcu;
                             if let Err(error) = self.try_advance_floor().await {
                                 warn!(%error, "failed marshal floor advancement");
                             }
+
+                            if self.latest_tip.height > self.last_fcu.height {
+                                self.start_execution_task(ExecutionRequest::Forkchoice(
+                                    self.latest_tip,
+                                ));
+                            }
                         }
-                        ExecutionTaskResult::Retryable { tip, error } => {
-                            warn!(%error, height = %tip.height, digest = %tip.digest,
-                                "forkchoice update failed");
+                        ExecutionTaskResult::NonFatal { error } => {
+                            warn!(%error, "forkchoice update failed");
                         }
                         ExecutionTaskResult::Fatal { error } => {
                             error!(%error, "execution task failed");
@@ -147,30 +152,28 @@ where
                 Some(update) = self.mailbox.next() => {
                     match update {
                         Update::Block(block, ack) => {
-                            self.execution_queue.push_back(ExecutionRequest::Block {
-                                block,
-                                ack,
-                            });
+                            self.block_queue.push_back((block, ack));
                         }
                         Update::Tip(_, height, digest) => {
                             if height > self.latest_tip.height {
-                                let tip = FinalizedTip { height, digest };
-                                self.latest_tip = tip;
-                                self.execution_queue.push_back(ExecutionRequest::Tip(tip));
+                                self.latest_tip = FinalizedTip { height, digest };
+                                self.start_execution_task(ExecutionRequest::Forkchoice(
+                                    self.latest_tip,
+                                ));
                             }
                         }
                     }
                 }
 
                 _ = (&mut self.fcu_heartbeat_timer).fuse() => {
-                    self.execution_queue.push_back(ExecutionRequest::Heartbeat(self.latest_tip));
+                    self.start_execution_task(ExecutionRequest::Forkchoice(self.latest_tip));
                 }
             }
         }
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
-        if self.execution_task.is_none() && self.execution_queue.is_empty() {
+        if self.execution_task.is_none() && self.block_queue.is_empty() {
             if self.fcu_heartbeat_timer.is_none() {
                 self.fcu_heartbeat_timer
                     .replace(self.context.sleep(self.fcu_heartbeat_interval).boxed());
@@ -180,14 +183,10 @@ where
         }
     }
 
-    fn start_next_execution_task(&mut self) {
+    fn start_execution_task(&mut self, request: ExecutionRequest) {
         if !self.execution_task.is_none() {
             return;
         }
-
-        let Some(request) = self.execution_queue.pop_front() else {
-            return;
-        };
 
         let last_fcu = self.last_fcu;
         let context = self.context.clone();
@@ -242,14 +241,13 @@ where
 }
 
 enum ExecutionRequest {
-    Heartbeat(FinalizedTip),
-    Tip(FinalizedTip),
-    Block { block: Block, ack: Exact },
+    Forkchoice(FinalizedTip),
+    Block(Block, Exact),
 }
 
 enum ExecutionTaskResult {
     Completed(FinalizedTip),
-    Retryable { tip: FinalizedTip, error: Report },
+    NonFatal { error: Report },
     Fatal { error: Report },
 }
 
@@ -260,27 +258,13 @@ async fn execute_request<TContext: Pacer>(
     request: ExecutionRequest,
 ) -> ExecutionTaskResult {
     match request {
-        ExecutionRequest::Tip(tip) => {
-            if tip.height <= last_fcu.height {
-                return ExecutionTaskResult::Completed(last_fcu);
-            }
-
+        ExecutionRequest::Forkchoice(tip) => {
             match submit_forkchoice_update(&context, &execution_node, &tip).await {
                 Ok(()) => ExecutionTaskResult::Completed(tip),
-                Err(error) => ExecutionTaskResult::Retryable { tip, error },
+                Err(error) => ExecutionTaskResult::NonFatal { error },
             }
         }
-        ExecutionRequest::Heartbeat(tip) => {
-            match submit_forkchoice_update(&context, &execution_node, &tip).await {
-                Ok(()) => ExecutionTaskResult::Completed(if tip.height > last_fcu.height {
-                    tip
-                } else {
-                    last_fcu
-                }),
-                Err(error) => ExecutionTaskResult::Retryable { tip, error },
-            }
-        }
-        ExecutionRequest::Block { block, ack } => {
+        ExecutionRequest::Block(block, ack) => {
             let tip = FinalizedTip {
                 height: block.height(),
                 digest: block.digest(),
@@ -358,7 +342,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
         .fork_choice_updated(forkchoice, None)
         .pace(context, Duration::from_millis(20))
         .await
-        .wrap_err("failed requesting follower execution layer to update forkchoice state")?;
+        .wrap_err("failed to update forkchoice state")?;
 
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
 
