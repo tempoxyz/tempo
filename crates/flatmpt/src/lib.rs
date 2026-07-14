@@ -22,7 +22,9 @@ pub mod cursors;
 pub mod follower;
 mod sparse;
 mod stream;
-pub use follower::{follower, Follower};
+pub use follower::{
+    follower, pending_chain, publish_snapshot, published_snapshot, Follower, PendingBlock,
+};
 pub use sparse::{ops_to_post_state, sparse_enabled, RevealSink, SparseStats, SparseWorker};
 pub use stream::{stream_enabled, FlatStream};
 pub use mpt_flat_poc::FlatSnapshot;

@@ -47,16 +47,23 @@ pub(crate) fn flat_reads_enabled() -> bool {
 /// feed — so any thread's first touch of a key feeds the commitment worker,
 /// and nobody hashes or fetches the same thing twice.
 pub(crate) struct FlatReadShared {
-    /// Lock-free snapshot of the flat store, pinned at the block's parent
-    /// state for the whole build — reads never wait on the writer and never
-    /// observe mid-block flat advances.
+    /// Lock-free snapshot of the flat store, pinned for the whole build —
+    /// reads never wait on the writer and never observe mid-block advances.
+    /// Either exactly at the parent state (`overlay` empty) or at an ancestor
+    /// the `overlay` chain extends to the parent.
     pub snap: tempo_flatmpt::FlatSnapshot,
+    /// Pending (queued, unapplied) blocks between the snapshot state and the
+    /// parent state, newest first. First-touch reads consult these before the
+    /// snapshot, so the builder never waits for the follower's applies.
+    pub overlay: Vec<std::sync::Arc<tempo_flatmpt::PendingBlock>>,
     /// Per-block keccak(address) memo shared by all reading threads.
     pub hashed: HashedKeyMemo,
     /// When a sparse commitment worker is active, first-touch reads walk the
     /// same records its reveals need — capture the path nodes during the read
     /// and hand them over, so the worker never re-fetches them (lossy; a
     /// dropped batch only means the worker fetches that path itself).
+    /// Must be `None` when `overlay` is non-empty: reveal nodes from the
+    /// ancestor trie carry sibling hashes stale relative to the parent trie.
     pub reveal: Option<RevealFeed>,
 }
 
@@ -174,6 +181,15 @@ impl FlatReadProvider {
 impl AccountReader for FlatReadProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
         let key = self.shared.hashed.account(address);
+        for pending in &self.shared.overlay {
+            if let Some(hit) = pending.account(&key.0) {
+                return Ok(hit.map(|(nonce, balance, code_hash)| Account {
+                    nonce,
+                    balance,
+                    bytecode_hash: (code_hash != keccak256([]).0).then(|| B256::from(code_hash)),
+                }));
+            }
+        }
         let read = self
             .read_account_rlp(&key)?
             .map(|rlp| tempo_flatmpt::FlatShadow::decode_account_rlp(rlp.as_slice()))
@@ -196,6 +212,16 @@ impl StateProvider for FlatReadProvider {
     ) -> ProviderResult<Option<alloy_primitives::StorageValue>> {
         let acct_key = self.shared.hashed.account(&account);
         let slot_key = alloy_primitives::keccak256(storage_key.0);
+        for pending in &self.shared.overlay {
+            if let Some(hit) = pending.storage(&acct_key.0, &slot_key.0) {
+                return hit
+                    .map(|mut rlp| {
+                        <alloy_primitives::U256 as alloy_rlp::Decodable>::decode(&mut rlp)
+                            .map_err(|e| other(anyhow::anyhow!("{e}")))
+                    })
+                    .transpose();
+            }
+        }
         let read = self
             .read_storage_rlp(&acct_key, &slot_key)?
             .map(|rlp| {

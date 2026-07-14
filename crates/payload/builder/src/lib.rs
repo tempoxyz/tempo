@@ -425,26 +425,35 @@ where
         let mut flat_read_shared: Option<std::sync::Arc<flat_reads::FlatReadShared>> = None;
         if flat_reads::flat_reads_enabled() {
             if let Some(shadow) = flat_shadow {
-                // Reads must reflect the exact parent state: take a lock-free
-                // snapshot only when the flat is at the parent; otherwise
-                // (follower lagging, rebuild race) this block reads from MDBX —
-                // unless the KV copy isn't persisted at all, in which case the
-                // only correct option is to wait for the follower.
-                //
-                // Bounded wait: the follower holds the write lock for its
-                // whole apply (seconds on gas-capped blocks) — a plain read()
-                // here serialized every build behind the previous block's
-                // apply. Falling back to MDBX keeps the builder moving; the
-                // follower catches up in the background.
-                let mut snap = shadow
-                    .try_read_for(std::time::Duration::from_millis(50))
-                    .and_then(|g| g.at_parent(parent_header.state_root()).then(|| g.snapshot()));
+                // Reads must reflect the exact parent state. Preferred path is
+                // fully lock-free: the follower's last published snapshot plus
+                // the chain of queued-but-unapplied blocks overlaid on top —
+                // the builder never waits on the follower's apply. The direct
+                // bounded lock read covers startup (nothing published yet);
+                // past that, this block reads from MDBX — unless the KV copy
+                // isn't persisted at all, in which case the only correct
+                // option is to wait for the pending chain to become available.
+                let parent_root = parent_header.state_root();
+                let resolve = || {
+                    tempo_flatmpt::published_snapshot().and_then(|(published_root, snap)| {
+                        tempo_flatmpt::pending_chain(published_root, parent_root)
+                            .map(|overlay| (snap, overlay))
+                    })
+                };
+                let mut snap = resolve().or_else(|| {
+                    shadow.try_read_for(std::time::Duration::from_millis(50)).and_then(|g| {
+                        g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new()))
+                    })
+                });
                 if snap.is_none() && flat_reads::no_state_kv_active() {
                     let deadline = Instant::now() + std::time::Duration::from_secs(15);
                     while snap.is_none() && Instant::now() < deadline {
                         std::thread::sleep(std::time::Duration::from_millis(5));
-                        let g = shadow.read();
-                        snap = g.at_parent(parent_header.state_root()).then(|| g.snapshot());
+                        snap = resolve().or_else(|| {
+                            shadow.try_read_for(std::time::Duration::from_millis(5)).and_then(
+                                |g| g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new())),
+                            )
+                        });
                     }
                     if snap.is_none() {
                         return Err(PayloadBuilderError::Other(
@@ -456,20 +465,32 @@ where
                     }
                 }
                 match snap {
-                    Some(snap) => {
+                    Some((snap, overlay)) => {
+                        if !overlay.is_empty() {
+                            debug!(
+                                target: "flatmpt",
+                                pending = overlay.len(),
+                                "flat lags parent; reading through the pending-block overlay"
+                            );
+                        }
                         let shared = std::sync::Arc::new(flat_reads::FlatReadShared {
                             snap,
                             hashed: Default::default(),
                             // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
                             // feed (A/B: exec-thread reveal-walk cost vs the
-                            // worker fetching its own reveals).
+                            // worker fetching its own reveals). With an active
+                            // overlay the snapshot trie is an ancestor of the
+                            // parent trie — its node hashes are stale — so the
+                            // worker must fetch its own proofs.
                             reveal: flat_sparse
                                 .as_ref()
+                                .filter(|_| overlay.is_empty())
                                 .filter(|_| {
                                     std::env::var("TEMPO_FLATMPT_READ_REVEAL").as_deref()
                                         != Ok("0")
                                 })
                                 .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
+                            overlay,
                         });
                         state_provider = Box::new(flat_reads::FlatReadProvider {
                             inner: state_provider,
@@ -1224,10 +1245,14 @@ where
                     );
                     root
                 }
-                None => shadow
-                    .write()
-                    .root_for(parent_header.number(), parent_header.state_root(), ops)
-                    .map_err(|e| PayloadBuilderError::Other(e.into()))?,
+                None => {
+                    let root = shadow
+                        .write()
+                        .root_for(parent_header.number(), parent_header.state_root(), ops)
+                        .map_err(|e| PayloadBuilderError::Other(e.into()))?;
+                    tempo_flatmpt::publish_snapshot(shadow);
+                    root
+                }
             };
             (Some(root), Some(hashed))
         } else {
