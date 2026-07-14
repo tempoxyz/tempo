@@ -112,12 +112,10 @@ where
     }
 
     async fn run(mut self) {
+        let mut heartbeat = false;
         loop {
-            if self.execution_task.is_none()
-                && let Some((block, ack)) = self.block_queue.pop_front()
-            {
-                self.start_execution_task(ExecutionRequest::Block(block, ack));
-            }
+            self.start_execution_task(heartbeat);
+            heartbeat = false;
 
             self.update_fcu_heartbeat_timer();
 
@@ -134,9 +132,7 @@ where
                             let _: Result<_, _> = self.try_advance_floor().await;
 
                             if self.latest_tip.height > self.last_fcu.height {
-                                self.start_execution_task(ExecutionRequest::Forkchoice(
-                                    self.latest_tip,
-                                ));
+                                self.start_execution_task(true);
                             }
                         }
                         ExecutionTaskResult::NonFatal { error } => {
@@ -157,16 +153,14 @@ where
                         Update::Tip(_, height, digest) => {
                             if height > self.latest_tip.height {
                                 self.latest_tip = FinalizedTip { height, digest };
-                                self.start_execution_task(ExecutionRequest::Forkchoice(
-                                    self.latest_tip,
-                                ));
+                                self.start_execution_task(true);
                             }
                         }
                     }
                 }
 
                 _ = (&mut self.fcu_heartbeat_timer).fuse() => {
-                    self.start_execution_task(ExecutionRequest::Forkchoice(self.latest_tip));
+                    heartbeat = true;
                 }
             }
         }
@@ -183,10 +177,19 @@ where
         }
     }
 
-    fn start_execution_task(&mut self, request: ExecutionRequest) {
+    fn start_execution_task(&mut self, heartbeat: bool) {
         if !self.execution_task.is_none() {
             return;
         }
+
+        let request = if heartbeat {
+            ExecutionRequest::Forkchoice(self.latest_tip)
+        } else {
+            let Some((block, ack)) = self.block_queue.pop_front() else {
+                return;
+            };
+            ExecutionRequest::Block(block, ack)
+        };
 
         let last_fcu = self.last_fcu;
         let context = self.context.clone();
