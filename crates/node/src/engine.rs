@@ -36,8 +36,15 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         attr: &TempoPayloadAttributes,
         header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
-        // Ensure that payload attributes timestamp is not in the past
-        if attr.timestamp < header.timestamp() {
+        // Ensure the payload attributes strictly advance time at millisecond resolution.
+        //
+        // Tempo blocks are sub-second, so a header carries whole seconds in `timestamp`
+        // plus a `timestamp_millis_part`. Comparing only whole seconds here would accept
+        // attributes that move *backwards* within the same second (e.g. parent at 100.900s,
+        // attributes at 100.100s), which the authoritative consensus check
+        // (`TempoConsensus::validate_header_against_parent`) then rejects — a wasted build.
+        // Match that rule: block time must strictly increase in milliseconds.
+        if attr.timestamp_millis() <= header.timestamp_millis() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
         Ok(())
