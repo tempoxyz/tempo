@@ -145,7 +145,8 @@ impl SigningKey {
         path: P,
         passphrase: SecretString,
     ) -> Result<(), SigningKeyError> {
-        let file = std::fs::File::create(path).map_err(SigningKeyErrorKind::Write)?;
+        let path = path.as_ref();
+        let file = create_private_key_file(path).map_err(SigningKeyErrorKind::Write)?;
         self.write_encrypted(file, passphrase)
     }
 
@@ -197,6 +198,31 @@ impl SigningKey {
     pub fn public_key(&self) -> PublicKey {
         self.inner.public_key()
     }
+}
+
+fn create_private_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        // Apply restrictive permissions atomically when creating a new key file.
+        options.mode(0o600);
+    }
+
+    let file = options.open(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Also restrict an existing destination that may have had broader permissions.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(file)
 }
 
 impl From<PrivateKey> for SigningKey {

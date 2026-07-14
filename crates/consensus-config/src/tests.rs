@@ -144,6 +144,24 @@ fn signing_key_write_to_file_encrypted_roundtrip() {
     assert_eq!(loaded.public_key(), original.public_key());
 }
 
+#[cfg(unix)]
+#[test]
+fn signing_key_write_to_file_encrypted_restricts_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    SigningKey::random(&mut rand_08::thread_rng())
+        .write_to_file_encrypted(file.path(), passphrase("hunter2"))
+        .unwrap();
+
+    assert_eq!(
+        file.path().metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 #[test]
 fn signing_key_write_encrypted_wrong_passphrase_fails() {
     let mut rng = rand_08::rngs::StdRng::seed_from_u64(1234);
