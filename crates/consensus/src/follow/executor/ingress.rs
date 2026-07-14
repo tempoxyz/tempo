@@ -20,6 +20,6 @@ impl Reporter for Mailbox {
     async fn report(&mut self, update: Self::Activity) {
         self.sender
             .unbounded_send(update)
-            .expect("follower executor is present and ready to receive marshal updates");
+            .expect("executor is present and ready to receive marshal updates");
     }
 }

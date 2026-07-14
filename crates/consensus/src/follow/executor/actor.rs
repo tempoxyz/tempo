@@ -1,3 +1,13 @@
+//! Execution-layer driver for follower nodes.
+//!
+//! This actor sends verified finalized tips to Reth as head, safe, and finalized forkchoice
+//! updates, periodically refreshes that forkchoice with a heartbeat, and advances marshal's floor
+//! only after the selected sync target is durably canonical in Reth.
+//!
+//! Unlike the executor used by validator nodes, it does not build payloads, canonicalize proposal
+//! heads, or forward finalized blocks into the execution layer. Followers receive complete blocks
+//! from their upstream and rely on Reth's sync machinery plus marshal gap repair to fill history.
+
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
