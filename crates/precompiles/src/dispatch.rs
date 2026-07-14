@@ -161,11 +161,18 @@ macro_rules! dispatch {
         paste::paste! {{
             #[cfg(debug_assertions)]
             {
-                let mut selectors = std::collections::BTreeSet::new();
-                $(assert!(
-                    <$iface::$calls as alloy::sol_types::SolInterface>::selectors().all(|s| selectors.insert(s)),
-                    "duplicate precompile selector in dispatch! macro",
-                );)*
+                // Check for duplicate selectors without using `std` deps.
+                let mut unique_selectors = true;
+                let mut selectors = core::iter::empty::<[u8; 4]>()
+                    $(.chain(<$iface::$calls as alloy::sol_types::SolInterface>::selectors()))*;
+                // PERF: Cloning the selectors iterator only copies its current index and marker data.
+                while let Some(selector) = selectors.next() {
+                    if selectors.clone().any(|other| selector == other) {
+                        unique_selectors = false;
+                        break;
+                    }
+                }
+                assert!(unique_selectors, "duplicate precompile selector in dispatch! macro");
             }
 
             if let Some(selector) = $crate::dispatch::selector_from_calldata($calldata) {
