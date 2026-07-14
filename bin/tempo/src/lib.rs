@@ -284,14 +284,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
-            node.config
-                .datadir
-                .clone()
-                .resolve_datadir(node.chain_spec().chain())
-                .data_dir()
-                .join("consensus")
-        });
+        let datadir = node
+            .config
+            .datadir
+            .clone()
+            .resolve_datadir(node.chain_spec().chain());
+        let consensus_storage = args
+            .consensus
+            .storage_dir
+            .clone()
+            .unwrap_or_else(|| datadir.data_dir().join("consensus"));
 
         info_span!("prepare_consensus").in_scope(|| {
             info!(
@@ -303,7 +305,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let runtime_config = commonware_runtime::tokio::Config::default()
             .with_tcp_nodelay(Some(true))
             .with_worker_threads(args.consensus.worker_threads)
-            .with_storage_directory(consensus_storage)
+            .with_storage_directory(consensus_storage.clone())
             .with_catch_panics(true);
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
@@ -329,6 +331,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     auth_header: config.metrics_auth_header,
                     consensus_pubkey,
                     peer_id: format!("{:x}", node.network.peer_id()),
+                    datadir: datadir.data_dir().to_path_buf(),
+                    static_files_dir: datadir.static_files().to_path_buf(),
+                    consensus_dir: consensus_storage.clone(),
                 };
 
                 install_prometheus_metrics(ctx.with_label("telemetry_metrics"), prometheus_config)
