@@ -24,7 +24,7 @@ use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_provider::{BlockHashReader as _, DatabaseProviderFactory as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, debug, error, instrument, warn};
+use tracing::{Level, debug, error, instrument};
 
 use super::Config;
 use crate::{
@@ -130,10 +130,6 @@ where
 
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
-                        }
-                        ExecutionTaskResult::NonFatal(last_fcu, error) => {
-                            self.last_fcu = last_fcu;
-                            warn!(?last_fcu, %error, "forkchoice update failed");
                         }
                         ExecutionTaskResult::Fatal(error) => {
                             error!(%error, "execution task failed");
@@ -245,7 +241,6 @@ enum ExecutionRequest {
 
 enum ExecutionTaskResult {
     Completed(FinalizedTip),
-    NonFatal(FinalizedTip, Report),
     Fatal(Report),
 }
 
@@ -259,7 +254,7 @@ async fn execute_request<TContext: Pacer>(
         ExecutionRequest::Forkchoice(tip) => {
             match submit_forkchoice_update(&context, &execution_node, &tip).await {
                 Ok(()) => ExecutionTaskResult::Completed(tip),
-                Err(error) => ExecutionTaskResult::NonFatal(tip, error),
+                Err(error) => ExecutionTaskResult::Fatal(error),
             }
         }
         ExecutionRequest::Block(block, ack) => {
