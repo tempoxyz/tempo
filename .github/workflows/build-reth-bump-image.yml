@@ -3,6 +3,7 @@ name: Build reth-bump image
 permissions: {}
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - reth-auto-bump
