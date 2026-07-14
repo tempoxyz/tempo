@@ -131,11 +131,11 @@ fn amsterdam_gas_params() -> GasParams {
         (GasId::code_deposit_state_gas(), T4_CODE_DEPOSIT_STATE),
         // EIP-7702 delegation: 25k regular + 225k state = 250k per auth
         (
-            GasId::tx_eip7702_per_empty_account_cost(),
+            GasId::tx_eip7702_regular_gas(),
             T4_NEW_ACCOUNT_REGULAR,
         ),
         // Auth refund is disabled post-T1.
-        (GasId::tx_eip7702_auth_refund(), 0),
+        (GasId::tx_eip7702_regular_refund(), 0),
         // For each auth revm charges new_account_state_gas + tx_eip7702_state_gas_bytecode state gas
         //
         // Per TIP-1016, we only need 225k unconditional state gas charge (another 250k is charged only
@@ -157,11 +157,11 @@ fn t1_gas_params() -> GasParams {
         (GasId::new_account_cost_for_selfdestruct(), NEW_ACCOUNT_COST),
         (GasId::code_deposit_cost(), CODE_DEPOSIT_COST_T1),
         (
-            GasId::tx_eip7702_per_empty_account_cost(),
+            GasId::tx_eip7702_regular_gas(),
             EIP7702_PER_EMPTY_ACCOUNT_COST_T1,
         ),
         // Auth refund is disabled post-T1.
-        (GasId::tx_eip7702_auth_refund(), 0),
+        (GasId::tx_eip7702_regular_refund(), 0),
     ]);
     gas_params
 }
@@ -338,16 +338,19 @@ mod tests {
         );
         assert_eq!(gas_params.get(GasId::code_deposit_state_gas()), 2_300);
 
-        // EIP-7702 delegation: 25,000 regular + 225,000 state per auth
+        // EIP-7702 delegation: 25,000 regular + 225,000 state per auth.
+        // `tx_eip7702_per_empty_account_cost` returns only the regular
+        // portion; the state portion lives in `new_account_state_gas` (+ the
+        // zeroed bytecode state gas).
         assert_eq!(
-            gas_params.get(GasId::tx_eip7702_per_empty_account_cost()),
+            gas_params.get(GasId::tx_eip7702_regular_gas()),
             25_000,
-            "EIP-7702 per auth total = 25k regular + 225k state per spec"
+            "EIP-7702 per auth regular gas per spec"
         );
         assert_eq!(
             gas_params.tx_eip7702_per_empty_account_cost(),
-            250_000,
-            "EIP-7702 per auth state gas per spec"
+            25_000,
+            "EIP-7702 per auth regular gas per spec"
         );
         assert_eq!(
             gas_params.new_account_state_gas(),
@@ -355,9 +358,11 @@ mod tests {
             "EIP-7702 per auth state gas per spec"
         );
         assert_eq!(
-            gas_params.tx_eip7702_per_empty_account_cost() - gas_params.new_account_state_gas(),
-            25_000,
-            "EIP-7702 per auth regular gas = total - state = 25k"
+            gas_params.tx_eip7702_per_empty_account_cost()
+                + gas_params.new_account_state_gas()
+                + gas_params.tx_eip7702_state_gas_bytecode(),
+            250_000,
+            "EIP-7702 per auth total = 25k regular + 225k state per spec"
         );
         assert_eq!(
             gas_params.tx_eip7702_auth_refund_regular(),
@@ -424,7 +429,9 @@ mod tests {
 
         // EIP-7702: 25,000 regular + 225,000 state = 250,000 per auth
         assert_eq!(
-            t4.tx_eip7702_per_empty_account_cost(),
+            t4.tx_eip7702_per_empty_account_cost()
+                + t4.new_account_state_gas()
+                + t4.tx_eip7702_state_gas_bytecode(),
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );

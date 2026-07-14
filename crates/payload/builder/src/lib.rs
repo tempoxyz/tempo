@@ -370,7 +370,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            state_root_handle: mut trie_handle,
             config,
             cancel,
             best_payload,
@@ -540,18 +540,18 @@ where
 
         let bal_task_handle = if self.enable_bal {
             let bal_task_handle =
-                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
+                self.spawn_bal_task(trie_handle.as_mut().map(|handle| handle.take_state_hook()));
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(ref handle) = trie_handle {
+            if let Some(handle) = trie_handle.as_mut() {
                 executor
                     .evm_mut()
                     .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
+                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
             }
             None
         };
@@ -1021,11 +1021,12 @@ where
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
-            .map(|rx| rx.take_hashed_state_rx().recv())
+            .and_then(|handle| handle.try_take_hashed_state_rx())
+            .map(|rx| rx.recv())
         {
             hashed_state
         } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
+            Arc::new(finish_provider.hashed_post_state(&db.bundle_state))
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1090,7 +1091,7 @@ where
             )
         } else {
             let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
+                .state_root_with_updates((*hashed_state).clone())
                 .map_err(BlockExecutionError::other)?;
 
             (state_root, Arc::new(trie_updates), None)
@@ -1295,7 +1296,7 @@ where
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
+            hashed_state,
             trie_updates,
             changed_paths,
         };

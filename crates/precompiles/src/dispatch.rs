@@ -106,7 +106,7 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
         if output.is_success() {
             // On success: parent takes the child's final reservoir.
             output.reservoir = storage.reservoir();
-            output.state_gas_used = storage.state_gas_used();
+            output.state_gas_used = storage.state_gas_used() as i64;
         } else {
             // On revert or halt: state changes are undone, so ALL state gas returns
             // to the parent's reservoir.
