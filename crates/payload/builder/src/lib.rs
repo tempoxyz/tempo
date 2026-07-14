@@ -404,6 +404,7 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let t_state_by_hash = state_setup_start.elapsed();
         // Flat shadow + sparse worker come first: the read provider hands its
         // walk's reveal nodes to the worker, so they must share the block.
         let flat_shadow = if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Off {
@@ -420,6 +421,7 @@ where
         let flat_sparse = (tempo_flatmpt::sparse_enabled())
             .then(|| flat_shadow.map(|s| tempo_flatmpt::SparseWorker::begin(s, parent_header.state_root())))
             .flatten();
+        let t_sparse_begin = state_setup_start.elapsed();
         let mut flat_read_shared: Option<std::sync::Arc<flat_reads::FlatReadShared>> = None;
         if flat_reads::flat_reads_enabled() {
             if let Some(shadow) = flat_shadow {
@@ -476,6 +478,13 @@ where
                 }
             }
         }
+        debug!(
+            target: "flatmpt",
+            state_by_hash_ms = t_state_by_hash.as_millis() as u64,
+            sparse_begin_ms = (t_sparse_begin - t_state_by_hash).as_millis() as u64,
+            snapshot_ms = (state_setup_start.elapsed() - t_sparse_begin).as_millis() as u64,
+            "state setup phases"
+        );
         // Ceiling diagnostic: per-block exec-side cache hit rate (how much of
         // prewarm's work actually reaches the exec thread's reads).
         let cache_stats = std::sync::Arc::new(reth_execution_cache::CacheStats::default());
