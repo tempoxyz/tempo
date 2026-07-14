@@ -14,6 +14,7 @@ use prometheus_client::{
 };
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_tracing::tracing;
+use std::path::{Path, PathBuf};
 use sysinfo::{Disks, System};
 use url::Url;
 
@@ -26,24 +27,30 @@ struct HardwareInfo {
     total_memory_bytes: u64,
     disk_count: usize,
     disk_total_bytes: u64,
-    disk_file_systems: String,
+    datadir_file_system: String,
+    static_files_file_system: String,
+    consensus_file_system: String,
+}
+
+fn file_system_for_path(disks: &Disks, path: &Path) -> String {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    disks
+        .iter()
+        .filter(|disk| path.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().components().count())
+        .map(|disk| disk.file_system().to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Collects non-identifying hardware metadata and encodes it as a Prometheus info metric.
 ///
 /// Disk names and mount sources are deliberately not collected because they can expose internal
 /// infrastructure details for network-mounted filesystems.
-fn hardware_metrics() -> eyre::Result<String> {
+fn hardware_metrics(config: &PrometheusMetricsConfig) -> eyre::Result<String> {
     let system = System::new_all();
     let cpu = system.cpus().first();
     let disks = Disks::new_with_refreshed_list();
-    let mut disk_file_systems = disks
-        .iter()
-        .map(|disk| disk.file_system().to_string_lossy().into_owned())
-        .filter(|file_system| !file_system.is_empty())
-        .collect::<Vec<_>>();
-    disk_file_systems.sort_unstable();
-    disk_file_systems.dedup();
 
     let labels = HardwareInfo {
         cpu_vendor: cpu.map_or_else(String::new, |cpu| cpu.vendor_id().to_owned()),
@@ -53,7 +60,9 @@ fn hardware_metrics() -> eyre::Result<String> {
         total_memory_bytes: system.total_memory(),
         disk_count: disks.len(),
         disk_total_bytes: disks.iter().map(|disk| disk.total_space()).sum(),
-        disk_file_systems: disk_file_systems.join(","),
+        datadir_file_system: file_system_for_path(&disks, &config.datadir),
+        static_files_file_system: file_system_for_path(&disks, &config.static_files_dir),
+        consensus_file_system: file_system_for_path(&disks, &config.consensus_dir),
     };
 
     let mut registry = Registry::default();
@@ -80,6 +89,12 @@ pub struct PrometheusMetricsConfig {
     pub consensus_pubkey: Option<String>,
     /// Peer Id for this node.
     pub peer_id: String,
+    /// Resolved execution data directory.
+    pub datadir: PathBuf,
+    /// Resolved static files directory.
+    pub static_files_dir: PathBuf,
+    /// Resolved consensus data directory.
+    pub consensus_dir: PathBuf,
 }
 
 /// Spawns a task that periodically pushes both consensus and execution metrics to Victoria Metrics.
@@ -109,8 +124,8 @@ pub fn install_prometheus_metrics(
 
     let url = endpoint.to_string();
     let client = reqwest::Client::new();
+    let hardware_metrics = hardware_metrics(&config)?;
     let auth_header = config.auth_header;
-    let hardware_metrics = hardware_metrics()?;
 
     let reth_recorder = install_prometheus_recorder();
     context.spawn(move |context| async move {
