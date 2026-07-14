@@ -20,6 +20,15 @@ impl Mailbox {
         Self { inner }
     }
 
+    /// Creates a mailbox whose receiving end is dropped, so every send fails.
+    ///
+    /// For unit tests of actors that hold an epoch manager mailbox but never
+    /// exercise epoch transitions.
+    #[cfg(test)]
+    pub(crate) fn dangling() -> Self {
+        Self::new(mpsc::unbounded().0)
+    }
+
     pub(crate) fn enter(
         &mut self,
         epoch: Epoch,

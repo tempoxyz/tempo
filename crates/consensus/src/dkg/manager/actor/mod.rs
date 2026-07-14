@@ -1,12 +1,11 @@
 use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
 
 use alloy_consensus::BlockHeader as _;
-use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
-    marshal::{self, Update},
+    marshal::Update,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -27,7 +26,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, IoBuf, Metrics as _, Spawner, spawn_cell};
-use commonware_utils::{Acknowledgement, N3f1, NZU32, acknowledgement::Exact, ordered};
+use commonware_utils::{Acknowledgement, N3f1, NZU32, acknowledgement::Exact};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
@@ -38,24 +37,18 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_provider::HeaderProvider as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::TempoFullNode;
-use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
 use tokio::select;
 use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
-use crate::{
-    consensus::{Digest, block::Block},
-    validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
-};
+use crate::consensus::{Digest, block::Block};
 
 mod state;
 use state::State;
 
 use super::{
-    Command,
+    ChainView, Command,
     ingress::{GetDkgOutcome, VerifyDealerLog},
 };
 
@@ -112,12 +105,13 @@ impl Read for Message {
     }
 }
 
-pub(crate) struct Actor<TContext>
+pub(crate) struct Actor<TContext, TChain>
 where
     TContext: Clock + commonware_runtime::Metrics + commonware_runtime::Storage,
+    TChain: ChainView,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config,
+    config: super::Config<TChain>,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -134,7 +128,7 @@ where
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 }
 
-impl<TContext> Actor<TContext>
+impl<TContext, TChain> Actor<TContext, TChain>
 where
     TContext: commonware_runtime::BufferPooler
         + Clock
@@ -142,9 +136,10 @@ where
         + commonware_runtime::Metrics
         + Spawner
         + commonware_runtime::Storage,
+    TChain: ChainView,
 {
     pub(super) async fn new(
-        config: super::Config,
+        config: super::Config<TChain>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -182,19 +177,17 @@ where
             .partition_prefix(&self.config.partition_prefix)
             .initial_state({
                 let mut context = self.context.clone();
-                let execution_node = self.config.execution_node.clone();
+                let chain = self.config.chain.clone();
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
                 let last_finalized_height = self.config.last_finalized_height;
-                let mut marshal = self.config.marshal.clone();
                 async move {
                     establish_initial_state(
                         &mut context,
-                        &execution_node,
+                        &chain,
                         initial_share.clone(),
                         &epoch_strategy,
                         last_finalized_height,
-                        &mut marshal,
                     )
                     .await
                 }
@@ -301,7 +294,7 @@ where
                 )
             })?;
 
-        let mut ancestry_stream = AncestorStream::new();
+        let mut ancestry_stream = AncestorStream::<TChain>::new();
 
         info_span!("start_dkg", epoch = %state.epoch).in_scope(|| {
             info!(
@@ -448,7 +441,7 @@ where
                                 )
                                 .await
                             {
-                                let stream = match self.config.marshal.ancestry((None, hole)).await {
+                                let stream = match self.config.chain.ancestry(hole).await {
                                     Some(stream) => stream,
                                     None => break Err(eyre!("marshal mailbox is closed")),
                                 };
@@ -477,7 +470,7 @@ where
                         .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
                         .await
                     {
-                        let stream = match self.config.marshal.ancestry((None, hole)).await {
+                        let stream = match self.config.chain.ancestry(hole).await {
                             Some(stream) => stream,
                             None => break Err(eyre!("marshal mailbox is closed")),
                         };
@@ -546,11 +539,7 @@ where
         }
 
         while height <= target_height {
-            let header = get_header(
-                &self.config.execution_node,
-                &self.config.marshal,
-                height,
-            ).await
+            let header = self.config.chain.finalized_header(height).await
             .wrap_err_with(|| format!(
                 "neither consensus nor execution layer had a header for block at height `{height}`"
             ))?;
@@ -1067,6 +1056,16 @@ where
                     "did not have all dealer logs yet; will try to extend with \
                     logs read from notarized blocks and concluding DKG that way",
                 );
+                // Logs read from the notarized ancestry are collected
+                // separately and merged below so that they never replace logs
+                // ingested from finalized blocks: the first log a dealer got
+                // into the chain is canonical (`append_dealer_log` drops later
+                // duplicates), and nodes whose finalization is further ahead
+                // have already committed to it. Letting the ancestry walk
+                // overwrite the finalized entry would make the concluded
+                // outcome depend on how far this node's finalization had
+                // progressed, splitting validators over the boundary block.
+                let mut ancestry_logs = BTreeMap::new();
                 let (mut height, mut digest) = (request.height, request.digest);
                 while height >= epoch_info.first()
                     && Some(height)
@@ -1077,16 +1076,22 @@ where
                     if let Some(block) =
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
-                        raw_logs.extend(block.log.clone());
+                        // The walk visits blocks newest to oldest, so this
+                        // overwrite leaves the oldest block's log per dealer,
+                        // consistent with finalized ingestion.
+                        ancestry_logs.extend(block.log.clone());
                         height = if let Some(height) = block.height.previous() {
                             height
                         } else {
-                            break 'ensure_enough_logs;
+                            break;
                         };
                         digest = block.parent;
                     } else {
                         return Ok(Some((digest, request)));
                     }
+                }
+                for (dealer, log) in ancestry_logs {
+                    raw_logs.entry(dealer).or_insert(log);
                 }
             }
 
@@ -1166,7 +1171,10 @@ where
 
         // Check if next ceremony should be full.
         let next_epoch = state.epoch.next();
-        let will_be_re_dkg = read_re_dkg_epoch(&self.config.execution_node, request.digest)
+        let will_be_re_dkg = self
+            .config
+            .chain
+            .re_dkg_epoch(request.digest)
             // in theory it should never fail, but if it does, just stick to reshare.
             .is_ok_and(|epoch| epoch == next_epoch.get());
         info!(
@@ -1175,9 +1183,11 @@ where
             "determined if the next epoch will be a reshare or full re-dkg process",
         );
 
-        let next_players =
-            determine_next_players_at_hash(&self.config.execution_node, request.digest.0)
-                .wrap_err("could not determine who the next players are supposed to be")?;
+        let next_players = self
+            .config
+            .chain
+            .next_players(request.digest.0)
+            .wrap_err("could not determine who the next players are supposed to be")?;
 
         request
             .response
@@ -1217,16 +1227,16 @@ where
 }
 
 #[instrument(skip_all, err)]
-async fn establish_initial_state<TContext>(
+async fn establish_initial_state<TContext, TChain>(
     context: &mut TContext,
-    node: &TempoFullNode,
+    chain: &TChain,
     share: Option<Share>,
     epoch_strategy: &FixedEpocher,
     last_finalized_height: Height,
-    marshal: &mut crate::alias::marshal::Mailbox,
 ) -> eyre::Result<State>
 where
     TContext: Clock + CryptoRngCore,
+    TChain: ChainView,
 {
     let latest_boundary = latest_boundary_at_or_before(epoch_strategy, last_finalized_height);
     info!(
@@ -1236,7 +1246,7 @@ where
         outcome from last boundary height"
     );
 
-    let onchain_outcome = read_outcome_from_boundary(node, marshal, latest_boundary).await?;
+    let onchain_outcome = read_outcome_from_boundary(chain, latest_boundary).await?;
 
     let share = state::ShareState::Plaintext('verify_initial_share: {
         let Some(share) = share else {
@@ -1288,64 +1298,324 @@ fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -
     }
 }
 
-async fn read_outcome_from_boundary(
-    node: &TempoFullNode,
-    marshal: &crate::alias::marshal::Mailbox,
+async fn read_outcome_from_boundary<TChain>(
+    chain: &TChain,
     boundary: Height,
-) -> eyre::Result<OnchainDkgOutcome> {
-    let header = get_header(node, marshal, boundary)
-        .await
-        .wrap_err_with(|| {
-            format!("failed to read latest boundary header at height `{boundary}`")
-        })?;
+) -> eyre::Result<OnchainDkgOutcome>
+where
+    TChain: ChainView,
+{
+    let header = chain.finalized_header(boundary).await.wrap_err_with(|| {
+        format!("failed to read latest boundary header at height `{boundary}`")
+    })?;
 
     OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
         .wrap_err("the boundary block did not contain the on-chain DKG outcome")
-}
-
-#[instrument(skip_all, fields(%height))]
-async fn get_header(
-    node: &TempoFullNode,
-    marshal: &crate::alias::marshal::Mailbox,
-    height: Height,
-) -> eyre::Result<TempoHeader> {
-    let execution_finalized_watermark = node
-        .provider
-        .canonical_in_memory_state()
-        .get_finalized_num_hash()
-        .map_or_else(Height::zero, |num_hash| Height::new(num_hash.number));
-
-    if height <= execution_finalized_watermark {
-        match node.provider.header_by_number(height.get()) {
-            Ok(Some(header)) => return Ok(header),
-            Ok(None) => {
-                warn!(%height, "execution layer reported it had no header for DKG initial state");
-            }
-            Err(error) => {
-                warn!(
-                    error = %eyre::Report::new(error),
-                    %height,
-                    "failed to read finalized header from execution layer for DKG initial state"
-                );
-            }
-        };
-    }
-
-    if let Some(block) = marshal.get_block(height).await {
-        return Ok(block.header().clone());
-    }
-
-    bail!("could not find header for finalized block at `{height}`");
 }
 
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU64;
 
+    use alloy_consensus::Header;
+    use alloy_primitives::B256;
+    use commonware_cryptography::bls12381::primitives::sharing::Mode;
+    use commonware_runtime::{Runner as _, deterministic};
+    use commonware_utils::{TryFromIterator as _, ordered};
+    use futures::channel::oneshot;
+    use reth_primitives_traits::SealedBlock;
+
     use super::*;
+    use crate::dkg::manager::Config;
 
     fn epoch_strategy() -> FixedEpocher {
         FixedEpocher::new(NonZeroU64::new(10).expect("value is nonzero"))
+    }
+
+    /// A [`ChainView`] that only serves the validator-config reads issued at
+    /// the end of `handle_get_dkg_outcome`. Everything else is unreachable in
+    /// the tests using it.
+    #[derive(Clone)]
+    struct TestChainView {
+        next_players: ordered::Set<PublicKey>,
+    }
+
+    impl ChainView for TestChainView {
+        type Ancestry = futures::stream::Empty<Block>;
+
+        async fn finalized_header(&self, height: Height) -> eyre::Result<TempoHeader> {
+            bail!("the test does not serve finalized headers (requested `{height}`)")
+        }
+
+        async fn ancestry(&self, _digest: Digest) -> Option<Self::Ancestry> {
+            None
+        }
+
+        fn re_dkg_epoch(&self, _digest: Digest) -> eyre::Result<u64> {
+            // Never matches the next epoch: the next ceremony is a reshare.
+            Ok(u64::MAX)
+        }
+
+        fn next_players(&self, _hash: B256) -> eyre::Result<ordered::Set<PublicKey>> {
+            Ok(self.next_players.clone())
+        }
+    }
+
+    /// Runs one dealer through a full ceremony round-trip: every key in
+    /// `players` acknowledges the dealing and the dealer finalizes its signed
+    /// log. Fresh [`dkg::Player`] instances are used because acks are
+    /// stateless signatures over the dealing.
+    fn run_dealer(
+        rng: &mut impl CryptoRngCore,
+        round: &state::Round,
+        players: &[PrivateKey],
+        dealer_key: &PrivateKey,
+        share: Share,
+    ) -> SignedDealerLog<MinSig, PrivateKey> {
+        let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start::<N3f1>(
+            &mut *rng,
+            round.info().clone(),
+            dealer_key.clone(),
+            Some(share),
+        )
+        .expect("dealer must be able to start");
+        for key in players {
+            let mut player = dkg::Player::new(round.info().clone(), key.clone())
+                .expect("player must be able to start");
+            let priv_msg = priv_msgs
+                .iter()
+                .find(|(player, _)| *player == key.public_key())
+                .expect("dealer must produce a message for every player")
+                .1
+                .clone();
+            let ack = player
+                .dealer_message::<N3f1>(dealer_key.public_key(), pub_msg.clone(), priv_msg)
+                .expect("player must acknowledge a valid dealing");
+            dealer
+                .receive_player_ack(key.public_key(), ack)
+                .expect("ack must be attributable to a known player");
+        }
+        dealer.finalize::<N3f1>()
+    }
+
+    fn make_block(header: TempoHeader) -> Block {
+        Block::from_execution_block_unchecked(
+            SealedBlock::seal_slow(tempo_primitives::Block::new(header, Default::default())),
+            None,
+        )
+    }
+
+    fn header(number: u64, parent_hash: B256, extra_data: Vec<u8>) -> TempoHeader {
+        TempoHeader {
+            inner: Header {
+                number,
+                parent_hash,
+                extra_data: extra_data.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Regression test: a dealer log ingested from a finalized block must not
+    /// be replaced by a later log from the same dealer found while walking the
+    /// notarized ancestry.
+    ///
+    /// The scenario mirrors a node whose finalization lags behind
+    /// notarization at the epoch boundary. Dealer 0 equivocated: its original
+    /// log was finalized early, a second (also validly signed) log sits in a
+    /// notarized-but-not-yet-finalized block. Dealer 3's log only appears in
+    /// the last block before the boundary, so the finalized log cache is
+    /// incomplete and the ancestry fallback runs. The fallback must conclude
+    /// the ceremony with dealer 0's original log — the one every node that
+    /// finalized further has already committed to — or validators split over
+    /// the boundary block.
+    #[test]
+    fn ancestry_fallback_does_not_replace_finalized_dealer_logs() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            const NAMESPACE: &[u8] = b"test-dkg-namespace";
+
+            // Four validators, sorted by public key. The equivocating dealer
+            // must sort first: `observe` concludes the ceremony from the
+            // first `required_commitments` valid logs in key order, so a
+            // later-sorting equivocator might not influence the output at
+            // all and the test would pass vacuously.
+            let mut keys: Vec<_> = (0..4).map(PrivateKey::from_seed).collect();
+            keys.sort_by_key(|key| key.public_key());
+            let pubkeys =
+                ordered::Set::try_from_iter(keys.iter().map(|key| key.public_key())).unwrap();
+
+            let (previous_output, shares) =
+                dkg::deal::<MinSig, _, N3f1>(&mut context, Mode::NonZeroCounter, pubkeys.clone())
+                    .unwrap();
+            let shares: BTreeMap<_, _> = shares.into_iter().collect();
+
+            let state = State {
+                epoch: Epoch::new(0),
+                seed: Summary::random(&mut context),
+                output: previous_output,
+                share: state::ShareState::Plaintext(None),
+                players: pubkeys.clone(),
+                is_full_dkg: false,
+            };
+            let round = state::Round::from_state(&state, NAMESPACE);
+
+            let signed_logs: Vec<_> = keys
+                .iter()
+                .map(|key| {
+                    run_dealer(
+                        &mut context,
+                        &round,
+                        &keys,
+                        key,
+                        shares[&key.public_key()].clone(),
+                    )
+                })
+                .collect();
+            // A second, equally valid log from dealer 0: a fresh dealing from
+            // fresh randomness, acknowledged and signed like the first one.
+            let equivocated_log = run_dealer(
+                &mut context,
+                &round,
+                &keys,
+                &keys[0],
+                shares[&keys[0].public_key()].clone(),
+            );
+            let logs: Vec<_> = signed_logs
+                .iter()
+                .map(|signed| {
+                    signed
+                        .clone()
+                        .check(round.info())
+                        .expect("log must check against the round")
+                })
+                .collect();
+
+            let mut storage = state::builder()
+                .partition_prefix("dkg_test")
+                .initial_state({
+                    let state = state.clone();
+                    async move { Ok(state) }
+                })
+                .init(context.with_label("storage"))
+                .await
+                .expect("storage must initialize");
+
+            // Finalized ingestion saw the logs of the first three dealers
+            // (dealer 0's original among them), but not the fourth's.
+            for (dealer, log) in logs.iter().take(3) {
+                storage
+                    .append_dealer_log(state.epoch, dealer.clone(), log.clone())
+                    .await
+                    .expect("appending dealer log must work");
+            }
+
+            // Finalization stopped at height 6; blocks 7 and 8 are only
+            // notarized. Block 7 carries dealer 0's second log, block 8
+            // carries dealer 3's only log.
+            let header6 = header(6, B256::repeat_byte(5), Vec::new());
+            let block6 = make_block(header6.clone());
+            let block7 = make_block(header(
+                7,
+                block6.digest().0,
+                equivocated_log.encode().to_vec(),
+            ));
+            let block8 = make_block(header(
+                8,
+                block7.digest().0,
+                signed_logs[3].encode().to_vec(),
+            ));
+            storage
+                .append_finalized_header(state.epoch, header6)
+                .await
+                .expect("appending finalized header must work");
+            for block in [block6, block7, block8.clone()] {
+                storage.cache_notarized_block(&round, block);
+            }
+
+            let (_actor_tx, actor_rx) = mpsc::unbounded();
+            let mut actor = Actor::new(
+                Config {
+                    epoch_strategy: epoch_strategy(),
+                    epoch_manager: crate::epoch::manager::Mailbox::dangling(),
+                    namespace: NAMESPACE.to_vec(),
+                    me: PrivateKey::from_seed(99),
+                    mailbox_size: 8,
+                    last_finalized_height: Height::new(6),
+                    partition_prefix: "dkg_test".to_string(),
+                    chain: TestChainView {
+                        next_players: pubkeys.clone(),
+                    },
+                    initial_share: None,
+                },
+                context.clone(),
+                actor_rx,
+            )
+            .await
+            .expect("actor must initialize");
+
+            let (response, response_rx) = oneshot::channel();
+            let request = GetDkgOutcome {
+                digest: block8.digest(),
+                height: Height::new(8),
+                response,
+            };
+            let missing = actor
+                .handle_get_dkg_outcome(
+                    &Span::current(),
+                    &mut storage,
+                    &None,
+                    &round,
+                    &state,
+                    request,
+                )
+                .await
+                .expect("request must be servable");
+            assert!(
+                missing.is_none(),
+                "all blocks down to the finalized tip are cached; nothing to fetch"
+            );
+            let outcome = response_rx.await.expect("actor must respond");
+
+            let observe_over =
+                |context: &mut deterministic::Context,
+                 logs: Vec<(PublicKey, DealerLog<MinSig, PublicKey>)>| {
+                    let mut recorded = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+                    for (dealer, log) in logs {
+                        recorded.record(dealer, log);
+                    }
+                    observe::<_, _, N3f1, ed25519::Batch>(context, recorded, &Sequential)
+                        .expect("ceremony must conclude")
+                };
+
+            let expected = observe_over(&mut context, logs.clone());
+            let with_equivocated = observe_over(&mut context, {
+                let mut swapped = logs.clone();
+                swapped[0] = equivocated_log
+                    .clone()
+                    .check(round.info())
+                    .expect("equivocated log must check against the round");
+                swapped
+            });
+            assert_ne!(
+                expected, with_equivocated,
+                "the equivocated log must change the ceremony outcome, \
+                otherwise this test cannot detect which log was used"
+            );
+
+            assert_eq!(
+                outcome.output, expected,
+                "the outcome must be concluded from the finalized dealer \
+                logs; the duplicate in the notarized ancestry must be ignored"
+            );
+            assert!(
+                storage
+                    .get_dkg_outcome(&state.epoch, &block8.digest())
+                    .is_some(),
+                "the outcome must be cached for the boundary parent"
+            );
+        });
     }
 
     #[test]
@@ -1511,17 +1781,17 @@ impl Metrics {
     }
 }
 
-/// A wrapper around [`marshal::ancestry::AncestorStream`] wrapped in
+/// A wrapper around the [`ChainView::Ancestry`] stream wrapped in
 /// an option to make it easier to work with select macros.
 ///
 /// Invariants: if the inner stream is set, then the matching original request
 /// is also set.
-struct AncestorStream {
+struct AncestorStream<TChain: ChainView> {
     pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>>,
+    inner: Option<TChain::Ancestry>,
 }
 
-impl AncestorStream {
+impl<TChain: ChainView> AncestorStream<TChain> {
     fn new() -> Self {
         Self {
             pending_request: None,
@@ -1534,11 +1804,7 @@ impl AncestorStream {
         self.pending_request.take()
     }
 
-    fn set(
-        &mut self,
-        pending_request: (Span, GetDkgOutcome),
-        stream: marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>,
-    ) {
+    fn set(&mut self, pending_request: (Span, GetDkgOutcome), stream: TChain::Ancestry) {
         self.pending_request.replace(pending_request);
         self.inner.replace(stream);
     }
@@ -1552,7 +1818,7 @@ impl AncestorStream {
     }
 }
 
-impl Stream for AncestorStream {
+impl<TChain: ChainView> Stream for AncestorStream<TChain> {
     type Item = Block;
 
     fn poll_next(
@@ -1576,7 +1842,7 @@ impl Stream for AncestorStream {
     }
 }
 
-impl FusedStream for AncestorStream {
+impl<TChain: ChainView> FusedStream for AncestorStream<TChain> {
     fn is_terminated(&self) -> bool {
         self.inner.is_none()
     }
@@ -1596,52 +1862,4 @@ fn read_dealer_log(
         .check(round.info())
         .ok_or_eyre("failed checking signed log against current round")?;
     Ok((dealer, log))
-}
-
-/// Determines the next players depending on the header timestamp identified by `digest`.
-///
-/// This function should only be used when constructing or verifying a proposal.
-/// `digest` should therefore always refer to the parent parent of the proposal.
-///
-/// If the execution layer does not have a block corresponding to `digest`
-/// available then it cannot propose or verify a block.
-#[instrument(skip_all, fields(%hash), err(level = Level::WARN))]
-fn determine_next_players_at_hash(
-    node: &TempoFullNode,
-    hash: B256,
-) -> eyre::Result<ordered::Set<PublicKey>> {
-    let next_players =
-        read_active_and_known_peers_at_block_hash(node, &ordered::Set::default(), hash)
-            .wrap_err("failed reading peers from  validator config v2")?
-            .into_keys();
-
-    debug!(?next_players, "determined next players");
-    Ok(next_players)
-}
-
-/// Reads the `nextFullDkgCeremony` epoch value from one of the validator config contracts.
-///
-/// This is used to determine if the next DKG ceremony should be a full ceremony
-/// (new polynomial) instead of a reshare.
-///
-/// This function should only be used when constructing or verifying a proposal.
-/// `digest` should therefore always refer to the parent parent of the proposal.
-///
-/// If the execution layer does not have a block corresponding to `digest`
-/// available then it cannot propose or verify a block.
-#[instrument(
-    skip_all,
-    fields(
-        %digest,
-    ),
-    err(level = Level::WARN)
-    ret,
-)]
-pub(crate) fn read_re_dkg_epoch(node: &TempoFullNode, digest: Digest) -> eyre::Result<u64> {
-    read_validator_config_at_block_hash(node, digest.0, |config: &ValidatorConfigV2| {
-        config
-            .get_next_network_identity_rotation_epoch()
-            .map_err(eyre::Report::new)
-    })
-    .map(|(_, _, epoch)| epoch)
 }
