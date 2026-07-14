@@ -30,25 +30,19 @@ artifacts:
     abi: ../erc4626-vault.abi.json
     bytecode: ../neobank-bytecodes/privy-fee-wrapper.bin
   PrivyAdapter:
-    abi: ../empty.abi.json
     bytecode: ../neobank-bytecodes/privy-adapter.bin
   SentoraPathUSDVault:
     abi: ../erc4626-vault.abi.json
     bytecode: ../neobank-bytecodes/sentora-pathusd-vault.bin
   SentoraAdapter:
-    abi: ../empty.abi.json
     bytecode: ../neobank-bytecodes/sentora-adapter.bin
   MorphoMarket:
-    abi: ../empty.abi.json
     bytecode: ../neobank-bytecodes/morpho-market.bin
   Oracle:
-    abi: ../empty.abi.json
     bytecode: ../neobank-bytecodes/oracle.bin
   DirectSwapRoute:
-    abi: ../empty.abi.json
     bytecode: ../neobank-bytecodes/directswap-route.bin
   Wrapper:
-    abi: ../empty.abi.json
     bytecode: ../neobank-bytecodes/wrapper.bin
 
 setup:
