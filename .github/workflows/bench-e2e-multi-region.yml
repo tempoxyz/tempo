@@ -54,6 +54,8 @@ on:
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
+      TEMPO_TELEMETRY_URL:
+        required: false
       BENCH_METRICS_PUSH_URL:
         required: false
       DEREK_BENCH_TOKEN:
@@ -431,7 +433,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type c6id.8xlarge \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
-            --logs-push-url "${{ secrets.BENCH_LOGS_PUSH_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
@@ -484,7 +486,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type c6id.8xlarge \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
-            --logs-push-url "${{ secrets.BENCH_LOGS_PUSH_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
@@ -527,7 +529,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type c6id.8xlarge \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
-            --logs-push-url "${{ secrets.BENCH_LOGS_PUSH_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
@@ -570,7 +572,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type c6id.8xlarge \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
-            --logs-push-url "${{ secrets.BENCH_LOGS_PUSH_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
