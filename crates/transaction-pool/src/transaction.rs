@@ -102,10 +102,14 @@ impl TempoPooledTransaction {
     ) -> Self {
         let is_payment = transaction.is_payment_v2();
         let value = transaction.value();
-        let cost =
-            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
-                .saturating_add(value);
-        let fee_token_cost = cost - value;
+        // Derive fee_token_cost (gas spending in the fee token) directly, then add value to
+        // get the total cost. Recovering it as `cost - value` was wrong when `cost` saturated:
+        // if gas_spending + value overflows U256, `cost` clamps to U256::MAX and `cost - value`
+        // collapses far below the real gas spending, letting a transaction be admitted/ordered
+        // as though its gas cost were ~0.
+        let fee_token_cost =
+            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas());
+        let cost = fee_token_cost.saturating_add(value);
         Self {
             inner: EthPooledTransaction {
                 cost,
