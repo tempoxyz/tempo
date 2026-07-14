@@ -4,13 +4,7 @@
 //! When requested, it can also replace selected genesis accounts from the new chain spec and
 //! update hashed state, trie, and block-0 history without rebuilding unrelated bloat state.
 
-use std::{
-    collections::BTreeSet,
-    fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, fs};
 
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -18,10 +12,9 @@ use clap::Parser;
 use eyre::{ensure, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::{CliNodeTypes, EnvironmentArgs};
-use reth_codecs::Compact;
 use reth_db::{
     DatabaseEnv, open_db,
-    static_file::{AccountChangesetMask, StaticFileCursor, StorageChangesetMask},
+    static_file::{AccountChangesetMask, StorageChangesetMask},
 };
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
@@ -32,16 +25,14 @@ use reth_db_api::{
     transaction::{DbTx, DbTxMut},
 };
 use reth_ethereum::tasks::Runtime;
-use reth_nippy_jar::{DataReader, NippyJar, NippyJarWriter};
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::{Account, AlloyBlockHeader, Bytecode, NodePrimitives, StorageEntry};
 use reth_provider::{
     BlockNumReader, DatabaseProviderFactory, LatestStateProviderRef, ProviderFactory,
     RocksDBProviderFactory, StaticFileProviderBuilder, StaticFileProviderFactory,
     StaticFileSegment, StaticFileWriter, StorageSettingsCache, TrieWriter,
-    providers::{RocksDBProvider, StaticFileJarProvider},
+    providers::RocksDBProvider,
 };
-use reth_static_file_types::{ChangesetOffset, SegmentHeader};
 use reth_storage_api::{DBProvider, StateRootProvider};
 use reth_trie::{HashedPostState, HashedStorage};
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -276,41 +267,6 @@ struct GenesisAccountReplacement {
     hashed_storage: Vec<StorageEntry>,
 }
 
-#[derive(Clone, Debug)]
-struct StaticChangesetFile {
-    path: PathBuf,
-    cache_block_end: u64,
-    offset: ChangesetOffset,
-}
-
-struct OpenStaticChangesetFile {
-    jar: NippyJar<SegmentHeader>,
-    reader: Arc<DataReader>,
-    offset: ChangesetOffset,
-}
-
-#[derive(Clone, Debug)]
-struct StaticTailReplacementPlan {
-    path: PathBuf,
-    cache_block_end: u64,
-    row_offset: u64,
-    rows_to_prune: usize,
-    new_num_changes: u64,
-}
-
-#[derive(Clone, Debug)]
-struct AccountTailReplacementPlan {
-    static_plan: StaticTailReplacementPlan,
-    appended_changes: Vec<AccountBeforeTx>,
-}
-
-#[derive(Clone, Debug)]
-struct StorageTailReplacementPlan {
-    static_plan: StaticTailReplacementPlan,
-    appended_changes: Vec<StorageBeforeTx>,
-    old_storage_history_keys: Vec<StorageShardedKey>,
-}
-
 fn genesis_account_replacements(
     genesis: &Genesis,
     accounts: &[Address],
@@ -462,60 +418,60 @@ where
     P: StaticFileProviderFactory,
 {
     let static_file_provider = provider_rw.static_file_provider();
-    // A jar provider holds a shard read guard on the provider's jar cache (a dashmap). Acquiring
-    // another segment's provider can insert into that map via `entry()`, which takes a shard
-    // write lock and self-deadlocks whenever both cache keys land in the same shard. Extract the
-    // owned metadata and drop each provider before touching the cache again.
-    let old_account_static = {
+
+    // Keep the old jars memory-mapped through separate read-only providers while replacing the
+    // files. Separate providers avoid taking two guards from the same sharded cache.
+    let (old_account_path, old_account_offset) = {
         let provider = static_file_provider
             .get_maybe_segment_provider(StaticFileSegment::AccountChangeSets, 0)?;
-        block_zero_static_changeset_file(provider.as_ref())?
+        match provider.as_ref() {
+            Some(provider) => (
+                Some(provider.data_path().to_path_buf()),
+                provider.read_changeset_offset(0)?,
+            ),
+            None => (None, None),
+        }
     };
-    let old_storage_static = {
+    let (old_storage_path, old_storage_offset) = {
         let provider = static_file_provider
             .get_maybe_segment_provider(StaticFileSegment::StorageChangeSets, 0)?;
-        block_zero_static_changeset_file(provider.as_ref())?
+        match provider.as_ref() {
+            Some(provider) => (
+                Some(provider.data_path().to_path_buf()),
+                provider.read_changeset_offset(0)?,
+            ),
+            None => (None, None),
+        }
     };
+    let account_reader = old_account_path
+        .as_ref()
+        .map(|path| {
+            StaticFileProviderBuilder::read_only(path.parent().expect("static file has parent"))
+                .build::<P::Primitives>()
+        })
+        .transpose()?;
+    let storage_reader = old_storage_path
+        .as_ref()
+        .map(|path| {
+            StaticFileProviderBuilder::read_only(path.parent().expect("static file has parent"))
+                .build::<P::Primitives>()
+        })
+        .transpose()?;
+    let old_account_static = account_reader
+        .as_ref()
+        .zip(old_account_path.as_ref())
+        .map(|(provider, path)| provider.get_segment_provider_for_path(path))
+        .transpose()?
+        .flatten();
+    let old_storage_static = storage_reader
+        .as_ref()
+        .zip(old_storage_path.as_ref())
+        .map(|(provider, path)| provider.get_segment_provider_for_path(path))
+        .transpose()?
+        .flatten();
 
     let replacement_account_changes = replacement_account_changeset_entries(replacements);
     let replacement_storage_changes = replacement_storage_changeset_entries(replacements);
-
-    let fast_account_plan = account_tail_replacement_plan(
-        old_account_static.as_ref(),
-        synced_addresses,
-        &replacement_account_changes,
-    )?;
-    let fast_storage_plan = storage_tail_replacement_plan(
-        old_storage_static.as_ref(),
-        synced_addresses,
-        &replacement_storage_changes,
-    )?;
-
-    if let (Some(account_plan), Some(storage_plan)) = (fast_account_plan, fast_storage_plan) {
-        static_file_provider.remove_cached_provider(
-            StaticFileSegment::AccountChangeSets,
-            account_plan.static_plan.cache_block_end,
-        );
-        static_file_provider.remove_cached_provider(
-            StaticFileSegment::StorageChangeSets,
-            storage_plan.static_plan.cache_block_end,
-        );
-        replace_static_changeset_tail(
-            &account_plan.static_plan,
-            &account_plan.appended_changes,
-            "account changeset",
-        )?;
-        replace_static_changeset_tail(
-            &storage_plan.static_plan,
-            &storage_plan.appended_changes,
-            "storage changeset",
-        )?;
-
-        return Ok(storage_plan.old_storage_history_keys);
-    }
-
-    let old_account_file = open_static_changeset_file(old_account_static.as_ref())?;
-    let old_storage_file = open_static_changeset_file(old_storage_static.as_ref())?;
 
     static_file_provider.delete_segment(StaticFileSegment::AccountChangeSets)?;
     static_file_provider.delete_segment(StaticFileSegment::StorageChangeSets)?;
@@ -527,9 +483,9 @@ where
 
         let mut replacement_changes = replacement_account_changes.into_iter().peekable();
 
-        if let Some(file) = old_account_file.as_ref() {
-            let mut cursor = StaticFileCursor::new(&file.jar, Arc::clone(&file.reader))?;
-            for row in file.offset.changeset_range() {
+        if let (Some(provider), Some(offset)) = (old_account_static.as_ref(), old_account_offset) {
+            let mut cursor = provider.cursor()?;
+            for row in offset.changeset_range() {
                 let Some(change) = cursor.get_one::<AccountChangesetMask>(row.into())? else {
                     continue;
                 };
@@ -559,9 +515,9 @@ where
 
         let mut replacement_changes = replacement_storage_changes.into_iter().peekable();
 
-        if let Some(file) = old_storage_file.as_ref() {
-            let mut cursor = StaticFileCursor::new(&file.jar, Arc::clone(&file.reader))?;
-            for row in file.offset.changeset_range() {
+        if let (Some(provider), Some(offset)) = (old_storage_static.as_ref(), old_storage_offset) {
+            let mut cursor = provider.cursor()?;
+            for row in offset.changeset_range() {
                 let Some(change) = cursor.get_one::<StorageChangesetMask>(row.into())? else {
                     continue;
                 };
@@ -586,245 +542,6 @@ where
     }
 
     Ok(old_storage_history_keys)
-}
-
-fn block_zero_static_changeset_file<N: NodePrimitives>(
-    provider: Option<&StaticFileJarProvider<'_, N>>,
-) -> eyre::Result<Option<StaticChangesetFile>> {
-    provider
-        .map(|provider| -> eyre::Result<_> {
-            Ok(provider
-                .read_changeset_offset(0)?
-                .map(|offset| StaticChangesetFile {
-                    path: provider.data_path().to_path_buf(),
-                    cache_block_end: provider.user_header().expected_block_end(),
-                    offset,
-                }))
-        })
-        .transpose()
-        .map(Option::flatten)
-}
-
-fn open_static_changeset_file(
-    file: Option<&StaticChangesetFile>,
-) -> eyre::Result<Option<OpenStaticChangesetFile>> {
-    file.map(|file| -> eyre::Result<_> {
-        let jar = NippyJar::load(&file.path)?;
-        let reader = Arc::new(jar.open_data_reader()?);
-        Ok(OpenStaticChangesetFile {
-            jar,
-            reader,
-            offset: file.offset.clone(),
-        })
-    })
-    .transpose()
-}
-
-fn account_tail_replacement_plan(
-    file: Option<&StaticChangesetFile>,
-    synced_addresses: &BTreeSet<Address>,
-    replacement_changes: &[AccountBeforeTx],
-) -> eyre::Result<Option<AccountTailReplacementPlan>> {
-    let Some(file) = file else {
-        return Ok(None);
-    };
-    let Some(first_synced_address) = synced_addresses.first().copied() else {
-        return Ok(None);
-    };
-
-    let jar = NippyJar::load(&file.path)?;
-    if file.offset.changeset_range().end != jar.rows() as u64 {
-        return Ok(None);
-    }
-    let reader = Arc::new(jar.open_data_reader()?);
-    let mut cursor = StaticFileCursor::new(&jar, Arc::clone(&reader))?;
-
-    let Some(tail_start) =
-        find_account_changeset_tail_start(&mut cursor, file.offset.clone(), first_synced_address)?
-    else {
-        return Ok(None);
-    };
-
-    let mut appended_changes = replacement_changes.to_vec();
-    for row in tail_start..file.offset.changeset_range().end {
-        let Some(change) = cursor.get_one::<AccountChangesetMask>(row.into())? else {
-            return Ok(None);
-        };
-        if !synced_addresses.contains(&change.address) {
-            appended_changes.push(change);
-        }
-    }
-    appended_changes.sort_unstable_by_key(|change| change.address);
-
-    let rows_to_prune = (file.offset.changeset_range().end - tail_start) as usize;
-    Ok(Some(AccountTailReplacementPlan {
-        static_plan: StaticTailReplacementPlan {
-            path: file.path.clone(),
-            cache_block_end: file.cache_block_end,
-            row_offset: file.offset.offset(),
-            rows_to_prune,
-            new_num_changes: file.offset.num_changes() - rows_to_prune as u64
-                + appended_changes.len() as u64,
-        },
-        appended_changes,
-    }))
-}
-
-fn storage_tail_replacement_plan(
-    file: Option<&StaticChangesetFile>,
-    synced_addresses: &BTreeSet<Address>,
-    replacement_changes: &[StorageBeforeTx],
-) -> eyre::Result<Option<StorageTailReplacementPlan>> {
-    let Some(file) = file else {
-        return Ok(None);
-    };
-    let Some(first_synced_address) = synced_addresses.first().copied() else {
-        return Ok(None);
-    };
-
-    let jar = NippyJar::load(&file.path)?;
-    if file.offset.changeset_range().end != jar.rows() as u64 {
-        return Ok(None);
-    }
-    let reader = Arc::new(jar.open_data_reader()?);
-    let mut cursor = StaticFileCursor::new(&jar, Arc::clone(&reader))?;
-
-    let Some(tail_start) = find_storage_changeset_tail_start(
-        &mut cursor,
-        file.offset.clone(),
-        first_synced_address,
-        B256::ZERO,
-    )?
-    else {
-        return Ok(None);
-    };
-
-    let mut appended_changes = replacement_changes.to_vec();
-    let mut old_storage_history_keys = Vec::new();
-    for row in tail_start..file.offset.changeset_range().end {
-        let Some(change) = cursor.get_one::<StorageChangesetMask>(row.into())? else {
-            return Ok(None);
-        };
-        if synced_addresses.contains(&change.address) {
-            old_storage_history_keys.push(StorageShardedKey::last(change.address, change.key));
-        } else {
-            appended_changes.push(change);
-        }
-    }
-    appended_changes.sort_unstable_by_key(|change| (change.address, change.key));
-
-    let rows_to_prune = (file.offset.changeset_range().end - tail_start) as usize;
-    Ok(Some(StorageTailReplacementPlan {
-        static_plan: StaticTailReplacementPlan {
-            path: file.path.clone(),
-            cache_block_end: file.cache_block_end,
-            row_offset: file.offset.offset(),
-            rows_to_prune,
-            new_num_changes: file.offset.num_changes() - rows_to_prune as u64
-                + appended_changes.len() as u64,
-        },
-        appended_changes,
-        old_storage_history_keys,
-    }))
-}
-
-fn find_account_changeset_tail_start(
-    cursor: &mut StaticFileCursor<'_>,
-    offset: ChangesetOffset,
-    address: Address,
-) -> eyre::Result<Option<u64>> {
-    let mut low = offset.changeset_range().start;
-    let mut high = offset.changeset_range().end;
-
-    while low < high {
-        let mid = low + (high - low) / 2;
-        let Some(change) = cursor.get_one::<AccountChangesetMask>(mid.into())? else {
-            return Ok(None);
-        };
-        if change.address < address {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
-    }
-
-    Ok(Some(low))
-}
-
-fn find_storage_changeset_tail_start(
-    cursor: &mut StaticFileCursor<'_>,
-    offset: ChangesetOffset,
-    address: Address,
-    key: B256,
-) -> eyre::Result<Option<u64>> {
-    let mut low = offset.changeset_range().start;
-    let mut high = offset.changeset_range().end;
-
-    while low < high {
-        let mid = low + (high - low) / 2;
-        let Some(change) = cursor.get_one::<StorageChangesetMask>(mid.into())? else {
-            return Ok(None);
-        };
-        if (change.address, change.key) < (address, key) {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
-    }
-
-    Ok(Some(low))
-}
-
-fn replace_static_changeset_tail<T>(
-    plan: &StaticTailReplacementPlan,
-    replacement_changes: &[T],
-    label: &'static str,
-) -> eyre::Result<()>
-where
-    T: Compact,
-{
-    let jar = NippyJar::<SegmentHeader>::load(&plan.path)?;
-    let mut writer = NippyJarWriter::new(jar)?;
-    if plan.rows_to_prune > 0 {
-        writer.prune_rows(plan.rows_to_prune)?;
-    }
-
-    let mut buf = Vec::new();
-    for change in replacement_changes {
-        buf.clear();
-        change.to_compact(&mut buf);
-        writer.append_column(Some(Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-            &buf,
-        )))?;
-    }
-    writer.commit()?;
-    write_block_zero_changeset_offset(&plan.path, plan.row_offset, plan.new_num_changes)?;
-
-    info!(
-        target: "tempo::cli",
-        rows_to_prune = plan.rows_to_prune,
-        replacement_rows = replacement_changes.len(),
-        %label,
-        "Replaced block-0 static changeset tail"
-    );
-
-    Ok(())
-}
-
-fn write_block_zero_changeset_offset(
-    path: &Path,
-    row_offset: u64,
-    num_changes: u64,
-) -> eyre::Result<()> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path.with_extension("csoff"))?;
-    file.write_all(&row_offset.to_le_bytes())?;
-    file.write_all(&num_changes.to_le_bytes())?;
-    file.sync_all()?;
-    Ok(())
 }
 
 fn replace_hashed_accounts<P>(
