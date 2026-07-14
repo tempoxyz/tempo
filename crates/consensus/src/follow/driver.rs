@@ -224,7 +224,7 @@ where
                             };
 
                             // Emits an event on error.
-                            let _: Result<_, _> = self.process_new_block(certified).await;
+                            let _: Result<_, _> = self.process_event(certified).await;
                         }
                         Message::Finalized(update) => {
                             self.process_update(update).await;
@@ -273,15 +273,15 @@ where
                 return Ok(());
             };
 
-            let extra_data = boundary_block.header().extra_data();
-            let onchain_outcome =
-                tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                    .wrap_err_with(|| {
-                        format!(
-                            "the boundary block at height `{last_consensus_boundary}` \
+            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+                &mut &mut boundary_block.header().extra_data().as_ref(),
+            )
+            .wrap_err_with(|| {
+                format!(
+                    "the boundary block at height `{last_consensus_boundary}` \
                     contained no or a malformed DKG outcome"
-                        )
-                    })?;
+                )
+            })?;
 
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
@@ -305,7 +305,7 @@ where
         ),
         err(Display)
     )]
-    async fn process_new_block(&mut self, certified: CertifiedBlock) -> eyre::Result<()> {
+    async fn process_event(&mut self, certified: CertifiedBlock) -> eyre::Result<()> {
         // TODO: ensure well-formedness at the type level so we don't need extra decoding here.
         let finalization = alloy_primitives::hex::decode(&certified.certificate)
             .map_err(Report::new)
@@ -363,10 +363,10 @@ where
             .expect("strategy valid for all heights");
 
         if epoch_info.last() == block.height() {
-            let extra_data = block.header().extra_data();
-            let onchain_outcome =
-                tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                    .expect("boundary blocks must contain DKG outcomes");
+            let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+                &mut &mut block.header().extra_data().as_ref(),
+            )
+            .expect("boundary blocks must contain DKG outcomes");
 
             let network_identity = &self.config.network_identity;
             if onchain_outcome.epoch.get() >= network_identity.from_epoch
