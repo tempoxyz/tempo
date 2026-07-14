@@ -721,6 +721,13 @@ where
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
+        debug!(
+            target: "flatmpt",
+            pre_fill_ms = start.elapsed().as_millis() as u64,
+            pool_fetch_us = pool_fetch_start.elapsed().as_micros() as u64,
+            prepare_system_us = prepare_system_txs_elapsed.as_micros() as u64,
+            "build phases before fill"
+        );
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -975,6 +982,11 @@ where
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
+        debug!(
+            target: "flatmpt",
+            at_fill_end_ms = start.elapsed().as_millis() as u64,
+            "build phases at fill end"
+        );
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
