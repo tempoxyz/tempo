@@ -418,19 +418,14 @@ where
             // Resolution is cached per tip: pool validation calls this for
             // every incoming transaction's fee-balance read, so the walk must
             // not repeat per read.
-            let cached: Arc<
-                std::sync::Mutex<
-                    Option<(
-                        B256,
-                        tempo_flatmpt::FlatSnapshot,
-                        Vec<Arc<tempo_flatmpt::PendingBlock>>,
-                    )>,
-                >,
-            > = Arc::new(std::sync::Mutex::new(None));
-            let resolve = move || -> Result<
-                (tempo_flatmpt::FlatSnapshot, Vec<Arc<tempo_flatmpt::PendingBlock>>),
-                reth_errors::ProviderError,
-            > {
+            type TipState = (
+                B256,
+                tempo_flatmpt::FlatSnapshot,
+                Vec<Arc<tempo_flatmpt::PendingBlock>>,
+            );
+            let cached: Arc<std::sync::Mutex<Option<Arc<TipState>>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let resolve = move || -> Result<Arc<TipState>, reth_errors::ProviderError> {
                 use reth_provider::BlockReaderIdExt as _;
                 let err = |m: &str| {
                     reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
@@ -440,10 +435,10 @@ where
                     .ok_or_else(|| err("no canonical head for flat tip read"))?
                     .state_root();
                 if let Ok(guard) = cached.lock()
-                    && let Some((root, snap, chain)) = guard.as_ref()
-                    && *root == tip_root
+                    && let Some(state) = guard.as_ref()
+                    && state.0 == tip_root
                 {
-                    return Ok((snap.clone(), chain.clone()));
+                    return Ok(state.clone());
                 }
                 let shadow = tempo_flatmpt::shadow(|| {
                     (
@@ -459,16 +454,22 @@ where
                     if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
                         && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
                     {
-                        if let Ok(mut g) = cached.lock() { *g = Some((tip_root, snap.clone(), chain.clone())); }
-                        return Ok((snap, chain));
+                        let state = Arc::new((tip_root, snap, chain));
+                        if let Ok(mut g) = cached.lock() {
+                            *g = Some(state.clone());
+                        }
+                        return Ok(state);
                     }
                     if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
                         && g.at_parent(tip_root)
                     {
                         let snap = g.snapshot();
                         drop(g);
-                        if let Ok(mut g) = cached.lock() { *g = Some((tip_root, snap.clone(), Vec::new())); }
-                        return Ok((snap, Vec::new()));
+                        let state = Arc::new((tip_root, snap, Vec::new()));
+                        if let Ok(mut g) = cached.lock() {
+                            *g = Some(state.clone());
+                        }
+                        return Ok(state);
                     }
                     if std::time::Instant::now() > deadline {
                         return Err(err("flat store cannot serve the canonical tip state"));
@@ -480,9 +481,10 @@ where
             let resolve_slot = resolve_acct.clone();
             let _ = reth_provider::providers::FLAT_STATE_READS.set(reth_provider::providers::FlatStateReads {
                 account: Box::new(move |address| {
-                    let (snap, chain) = resolve_acct()?;
+                    let state = resolve_acct()?;
+                    let (_, snap, chain) = &*state;
                     let key = alloy_primitives::keccak256(address);
-                    let read = tempo_flatmpt::overlay_account(&chain, &snap, &key.0)
+                    let read = tempo_flatmpt::overlay_account(chain, snap, &key.0)
                         .map_err(|e| reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}"))))?;
                     Ok(read.map(|(nonce, balance, code_hash)| reth_primitives_traits::Account {
                         nonce,
@@ -492,10 +494,11 @@ where
                     }))
                 }),
                 storage: Box::new(move |address, slot| {
-                    let (snap, chain) = resolve_slot()?;
+                    let state = resolve_slot()?;
+                    let (_, snap, chain) = &*state;
                     let acct_key = alloy_primitives::keccak256(address);
                     let slot_key = alloy_primitives::keccak256(slot.0);
-                    tempo_flatmpt::overlay_storage(&chain, &snap, &acct_key.0, &slot_key.0)
+                    tempo_flatmpt::overlay_storage(chain, snap, &acct_key.0, &slot_key.0)
                         .map_err(|e| {
                             reth_errors::ProviderError::other(std::io::Error::other(format!(
                                 "{e:#}"
