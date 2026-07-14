@@ -1,0 +1,271 @@
+name: Stateless precompile benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      warmup_seconds:
+        description: "Criterion warm-up time per case"
+        required: true
+        default: "3"
+        type: string
+      measurement_seconds:
+        description: "Criterion measurement time per case"
+        required: true
+        default: "10"
+        type: string
+      sample_size:
+        description: "Criterion sample count per case (minimum 10)"
+        required: true
+        default: "100"
+        type: string
+      cpu_set:
+        description: "Pinned taskset CPU list for the benchmark runner"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      warmup_seconds:
+        description: "Criterion warm-up time per case"
+        required: false
+        default: "3"
+        type: string
+      measurement_seconds:
+        description: "Criterion measurement time per case"
+        required: false
+        default: "10"
+        type: string
+      sample_size:
+        description: "Criterion sample count per case (minimum 10)"
+        required: false
+        default: "100"
+        type: string
+      cpu_set:
+        description: "Pinned taskset CPU list for the benchmark runner"
+        required: true
+        type: string
+    secrets:
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stateless-precompiles-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Native stateless precompile benchmarks
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.event_name != 'merge_group' }}
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: full
+      RUSTC_WRAPPER: sccache
+      RUSTFLAGS: -C target-cpu=native
+      CRITERION_HOME: ${{ github.workspace }}/bench-results/stateless-precompiles/criterion
+      TEMPO_BENCH_MANIFEST: ${{ github.workspace }}/bench-results/stateless-precompiles/cases.json
+      TEMPO_BENCH_MACHINE_ID: bare-metal-dual-schelk
+      TEMPO_BENCH_CPU_SET: ${{ inputs.cpu_set }}
+      TEMPO_BENCH_RUN_ID: stateless-precompiles-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      # This workflow is intentionally not triggered by pull_request. Native code
+      # from untrusted PRs must not execute on the self-hosted benchmark runner.
+      - name: Reset workspace directory
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          sudo -u actions-runner mkdir -p "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        continue-on-error: true
+
+      - name: Validate benchmark configuration
+        env:
+          WARMUP_SECONDS: ${{ inputs.warmup_seconds || '3' }}
+          MEASUREMENT_SECONDS: ${{ inputs.measurement_seconds || '10' }}
+          SAMPLE_SIZE: ${{ inputs.sample_size || '100' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$WARMUP_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::warmup_seconds must be a positive integer"
+            exit 1
+          fi
+          if ! [[ "$MEASUREMENT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::measurement_seconds must be a positive integer"
+            exit 1
+          fi
+          if ! [[ "$SAMPLE_SIZE" =~ ^[0-9]+$ ]] || [ "$SAMPLE_SIZE" -lt 10 ]; then
+            echo "::error::sample_size must be an integer greater than or equal to 10"
+            exit 1
+          fi
+          if [ -z "$TEMPO_BENCH_CPU_SET" ] || ! [[ "$TEMPO_BENCH_CPU_SET" =~ ^[0-9,-]+$ ]]; then
+            echo "::error::cpu_set must be non-empty and contain only CPU numbers, commas, and ranges"
+            exit 1
+          fi
+          {
+            echo "TEMPO_BENCH_WARMUP_SECONDS=$WARMUP_SECONDS"
+            echo "TEMPO_BENCH_MEASUREMENT_SECONDS=$MEASUREMENT_SECONDS"
+            echo "TEMPO_BENCH_SAMPLE_SIZE=$SAMPLE_SIZE"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate benchmark host
+        run: |
+          set -euo pipefail
+          if ! taskset --cpu-list "$TEMPO_BENCH_CPU_SET" true; then
+            echo "::error::cpu_set is not available to the benchmark runner"
+            exit 1
+          fi
+
+          mapfile -t governors < <(
+            for path in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+              [ -f "$path" ] && cat "$path"
+            done | sort -u
+          )
+          if [ "${#governors[@]}" -eq 0 ]; then
+            echo "::error::no CPU governor metadata is available"
+            exit 1
+          fi
+          for governor in "${governors[@]}"; do
+            if [ "$governor" != "performance" ]; then
+              echo "::error::every CPU governor must be performance; observed $governor"
+              exit 1
+            fi
+          done
+
+          if [ -f /sys/devices/system/cpu/intel_pstate/no_turbo ] && \
+             [ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo)" != "1" ]; then
+            echo "::error::Intel turbo boost must be disabled"
+            exit 1
+          fi
+          if [ -f /sys/devices/system/cpu/cpufreq/boost ] && \
+             [ "$(cat /sys/devices/system/cpu/cpufreq/boost)" != "0" ]; then
+            echo "::error::AMD turbo boost must be disabled"
+            exit 1
+          fi
+
+      - name: Test benchmark exporter
+        run: python3 -m unittest discover -s contrib/bench/tests -p 'test_*.py'
+
+      - name: Build native benchmark target
+        run: |
+          cargo bench \
+            -p tempo-precompiles \
+            --features test-utils \
+            --bench stateless_precompiles \
+            --no-run
+
+      - name: Run native benchmarks
+        run: |
+          set -euo pipefail
+          rm -rf "$CRITERION_HOME"
+          mkdir -p "$(dirname "$TEMPO_BENCH_MANIFEST")"
+          echo "TEMPO_BENCH_STARTED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+
+          command=(
+            cargo bench
+            -p tempo-precompiles
+            --features test-utils
+            --bench stateless_precompiles
+            --
+            --warm-up-time "$TEMPO_BENCH_WARMUP_SECONDS"
+            --measurement-time "$TEMPO_BENCH_MEASUREMENT_SECONDS"
+            --sample-size "$TEMPO_BENCH_SAMPLE_SIZE"
+            --noplot
+          )
+          taskset --cpu-list "$TEMPO_BENCH_CPU_SET" "${command[@]}" \
+            2>&1 | tee bench-results/stateless-precompiles/benchmark.log
+
+      - name: Export canonical report
+        run: |
+          python3 contrib/bench/export-stateless-precompiles.py \
+            --manifest "$TEMPO_BENCH_MANIFEST" \
+            --criterion-dir "$CRITERION_HOME" \
+            --output bench-results/stateless-precompiles/report.json \
+            --rows-output bench-results/stateless-precompiles/clickhouse-rows.jsonl \
+            --profile bench \
+            --features tempo-precompiles/test-utils \
+            --allocator tikv-jemallocator/0.6.1 \
+            --warmup-seconds "$TEMPO_BENCH_WARMUP_SECONDS" \
+            --measurement-seconds "$TEMPO_BENCH_MEASUREMENT_SECONDS" \
+            --sample-size "$TEMPO_BENCH_SAMPLE_SIZE"
+
+      - name: Add benchmark summary
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("bench-results/stateless-precompiles/report.json").read_text())
+          lines = [
+              "## Native stateless precompile benchmarks",
+              "",
+              f"Run: `{report['run']['id']}` on `{report['host']['machine_id']}`",
+              "",
+              "| Case | Time (ns) | Gas | Mgas/s | Conservative Mgas/s |",
+              "| --- | ---: | ---: | ---: | ---: |",
+          ]
+          for result in report["results"]:
+              case = result["case"]
+              measurement = result["measurement"]["typical"]
+              metrics = result["metrics"]
+              lines.append(
+                  f"| `{case['case_id']}` | {measurement['point_estimate_ns']:.2f} "
+                  f"| {case['gas_used']} | {metrics['mgas_per_second']:.3f} "
+                  f"| {metrics['conservative_mgas_per_second']:.3f} |"
+              )
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload benchmark results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stateless-precompile-bench-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bench-results/stateless-precompiles/
+          if-no-files-found: warn
+
+  publish:
+    name: Publish stateless precompile results
+    if: ${{ github.ref == 'refs/heads/main' }}
+    needs: native
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download benchmark results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stateless-precompile-bench-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bench-results/stateless-precompiles
+
+      - name: Publish results to ClickHouse
+        env:
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          CLICKHOUSE_DATABASE: ${{ vars.CLICKHOUSE_DATABASE || 'default' }}
+        run: |
+          if [ -n "$CLICKHOUSE_URL" ]; then echo "::add-mask::$CLICKHOUSE_URL"; fi
+          if [ -n "$CLICKHOUSE_USER" ]; then echo "::add-mask::$CLICKHOUSE_USER"; fi
+          if [ -n "$CLICKHOUSE_PASSWORD" ]; then echo "::add-mask::$CLICKHOUSE_PASSWORD"; fi
+          bash contrib/bench/upload-execution-microbench-results.sh \
+            bench-results/stateless-precompiles/clickhouse-rows.jsonl

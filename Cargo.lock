@@ -13374,6 +13374,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
+ "tikv-jemallocator",
  "tracing",
 ]
 

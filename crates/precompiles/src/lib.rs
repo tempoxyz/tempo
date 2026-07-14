@@ -10,6 +10,9 @@ pub mod storage;
 pub mod dispatch;
 pub use dispatch::*;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod benchmark;
+
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
@@ -149,14 +152,23 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
+    let spec = ethereum_precompile_spec(cfg.spec);
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
+}
+
+/// Returns the Ethereum precompile specification used by Tempo at `hardfork`.
+///
+/// Tempo launched with Prague precompiles and adopted the Osaka set at T1C. Keeping this mapping
+/// separate from `From<TempoHardfork> for SpecId` is intentional: Tempo's EVM opcode rules use
+/// Osaka throughout, while the built-in precompile set has this additional compatibility boundary.
+pub fn ethereum_precompile_spec(hardfork: TempoHardfork) -> SpecId {
+    if hardfork.is_t1c() {
+        hardfork.into()
+    } else {
+        SpecId::PRAGUE
+    }
 }
 
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
