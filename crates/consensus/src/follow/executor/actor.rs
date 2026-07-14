@@ -24,7 +24,7 @@ use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_provider::{BlockHashReader as _, DatabaseProviderFactory as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{debug, error, instrument, warn};
+use tracing::{Level, debug, error, instrument, warn};
 
 use super::Config;
 use crate::{
@@ -129,9 +129,9 @@ where
                     match result {
                         ExecutionTaskResult::Completed(last_fcu) => {
                             self.last_fcu = last_fcu;
-                            if let Err(error) = self.try_advance_floor().await {
-                                warn!(%error, "failed marshal floor advancement");
-                            }
+
+                            // Emits an event on error.
+                            let _: Result<_, _> = self.try_advance_floor().await;
 
                             if self.latest_tip.height > self.last_fcu.height {
                                 self.start_execution_task(ExecutionRequest::Forkchoice(
@@ -195,7 +195,7 @@ where
             .replace(execute_request(context, execution_node, last_fcu, request).boxed());
     }
 
-    #[instrument(skip_all, err)]
+    #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
         let Some(finalized) = self
             .execution_node

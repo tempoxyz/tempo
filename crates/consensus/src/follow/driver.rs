@@ -205,7 +205,7 @@ where
     }
 
     async fn run(mut self) {
-        if self.heal_gap().await.is_err() {
+        if self.install_scheme_for_latest_epoch().await.is_err() {
             return;
         }
 
@@ -237,7 +237,7 @@ where
 
     /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
-    async fn heal_gap(&mut self) -> eyre::Result<()> {
+    async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
         let current_consensus_epoch = self
             .config
             .epoch_strategy
@@ -264,7 +264,7 @@ where
                 let consensus_epoch = current_consensus_epoch.epoch();
                 let execution_epoch = current_execution_epoch.epoch();
                 warn!(
-                    "cannot heal finalization gap; consensus layer epoch {consensus_epoch} is ahead \
+                    "cannot install scheme; consensus layer epoch {consensus_epoch} is ahead \
                     of execution layer epoch {execution_epoch}, but the consensus layer does not have \
                     the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
                     epoch boundaries via the network identity and will continue to try use it to verify finalizations"
