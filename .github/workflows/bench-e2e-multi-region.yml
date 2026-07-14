@@ -1,6 +1,67 @@
 name: bench-e2e-multi-region
 
 on:
+  workflow_call:
+    inputs:
+      baseline:
+        type: string
+        required: false
+        default: ""
+      feature:
+        type: string
+        required: false
+        default: ""
+      baseline-name:
+        type: string
+        required: false
+        default: ""
+      feature-name:
+        type: string
+        required: false
+        default: ""
+      duration:
+        type: string
+        required: false
+        default: "90"
+      bloat:
+        type: string
+        required: false
+        default: "100"
+      validator-count:
+        type: string
+        required: false
+        default: "50"
+      regions:
+        type: string
+        required: false
+        default: "us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1"
+      tps:
+        type: string
+        required: false
+        default: "50000"
+      accounts:
+        type: string
+        required: false
+        default: "1000"
+      max-concurrent-requests:
+        type: string
+        required: false
+        default: "100"
+      run-pairs:
+        type: string
+        required: false
+        default: "3"
+    secrets:
+      BENCH_LOGS_PUSH_URL:
+        required: false
+      BENCH_METRICS_PUSH_URL:
+        required: false
+      DEREK_BENCH_TOKEN:
+        required: false
+      VICTORIALOGS_URL:
+        required: false
+      VICTORIAMETRICS_URL:
+        required: false
   workflow_dispatch:
     inputs:
       baseline:
@@ -173,6 +234,8 @@ jobs:
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
       BENCH_INPUT_BASELINE: ${{ inputs.baseline || '' }}
       BENCH_INPUT_FEATURE: ${{ inputs.feature || '' }}
+      BENCH_INPUT_BASELINE_NAME: ${{ inputs['baseline-name'] || '' }}
+      BENCH_INPUT_FEATURE_NAME: ${{ inputs['feature-name'] || '' }}
       BENCH_INPUT_BASELINE_HARDFORK: ${{ inputs['baseline-hardfork'] || '' }}
       BENCH_INPUT_FEATURE_HARDFORK: ${{ inputs['feature-hardfork'] || '' }}
       BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
@@ -181,7 +244,7 @@ jobs:
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '50' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || 'us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1' }}
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
-      BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || (github.event_name == 'pull_request' && '100') || '1000' }}
+      BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '100' }}
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
@@ -224,6 +287,53 @@ jobs:
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           persist-credentials: false
+
+      - name: Validate Tempo commit ancestry
+        env:
+          GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+        run: |
+          resolve_tempo_ref() {
+            local ref="${1:-main}"
+            local rev
+
+            if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              printf '%s\n' "$ref"
+              return 0
+            fi
+
+            if [[ "$ref" == refs/* ]]; then
+              git ls-remote https://github.com/tempoxyz/tempo.git "$ref" "$ref^{}" 2>/dev/null |
+                awk -v ref="$ref" 'BEGIN { rev = "" } $2 == ref "^{}" { print $1; found = 1; exit } $2 == ref && rev == "" { rev = $1 } END { if (!found && rev != "") print rev }'
+              return 0
+            fi
+
+            rev="$(git ls-remote --refs https://github.com/tempoxyz/tempo.git "refs/heads/$ref" 2>/dev/null | awk -v ref="refs/heads/$ref" '$2 == ref { print $1; exit }')"
+            if [[ -n "$rev" ]]; then
+              printf '%s\n' "$rev"
+              return 0
+            fi
+
+            git ls-remote https://github.com/tempoxyz/tempo.git "refs/tags/$ref" "refs/tags/$ref^{}" 2>/dev/null |
+              awk -v ref="refs/tags/$ref" 'BEGIN { rev = "" } $2 == ref "^{}" { print $1; found = 1; exit } $2 == ref && rev == "" { rev = $1 } END { if (!found && rev != "") print rev }'
+          }
+
+          baseline_ref="${BENCH_INPUT_BASELINE:-main}"
+          feature_ref="${BENCH_INPUT_FEATURE:-main}"
+          baseline_commit="$(resolve_tempo_ref "$baseline_ref")"
+          feature_commit="$(resolve_tempo_ref "$feature_ref")"
+
+          if [[ -z "$baseline_commit" ]]; then
+            echo "Unable to resolve baseline ref '$baseline_ref' in tempoxyz/tempo" >&2
+            exit 1
+          fi
+          if [[ -z "$feature_commit" ]]; then
+            echo "Unable to resolve feature ref '$feature_ref' in tempoxyz/tempo" >&2
+            exit 1
+          fi
+
+          "$BENCH_REPO_DIR/scripts/validate_tempo_commit_ancestry.sh" \
+            baseline "$baseline_ref" "$baseline_commit" \
+            feature "$feature_ref" "$feature_commit"
 
       - name: Validate regions
         id: regions
@@ -292,6 +402,8 @@ jobs:
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
             --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
             --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
             --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
             --preset "$BENCH_INPUT_PRESET" \
@@ -343,6 +455,8 @@ jobs:
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
             --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
             --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
             --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
             --preset "$BENCH_INPUT_PRESET" \
@@ -384,6 +498,8 @@ jobs:
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
             --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
             --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
             --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
             --preset "$BENCH_INPUT_PRESET" \
@@ -425,6 +541,8 @@ jobs:
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
             --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
             --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
             --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
             --preset "$BENCH_INPUT_PRESET" \
