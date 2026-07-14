@@ -375,7 +375,9 @@ fn merkle_layers(leaves: Vec<B256>) -> Vec<Vec<B256>> {
         let next = layers
             .last()
             .expect("at least one layer")
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| hash_sorted_pair(pair[0], pair[1]))
             .collect();
         layers.push(next);
