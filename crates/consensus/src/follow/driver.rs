@@ -344,7 +344,7 @@ where
         let round = finalization.round();
         let activity = Activity::Finalization(finalization);
 
-        let _ = self.config.marshal.verified(round, consensus_block).await;
+        let _ = self.config.marshal.certified(round, consensus_block).await;
         self.config.marshal.report(activity.clone()).await;
         self.config.feed.report(activity).await;
         Ok(())
