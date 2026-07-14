@@ -131,10 +131,11 @@ where
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
-                        ExecutionTaskResult::NonFatal { error } => {
-                            warn!(%error, "forkchoice update failed");
+                        ExecutionTaskResult::NonFatal(last_fcu, error) => {
+                            self.last_fcu = last_fcu;
+                            warn!(?last_fcu, %error, "forkchoice update failed");
                         }
-                        ExecutionTaskResult::Fatal { error } => {
+                        ExecutionTaskResult::Fatal(error) => {
                             error!(%error, "execution task failed");
                             break;
                         }
@@ -244,8 +245,8 @@ enum ExecutionRequest {
 
 enum ExecutionTaskResult {
     Completed(FinalizedTip),
-    NonFatal { error: Report },
-    Fatal { error: Report },
+    NonFatal(FinalizedTip, Report),
+    Fatal(Report),
 }
 
 async fn execute_request<TContext: Pacer>(
@@ -258,7 +259,7 @@ async fn execute_request<TContext: Pacer>(
         ExecutionRequest::Forkchoice(tip) => {
             match submit_forkchoice_update(&context, &execution_node, &tip).await {
                 Ok(()) => ExecutionTaskResult::Completed(tip),
-                Err(error) => ExecutionTaskResult::NonFatal { error },
+                Err(error) => ExecutionTaskResult::NonFatal(tip, error),
             }
         }
         ExecutionRequest::Block(block, ack) => {
@@ -268,13 +269,13 @@ async fn execute_request<TContext: Pacer>(
             };
 
             if let Err(error) = submit_new_payload(&context, &execution_node, block).await {
-                return ExecutionTaskResult::Fatal { error };
+                return ExecutionTaskResult::Fatal(error);
             }
 
             let last_fcu = if tip.height > last_fcu.height {
                 if let Err(error) = submit_forkchoice_update(&context, &execution_node, &tip).await
                 {
-                    return ExecutionTaskResult::Fatal { error };
+                    return ExecutionTaskResult::Fatal(error);
                 }
                 tip
             } else {
