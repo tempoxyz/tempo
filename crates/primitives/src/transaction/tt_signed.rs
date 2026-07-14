@@ -348,11 +348,13 @@ impl Transaction for AASigned {
 
     #[inline]
     fn value(&self) -> U256 {
-        // Return sum of all call values
+        // Return sum of all call values, saturating to U256::MAX on overflow to match
+        // TempoTransaction::value(). alloy's U256 `+` wraps rather than panics, so a plain
+        // fold would silently report a small wrapped value for a call set summing past 2^256.
         self.tx
             .calls
             .iter()
-            .fold(U256::ZERO, |acc, call| acc + call.value)
+            .fold(U256::ZERO, |acc, call| acc.saturating_add(call.value))
     }
 
     #[inline]
