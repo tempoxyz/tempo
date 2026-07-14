@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use commonware_runtime::{Pacer, Spawner};
+use commonware_runtime::{Clock, Pacer, Spawner};
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
 
@@ -19,11 +19,12 @@ pub(crate) use ingress::Mailbox;
 pub(crate) struct Config {
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
+    pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 
 pub(crate) fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox)
 where
-    TContext: Pacer + Spawner,
+    TContext: Clock + Pacer + Spawner,
 {
     let (sender, receiver) = mpsc::unbounded();
     (Actor::new(context, config, receiver), Mailbox::new(sender))

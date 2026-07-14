@@ -2,10 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{marshal::Update, types::Height};
-use commonware_runtime::{ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
+use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_provider::{
     BlockHashReader as _, CanonStateSubscriptions as _, DatabaseProviderFactory as _,
 };
@@ -30,30 +31,56 @@ pub(crate) struct Actor<TContext> {
     marshal: crate::alias::marshal::Mailbox,
     mailbox: mpsc::UnboundedReceiver<Update<Block>>,
 
-    pending_tip: Option<FinalizedTip>,
+    tip: FinalizedTip,
     sync_target: Option<FinalizedTip>,
     forkchoice_task: OptionFuture<BoxFuture<'static, (FinalizedTip, eyre::Result<()>)>>,
+    fcu_heartbeat_interval: Duration,
+    fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
 }
 
 impl<TContext> Actor<TContext>
 where
-    TContext: Pacer + Spawner,
+    TContext: Clock + Pacer + Spawner,
 {
     pub(super) fn new(
         context: TContext,
         config: Config,
         mailbox: mpsc::UnboundedReceiver<Update<Block>>,
     ) -> Self {
+        let Config {
+            execution_node,
+            marshal,
+            fcu_heartbeat_interval,
+        } = config;
+
+        let tip = execution_node
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash()
+            .map_or_else(
+                || FinalizedTip {
+                    height: Height::new(0),
+                    digest: Digest(execution_node.chain_spec().genesis_hash()),
+                },
+                |tip| FinalizedTip {
+                    height: Height::new(tip.number),
+                    digest: Digest(tip.hash),
+                },
+            );
+
         Self {
             context: ContextCell::new(context),
 
             mailbox,
-            marshal: config.marshal,
-            execution_node: config.execution_node,
+            marshal,
+            execution_node,
 
+            tip,
             forkchoice_task: OptionFuture::none(),
-            pending_tip: None,
             sync_target: None,
+
+            fcu_heartbeat_interval,
+            fcu_heartbeat_timer: OptionFuture::none(),
         }
     }
 
@@ -65,7 +92,7 @@ where
         let mut canonical_state = self.execution_node.provider.canonical_state_stream();
 
         loop {
-            self.start_forkchoice_task();
+            self.update_fcu_heartbeat_timer();
 
             tokio::select! {
                 biased;
@@ -76,13 +103,23 @@ where
                         warn!(%error, height = %tip.height, digest = %tip.digest,
                             "follower forkchoice update failed");
                     }
+
+                    if self.tip.height > tip.height {
+                        self.start_forkchoice_task();
+                    }
                 }
 
                 Some(update) = self.mailbox.next() => {
                     match update {
                         Update::Block(_, ack) => ack.acknowledge(),
                         Update::Tip(_, height, digest) => {
+                            let previous_height = self.tip.height;
+
                             self.observe_tip(FinalizedTip { height, digest });
+                            if self.tip.height > previous_height {
+                                self.start_forkchoice_task();
+                            }
+
                             if let Err(error) = self.complete_sync_target_if_canonical().await {
                                 error!(%error, "failed checking marshal floor advancement");
                                 break;
@@ -102,23 +139,49 @@ where
                         break;
                     }
                 }
+
+                _ = (&mut self.fcu_heartbeat_timer).fuse() => {
+                    self.send_forkchoice_update_heartbeat();
+                }
             }
         }
     }
 
     fn observe_tip(&mut self, tip: FinalizedTip) {
         if self.sync_target.is_none() {
-            info!(height = %tip.height, digest = %tip.digest, "setting sync target");
+            debug!(height = %tip.height, digest = %tip.digest, "setting sync target");
             self.sync_target = Some(tip);
         }
 
-        if self
-            .pending_tip
-            .as_ref()
-            .is_none_or(|pending| tip.height > pending.height)
-        {
-            self.pending_tip = Some(tip);
+        if tip.height > self.tip.height {
+            self.tip = tip;
         }
+    }
+
+    fn arm_fcu_heartbeat_timer(&mut self) {
+        if !self.fcu_heartbeat_timer.is_none() {
+            return;
+        }
+
+        self.fcu_heartbeat_timer
+            .replace(self.context.sleep(self.fcu_heartbeat_interval).boxed());
+    }
+
+    fn disarm_fcu_heartbeat_timer(&mut self) {
+        self.fcu_heartbeat_timer = OptionFuture::none();
+    }
+
+    fn update_fcu_heartbeat_timer(&mut self) {
+        if self.forkchoice_task.is_none() {
+            self.arm_fcu_heartbeat_timer();
+        } else {
+            self.disarm_fcu_heartbeat_timer();
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn send_forkchoice_update_heartbeat(&mut self) {
+        self.start_forkchoice_task();
     }
 
     fn start_forkchoice_task(&mut self) {
@@ -126,9 +189,7 @@ where
             return;
         }
 
-        let Some(tip) = self.pending_tip.take() else {
-            return;
-        };
+        let tip = self.tip;
 
         let context = self.context.clone();
         let execution_node = self.execution_node.clone();
@@ -168,7 +229,7 @@ where
         );
 
         let target = self.sync_target.take().expect("target exists");
-        info!(height = %target.height, digest = %target.digest, "sync target is canonical; advancing marshal floor");
+        debug!(height = %target.height, digest = %target.digest, "sync target is canonical; advancing marshal floor");
 
         // The current commonware API accepts a height. Once the certified
         // floor API lands, fetch and pass `finalization` here instead. We set the floor
