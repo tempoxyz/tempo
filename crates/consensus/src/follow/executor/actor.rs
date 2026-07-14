@@ -14,7 +14,7 @@ use reth_provider::{
     BlockHashReader as _, CanonStateSubscriptions as _, DatabaseProviderFactory as _,
 };
 use tempo_node::TempoFullNode;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use super::Config;
 use crate::{
@@ -95,6 +95,11 @@ where
         let mut canonical_state = self.execution_node.provider.canonical_state_stream();
 
         loop {
+            if let Err(error) = self.complete_sync_target_if_canonical().await {
+                error!(%error, "failed checking marshal floor advancement");
+                break;
+            }
+
             self.update_fcu_heartbeat_timer();
 
             tokio::select! {
@@ -122,11 +127,6 @@ where
                             if self.tip.height > previous_height {
                                 self.start_forkchoice_task();
                             }
-
-                            if let Err(error) = self.complete_sync_target_if_canonical().await {
-                                error!(%error, "failed checking marshal floor advancement");
-                                break;
-                            }
                         }
                     }
                 }
@@ -136,11 +136,6 @@ where
                         error!("canonical state notification stream ended");
                         break;
                     };
-
-                    if let Err(error) = self.complete_sync_target_if_canonical().await {
-                        error!(%error, "failed checking marshal floor advancement");
-                        break;
-                    }
                 }
 
                 _ = (&mut self.fcu_heartbeat_timer).fuse() => {
