@@ -1438,7 +1438,12 @@ pub fn is_more_subblocks(
     let Some(best_payload) = best_payload else {
         return false;
     };
-    let Some(best_metadata) = best_payload
+    // Post-T4 a payload built with zero subblocks carries no subblock-metadata
+    // system tx (see `build_seal_block_txs`). A missing metadata tx therefore means
+    // "the best payload has zero subblocks", not "there are no additional subblocks".
+    // Treating it as the latter (returning false) would drop subblocks that arrived
+    // after the first build whenever pool fees did not independently increase.
+    let best_len = best_payload
         .block()
         .body()
         .transactions
@@ -1446,11 +1451,9 @@ pub fn is_more_subblocks(
         .rev()
         .filter(|tx| tx.is_system_tx())
         .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
-    else {
-        return false;
-    };
+        .map_or(0, |best_metadata| best_metadata.len());
 
-    subblocks.len() > best_metadata.len()
+    subblocks.len() > best_len
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
