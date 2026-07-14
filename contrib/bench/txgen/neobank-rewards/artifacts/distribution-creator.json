@@ -1,0 +1,67 @@
+{
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "accessControlManager_",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "distributor_",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "feeRecipient_",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "accessControlManager",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "distributor",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "feeRecipient",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ],
+  "bytecode": {
+    "object": "0x60e060405234801561000f575f80fd5b506040516102be3803806102be83398101604081905261002e91610155565b6001600160a01b0383166100895760405162461bcd60e51b815260206004820152601360248201527f7a65726f20616363657373206d616e616765720000000000000000000000000060448201526064015b60405180910390fd5b6001600160a01b0382166100d25760405162461bcd60e51b815260206004820152601060248201526f3d32b937903234b9ba3934b13aba37b960811b6044820152606401610080565b6001600160a01b03811661011d5760405162461bcd60e51b81526020600482015260126024820152711e995c9bc8199959481c9958da5c1a595b9d60721b6044820152606401610080565b6001600160a01b0392831660805290821660a0521660c052610195565b80516001600160a01b0381168114610150575f80fd5b919050565b5f805f60608486031215610167575f80fd5b6101708461013a565b925061017e6020850161013a565b915061018c6040850161013a565b90509250925092565b60805160a05160c0516101026101bc5f395f604201525f60aa01525f608401526101025ff3fe6080604052348015600e575f80fd5b5060043610603a575f3560e01c80634690484014603e578063b4a0bdf3146080578063bfe109281460a6575b5f80fd5b60647f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b03909116815260200160405180910390f35b60647f000000000000000000000000000000000000000000000000000000000000000081565b60647f00000000000000000000000000000000000000000000000000000000000000008156fea26469706673582212205a9d1e9126fd6a8119dc454e1daf343b1204c0b300c2bc015b3b861faab8b21864736f6c63430008190033"
+  }
+}

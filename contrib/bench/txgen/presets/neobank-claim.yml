@@ -1,0 +1,188 @@
+# Reusable reward-proof claim workload layered on the shared neobank setup.
+include: neobank-swap.yml
+
+merge:
+  accounts:
+    reward_admin:
+      mnemonic: "test test test test test test test test test test test junk"
+      index: 100001
+    reward_claimants:
+      mnemonic: "test test test test test test test test test test test junk"
+      range: [0, 2048]
+
+  record_pools:
+    neobank_reward_claims:
+      path: ../fixtures/neobank-reward-claims/claims.json
+
+  artifacts:
+    MerklBenchmarkDistributor: ../neobank-rewards/artifacts/benchmark-distributor.json
+    MerklProxy: ../neobank-rewards/artifacts/erc1967-proxy.json
+    MerklPullWrapper: ../neobank-rewards/artifacts/pull-token-wrapper.json
+    MerklAccessControl: ../neobank-rewards/artifacts/access-control-manager.json
+    MerklDistributionCreator: ../neobank-rewards/artifacts/distribution-creator.json
+
+  templates:
+    neobank_reward_claim:
+      type: tempo
+      from:
+        pool: reward_claimants
+        select: { index: 0 }
+      to: "0x0000000000000000000000000000000000000000"
+      input: "0x"
+      gas_limit: 1500000
+      max_fee_per_gas: 100000000000
+      max_priority_fee_per_gas: 100000000000
+      expiring_nonce: true
+      valid_for_secs: 10
+
+  sequences:
+    neobank_reward_claims:
+      bindings:
+        claim:
+          record:
+            pool: neobank_reward_claims
+            # Each pass uses every proof once. BenchmarkDistributor treats the
+            # proven amount as incremental, so later passes execute full payouts.
+            select: shuffled_cycle
+      steps:
+        - name: claim_pathusd_rewards
+          template: neobank_reward_claim
+          with:
+            from: { var: claim.from }
+            to: { var: setup.reward_distributor.address }
+            input: { var: claim.input }
+
+  mix:
+    - sequence: neobank_reward_claims
+      weight: 100
+
+append:
+  setup:
+    steps:
+      # Reward contracts use a dedicated deployer so their CREATE addresses stay
+      # stable when the principal-flow setup changes. The committed Merkle leaves
+      # bind to reward_wrapper at CREATE(reward_admin, 4).
+      - id: reward_access_control
+        bindings:
+          admin:
+            account:
+              pool: reward_admin
+              select: { index: 0 }
+        deploy:
+          type: eip1559
+          from: { var: admin.ref }
+          artifact: MerklAccessControl
+          gas_limit: 3000000
+          constructor_args:
+            - { var: admin.address }
+      - id: reward_distributor_implementation
+        # BenchmarkDistributor keeps the authorization, proof, and payout paths
+        # but treats the proven amount as incremental so proofs are reusable.
+        deploy:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          artifact: MerklBenchmarkDistributor
+          gas_limit: 15000000
+          constructor_args: []
+      - id: reward_distributor
+        deploy:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          artifact: MerklProxy
+          gas_limit: 3000000
+          constructor_args:
+            - { var: setup.reward_distributor_implementation.address }
+            - "0x"
+      - id: reward_distribution_creator
+        deploy:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          artifact: MerklDistributionCreator
+          gas_limit: 3000000
+          constructor_args:
+            - { var: setup.reward_access_control.address }
+            - { var: setup.reward_distributor.address }
+            - { var: setup.reward_access_control.sender }
+      - id: reward_wrapper
+        deploy:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          artifact: MerklPullWrapper
+          gas_limit: 9000000
+          constructor_args:
+            - "0x20c0000000000000000000000000000000000000"
+            - { var: setup.reward_distribution_creator.address }
+            - { var: setup.reward_access_control.sender }
+      - id: initialize_reward_distributor
+        tx:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          gas_limit: 1000000
+          call:
+            to: { var: setup.reward_distributor.address }
+            abi: MerklBenchmarkDistributor
+            function: initialize
+            args:
+              - { var: setup.reward_access_control.address }
+      - id: set_reward_epoch_duration
+        tx:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          gas_limit: 1000000
+          call:
+            to: { var: setup.reward_distributor.address }
+            abi: MerklBenchmarkDistributor
+            function: setEpochDuration
+            args: [1]
+      - id: update_reward_tree
+        tx:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          to: { var: setup.reward_distributor.address }
+          gas_limit: 1000000
+          # updateTree((bytes32,bytes32)); root followed by a zero IPFS hash.
+          input: "0xd9c98087d5e22956036f00808b0b02c3ef5f41d8b308e8ff4683429f7ca239e900a4ac720000000000000000000000000000000000000000000000000000000000000000"
+      - id: mint_reward_wrapper
+        tx:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          gas_limit: 1000000
+          call:
+            to: { var: setup.reward_wrapper.address }
+            abi: MerklPullWrapper
+            function: mint
+            args:
+              - { var: setup.reward_distributor.address }
+              # Covers more than 22 million claims at 43,860 wrapper units each;
+              # the reward admin receives the same 1e12 pathUSD faucet balance.
+              - "1000000000000"
+      - id: approve_reward_underlying
+        tx:
+          type: eip1559
+          from:
+            pool: reward_admin
+            select: { index: 0 }
+          gas_limit: 1000000
+          call:
+            to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: approve
+            args:
+              - { var: setup.reward_wrapper.address }
+              - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
