@@ -7,7 +7,6 @@ const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
 const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "dex"
-    "neobank-claim"
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"

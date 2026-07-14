@@ -1,7 +1,0 @@
-# Reusable reward-proof claims.
-include: neobank-swap.yml
-
-merge:
-  mix:
-    - sequence: neobank_reward_claims
-      weight: 100
