@@ -223,8 +223,13 @@ pub fn pending_chain(snapshot_root: B256, parent_root: B256) -> Option<Vec<Arc<P
     let q = PENDING_BLOCKS.lock();
     let mut chain = Vec::new();
     let mut target = parent_root;
+    // Self-loop entries (empty blocks; defensive — they are no longer
+    // registered) must not shadow the real block with the same root.
+    let find = |target: B256| {
+        q.iter().rev().find(|b| b.root == target && b.parent_root != b.root)
+    };
     while target != snapshot_root {
-        let blk = q.iter().rev().find(|b| b.root == target)?;
+        let blk = find(target)?;
         target = blk.parent_root;
         chain.push(blk.clone());
         if chain.len() > q.len() {
@@ -269,6 +274,13 @@ impl Follower {
     ) {
         ops.sort_by(|a, b| a.0.cmp(&b.0));
         note_pending(parent_root, crate::ops_fingerprint(&ops), expected_root);
+        // Empty blocks change nothing: the root is the parent's, there is
+        // nothing to apply, and registering them would insert a self-loop
+        // entry (parent_root == root) that shadows the real block with that
+        // root in the chain walk and retires it prematurely on "apply".
+        if ops.is_empty() && expected_root == parent_root {
+            return;
+        }
         // Must be registered before anyone can build on this block's state:
         // readers overlay pending blocks over the published snapshot.
         register_pending(Arc::new(PendingBlock::from_ops(parent_root, expected_root, &ops)));

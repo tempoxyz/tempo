@@ -446,6 +446,13 @@ where
                     })
                 });
                 if snap.is_none() && flat_reads::no_state_kv_active() {
+                    warn!(
+                        target: "flatmpt",
+                        parent = %parent_root,
+                        published = ?tempo_flatmpt::published_snapshot().map(|(r, _)| r),
+                        queue = tempo_flatmpt::follower(shadow).depth(),
+                        "no-KV build waiting for a servable parent state"
+                    );
                     let deadline = Instant::now() + std::time::Duration::from_secs(15);
                     while snap.is_none() && Instant::now() < deadline {
                         std::thread::sleep(std::time::Duration::from_millis(5));
