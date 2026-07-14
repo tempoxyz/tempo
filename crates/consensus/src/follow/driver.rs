@@ -13,14 +13,18 @@ use commonware_consensus::{
         scheme::bls12381_threshold::vrf::Scheme,
         types::{Activity, Finalization},
     },
-    types::{Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
-    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
+    Signer as _,
+    bls12381::primitives::variant::MinSig,
+    certificate::Provider,
+    ed25519::{self, PublicKey},
 };
+use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
-use commonware_utils::Acknowledgement;
+use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
 
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
@@ -63,7 +67,7 @@ pub(super) fn try_init<TContext>(
         .containing(Height::new(last_finalized_number))
         .expect("strategy valid for all heights and epochs");
 
-    let last_boundary = if epoch_info.last().get() == last_finalized_number {
+    let startup_execution_boundary = if epoch_info.last().get() == last_finalized_number {
         epoch_info.last()
     } else if let Some(previous) = epoch_info.epoch().previous() {
         config
@@ -78,13 +82,13 @@ pub(super) fn try_init<TContext>(
         &mut config
             .execution_node
             .provider
-            .header_by_number(last_boundary.get())
+            .header_by_number(startup_execution_boundary.get())
             .map_err(Report::new)
             .and_then(|maybe_header| maybe_header.ok_or_eyre("execution layer did not have header"))
             .wrap_err_with(|| {
                 format!(
                     "cannot establish baseline - unable to read the header \
-                    from the last boundary block at height `{last_boundary}` \
+                    from the last boundary block at height `{startup_execution_boundary}` \
                     from the execution layer"
                 )
             })?
@@ -92,7 +96,9 @@ pub(super) fn try_init<TContext>(
             .as_ref(),
     )
     .wrap_err_with(|| {
-        format!("the last boundary (`{last_boundary}`) block header did not contain a DKG outcome")
+        format!(
+            "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
+        )
     })?;
 
     config.scheme_provider.register(
@@ -103,6 +109,7 @@ pub(super) fn try_init<TContext>(
         ),
     );
 
+    let current_epoch = onchain_outcome.epoch;
     let network_scheme = Arc::new(Scheme::certificate_verifier(
         crate::config::NAMESPACE,
         config.network_identity.identity,
@@ -112,7 +119,8 @@ pub(super) fn try_init<TContext>(
         context: ContextCell::new(context),
         config,
         mailbox: rx,
-        last_boundary,
+        startup_execution_boundary,
+        current_epoch,
         network_scheme,
     };
     Ok((actor, mailbox))
@@ -192,7 +200,8 @@ pub(super) struct Driver<TContext> {
     context: ContextCell<TContext>,
     config: Config,
     mailbox: mpsc::UnboundedReceiver<Message>,
-    last_boundary: Height,
+    startup_execution_boundary: Height,
+    current_epoch: Epoch,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
@@ -247,7 +256,7 @@ where
         let current_execution_epoch = self
             .config
             .epoch_strategy
-            .containing(self.last_boundary)
+            .containing(self.startup_execution_boundary)
             .expect("strategy is valid for all heights and epochs");
 
         if let Some(previous) = current_consensus_epoch.epoch().previous()
@@ -290,6 +299,8 @@ where
                     *onchain_outcome.sharing().public(),
                 ),
             );
+
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
         } else {
             debug!("no gap detected");
         }
@@ -336,10 +347,37 @@ where
         };
 
         let identity = scheme.identity();
-        ensure!(
-            finalization.verify(&mut self.context, &scheme, &Sequential),
-            "failed to verify finalization against scheme: {identity}"
-        );
+        if !finalization.verify(&mut self.context, &scheme, &Sequential) {
+            debug!(
+                "failed to verify finalization {} against scheme: {identity}",
+                finalization.proposal.payload
+            );
+
+            // This network may have rotated identity, so hint the boundary of
+            // the node's current epoch to unblock syncing through the next
+            // onchain scheme.
+            let boundary_height = self
+                .config
+                .epoch_strategy
+                .last(self.current_epoch)
+                .expect("strategy is valid for all heights and epochs");
+
+            let stub_peers =
+                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
+
+            debug!(
+                current_epoch = %self.current_epoch,
+                %boundary_height,
+                "hinting current epoch boundary after finalization verification failed",
+            );
+
+            self.config
+                .marshal
+                .hint_finalized(boundary_height, stub_peers)
+                .await;
+
+            return Ok(());
+        }
 
         let round = finalization.round();
         let activity = Activity::Finalization(finalization);
@@ -388,6 +426,8 @@ where
                     *onchain_outcome.network_identity(),
                 ),
             );
+
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
         }
 
         ack.acknowledge();
