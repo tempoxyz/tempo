@@ -1078,9 +1078,13 @@ where
                     if let Some(block) =
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
-                        // The ancestry walk is newest-to-oldest, so older logs replace
-                        // newer ancestry duplicates.
-                        notarized_logs.extend(block.log.clone());
+                        if let Some((dealer, log)) = block.log.clone()
+                            && !finalized_logs.contains_key(&dealer)
+                        {
+                            // The ancestry walk is newest-to-oldest, so older logs replace
+                            // newer ancestry duplicates while finalized logs stay authoritative.
+                            notarized_logs.insert(dealer, log);
+                        }
                         height = if let Some(height) = block.height.previous() {
                             height
                         } else {
@@ -1092,7 +1096,6 @@ where
                     }
                 }
                 for (dealer, log) in notarized_logs {
-                    // Finalized logs stay authoritative over ancestry logs.
                     finalized_logs.entry(dealer).or_insert(log);
                 }
             }
