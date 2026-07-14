@@ -278,7 +278,7 @@ struct Withdrawal {
     uint128 fee; // processing fee for sequencer (calculated at request time)
     bytes32 memo; // user-provided context
     uint64 gasLimit; // max gas for IWithdrawalReceiver callback (0 = no callback)
-    address fallbackRecipient; // zone address for bounce-back if call fails
+    uint64 fallbackNonce; // resolves to the zone bounce-back recipient in ZoneOutbox
     bytes callbackData; // calldata for IWithdrawalReceiver (if gasLimit > 0)
     bytes encryptedSender; // optional encrypted (sender, txHash) reveal payload
 }
@@ -292,7 +292,7 @@ struct PendingWithdrawal {
     uint128 fee; // processing fee for sequencer (calculated at request time)
     bytes32 memo; // user-provided context
     uint64 gasLimit; // max gas for IWithdrawalReceiver callback (0 = no callback)
-    address fallbackRecipient; // zone address for bounce-back if call fails
+    uint64 fallbackNonce; // resolves to the zone bounce-back recipient in ZoneOutbox
     bytes callbackData; // calldata for IWithdrawalReceiver (if gasLimit > 0)
     bytes revealTo; // optional compressed secp256k1 pubkey for sender reveal encryption
 }
@@ -513,7 +513,7 @@ interface IZonePortal {
 
     event WithdrawalBounceBack(
         bytes32 indexed newCurrentDepositQueueHash,
-        address indexed fallbackRecipient,
+        uint64 indexed fallbackNonce,
         address token,
         uint128 amount,
         uint64 depositNumber
@@ -1051,7 +1051,7 @@ interface IZoneOutbox {
         uint128 fee,
         bytes32 memo,
         uint64 gasLimit,
-        address fallbackRecipient,
+        uint64 fallbackNonce,
         bytes data,
         bytes revealTo
     );
@@ -1073,6 +1073,12 @@ interface IZoneOutbox {
 
     /// @notice Next withdrawal index (monotonically increasing)
     function nextWithdrawalIndex() external view returns (uint64);
+
+    /// @notice Last nonce assigned to a user withdrawal fallback recipient
+    function lastFallbackNonce() external view returns (uint64);
+
+    /// @notice Resolve and delete a fallback recipient. Only callable by ZoneInbox.
+    function consumeFallbackRecipient(uint64 fallbackNonce) external returns (address recipient);
 
     /// @notice Current withdrawal batch index (monotonically increasing)
     function withdrawalBatchIndex() external view returns (uint64);
