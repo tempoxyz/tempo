@@ -25,8 +25,6 @@ struct HardwareInfo {
     physical_core_count: usize,
     logical_core_count: usize,
     total_memory_bytes: u64,
-    disk_count: usize,
-    disk_total_bytes: u64,
     datadir_file_system: String,
     static_files_file_system: String,
     consensus_file_system: String,
@@ -57,9 +55,9 @@ fn hardware_metrics(config: &PrometheusMetricsConfig) -> eyre::Result<String> {
         cpu_brand: cpu.map_or_else(String::new, |cpu| cpu.brand().to_owned()),
         physical_core_count: System::physical_core_count().unwrap_or_default(),
         logical_core_count: system.cpus().len(),
-        total_memory_bytes: system.total_memory(),
-        disk_count: disks.len(),
-        disk_total_bytes: disks.iter().map(|disk| disk.total_space()).sum(),
+        total_memory_bytes: system
+            .cgroup_limits()
+            .map_or_else(|| system.total_memory(), |limits| limits.total_memory),
         datadir_file_system: file_system_for_path(&disks, &config.datadir),
         static_files_file_system: file_system_for_path(&disks, &config.static_files_dir),
         consensus_file_system: file_system_for_path(&disks, &config.consensus_dir),
