@@ -865,7 +865,7 @@ async fn forward_finalized<TContext: Pacer>(
     } = request;
 
     // The finalized watermark reported by the execution layer is taken as
-    // gospel: a finalized block below the watermark is never forwarded
+    // gospel: a finalized block at or below the watermark is never forwarded
     // (for example when consensus replays finalized blocks after restoring
     // from a snapshot whose anchor is behind the execution state), because
     // the new-payload + forkchoice-update combination would move the
@@ -888,7 +888,7 @@ async fn forward_finalized<TContext: Pacer>(
         .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
     let consensus_context = block.header().consensus_context;
-    let new_canonicalized = if block.height().get() < execution_finalized.number {
+    let new_canonicalized = if block.height().get() <= execution_finalized.number {
         let canonical_hash = execution_node
             .provider
             .block_hash(block.height().get())
@@ -901,7 +901,7 @@ async fn forward_finalized<TContext: Pacer>(
             })?;
         ensure!(
             canonical_hash == Some(block.digest().0),
-            "finalized block with digest `{}` at height `{}` is below the \
+            "finalized block with digest `{}` at height `{}` is at or below the \
             execution layer's finalized block `{}` at height `{}`, but does not \
             match the execution layer's canonical chain (canonical hash: `{:?}`)",
             block.digest(),
