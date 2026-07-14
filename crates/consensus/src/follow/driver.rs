@@ -218,7 +218,14 @@ where
             select!(
                 biased;
 
-                Some(message) = self.mailbox.recv() => {
+                message = self.mailbox.recv() => {
+                    let Some(message) = message else {
+                        // All senders (marshal reporter, upstream event reporter) dropped:
+                        // the driver is shutting down. Exit cleanly. Binding the full Option
+                        // (rather than `Some(message)`) keeps this branch always-enabled, so
+                        // select! never panics with "all branches disabled and no else branch".
+                        break;
+                    };
                     match message {
                         Message::Event(event) => {
                             // Emits an event on error.
