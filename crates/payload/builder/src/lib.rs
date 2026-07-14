@@ -430,10 +430,15 @@ where
                 // (follower lagging, rebuild race) this block reads from MDBX —
                 // unless the KV copy isn't persisted at all, in which case the
                 // only correct option is to wait for the follower.
-                let mut snap = {
-                    let g = shadow.read();
-                    g.at_parent(parent_header.state_root()).then(|| g.snapshot())
-                };
+                //
+                // Bounded wait: the follower holds the write lock for its
+                // whole apply (seconds on gas-capped blocks) — a plain read()
+                // here serialized every build behind the previous block's
+                // apply. Falling back to MDBX keeps the builder moving; the
+                // follower catches up in the background.
+                let mut snap = shadow
+                    .try_read_for(std::time::Duration::from_millis(50))
+                    .and_then(|g| g.at_parent(parent_header.state_root()).then(|| g.snapshot()));
                 if snap.is_none() && flat_reads::no_state_kv_active() {
                     let deadline = Instant::now() + std::time::Duration::from_secs(15);
                     while snap.is_none() && Instant::now() < deadline {
