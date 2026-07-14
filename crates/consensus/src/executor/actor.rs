@@ -909,6 +909,9 @@ async fn forward_finalized<TContext: Pacer>(
             execution_finalized.number,
             canonical_hash,
         );
+        // A finalized tip can advance the execution layer before the corresponding finalized
+        // block is delivered during normal operation. The canonical hash check above proves this
+        // is that same block, so it must still contribute to the self-proposal metric.
         if let Some(public_key) = public_key.as_ref()
             && block
                 .header()
