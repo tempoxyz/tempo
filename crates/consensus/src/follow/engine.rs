@@ -155,7 +155,6 @@ impl<TUpstream> Config<TUpstream> {
             executor::Config {
                 execution_node: self.execution_node.clone(),
                 marshal: marshal_mailbox.clone(),
-                epoch_strategy: epoch_strategy.clone(),
             },
         );
 

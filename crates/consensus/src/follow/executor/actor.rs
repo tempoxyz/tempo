@@ -1,13 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{
-    marshal::Update,
-    types::{Epocher as _, FixedEpocher, Height},
-};
+use commonware_consensus::{marshal::Update, types::Height};
 use commonware_runtime::{ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
+use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_provider::{
     BlockHashReader as _, CanonStateSubscriptions as _, DatabaseProviderFactory as _,
@@ -31,7 +28,6 @@ pub(crate) struct Actor<TContext> {
     context: ContextCell<TContext>,
     execution_node: Arc<TempoFullNode>,
     marshal: crate::alias::marshal::Mailbox,
-    epoch_strategy: FixedEpocher,
     mailbox: mpsc::UnboundedReceiver<Update<Block>>,
 
     pending_tip: Option<FinalizedTip>,
@@ -54,7 +50,6 @@ where
             mailbox,
             marshal: config.marshal,
             execution_node: config.execution_node,
-            epoch_strategy: config.epoch_strategy,
 
             forkchoice_task: OptionFuture::none(),
             pending_tip: None,
@@ -112,7 +107,7 @@ where
     }
 
     fn observe_tip(&mut self, tip: FinalizedTip) {
-        if self.sync_target.is_none() && self.tip_is_more_than_one_epoch_ahead(&tip) {
+        if self.sync_target.is_none() {
             info!(height = %tip.height, digest = %tip.digest, "setting sync target");
             self.sync_target = Some(tip);
         }
@@ -124,29 +119,6 @@ where
         {
             self.pending_tip = Some(tip);
         }
-    }
-
-    fn tip_is_more_than_one_epoch_ahead(&self, tip: &FinalizedTip) -> bool {
-        let canonical_height = self
-            .execution_node
-            .provider
-            .canonical_in_memory_state()
-            .chain_info()
-            .best_number;
-
-        let canonical_epoch = self
-            .epoch_strategy
-            .containing(commonware_consensus::types::Height::new(canonical_height))
-            .expect("epoch strategy is valid for every height")
-            .epoch();
-
-        let tip_epoch = self
-            .epoch_strategy
-            .containing(tip.height)
-            .expect("epoch strategy is valid for every height")
-            .epoch();
-
-        tip_epoch > canonical_epoch.next()
     }
 
     fn start_forkchoice_task(&mut self) {
