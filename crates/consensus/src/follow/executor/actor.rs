@@ -2,7 +2,7 @@
 //!
 //! This actor sends verified finalized tips to Reth as head, safe, and finalized forkchoice
 //! updates, periodically refreshes that forkchoice with a heartbeat, and advances marshal's floor
-//! only after the selected sync target is durably canonical in Reth.
+//! to one epoch behind the finalized tip when that block is durably canonical in Reth.
 //!
 //! Unlike the executor used by validator nodes, it does not build payloads, canonicalize proposal
 //! heads, or forward finalized blocks into the execution layer. Followers receive complete blocks
@@ -13,18 +13,16 @@ use std::{sync::Arc, time::Duration};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     marshal::Update,
-    types::{Height, HeightDelta},
+    types::{Epocher as _, FixedEpocher, Height},
 };
 use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_provider::{
-    BlockHashReader as _, CanonStateSubscriptions as _, DatabaseProviderFactory as _,
-};
+use reth_provider::{BlockHashReader as _, DatabaseProviderFactory as _};
 use tempo_node::TempoFullNode;
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 use super::Config;
 use crate::{
@@ -42,10 +40,10 @@ pub(crate) struct Actor<TContext> {
     context: ContextCell<TContext>,
     execution_node: Arc<TempoFullNode>,
     marshal: crate::alias::marshal::Mailbox,
+    epoch_strategy: FixedEpocher,
     mailbox: mpsc::UnboundedReceiver<Update<Block>>,
 
     tip: FinalizedTip,
-    sync_target: Option<FinalizedTip>,
     forkchoice_task: OptionFuture<BoxFuture<'static, (FinalizedTip, eyre::Result<()>)>>,
     fcu_heartbeat_interval: Duration,
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
@@ -63,6 +61,7 @@ where
         let Config {
             execution_node,
             marshal,
+            epoch_strategy,
             fcu_heartbeat_interval,
         } = config;
 
@@ -86,11 +85,11 @@ where
 
             mailbox,
             marshal,
+            epoch_strategy,
             execution_node,
 
             tip,
             forkchoice_task: OptionFuture::none(),
-            sync_target: None,
 
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
@@ -102,14 +101,7 @@ where
     }
 
     async fn run(mut self) {
-        let mut canonical_state = self.execution_node.provider.canonical_state_stream();
-
         loop {
-            if let Err(error) = self.complete_sync_target_if_canonical().await {
-                error!(%error, "failed checking marshal floor advancement");
-                break;
-            }
-
             self.update_fcu_heartbeat_timer();
 
             tokio::select! {
@@ -131,38 +123,21 @@ where
                     match update {
                         Update::Block(_, ack) => ack.acknowledge(),
                         Update::Tip(_, height, digest) => {
-                            let previous_height = self.tip.height;
-
-                            self.observe_tip(FinalizedTip { height, digest });
-                            if self.tip.height > previous_height {
+                            if height > self.tip.height {
+                                self.tip = FinalizedTip { height, digest };
                                 self.start_forkchoice_task();
+                                if let Err(error) = self.try_advance_floor().await {
+                                    warn!(%error, "failed checking marshal floor advancement");
+                                }
                             }
                         }
                     }
-                }
-
-                notification = canonical_state.next() => {
-                    let Some(_notification) = notification else {
-                        error!("canonical state notification stream ended");
-                        break;
-                    };
                 }
 
                 _ = (&mut self.fcu_heartbeat_timer).fuse() => {
                     self.send_forkchoice_update_heartbeat();
                 }
             }
-        }
-    }
-
-    fn observe_tip(&mut self, tip: FinalizedTip) {
-        if self.sync_target.is_none() {
-            debug!(height = %tip.height, digest = %tip.digest, "setting sync target");
-            self.sync_target = Some(tip);
-        }
-
-        if tip.height > self.tip.height {
-            self.tip = tip;
         }
     }
 
@@ -211,10 +186,12 @@ where
     }
 
     #[instrument(skip_all, err)]
-    async fn complete_sync_target_if_canonical(&mut self) -> eyre::Result<()> {
-        let Some(target) = self.sync_target.as_ref() else {
-            return Ok(());
-        };
+    async fn try_advance_floor(&mut self) -> eyre::Result<()> {
+        let epoch_length = self
+            .epoch_strategy
+            .containing(self.tip.height)
+            .expect("strategy is valid for all heights and epochs")
+            .length();
 
         let database = self
             .execution_node
@@ -222,32 +199,18 @@ where
             .database_provider_ro()
             .wrap_err("failed opening execution database")?;
 
-        let target_hash = target.digest.0;
-        let canonical_hash = database
-            .block_hash(target.height.get())
-            .wrap_err("failed reading sync target canonical hash")?;
+        let floor_height = self.tip.height.saturating_sub(epoch_length.into());
+        let floor_digest = database
+            .block_hash(floor_height.get())
+            .wrap_err("failed reading floor block hash")?;
 
-        let Some(canonical_hash) = canonical_hash else {
+        let Some(floor_digest) = floor_digest else {
+            debug!(tip_height = %self.tip.height, %floor_height, "floor not durable in execution");
             return Ok(());
         };
 
-        ensure!(
-            canonical_hash == target_hash,
-            "sync target canonical hash mismatch: expected {target_hash}, got {canonical_hash}",
-        );
-
-        let target = self.sync_target.take().expect("target exists");
-        let new_floor = target.height.saturating_sub(HeightDelta::new(512));
-
-        debug!(%target.height, %target.digest, %new_floor, "sync target is canonical; advancing marshal floor");
-
-        // The current commonware API accepts a height. Once the certified
-        // floor API lands, fetch and pass `finalization` here instead. We set the floor
-        // to one-before so that the sync block is replayed (may be a boundary).
-        //
-        // The finalization is guaranteed to exist as the sync targets come from finalizations
-        // observed by the driver, reported to the marshal.
-        self.marshal.set_floor(new_floor).await;
+        debug!(tip_height = %self.tip.height, %floor_height, %floor_digest, "advancing marshal floor");
+        self.marshal.set_floor(floor_height).await;
 
         Ok(())
     }
