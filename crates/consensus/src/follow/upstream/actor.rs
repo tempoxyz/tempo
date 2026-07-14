@@ -1,6 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
@@ -21,7 +20,7 @@ use jsonrpsee::{
 use rand_08::Rng as _;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
-use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
+use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tempo_telemetry_util::display_duration;
 use tokio::{
     select,
@@ -30,7 +29,10 @@ use tokio::{
 use tracing::{debug, debug_span, instrument, warn, warn_span};
 use url::Url;
 
-use crate::utils::OptionFuture;
+use crate::{
+    consensus::{Block, Digest},
+    utils::OptionFuture,
+};
 
 pub(super) type EventStream =
     Either<stream::Empty<Result<Event, serde_json::Error>>, Fuse<Subscription<Event>>>;
@@ -64,8 +66,8 @@ pub(crate) struct Actor<TContext> {
     pub(super) event_stream: EventStream,
     /// Requests for finalizations while the actor is trying to establish a connection.
     pub(super) finalization_waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
-    /// Requests for execution blocks while the actor is trying to establish a connection.
-    pub(super) block_waiters: Vec<(B256, oneshot::Sender<Option<SealedOrRecoveredBlock<Block>>>)>,
+    /// Requests for consensus blocks while the actor is trying to establish a connection.
+    pub(super) block_waiters: Vec<(Digest, oneshot::Sender<Option<Block>>)>,
 }
 
 impl<TContext> Actor<TContext>
@@ -162,8 +164,8 @@ where
                         super::ingress::Message::GetFinalization { height, response, } => {
                             self.finalization_waiters.push((height, response));
                         }
-                        super::ingress::Message::GetBlock { hash, response, } => {
-                            self.block_waiters.push((hash, response));
+                        super::ingress::Message::GetBlock { digest, response, } => {
+                            self.block_waiters.push((digest, response));
                         }
                     }
                 }
@@ -220,11 +222,11 @@ where
                 .spawn(move |_| get_finalization(client, height, response));
         }
 
-        for (hash, response) in self.block_waiters.drain(..) {
+        for (digest, response) in self.block_waiters.drain(..) {
             let client = client.clone();
             self.context
                 .with_label("get_block")
-                .spawn(move |_| get_block(client, hash, response));
+                .spawn(move |_| get_block(client, digest, response));
         }
     }
 }
@@ -295,17 +297,17 @@ async fn get_finalization(
         .map_err(|_| eyre::eyre!("receiver went away"))
 }
 
-/// Fetches a full execution block from the upstream node.
-#[instrument(skip_all, fields(%hash), err)]
+/// Fetches a full consensus block from the upstream node.
+#[instrument(skip_all, fields(%digest), err)]
 async fn get_block(
     client: Arc<WsClient>,
-    hash: B256,
-    response: oneshot::Sender<Option<SealedOrRecoveredBlock<Block>>>,
+    digest: Digest,
+    response: oneshot::Sender<Option<Block>>,
 ) -> eyre::Result<()> {
     let block = client
         .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
             "eth_getBlockByHash",
-            rpc_params![hash, true],
+            rpc_params![digest.0, true],
         )
         .await
         .wrap_err("failed getting block by hash")?
@@ -317,9 +319,12 @@ async fn get_block(
             ))
         });
 
-    if let Some(block) = &block {
-        ensure!(block.hash() == hash, "mismatched block hash");
-    }
+    let block = block
+        .map(|block| {
+            ensure!(block.hash() == digest.0, "mismatched block hash");
+            Ok(Block::from_execution_block_unchecked(block, None))
+        })
+        .transpose()?;
 
     response
         .send(block)

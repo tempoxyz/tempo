@@ -1,10 +1,9 @@
-use alloy_primitives::B256;
 use commonware_consensus::types::Height;
 use commonware_utils::channel::fallible::FallibleExt as _;
-use reth_primitives_traits::SealedOrRecoveredBlock;
 use tempo_node::rpc::consensus::CertifiedBlock;
-use tempo_primitives::Block;
 use tokio::sync::{mpsc, oneshot};
+
+use crate::consensus::{Block, Digest};
 
 pub(super) enum Message {
     /// Request for a finalization of a given height.
@@ -12,10 +11,10 @@ pub(super) enum Message {
         height: Height,
         response: oneshot::Sender<Option<CertifiedBlock>>,
     },
-    /// Request an execution block by hash.
+    /// Request a consensus block by digest.
     GetBlock {
-        hash: B256,
-        response: oneshot::Sender<Option<SealedOrRecoveredBlock<Block>>>,
+        digest: Digest,
+        response: oneshot::Sender<Option<Block>>,
     },
 }
 
@@ -35,9 +34,9 @@ impl Mailbox {
             .flatten()
     }
 
-    pub(crate) async fn get_block(&self, hash: B256) -> Option<SealedOrRecoveredBlock<Block>> {
+    pub(crate) async fn get_block(&self, digest: Digest) -> Option<Block> {
         self.0
-            .request(move |response| Message::GetBlock { hash, response })
+            .request(move |response| Message::GetBlock { digest, response })
             .await
             .flatten()
     }

@@ -25,7 +25,7 @@ use tempo_node::TempoFullNode;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::{Block, Digest};
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -250,12 +250,11 @@ async fn resolve_block(
             Ok(consensus_block.encode())
         }
         Ok(None) => {
-            let Some(block) = upstream.get_block(block_digest.0).await else {
+            let Some(block) = upstream.get_block(block_digest).await else {
                 return Err(true);
             };
 
-            let consensus_block = Block::from_execution_block_unchecked(block, None);
-            Ok(consensus_block.encode())
+            Ok(block.encode())
         }
     }
 }
