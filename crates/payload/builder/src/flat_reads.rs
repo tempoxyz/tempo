@@ -137,6 +137,191 @@ fn other(e: anyhow::Error) -> reth_errors::ProviderError {
     reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}")))
 }
 
+/// Latency of a single state-element fetch on the prewarm workers' cache-miss
+/// path (whatever sits below the execution cache: the flat snapshot in flat
+/// mode, MDBX/rocksdb otherwise). Log2-bucket ns histograms, process-wide;
+/// a summary line is logged every 2^17 samples per kind.
+pub(crate) mod fetch_stats {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    const BUCKETS: usize = 40; // bucket i covers [2^(i-1), 2^i) ns
+    static HIST: [[AtomicU64; BUCKETS]; 2] =
+        [const { [const { AtomicU64::new(0) }; BUCKETS] }; 2];
+    static COUNT: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+    static SUM_NS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+    static MAX_NS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+    pub fn record(kind: usize, ns: u64) {
+        let b = (64 - ns.leading_zeros() as usize).min(BUCKETS - 1);
+        HIST[kind][b].fetch_add(1, Relaxed);
+        SUM_NS[kind].fetch_add(ns, Relaxed);
+        MAX_NS[kind].fetch_max(ns, Relaxed);
+        let n = COUNT[kind].fetch_add(1, Relaxed) + 1;
+        if n & ((1 << 17) - 1) == 0 {
+            log_summary(kind, n);
+        }
+    }
+
+    fn percentile(kind: usize, total: u64, p: f64) -> u64 {
+        let target = (total as f64 * p) as u64;
+        let mut cum = 0u64;
+        for (i, b) in HIST[kind].iter().enumerate() {
+            cum += b.load(Relaxed);
+            if cum >= target {
+                return 1u64 << i; // upper edge of the bucket
+            }
+        }
+        1u64 << (BUCKETS - 1)
+    }
+
+    fn log_summary(kind: usize, n: u64) {
+        let name = ["account", "storage"][kind];
+        tracing::info!(
+            target: "flatmpt",
+            kind = name,
+            n,
+            avg_us = SUM_NS[kind].load(Relaxed) / n / 1000,
+            p50_us = percentile(kind, n, 0.50) / 1000,
+            p90_us = percentile(kind, n, 0.90) / 1000,
+            p99_us = percentile(kind, n, 0.99) / 1000,
+            p999_us = percentile(kind, n, 0.999) / 1000,
+            max_us = MAX_NS[kind].load(Relaxed) / 1000,
+            "worker fetch stats"
+        );
+    }
+}
+
+/// Wraps the provider below the prewarm execution cache and times every
+/// account/storage fetch (i.e. only real fetches — cache hits never get here).
+pub(crate) struct FetchTimedProvider {
+    pub inner: reth_storage_api::StateProviderBox,
+}
+
+impl AccountReader for FetchTimedProvider {
+    fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
+        let t = std::time::Instant::now();
+        let r = self.inner.basic_account(address);
+        fetch_stats::record(0, t.elapsed().as_nanos() as u64);
+        r
+    }
+}
+
+impl StateProvider for FetchTimedProvider {
+    fn storage(
+        &self,
+        account: Address,
+        storage_key: alloy_primitives::StorageKey,
+    ) -> ProviderResult<Option<alloy_primitives::StorageValue>> {
+        let t = std::time::Instant::now();
+        let r = self.inner.storage(account, storage_key);
+        fetch_stats::record(1, t.elapsed().as_nanos() as u64);
+        r
+    }
+}
+
+impl BlockHashReader for FetchTimedProvider {
+    fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
+        self.inner.block_hash(number)
+    }
+    fn convert_block_hash(
+        &self,
+        hash_or_number: alloy_eips::BlockHashOrNumber,
+    ) -> ProviderResult<Option<B256>> {
+        self.inner.convert_block_hash(hash_or_number)
+    }
+    fn canonical_hashes_range(&self, start: u64, end: u64) -> ProviderResult<Vec<B256>> {
+        self.inner.canonical_hashes_range(start, end)
+    }
+}
+
+impl BytecodeReader for FetchTimedProvider {
+    fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
+        self.inner.bytecode_by_hash(code_hash)
+    }
+}
+
+impl StateRootProvider for FetchTimedProvider {
+    fn state_root(&self, hashed_state: HashedPostState) -> ProviderResult<B256> {
+        self.inner.state_root(hashed_state)
+    }
+    fn state_root_from_nodes(&self, input: TrieInput) -> ProviderResult<B256> {
+        self.inner.state_root_from_nodes(input)
+    }
+    fn state_root_with_updates(
+        &self,
+        hashed_state: HashedPostState,
+    ) -> ProviderResult<(B256, TrieUpdates)> {
+        self.inner.state_root_with_updates(hashed_state)
+    }
+    fn state_root_from_nodes_with_updates(
+        &self,
+        input: TrieInput,
+    ) -> ProviderResult<(B256, TrieUpdates)> {
+        self.inner.state_root_from_nodes_with_updates(input)
+    }
+}
+
+impl StorageRootProvider for FetchTimedProvider {
+    fn storage_root(
+        &self,
+        address: Address,
+        hashed_storage: HashedStorage,
+    ) -> ProviderResult<B256> {
+        self.inner.storage_root(address, hashed_storage)
+    }
+    fn storage_proof(
+        &self,
+        address: Address,
+        slot: B256,
+        hashed_storage: HashedStorage,
+    ) -> ProviderResult<StorageProof> {
+        self.inner.storage_proof(address, slot, hashed_storage)
+    }
+    fn storage_multiproof(
+        &self,
+        address: Address,
+        slots: &[B256],
+        hashed_storage: HashedStorage,
+    ) -> ProviderResult<StorageMultiProof> {
+        self.inner.storage_multiproof(address, slots, hashed_storage)
+    }
+}
+
+impl StateProofProvider for FetchTimedProvider {
+    fn proof(
+        &self,
+        input: TrieInput,
+        address: Address,
+        slots: &[B256],
+    ) -> ProviderResult<AccountProof> {
+        self.inner.proof(input, address, slots)
+    }
+    fn multiproof(
+        &self,
+        input: TrieInput,
+        targets: MultiProofTargets,
+    ) -> ProviderResult<MultiProof> {
+        self.inner.multiproof(input, targets)
+    }
+    fn witness(
+        &self,
+        input: TrieInput,
+        target: HashedPostState,
+        mode: reth_trie_common::ExecutionWitnessMode,
+    ) -> ProviderResult<Vec<Bytes>> {
+        self.inner.witness(input, target, mode)
+    }
+}
+
+impl HashedPostStateProvider for FetchTimedProvider {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> HashedPostState {
+        self.inner.hashed_post_state(bundle_state)
+    }
+}
+
 impl FlatReadProvider {
     /// Account point-read; when a reveal feed is attached and this is the
     /// first touch of `key`, the read's walk doubles as the reveal.

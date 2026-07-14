@@ -518,6 +518,10 @@ where
             });
         }
 
+        // Time every real fetch (below the cache: hits never reach this).
+        state_provider =
+            Box::new(crate::flat_reads::FetchTimedProvider { inner: state_provider });
+
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
                 state_provider,
