@@ -140,9 +140,15 @@ def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
         return
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
-    let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+    # BLOAT_TOKENS: comma-separated token-id override (e.g. "0" for a single
+    # 1B-account token). BLOAT_KECCAK_SIGNABLE=1: every bloat address is
+    # derived from a keccak-derived key, so all accounts can sign (txgen
+    # fast_signable pools).
+    let token_ids = if ($env.BLOAT_TOKENS? | is-empty) { $TIP20_TOKEN_IDS } else { $env.BLOAT_TOKENS | split row "," | each { |t| $t | str trim | into int } }
+    let token_args = ($token_ids | each { |id| ["--token" $"($id)"] } | flatten)
     let signable_args = if ($env.BLOAT_SIGNABLE? | is-empty) { [] } else { ["--signable-count" $env.BLOAT_SIGNABLE] }
-    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args ...$signable_args]
+    let keccak_args = if ($env.BLOAT_KECCAK_SIGNABLE? | default "" ) == "1" { ["--keccak-signable"] } else { [] }
+    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args ...$signable_args ...$keccak_args]
 }
 
 # Load the bloat file into a single node's database

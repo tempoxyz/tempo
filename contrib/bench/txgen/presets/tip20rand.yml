@@ -1,0 +1,55 @@
+# Truly random access over the entire bloated state: every bloat address is a
+# keccak-derived *signable* account (generate-state-bloat --keccak-signable,
+# single token), and each transfer picks BOTH sender and recipient uniformly
+# from that range. Every transaction therefore reads a cold sender balance at
+# admission and execution — no hot sender pool anywhere.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    fast_signable:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - 0
+        - ${TXGEN_RAND_ACCOUNTS}
+
+address_pools:
+  rand_recipients:
+    fast_signable:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - 0
+        - ${TXGEN_RAND_ACCOUNTS}
+
+artifacts:
+  ERC20: ../erc20.abi.json
+
+templates:
+  tip20_transfer_rand:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 5
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - address_pool:
+            pool: rand_recipients
+            select: random
+        - 1
+
+mix:
+  - template: tip20_transfer_rand
+    weight: 100

@@ -68,6 +68,13 @@ pub(crate) struct GenerateStateBloat {
     #[arg(long, default_value = "10000")]
     signable_count: usize,
 
+    /// Derive EVERY address from a keccak-derived secp256k1 key
+    /// (`sk_i = keccak256(keccak256(mnemonic) || be64(i) || "sk")`), making
+    /// all bloat accounts signable. Matches txgen's `fast_signable` pools.
+    /// `--signable-count` is ignored in this mode.
+    #[arg(long, default_value_t = false)]
+    keccak_signable: bool,
+
     /// Number of entries to process per chunk. Controls peak memory usage.
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
@@ -82,6 +89,7 @@ impl GenerateStateBloat {
             out,
             balance,
             signable_count,
+            keccak_signable,
             chunk_size,
         } = self;
 
@@ -172,7 +180,9 @@ impl GenerateStateBloat {
             let slot_bytes: Vec<[u8; 32]> = chunk_indices
                 .into_par_iter()
                 .map(|i| {
-                    let addr = if i < actual_signable {
+                    let addr = if keccak_signable {
+                        derive_address_keccak_signable(&seed, i as u64)
+                    } else if i < actual_signable {
                         let child = parent_key
                             .derive_child(i as u32)
                             .expect("child derivation should not fail");
@@ -237,6 +247,24 @@ fn token_address(token_id: u64) -> Address {
     bytes[..12].copy_from_slice(&TIP20_PAYMENT_PREFIX);
     bytes[12..].copy_from_slice(&token_id.to_be_bytes());
     Address::from(bytes)
+}
+
+/// Address of the keccak-derived signable key for `index`:
+/// `sk = keccak256(seed || be64(index) || "sk")`, rehashing in the
+/// (cryptographically negligible) case the scalar is invalid. Must stay
+/// byte-identical to txgen's `derive_fast_signable_signer`.
+fn derive_address_keccak_signable(seed: &[u8; 32], index: u64) -> Address {
+    let mut buf = [0u8; 42];
+    buf[..32].copy_from_slice(seed);
+    buf[32..40].copy_from_slice(&index.to_be_bytes());
+    buf[40..].copy_from_slice(b"sk");
+    let mut hash = keccak256(buf);
+    loop {
+        if let Ok(key) = k256::ecdsa::SigningKey::from_bytes((&hash.0).into()) {
+            return secret_key_to_address(&key);
+        }
+        hash = keccak256(hash);
+    }
 }
 
 /// Fast address derivation using keccak256(seed || index).
