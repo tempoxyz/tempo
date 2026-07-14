@@ -27,6 +27,20 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    /// One `Advance` per consumed transaction, sent by the consumer itself,
+    /// so the pool lookahead stays constant no matter how long warm tasks
+    /// take. With completion-driven dispatch (the old scheme, and still the
+    /// parallel mode), a correlated stall of all warm workers stops dispatch
+    /// entirely: the consumer drains the ~60-tx buffer in under a millisecond
+    /// and then parks for the remainder of the stall.
+    exec_driven: bool,
+}
+
+/// `TEMPO_PREWARM_EXEC_DRIVEN=0` reverts non-parallel dispatch to
+/// completion-driven (A/B knob).
+fn exec_driven_dispatch() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TEMPO_PREWARM_EXEC_DRIVEN").as_deref() != Ok("0"))
 }
 
 impl BestTransactionsPrewarming {
@@ -45,6 +59,7 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            exec_driven: !prewarm.parallel && exec_driven_dispatch(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -78,6 +93,7 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let exec_driven = !ctx.prewarm.parallel && exec_driven_dispatch();
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -121,7 +137,9 @@ impl BestTransactionsPrewarming {
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    if !exec_driven {
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    }
                 });
             };
 
@@ -145,11 +163,21 @@ impl BestTransactionsPrewarming {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
+                        let mut dropped = 0usize;
                         for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
+                            if let Some(tx) = tx {
+                                if is_invalidated_buffered_transaction(&invalid.tx, &tx.tx) {
+                                    dropped += 1;
+                                } else {
+                                    let _ = ctx.transactions_tx.send(Some(tx));
+                                }
+                            }
+                        }
+                        if exec_driven {
+                            // Replace evicted buffer entries; with exec-driven
+                            // dispatch nobody else refills the lookahead.
+                            for _ in 0..dropped {
+                                advance(&mut ctx);
                             }
                         }
                     }
@@ -284,6 +312,12 @@ impl Iterator for BestTransactionsPrewarming {
                 }
             }
             tx
+        }
+        if self.exec_driven {
+            // One dispatch per consumed transaction: the lookahead window is
+            // pinned to exec's own progress, never to warm-task completions.
+            let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
+            return self.transactions_rx.recv().ok().flatten().map(gate);
         }
         if let Ok(Some(tx)) = self.transactions_rx.try_recv().map(|o| o.map(gate)) {
             return Some(tx);
@@ -746,6 +780,7 @@ mod tests {
                 evm_env,
                 stop: Arc::default(),
                 parallel: false,
+                flat: None,
             },
             TestBestTransactions::new(txs, log),
         );
@@ -785,19 +820,24 @@ mod tests {
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let lookahead = executor.prewarming_pool().current_num_threads() * 2;
+        let txs = (0..lookahead + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
 
         let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
-        wait_until(|| log.lock().unwrap().yielded == expected.len());
+        // Exec-driven dispatch: the source is drained up to the lookahead
+        // window without consumer progress, and past it only as the consumer
+        // advances.
+        wait_until(|| log.lock().unwrap().yielded == lookahead);
 
         let actual = (0..expected.len())
             .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+        wait_until(|| log.lock().unwrap().yielded == expected.len());
     }
 
     #[test]
