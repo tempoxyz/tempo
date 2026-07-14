@@ -54,7 +54,8 @@ fn hardware_metrics(config: &PrometheusMetricsConfig) -> eyre::Result<String> {
         cpu_vendor: cpu.map_or_else(String::new, |cpu| cpu.vendor_id().to_owned()),
         cpu_brand: cpu.map_or_else(String::new, |cpu| cpu.brand().to_owned()),
         physical_core_count: System::physical_core_count().unwrap_or_default(),
-        logical_core_count: system.cpus().len(),
+        logical_core_count: std::thread::available_parallelism()
+            .map_or_else(|_| system.cpus().len(), |count| count.get()),
         total_memory_bytes: system
             .cgroup_limits()
             .map_or_else(|| system.total_memory(), |limits| limits.total_memory),
