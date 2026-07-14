@@ -415,6 +415,18 @@ where
         if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
             let provider = ctx.node.provider().clone();
             let chain_spec = chain_spec.clone();
+            // Resolution is cached per tip: pool validation calls this for
+            // every incoming transaction's fee-balance read, so the walk must
+            // not repeat per read.
+            let cached: Arc<
+                std::sync::Mutex<
+                    Option<(
+                        B256,
+                        tempo_flatmpt::FlatSnapshot,
+                        Vec<Arc<tempo_flatmpt::PendingBlock>>,
+                    )>,
+                >,
+            > = Arc::new(std::sync::Mutex::new(None));
             let resolve = move || -> Result<
                 (tempo_flatmpt::FlatSnapshot, Vec<Arc<tempo_flatmpt::PendingBlock>>),
                 reth_errors::ProviderError,
@@ -427,6 +439,12 @@ where
                     .latest_header()?
                     .ok_or_else(|| err("no canonical head for flat tip read"))?
                     .state_root();
+                if let Ok(guard) = cached.lock()
+                    && let Some((root, snap, chain)) = guard.as_ref()
+                    && *root == tip_root
+                {
+                    return Ok((snap.clone(), chain.clone()));
+                }
                 let shadow = tempo_flatmpt::shadow(|| {
                     (
                         tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
@@ -441,12 +459,16 @@ where
                     if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
                         && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
                     {
+                        if let Ok(mut g) = cached.lock() { *g = Some((tip_root, snap.clone(), chain.clone())); }
                         return Ok((snap, chain));
                     }
                     if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
                         && g.at_parent(tip_root)
                     {
-                        return Ok((g.snapshot(), Vec::new()));
+                        let snap = g.snapshot();
+                        drop(g);
+                        if let Ok(mut g) = cached.lock() { *g = Some((tip_root, snap.clone(), Vec::new())); }
+                        return Ok((snap, Vec::new()));
                     }
                     if std::time::Instant::now() > deadline {
                         return Err(err("flat store cannot serve the canonical tip state"));
