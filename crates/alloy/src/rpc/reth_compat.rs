@@ -146,6 +146,8 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 || nonce_key.is_some()
                 || key_authorization.is_some()
                 || key_id.is_some()
+                || key_type.is_some()
+                || key_data.is_some()
                 || fee_payer.is_some()
                 || valid_before.is_some()
                 || valid_after.is_some()
