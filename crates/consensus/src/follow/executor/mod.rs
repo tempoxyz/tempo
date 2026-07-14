@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use commonware_consensus::types::FixedEpocher;
+use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_runtime::{Clock, Pacer, Spawner};
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
@@ -21,6 +21,7 @@ pub(crate) struct Config {
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) epoch_strategy: FixedEpocher,
+    pub(crate) floor: Height,
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 

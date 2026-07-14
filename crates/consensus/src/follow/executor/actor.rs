@@ -2,7 +2,7 @@
 //!
 //! This actor sends verified finalized tips to Reth as head, safe, and finalized forkchoice
 //! updates, periodically refreshes that forkchoice with a heartbeat, and advances marshal's floor
-//! to one epoch behind the finalized tip when that block is durably canonical in Reth.
+//! to one epoch behind Reth's finalized state.
 //!
 //! Unlike the executor used by validator nodes, it does not build payloads, canonicalize proposal
 //! heads, or track blocks proposed by this node. Followers receive complete blocks from their
@@ -43,6 +43,7 @@ pub(crate) struct Actor<TContext> {
     execution_node: Arc<TempoFullNode>,
     marshal: crate::alias::marshal::Mailbox,
     epoch_strategy: FixedEpocher,
+    floor: Height,
     mailbox: mpsc::UnboundedReceiver<Update<Block>>,
 
     last_fcu: FinalizedTip,
@@ -68,6 +69,7 @@ where
             execution_node,
             marshal,
             epoch_strategy,
+            floor,
             fcu_heartbeat_interval,
         } = config;
 
@@ -92,6 +94,7 @@ where
             mailbox,
             marshal,
             epoch_strategy,
+            floor,
             execution_node,
 
             last_fcu: tip,
@@ -125,9 +128,9 @@ where
                                 if last_fcu.height > self.latest_tip.height {
                                     self.latest_tip = last_fcu;
                                 }
-                                if let Err(error) = self.try_advance_floor().await {
-                                    warn!(%error, "failed marshal floor advancement");
-                                }
+                            }
+                            if let Err(error) = self.try_advance_floor().await {
+                                warn!(%error, "failed marshal floor advancement");
                             }
                         }
                         ExecutionTaskResult::Retryable { tip, error } => {
@@ -195,11 +198,25 @@ where
 
     #[instrument(skip_all, err)]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
+        let Some(finalized) = self
+            .execution_node
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash()
+        else {
+            return Ok(());
+        };
+        let finalized_height = Height::new(finalized.number);
         let epoch_length = self
             .epoch_strategy
-            .containing(self.last_fcu.height)
+            .containing(finalized_height)
             .expect("strategy is valid for all heights and epochs")
             .length();
+
+        let floor_height = finalized_height.saturating_sub(epoch_length);
+        if floor_height <= self.floor {
+            return Ok(());
+        }
 
         let database = self
             .execution_node
@@ -207,18 +224,18 @@ where
             .database_provider_ro()
             .wrap_err("failed opening execution database")?;
 
-        let floor_height = self.last_fcu.height.saturating_sub(epoch_length);
         let floor_digest = database
             .block_hash(floor_height.get())
             .wrap_err("failed reading floor block hash")?;
 
         let Some(floor_digest) = floor_digest else {
-            debug!(tip_height = %self.last_fcu.height, %floor_height, "floor not durable in execution");
+            debug!(%finalized_height, %floor_height, "floor not durable in execution");
             return Ok(());
         };
 
-        debug!(tip_height = %self.last_fcu.height, %floor_height, %floor_digest, "advancing marshal floor");
+        debug!(%finalized_height, %floor_height, %floor_digest, "advancing marshal floor");
         self.marshal.set_floor(floor_height).await;
+        self.floor = floor_height;
 
         Ok(())
     }
