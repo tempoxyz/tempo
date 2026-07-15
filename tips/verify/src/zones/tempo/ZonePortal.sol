@@ -61,13 +61,13 @@ contract ZonePortal is IZonePortal {
     /// @notice Maximum allowed gas fee rate to prevent overflows
     uint128 public constant MAX_GAS_FEE_RATE = 1e18;
 
+    /// @dev The fixed account holding the shared portal logic contract runtime.
+    address internal constant ZONE_PORTAL_LOGIC_ADDRESS =
+        0x5AD1000000000000000000000000000000000000;
+
     /// @dev The explicitly configured factory is the only initializer authority.
     ///      This is protocol-wide code configuration and does not consume proxy storage.
     address internal immutable _factory;
-
-    /// @dev Canonical account that holds the portal logic contract's runtime code.
-    ///      This is supplied separately because the runtime is copied from a template deployment.
-    address internal immutable _portalLogic;
 
     /// @notice Encrypted deposit payloads always encrypt `(address to, bytes32 memo)`.
     uint256 internal constant ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE = 64;
@@ -150,12 +150,10 @@ contract ZonePortal is IZonePortal {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev This constructor executes only for the temporary template deployment used to
-    ///      produce runtime code. It is not executed at `portalLogic` when the protocol
-    ///      installs that runtime there; `portalLogic` identifies that canonical address
-    ///      for the direct-call guard.
-    constructor(address factory, address portalLogic) {
+    ///      produce runtime code. It is not executed when the protocol installs that runtime
+    ///      at `ZONE_PORTAL_LOGIC_ADDRESS`.
+    constructor(address factory) {
         _factory = factory;
-        _portalLogic = portalLogic;
     }
 
     function initialize(
@@ -195,7 +193,7 @@ contract ZonePortal is IZonePortal {
 
     /// @dev Initialization is valid only in a portal proxy's storage context.
     modifier onlyDelegateCall() {
-        if (address(this) == _portalLogic) revert MustDelegateCall();
+        if (address(this) == ZONE_PORTAL_LOGIC_ADDRESS) revert MustDelegateCall();
         _;
     }
 
