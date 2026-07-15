@@ -106,6 +106,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
+        let is_aa = self.has_aa_fields();
 
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
@@ -141,17 +142,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             is_system_tx: false,
             unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
             fee_payer,
-            tempo_tx_env: if !calls.is_empty()
-                || !tempo_authorization_list.is_empty()
-                || nonce_key.is_some()
-                || key_authorization.is_some()
-                || key_id.is_some()
-                || key_type.is_some()
-                || key_data.is_some()
-                || fee_payer.is_some()
-                || valid_before.is_some()
-                || valid_after.is_some()
-            {
+            tempo_tx_env: if is_aa {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
@@ -357,6 +348,19 @@ mod tests {
         transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
     };
 
+    fn call_request(target: Address) -> TransactionRequest {
+        TransactionRequest {
+            from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+            to: Some(TxKind::Call(target)),
+            nonce: Some(0),
+            gas: Some(100_000),
+            max_fee_per_gas: Some(1_000_000_000),
+            max_priority_fee_per_gas: Some(1_000_000),
+            chain_id: Some(4217),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_estimate_gas_when_calls_set() {
         let existing_call = Call {
@@ -390,6 +394,55 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
+    }
+
+    #[test]
+    fn test_estimate_gas_key_hints_only_produce_aa_env() {
+        let target = address!("0x2222222222222222222222222222222222222222");
+        let req = TempoTransactionRequest {
+            inner: call_request(target),
+            key_type: Some(SignatureType::WebAuthn),
+            ..Default::default()
+        };
+
+        let tx_env = req
+            .try_into_tx_env(&EvmEnv::default())
+            .expect("try_into_tx_env");
+        let signature = tx_env.tempo_tx_env.expect("tempo_tx_env").signature;
+        assert!(matches!(
+            signature,
+            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(_))
+        ));
+
+        let req = TempoTransactionRequest {
+            inner: call_request(target),
+            key_data: Some(Bytes::from_static(&[0x03, 0x20])),
+            ..Default::default()
+        };
+        let tx_env = req
+            .try_into_tx_env(&EvmEnv::default())
+            .expect("try_into_tx_env");
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "key_data alone must produce an AA tx env"
+        );
+    }
+
+    #[test]
+    fn test_estimate_gas_fee_token_only_produces_aa_env() {
+        let req = TempoTransactionRequest {
+            inner: call_request(address!("0x2222222222222222222222222222222222222222")),
+            fee_token: Some(address!("0x20c0000000000000000000000000000000000000")),
+            ..Default::default()
+        };
+
+        let tx_env = req
+            .try_into_tx_env(&EvmEnv::default())
+            .expect("try_into_tx_env");
+        assert!(
+            tx_env.tempo_tx_env.is_some(),
+            "fee_token alone must produce an AA tx env"
+        );
     }
 
     #[test]
