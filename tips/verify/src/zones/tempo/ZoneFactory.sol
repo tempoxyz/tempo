@@ -45,7 +45,7 @@ abstract contract ZoneFactory is IZoneFactory {
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
     address internal _messenger;
-    address internal _owner;
+    address public owner;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -56,7 +56,7 @@ abstract contract ZoneFactory is IZoneFactory {
         if (initialVerifier == address(0)) revert InvalidVerifier();
         require(sharedMessenger != address(0), "invalid messenger");
 
-        _owner = initialOwner;
+        owner = initialOwner;
         emit OwnershipTransferred(address(0), initialOwner);
         _validVerifiers[initialVerifier] = true;
         _verifier = initialVerifier;
@@ -71,7 +71,7 @@ abstract contract ZoneFactory is IZoneFactory {
         external
         returns (uint32 zoneId, address portal)
     {
-        if (msg.sender != _owner) revert NotOwner();
+        if (msg.sender != owner) revert NotOwner();
 
         if (!ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS).isTIP20(params.initialToken)) {
             revert InvalidToken();
@@ -146,11 +146,11 @@ abstract contract ZoneFactory is IZoneFactory {
 
     /// @inheritdoc IZoneFactory
     function transferOwnership(address newOwner) external {
-        if (msg.sender != _owner) revert NotOwner();
+        if (msg.sender != owner) revert NotOwner();
         if (newOwner == address(0)) revert InvalidOwner();
 
-        address previousOwner = _owner;
-        _owner = newOwner;
+        address previousOwner = owner;
+        owner = newOwner;
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
@@ -175,10 +175,6 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Returns the number of zones created, excluding reserved zone 0.
     function zoneCount() external view returns (uint32) {
         return _nextZoneId - 1;
-    }
-
-    function owner() external view returns (address) {
-        return _owner;
     }
 
     function zones(uint32 zoneId) external view returns (ZoneInfo memory) {
