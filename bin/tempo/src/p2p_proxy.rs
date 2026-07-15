@@ -22,7 +22,6 @@ use reth_ethereum::{
     },
     tasks::Runtime,
 };
-use reth_network_p2p::error::RequestError;
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -473,9 +472,6 @@ async fn run_p2p_network(
             }
             IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
-            }
-            IncomingEthRequest::GetSnap { response, .. } => {
-                let _ = response.send(Err(RequestError::UnsupportedCapability));
             }
         }
     }

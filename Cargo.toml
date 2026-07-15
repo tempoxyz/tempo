@@ -146,69 +146,68 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
 reth-codecs = { version = "0.5.2", default-features = false }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints", default-features = false }
-reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-network-p2p = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints", default-features = false }
-reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384", default-features = false }
+reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
 reth-primitives-traits = { version = "0.5.2", default-features = false }
-reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
+reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384" }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints-1bf2384", features = [
   "std",
   "optional-checks",
 ] }
