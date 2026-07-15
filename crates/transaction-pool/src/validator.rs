@@ -391,6 +391,33 @@ where
         const PAR: usize = 8;
         const MIN_PER_THREAD: usize = 4;
 
+        // Intake telemetry: batch-size distribution + per-tx wall cost.
+        use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+        static BATCHES: AtomicU64 = AtomicU64::new(0);
+        static TXS: AtomicU64 = AtomicU64::new(0);
+        static NS: AtomicU64 = AtomicU64::new(0);
+        static LAST: AtomicU64 = AtomicU64::new(0);
+        let n =
+            TXS.fetch_add(transactions.len() as u64, Relaxed) + transactions.len() as u64;
+        let b = BATCHES.fetch_add(1, Relaxed) + 1;
+        let last = LAST.load(Relaxed);
+        if n >= last + 100_000 && LAST.compare_exchange(last, n, Relaxed, Relaxed).is_ok() {
+            tracing::info!(
+                target: "flatmpt",
+                txs = n,
+                batches = b,
+                avg_batch = n / b,
+                avg_us_per_tx = NS.load(Relaxed) / n.max(1) / 1000,
+                "pool intake stats"
+            );
+        }
+        let t_batch = std::time::Instant::now();
+        let record =
+            |r: Vec<TransactionValidationOutcome<TempoPooledTransaction>>| {
+                NS.fetch_add(t_batch.elapsed().as_nanos() as u64, Relaxed);
+                r
+            };
+
         let error_outcomes = |transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
                               err: reth_provider::ProviderError| {
             transactions
@@ -402,12 +429,12 @@ where
         };
 
         if transactions.len() < 2 * MIN_PER_THREAD {
-            return match self.latest_state_provider_and_cache() {
+            return record(match self.latest_state_provider_and_cache() {
                 Ok((state_provider, cached_state)) => {
                     self.validate_batch(state_provider, cached_state, transactions)
                 }
                 Err(err) => error_outcomes(transactions, err),
-            };
+            });
         }
 
         let threads = PAR.min(transactions.len() / MIN_PER_THREAD).max(1);
@@ -422,7 +449,7 @@ where
             chunks.push(chunk);
         }
 
-        std::thread::scope(|s| {
+        record(std::thread::scope(|s| {
             let handles: Vec<_> = chunks
                 .into_iter()
                 .map(|chunk| {
@@ -438,7 +465,7 @@ where
                 .into_iter()
                 .flat_map(|handle| handle.join().expect("validation thread panicked"))
                 .collect()
-        })
+        }))
     }
 
     /// Returns the latest state provider and a state cache valid for the provider's tip.
