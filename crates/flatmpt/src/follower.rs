@@ -323,6 +323,21 @@ fn run(
                     Ok(root) if root == expected_root => {
                         publish_snapshot(shadow);
                         retire_pending(root);
+                        // Reclaim garbage between applies (bounded pass; off
+                        // the slot path). Without this the only gc entry
+                        // point was the periodic persist — far too little at
+                        // ~165k random writes per block.
+                        let t_gc = Instant::now();
+                        match shadow.write().gc_step() {
+                            Ok(n) if n > 0 => tracing::debug!(
+                                target: "flatmpt",
+                                evacuated = n,
+                                gc_ms = t_gc.elapsed().as_millis() as u64,
+                                "follower gc"
+                            ),
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "gc failed"),
+                        }
                         crate::sparse::prune_overlays(root);
                         tracing::info!(
                             target: "flatmpt",

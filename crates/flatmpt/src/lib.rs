@@ -547,6 +547,13 @@ impl FlatShadow {
         tracing::debug!(target: "flatmpt", block = number, n_ops, chunks, apply_us, root = %hex(root), "flat root");
         Ok(B256::from(root))
     }
+
+    /// Run one bounded garbage-collection pass (evacuate under-utilized
+    /// regions). Off the slot critical path — the follower calls this after
+    /// each apply. Generation-aware pins make it safe under live snapshots.
+    pub fn gc_step(&mut self) -> anyhow::Result<usize> {
+        self.db.gc_step().map_err(|e| anyhow::anyhow!("gc: {e:#}"))
+    }
 }
 
 /// The process-wide shadow. First caller initializes it from the genesis alloc
