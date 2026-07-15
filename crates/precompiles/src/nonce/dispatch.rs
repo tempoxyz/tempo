@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`NonceManager`] precompile.
 
-use crate::{Precompile, charge_input_cost, dispatch, nonce::NonceManager, view};
+use crate::{Precompile, charge_input_cost, dispatch, dispatch::tempo::view, nonce::NonceManager};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::INonce;

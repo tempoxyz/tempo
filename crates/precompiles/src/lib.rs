@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
-pub use error::{IntoPrecompileResult, Result};
+pub use error::{EncodePrecompileResult, IntoPrecompileResult, Result};
 
 pub mod storage;
 

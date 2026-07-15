@@ -1,10 +1,10 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{metadata, mutate, mutate_void, view},
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
-    view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

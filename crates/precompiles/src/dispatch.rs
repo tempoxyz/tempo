@@ -1,7 +1,7 @@
 //! ABI dispatch helpers for Tempo precompiles.
 
 use crate::{
-    IntoPrecompileResult, Result, error, input_cost, storage::StorageCtx,
+    EncodePrecompileResult, IntoPrecompileResult, Result, error, input_cost, storage::StorageCtx,
     storage_credits::StorageCredits,
 };
 use alloy::{
@@ -17,24 +17,29 @@ sol! {
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
-pub fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+pub fn metadata<T: SolCall, E: IntoPrecompileResult>(
+    f: impl FnOnce() -> core::result::Result<T::Return, E>,
+) -> PrecompileResult {
+    f().encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
-pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+pub fn view<T: SolCall, E: IntoPrecompileResult>(
+    call: T,
+    f: impl FnOnce(T) -> core::result::Result<T::Return, E>,
+) -> PrecompileResult {
+    f(call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a state-mutating call that returns ABI-encoded data.
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
-pub fn mutate<T: SolCall>(
+pub fn mutate<T: SolCall, E: IntoPrecompileResult>(
     call: T,
     sender: Address,
-    f: impl FnOnce(Address, T) -> Result<T::Return>,
+    f: impl FnOnce(Address, T) -> core::result::Result<T::Return, E>,
 ) -> PrecompileResult {
     if StorageCtx.is_static() {
         return Ok(PrecompileOutput::revert(
@@ -43,17 +48,17 @@ pub fn mutate<T: SolCall>(
             StorageCtx.reservoir(),
         ));
     }
-    f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+    f(sender, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
-pub fn mutate_void<T: SolCall>(
+pub fn mutate_void<T: SolCall, E: IntoPrecompileResult>(
     call: T,
     sender: Address,
-    f: impl FnOnce(Address, T) -> Result<()>,
+    f: impl FnOnce(Address, T) -> core::result::Result<(), E>,
 ) -> PrecompileResult {
     if StorageCtx.is_static() {
         return Ok(PrecompileOutput::revert(
@@ -62,7 +67,46 @@ pub fn mutate_void<T: SolCall>(
             StorageCtx.reservoir(),
         ));
     }
-    f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
+    f(sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
+}
+
+pub(crate) mod tempo {
+    use super::*;
+
+    /// Dispatches a Tempo parameterless view call, encoding the return via `T`.
+    #[inline]
+    pub(crate) fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
+        super::metadata::<T, crate::error::TempoPrecompileError>(f)
+    }
+
+    /// Dispatches a Tempo read-only call with decoded arguments, encoding the return via `T`.
+    #[inline]
+    pub(crate) fn view<T: SolCall>(
+        call: T,
+        f: impl FnOnce(T) -> Result<T::Return>,
+    ) -> PrecompileResult {
+        super::view::<T, crate::error::TempoPrecompileError>(call, f)
+    }
+
+    /// Dispatches a Tempo state-mutating call that returns ABI-encoded data.
+    #[inline]
+    pub(crate) fn mutate<T: SolCall>(
+        call: T,
+        sender: Address,
+        f: impl FnOnce(Address, T) -> Result<T::Return>,
+    ) -> PrecompileResult {
+        super::mutate::<T, crate::error::TempoPrecompileError>(call, sender, f)
+    }
+
+    /// Dispatches a Tempo state-mutating call that returns no data.
+    #[inline]
+    pub(crate) fn mutate_void<T: SolCall>(
+        call: T,
+        sender: Address,
+        f: impl FnOnce(Address, T) -> Result<()>,
+    ) -> PrecompileResult {
+        super::mutate_void::<T, crate::error::TempoPrecompileError>(call, sender, f)
+    }
 }
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
@@ -225,4 +269,121 @@ pub fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
     StorageCtx::default().error_result(error::TempoPrecompileError::UnknownFunctionSelector(
         selector,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        IntoPrecompileResult,
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
+    use alloy::{
+        primitives::U256,
+        sol_types::{SolCall, SolError},
+    };
+    use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileStatus};
+    use tempo_chainspec::hardfork::TempoHardfork;
+
+    sol! {
+        interface ITestDispatch {
+            function get(uint256 value) external view returns (uint256);
+            function set(uint256 value) external returns (uint256);
+            function clear(uint256 value) external;
+        }
+
+        error CustomTypedError(uint256 code);
+    }
+
+    enum CustomError {
+        Typed(CustomTypedError),
+        Tempo(TempoPrecompileError),
+    }
+
+    impl IntoPrecompileResult for CustomError {
+        fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+            match self {
+                Self::Typed(error) => Ok(PrecompileOutput::revert(
+                    gas,
+                    error.abi_encode().into(),
+                    reservoir,
+                )),
+                Self::Tempo(error) => error.into_precompile_result(gas, reservoir),
+            }
+        }
+    }
+
+    #[test]
+    fn generic_helpers_encode_success_outputs() -> eyre::Result<()> {
+        let output = view(
+            ITestDispatch::getCall {
+                value: U256::from(41),
+            },
+            |c| core::result::Result::<_, CustomError>::Ok(c.value + U256::from(1)),
+        )?;
+        assert!(output.is_success());
+        assert_eq!(
+            output.bytes,
+            ITestDispatch::getCall::abi_encode_returns(&U256::from(42))
+        );
+
+        let sender = Address::ZERO;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let output = mutate(
+                ITestDispatch::setCall {
+                    value: U256::from(7),
+                },
+                sender,
+                |_, c| core::result::Result::<_, CustomError>::Ok(c.value),
+            )?;
+            assert!(output.is_success());
+            assert_eq!(
+                output.bytes,
+                ITestDispatch::setCall::abi_encode_returns(&U256::from(7))
+            );
+
+            let output = mutate_void(
+                ITestDispatch::clearCall {
+                    value: U256::from(7),
+                },
+                sender,
+                |_, _| core::result::Result::<_, CustomError>::Ok(()),
+            )?;
+            assert!(output.is_success());
+            assert!(output.bytes.is_empty());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn downstream_typed_error_reverts_with_exact_bytes() -> eyre::Result<()> {
+        let error = CustomTypedError {
+            code: U256::from(9),
+        };
+        let output = view(ITestDispatch::getCall { value: U256::ZERO }, |_| {
+            core::result::Result::<U256, _>::Err(CustomError::Typed(error.clone()))
+        })?;
+        assert!(output.is_revert());
+        assert_eq!(output.bytes, error.abi_encode());
+        Ok(())
+    }
+
+    #[test]
+    fn tempo_error_behavior_is_preserved_through_extension_trait() -> eyre::Result<()> {
+        let output =
+            CustomError::Tempo(TempoPrecompileError::OutOfGas).into_precompile_result(123, 456)?;
+        assert!(matches!(
+            output.status,
+            PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
+        ));
+        assert_eq!(output.reservoir, 456);
+
+        let error = CustomError::Tempo(TempoPrecompileError::Fatal("boom".into()))
+            .into_precompile_result(0, 0)
+            .unwrap_err();
+        assert!(matches!(error, PrecompileError::Fatal(message) if message == "boom"));
+        Ok(())
+    }
 }

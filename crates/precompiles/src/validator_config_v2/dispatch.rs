@@ -1,7 +1,10 @@
 //! ABI dispatch for the [`ValidatorConfigV2`] precompile (T2+).
 
 use super::*;
-use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
+use crate::{
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{mutate, mutate_void, view},
+};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2;

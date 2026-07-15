@@ -1,7 +1,10 @@
 //! ABI dispatch for the [`CurrentCommittee`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch, mutate_void, view,
+    Precompile, charge_input_cost,
+    current_committee::CurrentCommittee,
+    dispatch,
+    dispatch::tempo::{mutate_void, view},
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

@@ -2,7 +2,9 @@
 
 use super::ValidatorConfig;
 use crate::{
-    Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate_void, view,
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{mutate_void, view},
+    error::TempoPrecompileError,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

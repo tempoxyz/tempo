@@ -1,6 +1,10 @@
 //! ABI dispatch for the [`TIP20Factory`] precompile.
 
-use crate::{Precompile, charge_input_cost, dispatch, mutate, tip20_factory::TIP20Factory, view};
+use crate::{
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{mutate, view},
+    tip20_factory::TIP20Factory,
+};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory;

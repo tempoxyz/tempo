@@ -1,13 +1,13 @@
 //! ABI dispatch for the [`TipFeeManager`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{metadata, mutate, mutate_void, view},
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
         amm::{M, MIN_LIQUIDITY, N, SCALE},
     },
-    view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

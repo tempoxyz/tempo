@@ -2,8 +2,9 @@
 
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
 use crate::{
-    Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
-    preserve_storage_credits, view,
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{metadata, mutate, mutate_void, view},
+    preserve_storage_credits,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

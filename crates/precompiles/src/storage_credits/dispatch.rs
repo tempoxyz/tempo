@@ -1,7 +1,9 @@
 //! ABI dispatch for the storage credits precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate_void, storage_credits::StorageCredits, view,
+    Precompile, charge_input_cost, dispatch,
+    dispatch::tempo::{mutate_void, view},
+    storage_credits::StorageCredits,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
