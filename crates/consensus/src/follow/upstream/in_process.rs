@@ -1,5 +1,5 @@
-//! An upstream provider to be used in e2e tests The [`jsonrpsee`] stack used by
-//! the standard websocket based provider requires a tokio runtime, which the tests
+//! An upstream provider to be used in e2e tests. The Alloy stack used by the
+//! standard websocket-based provider requires a Tokio runtime, which the tests
 //! runtime does not provide.
 
 use std::{sync::Arc, time::Duration};
