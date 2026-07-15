@@ -49,6 +49,7 @@ use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
     print_extensions_footer,
 };
+use alloy_primitives::B256;
 use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::{OptionExt, WrapErr as _};
@@ -57,7 +58,7 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
+use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};

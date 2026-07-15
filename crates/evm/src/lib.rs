@@ -5,70 +5,207 @@
 
 mod action_replay;
 mod assemble;
-mod pool;
+mod block;
+mod common;
+pub mod consensus;
+mod context;
+#[cfg(feature = "engine")]
+mod engine;
+pub mod error;
+pub mod evm;
+mod handler;
+mod instructions;
+#[cfg(test)]
+mod test_utils;
+mod transaction;
+
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
 };
-use alloy_consensus::{BlockHeader as _, Transaction};
-use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
-pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
-mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
-mod context;
+pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
-pub mod consensus;
-#[cfg(feature = "engine")]
-mod engine;
+pub use error::{FeePaymentError, TempoEvmError, TempoInvalidTransaction};
+pub use evm::{TempoEvm, TempoEvmFactory};
+pub use handler::{
+    ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
+    TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt, build_tempo_evm,
+    tempo_execution_config, tempo_tx_registry,
+};
+pub use transaction::{TempoAaTx, TempoEvmTx, TempoTxEnv};
+
+use alloy_consensus::{BlockHeader as _, Transaction};
+use alloy_eips::eip7840::BlobParams;
+use alloy_primitives::U256;
+use alloy_rlp::Decodable;
+use core::num::NonZeroU64;
+use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase, version::GasId};
+use reth_chainspec::EthChainSpec;
+use reth_evm::{
+    BlockExecutorFactory, ConfigureEvm, EvmEnv, EvmEnvFor, EvmTransactionValidationGasRules,
+    EvmTransactionValidationLimits,
+};
+use reth_evm_ethereum::EthBlockExecutionCtx;
+use reth_primitives_traits::{SealedBlock, SealedHeader};
+use std::{borrow::Cow, sync::Arc};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_precompiles::TempoPrecompiles;
+use tempo_primitives::{
+    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, subblock::PartialValidatorKey,
+};
+
 #[cfg(feature = "engine")]
 use rayon as _;
-mod error;
-pub use error::TempoEvmError;
-pub mod evm;
-use core::num::NonZeroU64;
-use std::{borrow::Cow, sync::Arc};
 
-use alloy_evm::{
-    self, EvmEnv,
-    block::BlockExecutorFactory,
-    eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
-    revm::Inspector,
-};
-use alloy_primitives::Address;
-pub use evm::TempoEvmFactory;
-use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
-use reth_primitives_traits::{SealedBlock, SealedHeader};
-use tempo_primitives::{
-    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-    subblock::PartialValidatorKey,
-};
+/// Fully resolved Tempo execution environment.
+#[derive(Clone, Debug)]
+pub struct TempoEvmEnv {
+    /// Active Tempo protocol revision.
+    pub tempo_spec: tempo_chainspec::hardfork::TempoHardfork,
+    /// Runtime gas and validation parameters.
+    pub version: evm2::Version,
+    /// Block fields visible to EVM execution.
+    pub block: TempoBlockEnv,
+}
 
-use crate::evm::TempoEvm;
-use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
-use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
-use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+impl Default for TempoEvmEnv {
+    fn default() -> Self {
+        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
+        let version = *tempo_execution_config(tempo_spec, 0).version();
+        Self {
+            tempo_spec,
+            version,
+            block: TempoBlockEnv::default(),
+        }
+    }
+}
 
-pub use tempo_revm::{
-    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
-    TempoHaltReason, TempoInvalidTransaction, TempoStateAccess,
-};
+impl EvmEnv for TempoEvmEnv {
+    type EvmTypes = TempoEvmTypes;
 
-#[cfg(test)]
-mod test_utils;
+    fn spec_id(&self) -> tempo_chainspec::hardfork::TempoHardfork {
+        self.tempo_spec
+    }
+
+    fn chain_id(&self) -> u64 {
+        self.version.chain_id
+    }
+
+    fn block_env(&self) -> &BlockEnv<TempoEvmTypes> {
+        &self.block
+    }
+
+    fn block_env_mut(&mut self) -> &mut BlockEnv<TempoEvmTypes> {
+        &mut self.block
+    }
+
+    fn version(&self) -> &evm2::Version {
+        &self.version
+    }
+
+    fn version_mut(&mut self) -> &mut evm2::Version {
+        &mut self.version
+    }
+
+    fn block_base_fee(&self) -> u64 {
+        self.block.basefee.to()
+    }
+
+    fn block_blob_base_fee(&self) -> u64 {
+        self.block.blob_basefee.to()
+    }
+
+    fn transaction_validation_limits(&self) -> EvmTransactionValidationLimits {
+        EvmTransactionValidationLimits {
+            max_initcode_size: self.version.max_initcode_size,
+            tx_gas_limit_cap: if self.version.feature(EvmFeatures::EIP8037) {
+                0
+            } else {
+                self.version.tx_gas_limit_cap
+            },
+        }
+    }
+
+    fn transaction_validation_gas_rules(&self) -> EvmTransactionValidationGasRules {
+        let params = &self.version.gas_params;
+        let floor_gas_enabled = self.version.feature(EvmFeatures::EIP7623);
+        EvmTransactionValidationGasRules {
+            tx_base_gas: 21_000,
+            tx_create_gas: if self.version.feature(EvmFeatures::EIP2) {
+                u64::from(params.get(GasId::TxCreateCost))
+            } else {
+                Default::default()
+            },
+            tx_data_zero_gas: 4,
+            tx_data_non_zero_gas: if self.version.feature(EvmFeatures::EIP2028) {
+                16
+            } else {
+                68
+            },
+            tx_access_list_address_gas: u64::from(params.get(GasId::TxAccessListAddressCost)),
+            tx_access_list_storage_key_gas: u64::from(
+                params.get(GasId::TxAccessListStorageKeyCost),
+            ),
+            tx_access_list_floor_byte_multiplier: if floor_gas_enabled {
+                u64::from(params.get(GasId::TxAccessListFloorByteMultiplier))
+            } else {
+                Default::default()
+            },
+            tx_initcode_word_gas: if self.version.feature(EvmFeatures::EIP3860) {
+                u64::from(params.get(GasId::TxInitcodeCost))
+            } else {
+                Default::default()
+            },
+            tx_floor_gas_base: if floor_gas_enabled {
+                u64::from(params.get(GasId::TxFloorCostBase))
+            } else {
+                Default::default()
+            },
+            tx_floor_gas_per_token: if floor_gas_enabled {
+                u64::from(params.get(GasId::TxFloorCostPerToken))
+            } else {
+                Default::default()
+            },
+            tx_floor_gas_non_zero_token_multiplier: if floor_gas_enabled {
+                u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier))
+            } else {
+                Default::default()
+            },
+            tx_eip7702_per_empty_account_cost: if self.version.feature(EvmFeatures::EIP7702) {
+                u64::from(params.get(GasId::TxEip7702PerEmptyAccountCost))
+            } else {
+                Default::default()
+            },
+        }
+    }
+
+    fn uses_separate_block_gas(&self) -> bool {
+        self.version.feature(EvmFeatures::EIP8037)
+    }
+
+    fn regular_gas_limit_cap(&self) -> u64 {
+        self.version.tx_gas_limit_cap
+    }
+
+    fn with_nonce_check_disabled(mut self) -> Self {
+        self.version.features.remove(EvmFeatures::NONCE_CHECK);
+        self
+    }
+
+    fn with_balance_check_disabled(mut self) -> Self {
+        self.version.features.remove(EvmFeatures::BALANCE_CHECK);
+        self
+    }
+}
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
-    /// Inner evm config
-    pub inner: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
-
-    /// Block assembler
+    chain_spec: Arc<TempoChainSpec>,
+    evm_factory: TempoEvmFactory,
+    /// Block assembler used by payload construction.
     pub block_assembler: TempoBlockAssembler,
 }
 
@@ -89,59 +226,99 @@ impl FeeTokenResolver for TempoEvmConfig {
 }
 
 impl TempoEvmConfig {
-    /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
+    /// Creates a Tempo EVM config for `chain_spec`.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        let inner =
-            EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
-            inner,
-            block_assembler: TempoBlockAssembler::new(chain_spec),
+            evm_factory: TempoEvmFactory::default(),
+            block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
+            chain_spec,
         }
     }
 
-    /// Returns the chain spec
+    /// Returns the chain spec.
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
-        self.inner.chain_spec()
+        &self.chain_spec
     }
 
-    /// Returns the inner EVM config
-    pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
-        &self.inner
-    }
-
-    /// Returns the moderato EVM config.
+    /// Returns the Moderato config.
     pub fn moderato() -> Self {
         Self::new(Arc::new(TempoChainSpec::moderato()))
     }
 
-    /// Returns the mainnet EVM config.
+    /// Returns the mainnet config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))
+    }
+
+    fn resolved_env(
+        &self,
+        tempo_spec: tempo_chainspec::hardfork::TempoHardfork,
+        block: BlockEnv<TempoEvmTypes>,
+        blob_params: Option<BlobParams>,
+    ) -> TempoEvmEnv {
+        let config = tempo_execution_config(tempo_spec, self.chain_spec.chain().id());
+        let mut version = *config.version();
+        version.tx_gas_limit_cap = tempo_spec.tx_gas_limit_cap().unwrap_or(u64::MAX);
+        if let Some(blob_params) = blob_params {
+            version.max_blobs_per_tx = blob_params.max_blobs_per_tx as usize;
+            version.blob_base_fee_update_fraction = blob_params
+                .update_fraction
+                .try_into()
+                .expect("blob base fee update fraction exceeds u64");
+        }
+        TempoEvmEnv {
+            tempo_spec,
+            version,
+            block,
+        }
     }
 }
 
 impl BlockExecutorFactory for TempoEvmConfig {
+    type Primitives = TempoPrimitives;
     type EvmFactory = TempoEvmFactory;
+    type EvmTypes = TempoEvmTypes;
+    type EvmTransaction = TempoTxEnv;
+    type Transaction = TempoTxEnv;
+    type Evm<'a> = TempoEvm<'a>;
+    type EvmEnv = TempoEvmEnv;
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
-    type Transaction = TempoTxEnvelope;
-    type Receipt = TempoReceipt;
-    type TxExecutionResult = TempoTxResult;
-    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> = TempoBlockExecutor<'a, DB, I>;
+    type Executor<'a> = TempoBlockExecutor<'a>;
 
-    fn evm_factory(&self) -> &Self::EvmFactory {
-        self.inner.executor_factory.evm_factory()
-    }
-
-    fn create_executor<'a, DB, I>(
+    fn create_executor<'a>(
         &'a self,
-        evm: TempoEvm<DB, I>,
+        evm: Self::Evm<'a>,
         ctx: Self::ExecutionCtx<'a>,
-    ) -> Self::Executor<'a, DB, I>
+    ) -> Self::Executor<'a>
     where
-        DB: StateDB,
-        I: Inspector<TempoContext<DB>>,
+        Self: 'a,
     {
         TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+    }
+
+    fn evm_factory(&self) -> &Self::EvmFactory {
+        &self.evm_factory
+    }
+
+    fn evm_with_env<'a, DB>(&self, db: DB, env: Self::EvmEnv) -> Self::Evm<'a>
+    where
+        DB: DynDatabase + 'a,
+    {
+        let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
+        let precompiles = TempoPrecompiles::new(
+            env.tempo_spec,
+            ext.actions.clone(),
+            ext.non_creditable_slots.clone(),
+        );
+        evm2::Evm::new_with_execution_config_and_ext(
+            ExecutionConfig::for_spec_and_version(env.tempo_spec, env.version),
+            env.tempo_spec,
+            env.block,
+            tempo_tx_registry(env.tempo_spec.into()),
+            db,
+            precompiles,
+            ext,
+        )
     }
 }
 
@@ -161,47 +338,22 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
+        let blob_params = self.chain_spec.blob_params_at_timestamp(header.timestamp());
+        let tempo_spec = self.chain_spec.tempo_hardfork_at(header.timestamp());
+        let block = block_env(
             header,
-            self.chain_spec(),
-            self.chain_spec().chain().id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(header.timestamp()),
-        );
-
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
-
-        // Apply TIP-1000 gas params for T1 hardfork.
-        //
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The flag is currently left at its default
-        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
-        // state gas split everywhere it is checked downstream.
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-
-        Ok(EvmEnv {
-            cfg_env,
-            block_env: TempoBlockEnv {
-                inner: block_env,
+            blob_params,
+            TempoBlockExt {
                 timestamp_millis_part: header.timestamp_millis_part,
                 epoch_length: self
-                    .chain_spec()
+                    .chain_spec
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
             },
-        })
+        );
+        Ok(self.resolved_env(tempo_spec, block, blob_params))
     }
 
     fn next_evm_env(
@@ -209,60 +361,55 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
-            parent,
-            NextEvmEnvAttributes {
+        let blob_params = self
+            .chain_spec
+            .blob_params_at_timestamp(attributes.timestamp);
+        let excess_blob_gas = parent
+            .maybe_next_block_excess_blob_gas(blob_params)
+            .or_else(|| blob_params.map(|_| 0));
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                parent_hash: parent.inner.hash_slow(),
+                beneficiary: attributes.suggested_fee_recipient,
                 timestamp: attributes.timestamp,
-                suggested_fee_recipient: attributes.suggested_fee_recipient,
-                prev_randao: attributes.prev_randao,
+                number: parent.number().saturating_add(1),
                 gas_limit: attributes.gas_limit,
+                base_fee_per_gas: Some(
+                    self.chain_spec
+                        .next_block_base_fee(parent, attributes.timestamp)
+                        .unwrap_or_default(),
+                ),
+                mix_hash: attributes.prev_randao,
                 slot_number: attributes.slot_number,
+                excess_blob_gas,
+                ..Default::default()
             },
-            self.chain_spec()
-                .next_block_base_fee(parent, attributes.timestamp)
-                .unwrap_or_default(),
-            self.chain_spec(),
-            self.chain_spec().chain().id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(attributes.timestamp),
-        );
-
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
-
-        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
-        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
-        // (see `evm_env_for_block` for details).
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-
-        Ok(EvmEnv {
-            cfg_env,
-            block_env: TempoBlockEnv {
-                inner: block_env,
+            ..Default::default()
+        };
+        let tempo_spec = self.chain_spec.tempo_hardfork_at(attributes.timestamp);
+        let block = block_env(
+            &header,
+            blob_params,
+            TempoBlockExt {
                 timestamp_millis_part: attributes.timestamp_millis_part,
                 epoch_length: self
-                    .chain_spec()
+                    .chain_spec
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
             },
-        })
+        );
+        Ok(self.resolved_env(tempo_spec, block, blob_params))
     }
 
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<Block>,
-    ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
+    ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error>
+    where
+        Self: 'a,
+    {
         // Decode validator -> fee_recipient mapping from the subblock metadata system transaction.
         let subblock_fee_recipients = block
             .body()
@@ -333,18 +480,45 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 }
 
+fn block_env(
+    header: &TempoHeader,
+    blob_params: Option<BlobParams>,
+    ext: TempoBlockExt,
+) -> TempoBlockEnv {
+    TempoBlockEnv {
+        number: U256::from(header.number()),
+        beneficiary: header.beneficiary(),
+        timestamp: U256::from(header.timestamp()),
+        gas_limit: U256::from(header.gas_limit()),
+        basefee: U256::from(header.base_fee_per_gas().unwrap_or_default()),
+        difficulty: header.difficulty(),
+        prevrandao: header
+            .mix_hash()
+            .map(|hash| U256::from_be_slice(hash.as_slice()))
+            .unwrap_or_default(),
+        blob_basefee: header
+            .excess_blob_gas()
+            .zip(blob_params)
+            .map(|(excess, params)| U256::from(params.calc_blob_fee(excess)))
+            .unwrap_or_default(),
+        slot_num: U256::from(header.slot_number().unwrap_or_default()),
+        ext,
+        _non_exhaustive: (),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_primitives::{
-        BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
+        BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
 
@@ -367,11 +541,11 @@ mod tests {
                 timestamp: 1000,
                 gas_limit: 30_000_000,
                 base_fee_per_gas: Some(1000),
-                beneficiary: alloy_primitives::Address::repeat_byte(0x01),
+                beneficiary: Address::repeat_byte(1),
                 ..Default::default()
             },
-            general_gas_limit: 10_000_000,
             timestamp_millis_part: 500,
+            general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             ..Default::default()
         };
@@ -382,17 +556,14 @@ mod tests {
         let evm_env = result.unwrap();
 
         // Verify block env fields
-        assert_eq!(evm_env.block_env.inner.number, U256::from(header.number()));
-        assert_eq!(
-            evm_env.block_env.inner.timestamp,
-            U256::from(header.timestamp())
-        );
-        assert_eq!(evm_env.block_env.inner.gas_limit, header.gas_limit());
-        assert_eq!(evm_env.block_env.inner.beneficiary, header.beneficiary());
+        assert_eq!(evm_env.block.number, U256::from(header.number()));
+        assert_eq!(evm_env.block.timestamp, U256::from(header.timestamp()));
+        assert_eq!(evm_env.block.gas_limit, U256::from(header.gas_limit()));
+        assert_eq!(evm_env.block.beneficiary, header.beneficiary());
 
         // Verify Tempo-specific field
-        assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
-        assert_eq!(evm_env.block_env.proposer_public_key, None);
+        assert_eq!(evm_env.block.ext.timestamp_millis_part, 500);
+        assert_eq!(evm_env.block.ext.proposer_public_key, None);
 
         let proposer = PublicKey::from_seed([0xab; 32]);
         let evm_env = evm_config
@@ -406,7 +577,7 @@ mod tests {
                 ..header
             })
             .unwrap();
-        assert_eq!(evm_env.block_env.proposer_public_key, Some(proposer));
+        assert_eq!(evm_env.block.ext.proposer_public_key, Some(proposer));
     }
 
     /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
@@ -414,8 +585,6 @@ mod tests {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
-        use tempo_chainspec::spec::DEV;
-
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -423,7 +592,7 @@ mod tests {
         let header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 100,
-                timestamp: 1000, // After T1 activation
+                timestamp: 1000,
                 gas_limit: 30_000_000,
                 base_fee_per_gas: Some(1000),
                 ..Default::default()
@@ -441,8 +610,8 @@ mod tests {
 
         // Verify TIP-1000 gas limit cap is set
         assert_eq!(
-            evm_env.cfg_env.tx_gas_limit_cap,
-            Some(tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
+            evm_env.version.tx_gas_limit_cap,
+            tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP,
             "TIP-1000 requires 30M gas limit cap for T1 hardfork"
         );
     }
@@ -468,8 +637,8 @@ mod tests {
         let attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: 1000,
-                suggested_fee_recipient: alloy_primitives::Address::repeat_byte(0x02),
-                prev_randao: B256::repeat_byte(0x03),
+                suggested_fee_recipient: Address::repeat_byte(2),
+                prev_randao: B256::repeat_byte(3),
                 gas_limit: 30_000_000,
                 parent_beacon_block_root: Some(B256::ZERO),
                 withdrawals: None,
@@ -482,7 +651,6 @@ mod tests {
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
         };
-
         let result = evm_config.next_evm_env(&parent, &attributes);
         assert!(result.is_ok());
 
@@ -490,17 +658,14 @@ mod tests {
 
         // Verify block env uses attributes
         // parent + 1
-        assert_eq!(evm_env.block_env.inner.number, U256::from(100));
-        assert_eq!(evm_env.block_env.inner.timestamp, U256::from(1000));
-        assert_eq!(
-            evm_env.block_env.inner.beneficiary,
-            Address::repeat_byte(0x02)
-        );
-        assert_eq!(evm_env.block_env.inner.gas_limit, 30_000_000);
+        assert_eq!(evm_env.block.number, U256::from(100));
+        assert_eq!(evm_env.block.timestamp, U256::from(1000));
+        assert_eq!(evm_env.block.beneficiary, Address::repeat_byte(0x02));
+        assert_eq!(evm_env.block.gas_limit, U256::from(30_000_000));
 
         // Verify Tempo-specific field
-        assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
-        assert_eq!(evm_env.block_env.proposer_public_key, None);
+        assert_eq!(evm_env.block.ext.timestamp_millis_part, 750);
+        assert_eq!(evm_env.block.ext.proposer_public_key, None);
 
         let proposer = PublicKey::from_seed([0xcd; 32]);
         let evm_env = evm_config
@@ -517,7 +682,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(evm_env.block_env.proposer_public_key, Some(proposer));
+        assert_eq!(evm_env.block.ext.proposer_public_key, Some(proposer));
     }
 
     #[test]
@@ -527,7 +692,7 @@ mod tests {
 
         // Create subblock metadata
         let validator_key = B256::repeat_byte(0x01);
-        let fee_recipient = alloy_primitives::Address::repeat_byte(0x02);
+        let fee_recipient = Address::repeat_byte(0x02);
         let metadata = vec![SubBlockMetadata {
             version: SubBlockVersion::V1,
             validator: validator_key,
@@ -543,11 +708,11 @@ mod tests {
 
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
+                chain_id: Some(chainspec.chain().id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(alloy_primitives::Address::ZERO),
+                to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
             },
@@ -597,8 +762,6 @@ mod tests {
 
     #[test]
     fn test_context_for_block_t4_without_metadata_has_empty_fee_recipients() {
-        use tempo_chainspec::spec::DEV;
-
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec);
 
@@ -655,7 +818,7 @@ mod tests {
         let attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: 1000,
-                suggested_fee_recipient: alloy_primitives::Address::repeat_byte(0x03),
+                suggested_fee_recipient: Address::repeat_byte(0x03),
                 prev_randao: B256::repeat_byte(0x04),
                 gas_limit: 30_000_000,
                 parent_beacon_block_root: Some(B256::repeat_byte(0x05)),

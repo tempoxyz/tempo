@@ -1,21 +1,14 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
+use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature};
-use core::num::NonZeroU64;
-use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
 use reth_rpc_eth_types::EthApiError;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{
-    SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
-    transaction::{Call, RecoveredTempoAuthorization},
-};
-use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
+use tempo_evm::{TempoEvmEnv, TempoTxEnv};
+use tempo_primitives::{SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
 
 /// Non-zero transaction identifier used only for RPC simulations.
 ///
@@ -98,97 +91,45 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransactionRequest {
+impl TryIntoTxEnv<TempoTxEnv, TempoEvmEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
-    fn try_into_tx_env(
-        self,
-        evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
-    ) -> Result<TempoTxEnv, Self::Err> {
+    fn try_into_tx_env(self, evm_env: &TempoEvmEnv) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
-        let is_aa = self.has_aa_fields();
-
-        let fee_payer = if self.fee_payer_signature.is_some() {
-            // Try to recover the fee payer address from the signature.
-            // If recovery fails (e.g. dummy signature during gas estimation / fill),
-            // keep it unresolved so estimation/fill can continue with sender-paid semantics.
-            let recovered = self
-                .clone()
+        let is_aa = self.output_tx_type() == TempoTxType::AA;
+        let (envelope, fee_payer, key_id) = if is_aa {
+            let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
+            let key_data = self.key_data.clone();
+            let key_id = self.key_id;
+            let has_fee_payer_signature = self.fee_payer_signature.is_some();
+            let tx = self
                 .build_aa()
-                .ok()
-                .and_then(|tx| tx.recover_fee_payer(caller_addr).ok());
-            Some(recovered)
+                .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+            let fee_payer = has_fee_payer_signature
+                .then(|| tx.recover_fee_payer(caller_addr).ok())
+                .flatten();
+            let signature = create_mock_tempo_sig(
+                &key_type,
+                key_data.as_ref(),
+                key_id,
+                caller_addr,
+                evm_env.tempo_spec.is_t1c(),
+            );
+            (
+                TempoTxEnvelope::AA(tx.into_signed(signature)),
+                fee_payer,
+                key_id,
+            )
         } else {
-            None
+            let envelope = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(self)
+                .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+            (envelope, None, None)
         };
 
-        let Self {
-            inner,
-            fee_token,
-            calls,
-            key_type,
-            key_data,
-            key_id,
-            tempo_authorization_list,
-            nonce_key,
-            key_authorization,
-            valid_before,
-            valid_after,
-            fee_payer_signature: _,
-        } = self;
-
-        Ok(TempoTxEnv {
-            fee_token,
-            is_system_tx: false,
-            unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
-            fee_payer,
-            tempo_tx_env: if is_aa {
-                // Create mock signature for gas estimation
-                // If key_type is not provided, default to secp256k1
-                // For Keychain signatures, use the caller's address as the root key address
-                let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-                let mock_signature = create_mock_tempo_sig(
-                    &key_type,
-                    key_data.as_ref(),
-                    key_id,
-                    caller_addr,
-                    evm_env.spec_id().is_t1c(),
-                );
-
-                let mut calls = calls;
-                if let Some(to) = &inner.to {
-                    calls.push(Call {
-                        to: *to,
-                        value: inner.value.unwrap_or_default(),
-                        input: inner.input.clone().into_input().unwrap_or_default(),
-                    });
-                }
-                if calls.is_empty() {
-                    return Err(EthApiError::InvalidParams("empty calls list".to_string()));
-                }
-
-                Some(Box::new(TempoBatchCallEnv {
-                    aa_calls: calls,
-                    signature: mock_signature,
-                    tempo_authorization_list: tempo_authorization_list
-                        .into_iter()
-                        .map(RecoveredTempoAuthorization::new)
-                        .collect(),
-                    nonce_key: nonce_key.unwrap_or_default(),
-                    key_authorization,
-                    signature_hash: B256::ZERO,
-                    tx_hash: B256::ZERO,
-                    valid_before: valid_before.map(NonZeroU64::get),
-                    valid_after: valid_after.map(NonZeroU64::get),
-                    subblock_transaction: false,
-                    override_key_id: key_id,
-                    expiring_nonce_idx: None,
-                }))
-            } else {
-                None
-            },
-            inner: inner.try_into_tx_env(evm_env)?,
-        })
+        Ok(
+            TempoTxEnv::from(Recovered::new_unchecked(envelope, caller_addr))
+                .with_simulation_overrides(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, fee_payer, key_id),
+        )
     }
 }
 
@@ -389,9 +330,15 @@ mod tests {
 
         let built_calls = req.clone().build_aa().expect("build_aa").calls;
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+        let estimated_calls = tx_env
+            .as_aa()
+            .expect("AA transaction")
+            .inner()
+            .tx()
+            .calls
+            .clone();
 
         assert_eq!(estimated_calls, built_calls);
     }
@@ -464,16 +411,16 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert_eq!(
             tx_env.channel_open_context_hash(),
-            Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
+            RPC_SIMULATION_UNIQUE_TX_IDENTIFIER
         );
         assert_ne!(
             tx_env.channel_open_context_hash(),
-            Some(B256::ZERO),
+            B256::ZERO,
             "RPC simulations must seed a non-zero context hash so TIP20ChannelReserve.open() does not treat it as unset"
         );
     }
@@ -575,16 +522,16 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert!(
-            tx_env.tempo_tx_env.is_some(),
+            tx_env.as_aa().is_some(),
             "fee_payer_signature alone must produce an AA tx env"
         );
         assert_eq!(
-            tx_env.fee_payer,
-            Some(Some(sponsor.address())),
+            tx_env.fee_payer().expect("fee payer"),
+            sponsor.address(),
             "fee_payer should recover sponsor address"
         );
     }
@@ -618,9 +565,15 @@ mod tests {
 
         let req: TempoTransactionRequest = tx.into();
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+        let aa_calls = tx_env
+            .as_aa()
+            .expect("AA transaction")
+            .inner()
+            .tx()
+            .calls
+            .clone();
 
         assert_eq!(
             aa_calls, calls,
@@ -648,16 +601,15 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert!(
-            tx_env.tempo_tx_env.is_some(),
+            tx_env.as_aa().is_some(),
             "fee_payer_signature alone must produce an AA tx env"
         );
-        assert_eq!(
-            tx_env.fee_payer,
-            Some(None),
+        assert!(
+            tx_env.fee_payer().is_err(),
             "invalid fee_payer_signature should remain unresolved"
         );
     }

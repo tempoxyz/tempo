@@ -1,12 +1,12 @@
-use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
-use alloy_consensus::transaction::{Either, Recovered};
-use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
+use crate::{TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
+use alloy_consensus::transaction::Recovered;
+use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
-use revm::{
-    Database,
-    context::{JournalTr, result::EVMError},
-    state::{AccountInfo, Bytecode},
+use evm2::{
+    Evm,
+    evm::{AccountInfo, Database, StateCheckpoint},
+    registry::{HandlerError, HandlerResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
@@ -14,7 +14,7 @@ use tempo_precompiles::{
     storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
     tip20::{ITIP20, TIP20Token},
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
+use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
@@ -46,23 +46,19 @@ pub trait TempoTx {
 
 impl TempoTx for TempoTxEnv {
     fn fee_token(&self) -> Option<Address> {
-        self.fee_token
+        self.evm_tx().fee_token()
     }
 
     fn is_aa(&self) -> bool {
-        self.tempo_tx_env.is_some()
+        self.evm_tx().is_aa()
     }
 
     fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)> {
-        if let Some(aa) = self.tempo_tx_env.as_ref() {
-            Either::Left(aa.aa_calls.iter().map(|call| (call.to, &call.input)))
-        } else {
-            Either::Right(core::iter::once((self.inner.kind, &self.inner.data)))
-        }
+        self.evm_tx().calls()
     }
 
     fn caller(&self) -> Address {
-        self.inner.caller
+        self.evm_tx().signer()
     }
 }
 
@@ -86,7 +82,7 @@ impl TempoTx for Recovered<TempoTxEnvelope> {
 
 /// Helper trait to perform Tempo-specific operations on top of different state providers.
 ///
-/// We provide blanket implementations for revm database, journal and reth state provider.
+/// We provide implementations for EVM2 databases and live EVM state.
 ///
 /// The generic marker is used as a workaround to avoid conflicting implementations.
 pub trait TempoStateAccess<M = ()> {
@@ -142,7 +138,7 @@ pub trait TempoStateAccess<M = ()> {
         spec: TempoHardfork,
         fee_token: Address,
         actions: StorageActions,
-    ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
+    ) -> HandlerResult<()>
     where
         Self: Sized,
     {
@@ -158,7 +154,7 @@ pub trait TempoStateAccess<M = ()> {
             };
 
             if currency.as_str() != "USD" {
-                return Ok(Err(EVMError::Transaction(
+                return Ok(Err(HandlerError::external(
                     TempoInvalidTransaction::FeeTokenNotUsdCurrency {
                         address: fee_token,
                         currency,
@@ -168,7 +164,7 @@ pub trait TempoStateAccess<M = ()> {
 
             Ok(Ok(()))
         })
-        .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
+        .map_err(|err: TempoPrecompileError| HandlerError::Custom(err.to_string()))?
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -230,34 +226,51 @@ impl<DB: Database> TempoStateAccess<()> for DB {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
-        self.basic(address).map(Option::unwrap_or_default)
+        self.get_account(&address).map(Option::unwrap_or_default)
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
-        self.storage(address, key)
+        self.get_storage(&address, &key)
     }
 }
 
-impl<T: JournalTr> TempoStateAccess<((), ())> for T {
-    type Error = <T::Database as Database>::Error;
+impl TempoStateAccess<((),)> for Evm<'_, TempoEvmTypes> {
+    type Error = String;
 
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
-        self.load_account(address).map(|s| s.data.info.clone())
+        self.state_mut()
+            .account(&address, false)
+            .map(|mut account| {
+                account.warm();
+                account.get().cloned().unwrap_or_default()
+            })
+            .map_err(|code| self.error(code).to_string())
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
-        JournalTr::sload(self, address, key).map(|s| s.data)
+        self.state_mut()
+            .storage_slot(&address, key, false)
+            .map(|mut slot| {
+                slot.warm();
+                slot.current()
+            })
+            .map_err(|code| self.error(code).to_string())
     }
 }
 
-#[cfg(feature = "reth")]
 impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
-    type Error = reth_evm::execute::ProviderError;
+    type Error = reth_storage_api::errors::provider::ProviderError;
 
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
         self.basic_account(&address)
             .map(Option::unwrap_or_default)
-            .map(Into::into)
+            .map(|account| AccountInfo {
+                balance: account.balance,
+                nonce: account.nonce,
+                code_hash: account.get_bytecode_hash(),
+                code: None,
+                _non_exhaustive: (),
+            })
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
@@ -396,7 +409,7 @@ where
         unreachable!("'sstore' not supported in read-only context")
     }
 
-    fn set_code(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
+    fn set_code(&mut self, _: Address, _: Bytes) -> TempoResult<()> {
         unreachable!("'set_code' not supported in read-only context")
     }
 
@@ -416,15 +429,15 @@ where
         unreachable!("'refund_gas' not supported in read-only context")
     }
 
-    fn checkpoint(&mut self) -> revm::context::journaled_state::JournalCheckpoint {
+    fn checkpoint(&mut self) -> StateCheckpoint {
         unreachable!("'checkpoint' not supported in read-only context")
     }
 
-    fn checkpoint_commit(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
+    fn checkpoint_commit(&mut self, _: StateCheckpoint) {
         unreachable!("'checkpoint_commit' not supported in read-only context")
     }
 
-    fn checkpoint_revert(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
+    fn checkpoint_revert(&mut self, _: StateCheckpoint) {
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
 
@@ -436,37 +449,101 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FeeTokenResolver, TempoFeeManager};
-    use alloy_primitives::{address, uint};
-    use alloy_sol_types::SolCall;
-    use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
-    use tempo_contracts::precompiles::{
-        DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
-    };
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_primitives::{B256, Signature, address, uint};
+    use evm2::bytecode::Bytecode;
+    use std::{collections::HashMap, convert::Infallible};
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         tip_fee_manager::TipFeeManager,
         tip20::{IRolesAuth::*, ITIP20::*, TIP20Token, slots as tip20_slots},
     };
+    use tempo_primitives::{
+        AASigned, TempoSignature, TempoTransaction, transaction::tt_signature::PrimitiveSignature,
+    };
+
+    #[derive(Default)]
+    struct TestDatabase {
+        accounts: HashMap<Address, AccountInfo>,
+        storage: HashMap<(Address, U256), U256>,
+    }
+
+    impl Database for TestDatabase {
+        type Error = Infallible;
+
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(self.accounts.get(address).cloned())
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &U256) -> Result<U256, Self::Error> {
+            Ok(self
+                .storage
+                .get(&(*address, *key))
+                .copied()
+                .unwrap_or_default())
+        }
+
+        fn get_block_hash(&mut self, _number: &U256) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    impl TestDatabase {
+        fn insert_account_storage(&mut self, address: Address, slot: U256, value: U256) {
+            self.accounts.entry(address).or_default();
+            self.storage.insert((address, slot), value);
+        }
+    }
+
+    fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
+        Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id: Some(1),
+                    gas_limit: 21_000,
+                    to,
+                    input,
+                    ..Default::default()
+                },
+                Signature::test_signature(),
+            )),
+            caller,
+        )
+        .into()
+    }
+
+    fn aa_env(caller: Address, transaction: TempoTransaction) -> TempoTxEnv {
+        Recovered::new_unchecked(
+            TempoTxEnvelope::AA(AASigned::new_unhashed(
+                transaction,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            )),
+            caller,
+        )
+        .into()
+    }
 
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
         let caller = Address::random();
         let fee_token = Address::random();
 
-        let tx_env = TxEnv {
-            data: Bytes::new(),
+        let tx = aa_env(
             caller,
-            ..Default::default()
-        };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            fee_token: Some(fee_token),
-            ..Default::default()
-        };
+            TempoTransaction {
+                fee_token: Some(fee_token),
+                ..Default::default()
+            },
+        );
 
-        let token = TempoFeeManager.resolve_fee_token(
-            &mut EmptyDB::default(),
+        let mut db = TestDatabase::default();
+        let token = db.get_fee_token(
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -481,20 +558,14 @@ mod tests {
         let caller = Address::random();
         let token = Address::random();
 
-        let call = IFeeManager::setUserTokenCall { token };
-        let tx_env = TxEnv {
-            data: call.abi_encode().into(),
-            kind: TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+        let tx = legacy_env(
             caller,
-            ..Default::default()
-        };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+            TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+            IFeeManager::setUserTokenCall { token }.abi_encode().into(),
+        );
 
-        let result_token = TempoFeeManager.resolve_fee_token(
-            &mut EmptyDB::default(),
+        let mut db = TestDatabase::default();
+        let result_token = db.get_fee_token(
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -510,14 +581,16 @@ mod tests {
         let user_token = Address::random();
 
         // Set user stored token preference in the FeeManager
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let user_slot = TipFeeManager::new().user_tokens[caller].slot();
-        db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
-            .unwrap();
+        let mut db = TestDatabase::default();
+        db.insert_account_storage(
+            TIP_FEE_MANAGER_ADDRESS,
+            TipFeeManager::new().user_tokens[caller].slot(),
+            U256::from_be_bytes(user_token.into_word().0),
+        );
 
-        let result_token = TempoFeeManager.resolve_fee_token(
-            &mut db,
-            &TempoTxEnv::default(),
+        let tx = legacy_env(caller, TxKind::Call(Address::ZERO), Bytes::new());
+        let result_token = db.get_fee_token(
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -531,19 +604,14 @@ mod tests {
         let caller = Address::random();
         let tip20_token = Address::random();
 
-        let tx_env = TxEnv {
-            data: Bytes::from_static(b"transfer_data"),
-            kind: TxKind::Call(tip20_token),
+        let tx = legacy_env(
             caller,
-            ..Default::default()
-        };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+            TxKind::Call(tip20_token),
+            Bytes::from_static(b"transfer_data"),
+        );
 
-        let result_token = TempoFeeManager.resolve_fee_token(
-            &mut EmptyDB::default(),
+        let mut db = TestDatabase::default();
+        let result_token = db.get_fee_token(
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -556,17 +624,10 @@ mod tests {
     #[test]
     fn test_get_fee_token_fallback() -> eyre::Result<()> {
         let caller = Address::random();
-        let tx_env = TxEnv {
-            caller,
-            ..Default::default()
-        };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+        let tx = legacy_env(caller, TxKind::Call(Address::ZERO), Bytes::new());
 
-        let result_token = TempoFeeManager.resolve_fee_token(
-            &mut EmptyDB::default(),
+        let mut db = TestDatabase::default();
+        let result_token = db.get_fee_token(
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -592,20 +653,13 @@ mod tests {
             minAmountOut: 900,
         };
 
-        let tx_env = TxEnv {
-            data: call.abi_encode().into(),
-            kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+        let mut db = TestDatabase::default();
+        let tx = legacy_env(
             caller,
-            ..Default::default()
-        };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
-
-        let mut db = EmptyDB::default();
-        let token = TempoFeeManager.resolve_fee_token(
-            &mut db,
+            TxKind::Call(STABLECOIN_DEX_ADDRESS),
+            call.abi_encode().into(),
+        );
+        let token = db.get_fee_token(
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -621,20 +675,13 @@ mod tests {
             maxAmountIn: 1000,
         };
 
-        let tx_env = TxEnv {
-            data: call.abi_encode().into(),
-            kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
+        let tx = legacy_env(
             caller,
-            ..Default::default()
-        };
+            TxKind::Call(STABLECOIN_DEX_ADDRESS),
+            call.abi_encode().into(),
+        );
 
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
-
-        let token = TempoFeeManager.resolve_fee_token(
-            &mut db,
+        let token = db.get_fee_token(
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -652,9 +699,9 @@ mod tests {
         let expected_balance = U256::from(1000u64);
 
         // Set up CacheDB with balance
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = TestDatabase::default();
         let balance_slot = TIP20Token::from_address(token_address)?.balances[account].slot();
-        db.insert_account_storage(token_address, balance_slot, expected_balance)?;
+        db.insert_account_storage(token_address, balance_slot, expected_balance);
 
         // Read balance using typed storage
         let balance = db.get_token_balance(
@@ -697,7 +744,7 @@ mod tests {
     #[test]
     fn test_is_fee_token_paused() -> eyre::Result<()> {
         let token_address = PATH_USD_ADDRESS;
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = TestDatabase::default();
 
         // Default (unpaused) returns false
         assert!(!db.is_fee_token_paused(
@@ -707,7 +754,7 @@ mod tests {
         )?);
 
         // Set paused=true
-        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
+        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1));
         assert!(db.is_fee_token_paused(
             TempoHardfork::Genesis,
             token_address,
@@ -746,8 +793,8 @@ mod tests {
         ];
 
         for (currency_value, expected, label) in cases {
-            let mut db = revm::database::CacheDB::new(EmptyDB::default());
-            db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
+            let mut db = TestDatabase::default();
+            db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value);
 
             let is_usd = db.is_tip20_usd(
                 TempoHardfork::Genesis,
@@ -763,10 +810,10 @@ mod tests {
     #[test]
     fn test_tip20_currency_for_error_does_not_read_long_currency() -> eyre::Result<()> {
         let fee_token = PATH_USD_ADDRESS;
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let mut db = TestDatabase::default();
         let len = 1024usize;
 
-        db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
+        db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1));
 
         let err = db
             .ensure_tip20_usd(
@@ -777,12 +824,12 @@ mod tests {
             .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
             err,
-            EVMError::Transaction(
-                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    currency,
-                    ..
-                }
-            ) if currency == "<1024 bytes>"
+            HandlerError::External(ref error)
+                if matches!(
+                    error.downcast_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency { currency, .. })
+                        if currency == "<1024 bytes>"
+                )
         ));
 
         Ok(())

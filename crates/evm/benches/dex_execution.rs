@@ -8,29 +8,24 @@
 mod common;
 
 use alloy_consensus::transaction::Recovered;
-use alloy_evm::{Evm, EvmFactory};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_sol_types::{SolCall, SolValue};
 use common::{
-    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, txgen_signers,
+    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
+    hardfork_bench_cases, seeded_db, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
+use evm2::evm::InMemoryDB;
 use std::{hint::black_box, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, tip20_factory::createTokenCall};
-use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageActions, StorageCtx},
+    storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -58,72 +53,61 @@ fn seed_dex_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
-    let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
-        common::bench_env(hardfork, block_timestamp),
-    );
+) -> InMemoryDB {
+    let mut evm = bench_evm(InMemoryDB::default(), hardfork, block_timestamp);
     let admin = participants
         .first()
         .copied()
         .unwrap_or_else(|| Address::repeat_byte(0x01));
 
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            TIP403Registry::new().initialize()?;
-            TIP20Factory::new().initialize()?;
-            TIP20Factory::new().create_token_reserved_address(
-                PATH_USD_ADDRESS,
-                "pathUSD",
-                "pathUSD",
-                "USD",
-                Address::ZERO,
+    StorageCtx::enter_evm(&mut evm, || {
+        TIP403Registry::new().initialize()?;
+        TIP20Factory::new().initialize()?;
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "pathUSD",
+            "pathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
+
+        let mut quote = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+        quote.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let base_token = TIP20Factory::new().create_token(
+            admin,
+            createTokenCall {
+                name: "benchBASE".to_string(),
+                symbol: "benchBASE".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: PATH_USD_ADDRESS,
                 admin,
-            )?;
+                salt: DEX_BASE_TOKEN_SALT,
+            },
+        )?;
+        let mut base = TIP20Token::from_address(base_token)?;
+        base.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-            let mut quote = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            quote.grant_role_internal(admin, *ISSUER_ROLE)?;
+        for participant in participants {
+            let mint = ITIP20::mintCall {
+                to: *participant,
+                amount: U256::from(PARTICIPANT_MINT_AMOUNT),
+            };
+            quote.mint(admin, mint.clone())?;
+            base.mint(admin, mint)?;
+        }
 
-            let base_token = TIP20Factory::new().create_token(
-                admin,
-                createTokenCall {
-                    name: "benchBASE".to_string(),
-                    symbol: "benchBASE".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: PATH_USD_ADDRESS,
-                    admin,
-                    salt: DEX_BASE_TOKEN_SALT,
-                },
-            )?;
-            let mut base = TIP20Token::from_address(base_token)?;
-            base.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            for participant in participants {
-                let mint = ITIP20::mintCall {
-                    to: *participant,
-                    amount: U256::from(PARTICIPANT_MINT_AMOUNT),
-                };
-                quote.mint(admin, mint.clone())?;
-                base.mint(admin, mint)?;
-            }
-
-            StablecoinDEX::new().initialize()?;
-            TipFeeManager::new().initialize()?;
-            NonceManager::new().initialize()?;
-            Ok::<(), TempoPrecompileError>(())
-        },
-    )
+        StablecoinDEX::new().initialize()?;
+        TipFeeManager::new().initialize()?;
+        NonceManager::new().initialize()?;
+        Ok::<(), TempoPrecompileError>(())
+    })
     .expect("failed to seed DEX benchmark state");
+    evm.state_mut().commit_transaction();
+    evm.state_mut().clear_transaction_state();
 
-    let evm_state = evm.ctx_mut().journaled_state.evm_state().clone();
-    evm.db_mut().commit(evm_state);
-    evm.finish().0
+    seeded_db(&evm)
 }
 
 fn sign_dex_call(

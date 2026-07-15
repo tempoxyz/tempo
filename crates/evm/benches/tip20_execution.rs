@@ -8,29 +8,24 @@ mod common;
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
-use alloy_evm::{Evm, EvmFactory};
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use common::{
-    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_env, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, sign_precompile_call, txgen_signers,
+    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
+    hardfork_bench_cases, seeded_db, sign_precompile_call, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
+use evm2::evm::InMemoryDB;
 use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::ITIP20;
-use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::{StorageActions, StorageCtx},
+    storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -89,63 +84,50 @@ fn seed_in_memory_cache_db(
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
-    // This setup database only materializes the benchmark fixture in memory. The measured
-    // execution path below uses Reth's fixed-cache execution provider, not CacheDB.
-    let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
-        bench_env(hardfork, block_timestamp),
-    );
+) -> InMemoryDB {
+    let mut evm = bench_evm(InMemoryDB::default(), hardfork, block_timestamp);
     let admin = participants
         .first()
         .copied()
         .unwrap_or_else(|| Address::repeat_byte(0x01));
 
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || {
-            TIP403Registry::new().initialize()?;
-            TIP20Factory::new().initialize()?;
-            TIP20Factory::new().create_token_reserved_address(
-                PATH_USD_ADDRESS,
-                "pathUSD",
-                "pathUSD",
-                "USD",
-                Address::ZERO,
+    StorageCtx::enter_evm(&mut evm, || {
+        TIP403Registry::new().initialize()?;
+        TIP20Factory::new().initialize()?;
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "pathUSD",
+            "pathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
+
+        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        for participant in participants {
+            token.mint(
                 admin,
+                ITIP20::mintCall {
+                    to: *participant,
+                    amount: U256::from(PARTICIPANT_MINT_AMOUNT),
+                },
             )?;
+        }
 
-            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-            for participant in participants {
-                token.mint(
-                    admin,
-                    ITIP20::mintCall {
-                        to: *participant,
-                        amount: U256::from(PARTICIPANT_MINT_AMOUNT),
-                    },
-                )?;
-            }
+        if let Some((delegates, kind)) = reward_seed {
+            seed_reward_bench_state(&mut token, admin, participants, delegates, kind)?;
+        }
 
-            if let Some((delegates, kind)) = reward_seed {
-                seed_reward_bench_state(&mut token, admin, participants, delegates, kind)?;
-            }
-
-            TipFeeManager::new().initialize()?;
-            NonceManager::new().initialize()?;
-            Ok::<(), TempoPrecompileError>(())
-        },
-    )
+        TipFeeManager::new().initialize()?;
+        NonceManager::new().initialize()?;
+        Ok::<(), TempoPrecompileError>(())
+    })
     .expect("failed to seed TIP20 benchmark state");
+    evm.state_mut().commit_transaction();
+    evm.state_mut().clear_transaction_state();
 
-    let evm_state = evm.ctx_mut().journaled_state.evm_state().clone();
-    evm.db_mut().commit(evm_state);
-    evm.finish().0
+    seeded_db(&evm)
 }
 
 fn seed_reward_bench_state(

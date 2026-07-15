@@ -67,7 +67,6 @@ reth-ethereum.workspace = true
 reth-evm.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
-reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 

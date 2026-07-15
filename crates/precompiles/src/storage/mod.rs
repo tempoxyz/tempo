@@ -7,7 +7,6 @@ pub mod actions;
 pub use actions::{StorageAction, StorageActions};
 
 pub mod evm;
-pub use evm::SstoreTransitionFlags;
 pub mod hashmap;
 
 pub mod thread_local;
@@ -21,11 +20,10 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, B256, LogData, Signature, U256};
-use revm::{
-    context::journaled_state::JournalCheckpoint,
+use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
+use evm2::{
+    evm::{AccountInfo, StateCheckpoint},
     interpreter::gas::{KECCAK256, KECCAK256WORD},
-    state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoBlockEnv;
@@ -51,7 +49,7 @@ pub trait PrecompileStorageProvider {
     fn block_env(&self) -> &TempoBlockEnv;
 
     /// Sets the bytecode at the given address.
-    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
+    fn set_code(&mut self, address: Address, code: Bytes) -> Result<()>;
 
     /// Executes a closure with access to the account info for the given address.
     fn with_account_info(
@@ -156,17 +154,17 @@ pub trait PrecompileStorageProvider {
     ///
     /// Prefer [`StorageCtx::checkpoint`] which returns a [`CheckpointGuard`] that
     /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
-    fn checkpoint(&mut self) -> JournalCheckpoint;
+    fn checkpoint(&mut self) -> StateCheckpoint;
 
     /// Commits all state changes since the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard::commit`].
-    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint);
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint);
 
     /// Reverts all state changes back to the given checkpoint.
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
-    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint);
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
     ///
@@ -188,9 +186,9 @@ pub trait PrecompileStorageProvider {
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
         let num_words =
             u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
-        let price = KECCAK256WORD
+        let price = u64::from(KECCAK256WORD)
             .checked_mul(num_words)
-            .and_then(|w| w.checked_add(KECCAK256))
+            .and_then(|w| w.checked_add(u64::from(KECCAK256)))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.deduct_gas(price)?;
         Ok(keccak256(data))
@@ -267,7 +265,8 @@ pub trait ContractStorage {
 
     /// Returns true if the contract has been initialized (has bytecode deployed).
     fn is_initialized(&self) -> Result<bool> {
-        self.storage()
-            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
+        self.storage().with_account_info(self.address(), |info| {
+            Ok(info.code_hash != alloy::primitives::KECCAK256_EMPTY)
+        })
     }
 }

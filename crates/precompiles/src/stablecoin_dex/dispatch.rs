@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
@@ -104,7 +104,6 @@ impl Precompile for StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
-
     use crate::{
         Precompile,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
@@ -167,10 +166,10 @@ mod tests {
             };
             let calldata = call.abi_encode();
 
-            // Should dispatch to place function (may fail due to business logic, but dispatch works)
+            // The selector dispatches and the intentionally incomplete setup is rejected by
+            // business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -195,10 +194,10 @@ mod tests {
             };
             let calldata = call.abi_encode();
 
-            // Should dispatch to place_flip function
+            // The selector dispatches and the intentionally incomplete setup is rejected by
+            // business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -240,7 +239,7 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
-            let output = result?.bytes;
+            let output = result?.into_bytes();
             let returned_value = u32::abi_decode(&output)?;
 
             assert_eq!(returned_value, 98_000, "MIN_PRICE should be 98_000");
@@ -262,7 +261,7 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
-            let output = result?.bytes;
+            let output = result?.into_bytes();
             let returned_value = i16::abi_decode(&output)?;
 
             let expected = crate::stablecoin_dex::TICK_SPACING;
@@ -288,7 +287,7 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
-            let output = result?.bytes;
+            let output = result?.into_bytes();
             let returned_value = u32::abi_decode(&output)?;
 
             assert_eq!(returned_value, 102_000, "MAX_PRICE should be 102_000");
@@ -309,10 +308,10 @@ mod tests {
             let call = IStablecoinDEX::createPairCall { base };
             let calldata = call.abi_encode();
 
-            // Should dispatch to create_pair function
+            // The selector dispatches and the intentionally invalid pair is rejected by business
+            // logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
             Ok(())
         })
     }
@@ -333,10 +332,9 @@ mod tests {
             };
             let calldata = call.abi_encode();
 
-            // Should dispatch to withdraw function
+            // The selector dispatches and the missing balance is rejected by business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -354,10 +352,9 @@ mod tests {
             let call = IStablecoinDEX::cancelCall { orderId: 1u128 };
             let calldata = call.abi_encode();
 
-            // Should dispatch to cancel function
+            // The selector dispatches and the missing order is rejected by business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
             Ok(())
         })
     }

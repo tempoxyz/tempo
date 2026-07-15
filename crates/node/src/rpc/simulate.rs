@@ -3,7 +3,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256, keccak256};
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth_ethereum::evm::revm::database::StateProviderDatabase;
+use reth_evm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
 use reth_node_builder::NodeAdapter;
 use reth_primitives_traits::AlloyBlockHeader as _;

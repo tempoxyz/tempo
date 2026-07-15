@@ -211,10 +211,10 @@ reth_storage_api::delegate_impls_to_as_ref!(
 );
 
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(&self, state: &reth_execution_types::EvmState) -> HashedPostState {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let result = self.inner.hashed_post_state(bundle_state);
+        let result = self.inner.hashed_post_state(state);
         drop(_span);
         self.metrics
             .hashed_post_state_duration_seconds

@@ -639,7 +639,7 @@ where
                 let block_update_start = Instant::now();
 
                 let tip = &new;
-                let bundle_state = tip.execution_outcome().state().state();
+                let execution_state = tip.execution_outcome().execution_state_ref();
                 let tip_timestamp = tip.tip().header().timestamp();
 
                 // Removed transactions are collected here and dropped at the end of the
@@ -651,7 +651,7 @@ where
                 // This removes mined 2D nonce transactions and promotes newly
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
-                removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+                removed_txs.push(pool.notify_aa_pool_on_state_updates(execution_state));
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.
@@ -1452,10 +1452,13 @@ mod tests {
 
         Arc::new(Chain::new(
             blocks,
-            ExecutionOutcome {
+            ExecutionOutcome::from_state_and_reverts(
+                Default::default(),
+                Vec::new(),
                 receipts,
-                ..Default::default()
-            },
+                0,
+                Vec::new(),
+            ),
             Default::default(),
         ))
     }

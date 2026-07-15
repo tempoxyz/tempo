@@ -7,10 +7,9 @@ use alloy::{
     },
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, TxKind, U64, U256};
+use alloy_primitives::{Address, TxKind, U64, U256, hex};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum::{
-    evm::revm::primitives::hex,
     node::builder::{NodeBuilder, NodeHandle},
     pool::TransactionPool,
     primitives::SignerRecoverable,

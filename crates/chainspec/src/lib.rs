@@ -18,6 +18,8 @@ pub use network_identity::NetworkIdentity;
 #[cfg(feature = "reth")]
 pub use spec::{TempoChainSpec, TempoHardforks};
 
+#[cfg(feature = "evm")]
+pub use tempo_hardfork::gas_params;
 pub use tempo_hardfork::{TempoHardfork, constants};
 
 /// Backwards-compatible hardfork import path.

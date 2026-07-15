@@ -26,20 +26,20 @@ use futures::{FutureExt as _, StreamExt, channel::mpsc};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_evm::{Evm, revm::database::State};
+use reth_evm::database::StateProviderDatabase;
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::Recovered;
-use reth_provider::{
-    BlockReader, BlockSource, ProviderError, StateProviderBox, StateProviderFactory,
-};
-use reth_revm::database::StateProviderDatabase;
+use reth_provider::{BlockReader, BlockSource, ProviderError, StateProviderFactory};
 use std::{
     pin::Pin,
     sync::{Arc, mpsc::RecvError},
     time::{Duration, Instant},
 };
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
+use tempo_node::{
+    TempoFullNode,
+    evm::{TempoTxEnv, evm::TempoEvm},
+};
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
@@ -670,15 +670,8 @@ impl Reporter for Mailbox {
     }
 }
 
-fn evm_at_block(
-    node: &TempoFullNode,
-    hash: BlockHash,
-) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(
-            node.provider.state_by_block_hash(hash)?,
-        ))
-        .build();
+fn evm_at_block(node: &TempoFullNode, hash: BlockHash) -> eyre::Result<TempoEvm<'static>> {
+    let db = StateProviderDatabase::new(node.provider.state_by_block_hash(hash)?);
     let header = node
         .provider
         .find_sealed_or_recovered_block(hash, BlockSource::Any)?
@@ -708,7 +701,7 @@ async fn build_subblock(
             let shared_gas_limit = node
                 .config
                 .chain
-                .shared_gas_limit_at(evm.block().timestamp.saturating_to(), evm.block().gas_limit);
+                .shared_gas_limit_at(evm.block().timestamp.to(), evm.block().gas_limit.to());
             let gas_budget = shared_gas_limit
                 .checked_div(num_validators as u64)
                 .expect("validator set must not be empty");
@@ -718,7 +711,7 @@ async fn build_subblock(
 
             for (tx_hash, tx) in txs {
                 let max_regular_gas =
-                    core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
+                    core::cmp::min(tx.gas_limit(), evm.version().tx_gas_limit_cap);
                 // Remove transactions over subblock gas budget
                 if max_regular_gas > gas_budget {
                     warn!(
@@ -737,7 +730,10 @@ async fn build_subblock(
                     continue;
                 }
 
-                if let Err(err) = evm.transact_commit(&*tx) {
+                if let Err(err) = evm
+                    .transact(&TempoTxEnv::from(tx.as_ref().clone()))
+                    .map(|executed| executed.commit())
+                {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
                     to_remove.push(tx_hash);
                     continue;
@@ -848,13 +844,13 @@ async fn validate_subblock(
     let shared_gas_limit = node
         .config
         .chain
-        .shared_gas_limit_at(evm.block().timestamp.saturating_to(), evm.block().gas_limit);
+        .shared_gas_limit_at(evm.block().timestamp.to(), evm.block().gas_limit.to());
 
     // Bound subblock size at a value proportional to shared_gas_limit.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
     let max_size = (MAX_RLP_BLOCK_SIZE as u128 * u128::from(shared_gas_limit)
-        / u128::from(evm.block().gas_limit)
+        / evm.block().gas_limit.to::<u128>()
         / participants as u128) as usize;
     if subblock.total_tx_size() > max_size {
         warn!(
@@ -868,8 +864,7 @@ async fn validate_subblock(
     let gas_budget = shared_gas_limit / participants as u64;
     let mut total_gas = 0u64;
     for tx in subblock.transactions_recovered() {
-        let max_regular_gas =
-            core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
+        let max_regular_gas = core::cmp::min(tx.gas_limit(), evm.version().tx_gas_limit_cap);
         total_gas = total_gas.saturating_add(max_regular_gas);
         if total_gas > gas_budget {
             warn!(
@@ -882,7 +877,10 @@ async fn validate_subblock(
 
     // Ensure all transactions can be committed
     for tx in subblock.transactions_recovered() {
-        if let Err(err) = evm.transact_commit(tx) {
+        if let Err(err) = evm
+            .transact(&TempoTxEnv::from(tx.cloned()))
+            .map(|executed| executed.commit())
+        {
             return Err(eyre::eyre!("transaction failed to execute: {err:?}"));
         }
     }

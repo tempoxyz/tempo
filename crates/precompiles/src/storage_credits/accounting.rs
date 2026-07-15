@@ -4,16 +4,17 @@
 //! after a storage slot is written. It is driven through the [`StorageCreditsBackend`]
 //! trait so the exact same logic can be reused from two places:
 //!
-//! - the opcode-level SSTORE hook in `tempo-revm` (`TempoGasState`), and
+//! - Tempo's EVM2 opcode-level SSTORE hook, and
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
 use super::{CreditMode, StorageCredits, TransientState};
-use crate::storage::{FromWord, SstoreTransitionFlags};
+use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
-use revm::{
-    context_interface::cfg::GasParams,
-    interpreter::{InstructionResult, SStoreResult, StateLoad, gas::GasTracker},
+use evm2::{
+    evm::{SLoad, SStore},
+    interpreter::GasTracker,
+    version::{GasId, GasParams},
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
@@ -24,7 +25,7 @@ pub trait StorageCreditsErr: Sized {
     fn fatal_external() -> Self;
 }
 
-impl StorageCreditsErr for InstructionResult {
+impl StorageCreditsErr for evm2::interpreter::InstrStop {
     fn out_of_gas() -> Self {
         Self::OutOfGas
     }
@@ -38,19 +39,18 @@ impl StorageCreditsErr for InstructionResult {
 pub trait StorageCreditsBackend {
     type Error: StorageCreditsErr;
 
-    /// Gas parameters for the active spec.
+    /// Gas parameters for the active EVM2 version.
     fn gas_params(&self) -> &GasParams;
 
-    /// Gas tracker for the active execution context.
+    /// Gas tracker for the active EVM2 execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
+    /// Charges `cost` regular gas, returning out-of-gas if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         self.gas_tracker()
-            .record_regular_cost(cost)
-            .then_some(())
-            .ok_or_else(Self::Error::out_of_gas)
+            .spend(cost)
+            .map_err(|_| Self::Error::out_of_gas())
     }
 
     /// SLOAD `address[key]`, optionally skipping the cold load.
@@ -59,7 +59,7 @@ pub trait StorageCreditsBackend {
         address: Address,
         key: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, Self::Error>;
+    ) -> Result<SLoad, Self::Error>;
 
     /// SSTORE `address[key]`.
     fn sstore(
@@ -68,7 +68,7 @@ pub trait StorageCreditsBackend {
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<SstoreTransitionFlags, Self::Error>;
+    ) -> Result<SStore, Self::Error>;
 
     /// TLOAD `address[key]`.
     fn tload(&mut self, address: Address, key: U256) -> U256;
@@ -106,13 +106,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
     key: Option<U256>,
-    caller_state_load: &StateLoad<SStoreResult>,
+    sstore: &SStore,
 ) -> Result<(), B::Error> {
-    let sstore_flags = SstoreTransitionFlags::from(caller_state_load);
-
     // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
     // If both values are zero or non-zero, slot occupancy is unchanged, so skip credits accounting.
-    if !sstore_flags.crosses_zero_boundary() {
+    if sstore.present_value.is_zero() == sstore.new_value.is_zero() {
         return Ok(());
     }
 
@@ -123,11 +121,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     // Load the persistent storage credit balance for the storage-owning account.
-    let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
+    let warm_storage_read_cost = u64::from(backend.gas_params().get(GasId::WarmStorageReadCost));
     backend.charge_gas(warm_storage_read_cost)?;
 
     let account_slot = StorageCredits::slot(owner);
-    let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
+    let additional_cold_cost =
+        u64::from(backend.gas_params().get(GasId::ColdStorageAdditionalCost));
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load =
         backend.sload(STORAGE_CREDITS_ADDRESS, account_slot, skip_cold)?;
@@ -136,10 +135,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     let mut credit =
-        u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
+        u64::from_word(storage_credit_state_load.value).map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
-    if sstore_flags.is_nonzero_to_zero() {
+    if !sstore.present_value.is_zero() && sstore.new_value.is_zero() {
         // x→0: storage deletion doesn't mint on protocol fee/keychain bookkeeping slots.
         if let Some(key) = key
             && backend.is_non_creditable_slot(owner, key)
@@ -152,10 +151,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             credit = credit.saturating_add(1);
             was_changed = true;
         }
-    } else if sstore_flags.is_zero_to_nonzero() {
+    } else if sstore.present_value.is_zero() && !sstore.new_value.is_zero() {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
-        // revm's SSTORE function adds the 5k residual for clean writes (`original == present == 0`).
+        // EVM2's standard SSTORE accounting adds the 5k residual for clean writes
+        // (`original == present == 0`).
         let mut transient_state: TransientState = backend
             .tload(STORAGE_CREDITS_ADDRESS, account_slot)
             .try_into()
@@ -197,8 +197,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         )?;
 
         // Only when change happens charge additional gas.
-        if flags.charges_clean_update() {
-            backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
+        if !flags.is_noop() && flags.is_clean() {
+            backend.charge_gas(u64::from(
+                backend
+                    .gas_params()
+                    .get(GasId::SstoreResetWithoutColdLoadCost),
+            ))?;
         };
     }
 

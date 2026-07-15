@@ -2,7 +2,10 @@
 
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
-use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
+use reth_evm::{
+    Database,
+    cached::{AccountInfo, Bytecode},
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
@@ -41,7 +44,7 @@ impl StateCache {
     const MAX_CONTRACTS: usize = 1 << 12;
 }
 
-/// A [`DatabaseRef`] adapter that serves reads from a shared [`StateCache`], falling back
+/// A [`Database`] adapter that serves reads from a shared [`StateCache`], falling back
 /// to the wrapped database and populating the cache on miss.
 #[derive(Debug)]
 #[expect(unnameable_types)]
@@ -58,19 +61,19 @@ impl<'a, DB> StateCacheDb<'a, DB> {
     }
 }
 
-impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
+impl<DB: Database> Database for StateCacheDb<'_, DB> {
     type Error = DB::Error;
 
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if let Some(account) = self.cache.accounts.get(&address) {
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if let Some(account) = self.cache.accounts.get(address) {
             return Ok(account.clone());
         }
-        let account = self.db.basic_ref(address)?;
+        let account = self.db.get_account(address)?;
         if self.cache.account_count.load(Ordering::Relaxed) < StateCache::MAX_ACCOUNTS
             && self
                 .cache
                 .accounts
-                .insert(address, account.clone())
+                .insert(*address, account.clone())
                 .is_none()
         {
             self.cache.account_count.fetch_add(1, Ordering::Relaxed);
@@ -78,16 +81,16 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
         Ok(account)
     }
 
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        if let Some(code) = self.cache.contracts.get(&code_hash) {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        if let Some(code) = self.cache.contracts.get(code_hash) {
             return Ok(code.clone());
         }
-        let code = self.db.code_by_hash_ref(code_hash)?;
+        let code = self.db.get_code_by_hash(code_hash)?;
         if self.cache.contract_count.load(Ordering::Relaxed) < StateCache::MAX_CONTRACTS
             && self
                 .cache
                 .contracts
-                .insert(code_hash, code.clone())
+                .insert(*code_hash, code.clone())
                 .is_none()
         {
             self.cache.contract_count.fetch_add(1, Ordering::Relaxed);
@@ -95,41 +98,25 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
         Ok(code)
     }
 
-    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        if let Some(value) = self.cache.storage.get(&(address, index)) {
+    fn get_storage(&mut self, address: &Address, index: &U256) -> Result<U256, Self::Error> {
+        if let Some(value) = self.cache.storage.get(&(*address, *index)) {
             return Ok(*value);
         }
-        let value = self.db.storage_ref(address, index)?;
+        let value = self.db.get_storage(address, index)?;
         if self.cache.storage_count.load(Ordering::Relaxed) < StateCache::MAX_STORAGE_SLOTS
-            && self.cache.storage.insert((address, index), value).is_none()
+            && self
+                .cache
+                .storage
+                .insert((*address, *index), value)
+                .is_none()
         {
             self.cache.storage_count.fetch_add(1, Ordering::Relaxed);
         }
         Ok(value)
     }
 
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.db.block_hash_ref(number)
-    }
-}
-
-impl<DB: DatabaseRef> Database for StateCacheDb<'_, DB> {
-    type Error = DB::Error;
-
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.basic_ref(address)
-    }
-
-    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.code_by_hash_ref(code_hash)
-    }
-
-    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        self.storage_ref(address, index)
-    }
-
-    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
-        self.block_hash_ref(number)
+    fn get_block_hash(&mut self, number: &U256) -> Result<Option<B256>, Self::Error> {
+        self.db.get_block_hash(number)
     }
 }
 
@@ -143,10 +130,10 @@ mod tests {
         reads: AtomicUsize,
     }
 
-    impl DatabaseRef for CountingDb {
+    impl Database for CountingDb {
         type Error = core::convert::Infallible;
 
-        fn basic_ref(&self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(Some(AccountInfo {
                 balance: U256::from(1),
@@ -154,39 +141,39 @@ mod tests {
             }))
         }
 
-        fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
             self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(Bytecode::default())
         }
 
-        fn storage_ref(&self, _address: Address, _index: U256) -> Result<U256, Self::Error> {
+        fn get_storage(&mut self, _address: &Address, _index: &U256) -> Result<U256, Self::Error> {
             self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(U256::from(42))
         }
 
-        fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
-            Ok(B256::ZERO)
+        fn get_block_hash(&mut self, _number: &U256) -> Result<Option<B256>, Self::Error> {
+            Ok(Some(B256::ZERO))
         }
     }
 
     #[test]
     fn caches_reads_across_instances() {
         let cache = StateCache::default();
-        let inner = CountingDb::default();
+        let mut inner = CountingDb::default();
         let address = Address::with_last_byte(1);
         let slot = U256::from(7);
 
         {
-            let db = StateCacheDb::new(&cache, &inner);
-            assert_eq!(db.storage_ref(address, slot).unwrap(), U256::from(42));
-            assert!(db.basic_ref(address).unwrap().is_some());
+            let mut db = StateCacheDb::new(&cache, &mut inner);
+            assert_eq!(db.get_storage(&address, &slot).unwrap(), U256::from(42));
+            assert!(db.get_account(&address).unwrap().is_some());
         }
         assert_eq!(inner.reads.load(Ordering::Relaxed), 2);
 
         // A new adapter over the same cache serves all reads from memory.
-        let db = StateCacheDb::new(&cache, &inner);
-        assert_eq!(db.storage_ref(address, slot).unwrap(), U256::from(42));
-        assert!(db.basic_ref(address).unwrap().is_some());
+        let mut db = StateCacheDb::new(&cache, &mut inner);
+        assert_eq!(db.get_storage(&address, &slot).unwrap(), U256::from(42));
+        assert!(db.get_account(&address).unwrap().is_some());
         assert_eq!(inner.reads.load(Ordering::Relaxed), 2);
     }
 }

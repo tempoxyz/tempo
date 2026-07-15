@@ -21,27 +21,24 @@ tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
-tempo-revm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
+reth-execution-types.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
-reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
 reth-eth-wire-types.workspace = true
 reth-tracing.workspace = true
 reth-metrics.workspace = true
 
-revm.workspace = true
-
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
+evm2.workspace = true
 
 derive_more.workspace = true
 dashmap.workspace = true
@@ -62,8 +59,7 @@ test-utils = [
 	"reth-primitives-traits/test-utils",
 	"reth-provider/test-utils",
 	"reth-transaction-pool/test-utils",
-	"tempo-precompiles/test-utils",
-	"reth-revm/test-utils"
+	"tempo-precompiles/test-utils"
 ]
 
 [dev-dependencies]

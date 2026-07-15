@@ -9,15 +9,28 @@ use crate::{
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
+#[cfg(test)]
+use alloy::primitives::Bytes;
 use alloy::{
     primitives::{Address, B256, U256, address, hex_literal::hex},
     sol_types::SolError,
 };
-use revm::precompile::PrecompileError;
+use evm2::PrecompileError;
+#[cfg(test)]
+use evm2::precompiles::PrecompileResult;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+
+/// Returns the revert payload or panics with the unexpected EVM2 result.
+#[cfg(test)]
+pub fn revert_bytes(result: &PrecompileResult) -> &Bytes {
+    match result {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        other => panic!("expected precompile revert, got {other:?}"),
+    }
+}
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -38,21 +51,13 @@ pub fn check_selector_coverage<P: Precompile>(
 
         let result = precompile.call(&calldata, Address::ZERO);
 
-        // Check if we got "Unknown function selector" error (fatal format)
-        let is_unsupported_old = matches!(&result,
-            Err(PrecompileError::Fatal(msg)) if msg.contains("Unknown function selector")
+        let is_unsupported = matches!(
+            &result,
+            Err(PrecompileError::Revert(bytes))
+                if UnknownFunctionSelector::abi_decode(bytes).is_ok()
         );
 
-        // Check if we got "Unknown function selector" error (ABI-encoded revert)
-        let is_unsupported_new = if let Ok(output) = &result {
-            output.is_revert() && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
-        } else {
-            false
-        };
-
-        if (is_unsupported_old || is_unsupported_new)
-            && let Some(name) = name_lookup(*selector)
-        {
+        if is_unsupported && let Some(name) = name_lookup(*selector) {
             unsupported_selectors.push((*selector, name));
         }
     }
