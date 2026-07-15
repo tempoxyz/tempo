@@ -409,6 +409,8 @@ interface IVerifier {
 /// @notice Interface for creating zones
 interface IZoneFactory {
 
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
     struct CreateZoneParams {
         address initialToken; // first TIP-20 to enable (sequencer can enable more later)
         address admin;
@@ -431,11 +433,19 @@ interface IZoneFactory {
     );
 
     error InvalidToken();
+    error InvalidOwner();
+    error NotOwner();
     error InvalidAdmin();
     error InvalidSequencer();
     error InvalidVerifier();
     error InsufficientGas();
     error ZoneIdOverflow();
+
+    /// @notice Returns the account authorized to create zones.
+    function owner() external view returns (address);
+
+    /// @notice Transfers zone-creation authority to `newOwner`.
+    function transferOwnership(address newOwner) external;
 
     /// @notice Returns whether a verifier contract is approved for zone creation.
     /// @param verifier The verifier contract address to check.
