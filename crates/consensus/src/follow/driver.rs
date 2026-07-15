@@ -1,8 +1,7 @@
-//! Follower sync driver.
+//! Follower finalization driver.
 //!
-//! Subscribes to upstream finalization events and processes epoch boundary
-//! blocks for DKG scheme extraction. Non-boundary blocks are synced by Reth
-//! via P2P and fetched by marshal's gap-repair resolver on demand.
+//! Validates finalized blocks received from upstream and reports them to
+//! marshal and the consensus feed.
 
 use std::sync::Arc;
 
@@ -31,9 +30,12 @@ use rand_08::{CryptoRng, Rng};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
 use reth_provider::HeaderProvider as _;
 use tempo_chainspec::NetworkIdentity;
-use tempo_node::{TempoFullNode, rpc::consensus::Event};
+use tempo_node::{
+    TempoFullNode,
+    rpc::consensus::{CertifiedBlock, Event},
+};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn, warn_span};
+use tracing::{debug, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -65,7 +67,7 @@ pub(super) fn try_init<TContext>(
         .containing(Height::new(last_finalized_number))
         .expect("strategy valid for all heights and epochs");
 
-    let last_boundary = if epoch_info.last().get() == last_finalized_number {
+    let startup_execution_boundary = if epoch_info.last().get() == last_finalized_number {
         epoch_info.last()
     } else if let Some(previous) = epoch_info.epoch().previous() {
         config
@@ -75,17 +77,18 @@ pub(super) fn try_init<TContext>(
     } else {
         Height::zero()
     };
+
     let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
         &mut config
             .execution_node
             .provider
-            .header_by_number(last_boundary.get())
+            .header_by_number(startup_execution_boundary.get())
             .map_err(Report::new)
             .and_then(|maybe_header| maybe_header.ok_or_eyre("execution layer did not have header"))
             .wrap_err_with(|| {
                 format!(
                     "cannot establish baseline - unable to read the header \
-                    from the last boundary block at height `{last_boundary}` \
+                    from the last boundary block at height `{startup_execution_boundary}` \
                     from the execution layer"
                 )
             })?
@@ -93,7 +96,9 @@ pub(super) fn try_init<TContext>(
             .as_ref(),
     )
     .wrap_err_with(|| {
-        format!("the last boundary (`{last_boundary}`) block header did not contain a DKG outcome")
+        format!(
+            "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
+        )
     })?;
 
     config.scheme_provider.register(
@@ -104,6 +109,7 @@ pub(super) fn try_init<TContext>(
         ),
     );
 
+    let current_epoch = onchain_outcome.epoch;
     let network_scheme = Arc::new(Scheme::certificate_verifier(
         crate::config::NAMESPACE,
         config.network_identity.identity,
@@ -113,8 +119,8 @@ pub(super) fn try_init<TContext>(
         context: ContextCell::new(context),
         config,
         mailbox: rx,
-        current_epoch: epoch_info.epoch(),
-        last_boundary,
+        startup_execution_boundary,
+        current_epoch,
         network_scheme,
     };
     Ok((actor, mailbox))
@@ -125,11 +131,11 @@ pub(super) struct Config {
     pub(super) scheme_provider: SchemeProvider,
     pub(super) network_identity: NetworkIdentity,
 
-    // TODO: What to do with this information?
     pub(super) last_finalized_height: Height,
 
     pub(super) marshal: crate::alias::marshal::Mailbox,
     pub(super) feed: feed::Mailbox,
+
     pub(super) epoch_strategy: FixedEpocher,
 }
 
@@ -194,8 +200,7 @@ pub(super) struct Driver<TContext> {
     context: ContextCell<TContext>,
     config: Config,
     mailbox: mpsc::UnboundedReceiver<Message>,
-
-    last_boundary: Height,
+    startup_execution_boundary: Height,
     current_epoch: Epoch,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
@@ -209,10 +214,9 @@ where
     }
 
     async fn run(mut self) {
-        self.config.marshal.set_floor(self.last_boundary).await;
-        if self.heal_gap().await.is_err() {
+        if self.install_scheme_for_latest_epoch().await.is_err() {
             return;
-        };
+        }
 
         loop {
             select!(
@@ -221,8 +225,15 @@ where
                 Some(message) = self.mailbox.recv() => {
                     match message {
                         Message::Event(event) => {
+                            let Event::Finalized {
+                                block: certified, ..
+                            } = *event
+                            else {
+                                continue;
+                            };
+
                             // Emits an event on error.
-                            let _: Result<_, _> = self.process_event(*event).await;
+                            let _: Result<_, _> = self.process_event(certified).await;
                         }
                         Message::Finalized(update) => {
                             self.process_update(update).await;
@@ -235,7 +246,7 @@ where
 
     /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
-    async fn heal_gap(&mut self) -> eyre::Result<()> {
+    async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
         let current_consensus_epoch = self
             .config
             .epoch_strategy
@@ -245,7 +256,7 @@ where
         let current_execution_epoch = self
             .config
             .epoch_strategy
-            .containing(self.last_boundary)
+            .containing(self.startup_execution_boundary)
             .expect("strategy is valid for all heights and epochs");
 
         if let Some(previous) = current_consensus_epoch.epoch().previous()
@@ -262,7 +273,7 @@ where
                 let consensus_epoch = current_consensus_epoch.epoch();
                 let execution_epoch = current_execution_epoch.epoch();
                 warn!(
-                    "cannot heal finalization gap; consensus layer epoch {consensus_epoch} is ahead \
+                    "cannot install scheme; consensus layer epoch {consensus_epoch} is ahead \
                     of execution layer epoch {execution_epoch}, but the consensus layer does not have \
                     the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
                     epoch boundaries via the network identity and will continue to try use it to verify finalizations"
@@ -272,12 +283,12 @@ where
             };
 
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut boundary_block.header().extra_data().as_ref(),
+                &mut &mut boundary_block.header().extra_data().as_ref(),
             )
             .wrap_err_with(|| {
                 format!(
                     "the boundary block at height `{last_consensus_boundary}` \
-                contained no or a malformed DKG outcome"
+                    contained no or a malformed DKG outcome"
                 )
             })?;
 
@@ -288,6 +299,8 @@ where
                     *onchain_outcome.sharing().public(),
                 ),
             );
+
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
         } else {
             debug!("no gap detected");
         }
@@ -295,15 +308,15 @@ where
         Ok(())
     }
 
-    #[instrument(skip_all, err(Display))]
-    async fn process_event(&mut self, event: Event) -> eyre::Result<()> {
-        let Event::Finalized {
-            block: certified, ..
-        } = event
-        else {
-            return Ok(());
-        };
-
+    #[instrument(
+        skip_all,
+        fields(
+            height = certified.block.number(),
+            digest = %certified.digest,
+        ),
+        err(Display)
+    )]
+    async fn process_event(&mut self, certified: CertifiedBlock) -> eyre::Result<()> {
         // TODO: ensure well-formedness at the type level so we don't need extra decoding here.
         let finalization = alloy_primitives::hex::decode(&certified.certificate)
             .map_err(Report::new)
@@ -313,47 +326,13 @@ where
             })
             .wrap_err("event contained a malformed finalization certificate")?;
 
-        let height = Height::new(certified.block.number());
+        let finalization_epoch = finalization.epoch();
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
+
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"
         );
-
-        let finalization_epoch = finalization.epoch();
-        if finalization_epoch > self.current_epoch {
-            let stub_peers =
-                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
-
-            let boundary_height = self
-                .config
-                .epoch_strategy
-                .last(self.current_epoch)
-                .expect("strategy is valid for all epochs and heights");
-
-            debug!(
-                %self.current_epoch,
-                %boundary_height,
-                "hinting to sync system that a finalization certificate might be \
-                available for our current epoch",
-            );
-
-            // In the event our network identity cannot verify this finalization,
-            // hint the boundary of the current epoch to progress.
-            self.config
-                .marshal
-                .hint_finalized(boundary_height, stub_peers.clone())
-                .await;
-
-            if let Some(one_before_boundary) = boundary_height.previous() {
-                self.config.marshal.set_floor(one_before_boundary).await;
-            }
-
-            let network_identity = self.config.network_identity.clone();
-            if finalization_epoch.get() < network_identity.from_epoch {
-                return Ok(());
-            }
-        }
 
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
@@ -362,33 +341,50 @@ where
             Some(scheme) => scheme,
             None if can_use_network_identity_fallback => self.network_scheme.clone(),
             None => bail!(
-                "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`; current epoch `{}`",
+                "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`",
                 self.config.network_identity.from_epoch,
-                self.current_epoch
             ),
         };
 
-        // If we can accept this cert, jump to it and set the floor as the
-        // upstream may have pruned any intermediatery blocks.
-        if finalization.verify(&mut self.context, &scheme, &Sequential) {
-            let round = finalization.round();
-            let activity = Activity::Finalization(finalization);
-            if !self.config.marshal.verified(round, consensus_block).await {
-                warn_span!("follow_driver").in_scope(
-                    || warn!(?round, %height, "marshal refused to persist the verified block"),
-                )
-            }
+        let identity = scheme.identity();
+        if !finalization.verify(&mut self.context, &scheme, &Sequential) {
+            debug!(
+                "failed to verify finalization {} against scheme: {identity}",
+                finalization.proposal.payload
+            );
 
-            if let Some(one_before_block) = height.previous() {
-                self.config.marshal.set_floor(one_before_block).await;
-            }
+            // This network may have rotated identity, so hint the boundary of
+            // the node's current epoch to unblock syncing through the next
+            // onchain scheme.
+            let boundary_height = self
+                .config
+                .epoch_strategy
+                .last(self.current_epoch)
+                .expect("strategy is valid for all heights and epochs");
 
-            self.config.marshal.report(activity.clone()).await;
-            self.config.feed.report(activity).await;
-        } else {
-            debug!(%finalization_epoch, %height, "failed finalization certificate verification")
+            let stub_peers =
+                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
+
+            debug!(
+                current_epoch = %self.current_epoch,
+                %boundary_height,
+                "hinting current epoch boundary after finalization verification failed",
+            );
+
+            self.config
+                .marshal
+                .hint_finalized(boundary_height, stub_peers)
+                .await;
+
+            return Ok(());
         }
 
+        let round = finalization.round();
+        let activity = Activity::Finalization(finalization);
+
+        let _ = self.config.marshal.certified(round, consensus_block).await;
+        self.config.marshal.report(activity.clone()).await;
+        self.config.feed.report(activity).await;
         Ok(())
     }
 
@@ -406,7 +402,7 @@ where
 
         if epoch_info.last() == block.height() {
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut block.header().extra_data().as_ref(),
+                &mut &mut block.header().extra_data().as_ref(),
             )
             .expect("boundary blocks must contain DKG outcomes");
 
@@ -431,10 +427,7 @@ where
                 ),
             );
 
-            self.current_epoch = onchain_outcome.epoch;
-        } else {
-            // If not a boundary block, we may have fast forwarded
-            self.current_epoch = epoch_info.epoch();
+            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
         }
 
         ack.acknowledge();

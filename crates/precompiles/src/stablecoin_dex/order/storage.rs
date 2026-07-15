@@ -237,14 +237,26 @@ impl OrderHandler {
         }
     }
 
-    /// Returns a storage handler for the order's maker address.
-    pub(crate) fn maker(&self) -> StorageResult<Slot<Address>> {
-        let loc = match self.version()? {
+    /// Returns the order's maker address.
+    pub(crate) fn maker(&self) -> StorageResult<Address> {
+        let (version, slot0) = self.version_and_slot()?;
+        let loc = match version {
             OrderVersion::Legacy => __packing_legacy_order::MAKER_LOC,
             OrderVersion::V1 | OrderVersion::V2 => __packing_v1_order::MAKER_LOC,
         };
 
-        Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
+        // T8+ version detection loads slot 0. We reuse it when the maker is stored there.
+        if let Some(slot0) = slot0
+            && loc.offset_slots == 0
+        {
+            Address::load(
+                &packing::PackedSlot(slot0),
+                U256::ZERO,
+                LayoutCtx::packed(loc.offset_bytes),
+            )
+        } else {
+            Slot::new_at_loc(self.base_slot, loc, self.address).read()
+        }
     }
 
     /// Returns a storage handler for the order's remaining amount.
@@ -285,12 +297,19 @@ impl OrderHandler {
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
     }
 
+    /// Returns the physical storage version and the loaded base slot, when read.
+    pub(crate) fn version_and_slot(&self) -> StorageResult<(OrderVersion, Option<U256>)> {
+        if !StorageCtx.spec().is_t8() {
+            return Ok((OrderVersion::Legacy, None));
+        }
+
+        let slot0 = self.load(self.base_slot)?;
+        Ok((OrderVersion::try_from(slot0)?, Some(slot0)))
+    }
+
     /// Returns the physical storage version.
     pub(crate) fn version(&self) -> StorageResult<OrderVersion> {
-        if !StorageCtx.spec().is_t8() {
-            return Ok(OrderVersion::Legacy);
-        }
-        OrderVersion::try_from(self.load(self.base_slot)?)
+        self.version_and_slot().map(|(version, _)| version)
     }
 
     /// Reads this order using a known owning book key, skipping V2 index resolution.
@@ -328,7 +347,8 @@ impl OrderHandler {
             return value.store(self, self.base_slot, LayoutCtx::FULL);
         }
 
-        let old_slots = match self.version()? {
+        let (old_version, slot0) = self.version_and_slot()?;
+        let old_slots = match old_version {
             OrderVersion::Legacy => LegacyOrder::SLOTS,
             OrderVersion::V1 => V1Order::SLOTS,
             OrderVersion::V2 => V2Order::SLOTS,
@@ -348,8 +368,10 @@ impl OrderHandler {
             V1Order::SLOTS
         };
 
-        for offset in new_slots..old_slots {
-            self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+        if slot0.is_none_or(|val| !val.is_zero()) {
+            for offset in new_slots..old_slots {
+                self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
+            }
         }
         Ok(())
     }

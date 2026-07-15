@@ -1,19 +1,26 @@
 use std::{sync::Arc, time::Duration};
 
+use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
-use eyre::{Report, WrapErr as _};
+use eyre::{Report, WrapErr as _, ensure};
 use futures::{
     FutureExt as _, StreamExt as _,
     future::{BoxFuture, Either},
     stream::{self, Fuse, FusedStream},
 };
 use jsonrpsee::{
-    core::{client, client::Subscription},
+    core::{
+        client,
+        client::{ClientT as _, Subscription},
+    },
+    rpc_params,
     ws_client::{PingConfig, WsClient, WsClientBuilder},
 };
 use rand_08::Rng as _;
+use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
+use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tempo_telemetry_util::display_duration;
 use tokio::{
     select,
@@ -22,7 +29,10 @@ use tokio::{
 use tracing::{debug, debug_span, instrument, warn, warn_span};
 use url::Url;
 
-use crate::utils::OptionFuture;
+use crate::{
+    consensus::{Block, Digest},
+    utils::OptionFuture,
+};
 
 pub(super) type EventStream =
     Either<stream::Empty<Result<Event, serde_json::Error>>, Fuse<Subscription<Event>>>;
@@ -54,8 +64,8 @@ pub(crate) struct Actor<TContext> {
     pub(super) pending_stream:
         OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
     pub(super) event_stream: EventStream,
-    /// Requests for blocks while the actor is trying to establish a connection.
-    pub(super) waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
+    /// Requests waiting for the actor to establish a connection.
+    pub(super) waiters: Vec<super::ingress::Message>,
 }
 
 impl<TContext> Actor<TContext>
@@ -147,12 +157,8 @@ where
                     }
                 }
 
-                Some(msg) = self.mailbox.recv() => {
-                    match msg {
-                        super::ingress::Message::GetFinalization { height, response, } => {
-                            self.waiters.push((height, response));
-                        }
-                    }
+                Some(request) = self.mailbox.recv() => {
+                    self.waiters.push(request);
                 }
             );
         }
@@ -182,7 +188,7 @@ where
         }
     }
 
-    /// Drains the waiters by fetching the finalizations they are waiting for.
+    /// Drains the waiters by fetching the data they are waiting for.
     ///
     /// Only executes if a client is present and connected.
     fn drain_waiters(&mut self) {
@@ -200,11 +206,21 @@ where
             return;
         }
 
-        for (height, response) in self.waiters.drain(..) {
-            let client = client.clone();
-            self.context
-                .with_label("get_finalization")
-                .spawn(move |_| get_finalization(client, height, response));
+        for request in self.waiters.drain(..) {
+            match request {
+                super::ingress::Message::GetFinalization { height, response } => {
+                    let client = client.clone();
+                    self.context
+                        .with_label("get_finalization")
+                        .spawn(move |_| get_finalization(client, height, response));
+                }
+                super::ingress::Message::GetBlock { digest, response } => {
+                    let client = client.clone();
+                    self.context
+                        .with_label("get_block")
+                        .spawn(move |_| get_block(client, digest, response));
+                }
+            }
         }
     }
 }
@@ -272,6 +288,40 @@ async fn get_finalization(
         .wrap_err("failed getting finalization")?;
     response
         .send(Some(finalization))
+        .map_err(|_| eyre::eyre!("receiver went away"))
+}
+
+/// Fetches a full consensus block from the upstream node.
+#[instrument(skip_all, fields(%digest), err)]
+async fn get_block(
+    client: Arc<WsClient>,
+    digest: Digest,
+    response: oneshot::Sender<Option<Block>>,
+) -> eyre::Result<()> {
+    let block = client
+        .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
+            "eth_getBlockByHash",
+            rpc_params![digest.0, true],
+        )
+        .await
+        .wrap_err("failed getting block by hash")?
+        .map(|block| {
+            SealedOrRecoveredBlock::from(SealedBlock::seal_slow(
+                block
+                    .into_consensus_block()
+                    .map_transactions(|transaction| transaction.into_inner()),
+            ))
+        });
+
+    let block = block
+        .map(|block| {
+            ensure!(block.hash() == digest.0, "mismatched block hash");
+            Ok(Block::from_execution_block_unchecked(block, None))
+        })
+        .transpose()?;
+
+    response
+        .send(block)
         .map_err(|_| eyre::eyre!("receiver went away"))
 }
 

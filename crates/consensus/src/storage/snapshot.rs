@@ -185,6 +185,7 @@ where
         .wrap_err("failed syncing snapshot prunable finalized blocks archive")
 }
 
+#[cfg_attr(test, derive(Debug))]
 struct AnchorAndTipFinalizations {
     tip_height: u64,
     tip_digest: Digest,
@@ -400,5 +401,330 @@ where
         {
             return Ok(Some((height, finalization.proposal.payload)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for [`find_anchor_and_tip_finalizations`] anchor selection:
+    //!
+    //! - tip at or below execution finalized → anchor == tip,
+    //! - contiguous prunable path down to execution finalized → anchor == tip,
+    //! - empty prunable archive → anchor falls back to the nearest
+    //!   certificate at or below execution finalized,
+    //! - hole mid-range → anchor lands on the nearest certificate below the
+    //!   hole that still has a contiguous path to the floor,
+    //! - no certificates at all / none reachable at or below the floor →
+    //!   error.
+    //!
+    //! Certificates are fabricated with garbage threshold signatures via
+    //! [`Lazy::deferred`]; anchor selection only ever reads
+    //! `proposal.payload`, and the certificate bytes round-trip the archive
+    //! codec without being decoded.
+
+    use alloy_primitives::B256;
+    use commonware_codec::{FixedSize, types::lazy::Lazy};
+    use commonware_consensus::{
+        simplex::{
+            scheme::bls12381_threshold::vrf::{
+                Certificate as VrfCertificate, Signature as VrfSignature,
+            },
+            types::Proposal,
+        },
+        types::{Epoch, Round, View},
+    };
+    use commonware_macros::test_traced;
+    use commonware_runtime::{Runner as _, deterministic};
+
+    use super::*;
+    use crate::storage::{
+        PRUNABLE_ITEMS_PER_SECTION,
+        hybrid::{
+            Prunable,
+            test::utils::{fresh_page_cache, fresh_prunable_with_section_size, make_chain},
+        },
+        init_finalizations_archive,
+    };
+
+    async fn fresh_archives(
+        context: &deterministic::Context,
+    ) -> (
+        FinalizationsArchive<deterministic::Context>,
+        Prunable<deterministic::Context>,
+    ) {
+        let finalizations =
+            init_finalizations_archive(context, "test-snapshot", fresh_page_cache(context))
+                .await
+                .expect("init finalizations archive");
+        let prunable = fresh_prunable_with_section_size(context, PRUNABLE_ITEMS_PER_SECTION).await;
+        (finalizations, prunable)
+    }
+
+    /// Build a finalization certificate carrying `digest` as its payload.
+    ///
+    /// The threshold signature is garbage bytes deferred behind [`Lazy`];
+    /// anchor selection never decodes it.
+    fn make_finalization(
+        height: u64,
+        digest: Digest,
+    ) -> Finalization<Scheme<PublicKey, MinSig>, Digest> {
+        let signature_bytes = [0u8; <VrfSignature<MinSig> as FixedSize>::SIZE];
+        Finalization {
+            proposal: Proposal::new(
+                Round::new(Epoch::zero(), View::new(height)),
+                View::zero(),
+                digest,
+            ),
+            certificate: VrfCertificate {
+                signature: Lazy::deferred(&mut &signature_bytes[..], ()),
+            },
+        }
+    }
+
+    async fn put_cert(
+        finalizations: &mut FinalizationsArchive<deterministic::Context>,
+        height: u64,
+        digest: Digest,
+    ) {
+        finalizations
+            .put(height, digest, make_finalization(height, digest))
+            .await
+            .expect("put finalization certificate");
+    }
+
+    /// Seed a certificate for every block in `blocks`, keyed by the block's
+    /// digest — mirroring production where a certificate's payload is the
+    /// finalized block's hash.
+    async fn put_certs_for(
+        finalizations: &mut FinalizationsArchive<deterministic::Context>,
+        blocks: &[Block],
+    ) {
+        for block in blocks {
+            put_cert(finalizations, block.height().get(), block.digest()).await;
+        }
+    }
+
+    async fn put_block(prunable: &mut Prunable<deterministic::Context>, block: &Block) {
+        prunable
+            .put(block.height().get(), block.digest(), block.clone())
+            .await
+            .expect("put prunable finalized block");
+    }
+
+    /// A digest for heights that have a certificate but no backing test block.
+    fn synthetic_digest(height: u64) -> Digest {
+        Digest(B256::with_last_byte(height as u8))
+    }
+
+    #[test_traced]
+    fn errors_when_no_finalization_certificates_exist() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (finalizations, prunable) = fresh_archives(&context).await;
+
+            let err = find_anchor_and_tip_finalizations(&finalizations, &prunable, 5)
+                .await
+                .expect_err("empty finalizations archive must error");
+            assert!(
+                err.to_string()
+                    .contains("no finalization certificates found"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test_traced]
+    fn anchor_is_tip_when_tip_at_or_below_execution_finalized() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, prunable) = fresh_archives(&context).await;
+            for height in 1..=5 {
+                put_cert(&mut finalizations, height, synthetic_digest(height)).await;
+            }
+
+            // Execution finalized is ahead of the certificate tip; the tip is
+            // the anchor and the (empty) prunable archive is never consulted.
+            let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 8)
+                .await
+                .expect("selection must succeed");
+
+            assert_eq!(selected.tip_height, 5);
+            assert_eq!(selected.tip_digest, synthetic_digest(5));
+            assert_eq!(selected.anchor_height, 5);
+            assert_eq!(selected.anchor_digest, synthetic_digest(5));
+        });
+    }
+
+    #[test_traced]
+    fn anchor_is_tip_when_prunable_path_reaches_execution_finalized() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, mut prunable) = fresh_archives(&context).await;
+            let chain = make_chain(1, 10);
+            put_certs_for(&mut finalizations, &chain).await;
+            // Blocks 4..=10 are present: a contiguous path from execution
+            // finalized (3) up to the tip.
+            for block in &chain[3..] {
+                put_block(&mut prunable, block).await;
+            }
+
+            let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
+                .await
+                .expect("selection must succeed");
+
+            assert_eq!(selected.tip_height, 10);
+            assert_eq!(selected.anchor_height, 10);
+            assert_eq!(selected.anchor_digest, chain[9].digest());
+        });
+    }
+
+    #[test_traced]
+    fn below_watermark_prunable_blocks_do_not_extend_the_anchor() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, mut prunable) = fresh_archives(&context).await;
+            let chain = make_chain(1, 10);
+            put_certs_for(&mut finalizations, &chain).await;
+            // Only blocks at or below execution finalized (3) are present.
+            // The hole search never probes at or below the floor, so these
+            // blocks are irrelevant: selection must behave exactly as with an
+            // empty prunable archive and fall back to the certificate at the
+            // floor.
+            for block in &chain[..3] {
+                put_block(&mut prunable, block).await;
+            }
+
+            let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
+                .await
+                .expect("selection must succeed");
+
+            assert_eq!(selected.tip_height, 10);
+            assert_eq!(selected.tip_digest, chain[9].digest());
+            assert_eq!(selected.anchor_height, 3);
+            assert_eq!(selected.anchor_digest, chain[2].digest());
+        });
+    }
+
+    #[test_traced]
+    fn below_watermark_prunable_blocks_are_not_streamed() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (_, mut prunable) = fresh_archives(&context).await;
+            let chain = make_chain(1, 10);
+            // Blocks 1..=5 straddle execution finalized (3): only 4 and 5 may
+            // end up in the snapshot archive.
+            for block in &chain[..5] {
+                put_block(&mut prunable, block).await;
+            }
+
+            let (entries_tx, mut entries_rx) = tokio::sync::mpsc::channel(16);
+            stream_block_archive_entries(&prunable, 3, &entries_tx)
+                .await
+                .expect("streaming must succeed");
+            drop(entries_tx);
+
+            let mut streamed = Vec::new();
+            while let Some(entry) = entries_rx.recv().await {
+                let ArchiveEntryKind::Block(block) = entry.0 else {
+                    panic!("block streaming must not emit certificates");
+                };
+                streamed.push(block.height().get());
+            }
+            assert_eq!(streamed, vec![4, 5]);
+        });
+    }
+
+    #[test_traced]
+    fn empty_prunable_anchors_at_certificate_at_execution_finalized() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, prunable) = fresh_archives(&context).await;
+            let chain = make_chain(1, 10);
+            put_certs_for(&mut finalizations, &chain).await;
+
+            // No blocks at all: the descent must walk certificate by
+            // certificate down to the execution finalized floor.
+            let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
+                .await
+                .expect("selection must succeed");
+
+            assert_eq!(selected.tip_height, 10);
+            assert_eq!(selected.tip_digest, chain[9].digest());
+            assert_eq!(selected.anchor_height, 3);
+            assert_eq!(selected.anchor_digest, chain[2].digest());
+        });
+    }
+
+    #[test_traced]
+    fn empty_prunable_anchors_at_nearest_certificate_below_execution_finalized() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, prunable) = fresh_archives(&context).await;
+            // Certificates at 2 and 5..=10; nothing at 3 and 4, so with
+            // execution finalized at 4 the descent must skip past the gap
+            // and anchor at 2.
+            put_cert(&mut finalizations, 2, synthetic_digest(2)).await;
+            for height in 5..=10 {
+                put_cert(&mut finalizations, height, synthetic_digest(height)).await;
+            }
+
+            let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 4)
+                .await
+                .expect("selection must succeed");
+
+            assert_eq!(selected.tip_height, 10);
+            assert_eq!(selected.anchor_height, 2);
+            assert_eq!(selected.anchor_digest, synthetic_digest(2));
+        });
+    }
+
+    #[test_traced]
+    fn hole_above_floor_anchors_at_nearest_certificate_below_hole() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, mut prunable) = fresh_archives(&context).await;
+            let chain = make_chain(1, 10);
+            put_certs_for(&mut finalizations, &chain).await;
+            // Blocks 4..=6 and 8..=10 are present; 7 is a hole. The path from
+            // the tip breaks at 7, so the anchor must drop to the certificate
+            // at 6, from which the path down to the floor (3) is contiguous.
+            for block in &chain[3..6] {
+                put_block(&mut prunable, block).await;
+            }
+            for block in &chain[7..] {
+                put_block(&mut prunable, block).await;
+            }
+
+            let selected = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
+                .await
+                .expect("selection must succeed");
+
+            assert_eq!(selected.tip_height, 10);
+            assert_eq!(selected.tip_digest, chain[9].digest());
+            assert_eq!(selected.anchor_height, 6);
+            assert_eq!(selected.anchor_digest, chain[5].digest());
+        });
+    }
+
+    #[test_traced]
+    fn errors_when_no_certificate_at_or_below_execution_finalized() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut finalizations, prunable) = fresh_archives(&context).await;
+            // Certificates only above the floor, and no blocks to build a
+            // path with: no anchor can be selected.
+            for height in 5..=10 {
+                put_cert(&mut finalizations, height, synthetic_digest(height)).await;
+            }
+
+            let err = find_anchor_and_tip_finalizations(&finalizations, &prunable, 3)
+                .await
+                .expect_err("unreachable floor must error");
+            assert!(
+                err.to_string()
+                    .contains("no finalization certificate found"),
+                "unexpected error: {err}"
+            );
+        });
     }
 }

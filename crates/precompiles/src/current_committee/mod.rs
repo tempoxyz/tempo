@@ -36,6 +36,8 @@ impl CurrentCommittee {
             return Err(CurrentCommitteeError::unauthorized().into());
         }
 
+        // System writes are free and must not mint or consume TIP-1060 storage credits.
+        self.storage.set_tip1060_storage_credits(false);
         self.epoch.write(call.epoch)?;
         self.ids.write(call.publicKeys)?;
         Ok(())

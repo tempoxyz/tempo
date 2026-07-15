@@ -7,11 +7,11 @@ cancel_bid_earn_credits:
   storage_credits: "user1: 0 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 0 -> 4"
 cancel_head_bid_tracks_successor_prev:
-  gas: 342041
+  gas: 341941
   storage_credits: "user11: 0 -> 3; user12: 0 -> 1"
   pooled_storage_credits: "DEX TIP-1060: 20 -> 22"
 cancel_tail_bid_credits_predecessor_next:
-  gas: 342041
+  gas: 341941
   storage_credits: "user10: 0 -> 3; user9: 0 -> 1"
   pooled_storage_credits: "DEX TIP-1060: 16 -> 18"
 create_pair:
@@ -19,39 +19,39 @@ create_pair:
   storage_credits: n/a
   pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
 place_ask_wallet:
-  gas: 1590285
+  gas: 1583685
   storage_credits: "user2: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 6 -> 6"
 place_bid_append_same_level:
-  gas: 1095969
+  gas: 1089369
   storage_credits: "user16: 0 -> 0; user15: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 3 -> 3"
 place_bid_cross_user_after_cancel_credits:
-  gas: 1091069
+  gas: 1084469
   storage_credits: "user7: 0 -> 0; user6: 2 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 6 -> 6"
 place_bid_cross_user_after_fill_credits:
-  gas: 1091069
+  gas: 1084469
   storage_credits: "user7: 0 -> 0; user4: 2 -> 2"
   pooled_storage_credits: "DEX TIP-1060: 12 -> 12"
 place_bid_reuse_cancel_credits:
-  gas: 849413
+  gas: 842813
   storage_credits: "user1: 2 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 4 -> 3"
 place_bid_reuse_predecessor_next_credit:
-  gas: 852469
+  gas: 845869
   storage_credits: "user9: 1 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 18 -> 18"
 place_bid_reuse_swap_credits:
-  gas: 602113
+  gas: 595513
   storage_credits: "user3: 2 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 10 -> 9"
 place_bid_wallet:
-  gas: 1837585
+  gas: 1830985
   storage_credits: "user1: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
 place_flip_bid_wallet:
-  gas: 1341043
+  gas: 1334443
   storage_credits: "user5: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 12 -> 12"
 swap_exact_in_full_ask_earn_credits:

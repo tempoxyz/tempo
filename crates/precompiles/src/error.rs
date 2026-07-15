@@ -360,10 +360,23 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
-pub trait IntoPrecompileResult<T> {
+/// Extension trait to convert an error into a [`PrecompileResult`].
+pub trait IntoPrecompileResult {
+    /// Converts `self` into a [`PrecompileResult`].
+    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult;
+}
+
+impl<E: Into<TempoPrecompileError>> IntoPrecompileResult for E {
+    #[inline]
+    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+        self.into().into_precompile_result(gas, reservoir)
+    }
+}
+
+/// Extension trait to convert a [`Result`](core::result::Result) into a [`PrecompileResult`].
+pub trait EncodePrecompileResult<T> {
     /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
-    fn into_precompile_result(
+    fn encode_precompile_result(
         self,
         gas: u64,
         reservoir: u64,
@@ -371,8 +384,11 @@ pub trait IntoPrecompileResult<T> {
     ) -> PrecompileResult;
 }
 
-impl<T> IntoPrecompileResult<T> for Result<T> {
-    fn into_precompile_result(
+impl<T, E> EncodePrecompileResult<T> for core::result::Result<T, E>
+where
+    E: IntoPrecompileResult,
+{
+    fn encode_precompile_result(
         self,
         gas: u64,
         reservoir: u64,
@@ -493,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn test_into_precompile_result_trait_success() {
+    fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.into_precompile_result(0, 0, |val| {
+        let precompile_result = result.encode_precompile_result(0, 0, |val| {
             alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
         });
 

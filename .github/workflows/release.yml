@@ -47,11 +47,11 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "version=$INPUT_TAG" >> $GITHUB_OUTPUT
+            echo "version=$INPUT_TAG" >> "$GITHUB_OUTPUT"
           elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
-            echo "version=sha-${SHA::7}" >> $GITHUB_OUTPUT
+            echo "version=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
   check-version:
     name: check version
@@ -64,12 +64,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag,
         # so that Cargo version 1.4.8 can be matched against both v1.4.8 and v1.4.8-rc.1
+        env:
+          TAG: ${{ needs.get-version.outputs.version }}
         run: |
-          tag="${{ needs.get-version.outputs.version }}"
+          tag="$TAG"
           tag=${tag#v}
           cargo_ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
           [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
@@ -109,49 +111,60 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.platform.target }}
 
       - name: Setup mold linker
-        uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+        uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
 
       - name: Get build profile
         id: profile
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "profile=${{ inputs.profile }}" >> $GITHUB_OUTPUT
+            echo "profile=${{ inputs.profile }}" >> "$GITHUB_OUTPUT"
           else
-            echo "profile=maxperf" >> $GITHUB_OUTPUT
+            echo "profile=maxperf" >> "$GITHUB_OUTPUT"
           fi
         shell: bash
 
       - name: Build binary
-        run: cargo build --locked --bin ${{ matrix.binary.name }} --features "${{ matrix.binary.features }}" --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
         env:
           CARGO_TARGET_DIR: target
+          BIN_NAME: ${{ matrix.binary.name }}
+          BIN_FEATURES: ${{ matrix.binary.features }}
+          BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
+          TARGET: ${{ matrix.platform.target }}
+        run: cargo build --locked --bin "$BIN_NAME" --features "$BIN_FEATURES" --profile "$BUILD_PROFILE" --target "$TARGET"
 
       - name: Prepare binary
         id: prepare
         shell: bash
+        env:
+          BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
+          TARGET: ${{ matrix.platform.target }}
+          BIN_NAME: ${{ matrix.binary.name }}
+          VERSION: ${{ needs.get-version.outputs.version }}
         run: |
-          PROFILE="${{ steps.profile.outputs.profile }}"
+          PROFILE="$BUILD_PROFILE"
           if [ "$PROFILE" = "dev" ]; then
             PROFILE_DIR="debug"
           else
             PROFILE_DIR="$PROFILE"
           fi
 
-          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary.name }}"
-          BINARY_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
-          ARCHIVE_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
+          BINARY_PATH="target/${TARGET}/${PROFILE_DIR}/${BIN_NAME}"
+          BINARY_NAME="${BIN_NAME}-${VERSION}-${TARGET}"
+          ARCHIVE_NAME="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
 
           cp "$BINARY_PATH" "$BINARY_NAME"
           tar czf "$ARCHIVE_NAME" "$BINARY_NAME"
 
-          echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
-          echo "archive_path=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
-          echo "binary_name=$BINARY_NAME"   >> $GITHUB_OUTPUT
+          {
+            echo "archive_name=$ARCHIVE_NAME"
+            echo "archive_path=$ARCHIVE_NAME"
+            echo "binary_name=$BINARY_NAME"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate checksums
         shell: bash
@@ -161,20 +174,25 @@ jobs:
         # independent rebuilder will compare against once the reproducible
         # build path lands (ELF hashes reproduce far more reliably than
         # tar/gzip hashes).
+        env:
+          ARCHIVE_PATH: ${{ steps.prepare.outputs.archive_path }}
+          ARCHIVE_NAME: ${{ steps.prepare.outputs.archive_name }}
+          BINARY_NAME: ${{ steps.prepare.outputs.binary_name }}
         run: |
-          shasum -a 256 "${{ steps.prepare.outputs.archive_path }}" > "${{ steps.prepare.outputs.archive_name }}.sha256"
-          shasum -a 256 "${{ steps.prepare.outputs.binary_name }}"  > "${{ steps.prepare.outputs.binary_name }}.sha256"
+          shasum -a 256 "$ARCHIVE_PATH" > "${ARCHIVE_NAME}.sha256"
+          shasum -a 256 "$BINARY_NAME"  > "${BINARY_NAME}.sha256"
 
       - name: GPG sign archive
         shell: bash
         env:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          ARCHIVE_PATH: ${{ steps.prepare.outputs.archive_path }}
         run: |
           GNUPGHOME=$(mktemp -d)
           export GNUPGHOME
           echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
-          printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "${{ steps.prepare.outputs.archive_path }}"
+          printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
 
       - name: Generate SBOM (SPDX-JSON) for archive
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -291,7 +309,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Open Cargo version bump PR
         env:
@@ -390,8 +408,8 @@ jobs:
         env:
           VERSION: ${{ needs.get-version.outputs.version }}
         run: |
-          mkdir $VERSION
-          mv artifacts/**/* $VERSION/
+          mkdir "$VERSION"
+          mv artifacts/**/* "$VERSION/"
 
       - name: Determine destination directory
         id: dest
@@ -400,10 +418,10 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [[ "${{ github.repository }}" == "tempoxyz/tempo-private-fork" ]]; then
-            echo "dir=${SHA}/${VERSION}" >> $GITHUB_OUTPUT
+            echo "dir=${SHA}/${VERSION}" >> "$GITHUB_OUTPUT"
           else
             # Otherwise these are being stored in a generic bucket with many other subdirectories
-            echo "dir=binaries/${VERSION}" >> $GITHUB_OUTPUT
+            echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: shallwefootball/s3-upload-action@4350529f410221787ccf424e50133cbc1b52704e # v1.3.3

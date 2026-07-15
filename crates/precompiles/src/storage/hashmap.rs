@@ -30,6 +30,7 @@ pub struct HashMapStorageProvider {
     is_static: bool,
     gas_params: GasParams,
     gas_tracker: GasTracker,
+    tip1060_storage_credits_enabled: bool,
     counter_sload: u64,
     counter_sstore: u64,
     non_creditable_slots: NonCreditableSlots,
@@ -82,6 +83,7 @@ impl HashMapStorageProvider {
             is_static: false,
             gas_params: GasParams::new_spec(spec.into()),
             gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
+            tip1060_storage_credits_enabled: spec.is_t7(),
             counter_sload: 0,
             counter_sstore: 0,
             non_creditable_slots: NonCreditableSlots::empty(),
@@ -92,6 +94,7 @@ impl HashMapStorageProvider {
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
         self.gas_params = GasParams::new_spec(self.spec.into());
+        self.tip1060_storage_credits_enabled = spec.is_t7();
         self
     }
 
@@ -143,7 +146,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             .unwrap_or(U256::ZERO);
         self.internals.insert((address, key), value);
 
-        if self.spec.is_t7() {
+        if self.tip1060_storage_credits_enabled {
             let state_load = StateLoad::new(
                 SStoreResult {
                     original_value: present,
@@ -270,8 +273,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
     }
 
-    fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
-        // HashMapStorageProvider does not run TIP-1060 accounting.
+    fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        self.tip1060_storage_credits_enabled = self.spec.is_t7() && enabled;
     }
 }
 
@@ -383,6 +386,7 @@ impl HashMapStorageProvider {
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
         self.gas_params = GasParams::new_spec(self.spec.into());
+        self.tip1060_storage_credits_enabled = spec.is_t7();
     }
 
     /// Clears all transient storage (simulates a new block).

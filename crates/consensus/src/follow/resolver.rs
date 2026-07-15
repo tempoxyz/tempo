@@ -3,7 +3,7 @@
 //! Implements [`Resolver`] for marshal's gap-repair machinery. Checks the
 //! local execution node first and falls back to the upstream abstraction.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use commonware_codec::{DecodeExt as _, Encode as _};
@@ -13,7 +13,7 @@ use commonware_consensus::{
     types::Height,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::{ContextCell, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{
     channel::{fallible::FallibleExt as _, mpsc},
     futures::{AbortablePool, Aborter},
@@ -25,7 +25,21 @@ use tempo_node::TempoFullNode;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::{Block, Digest};
+
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+fn retry_delay(attempt: u32) -> Duration {
+    if attempt == 0 {
+        return Duration::ZERO;
+    }
+
+    let multiplier = 2u32.saturating_pow(attempt.saturating_sub(1));
+    INITIAL_RETRY_DELAY
+        .saturating_mul(multiplier)
+        .min(MAX_RETRY_DELAY)
+}
 
 pub(crate) fn try_init<TContext>(
     context: TContext,
@@ -83,7 +97,8 @@ pub(crate) struct Config {
     pub(super) mailbox_size: usize,
 }
 
-type FetchPool = AbortablePool<(handler::Request<Digest>, Result<Bytes, bool>)>;
+type FetchPool = AbortablePool<(handler::Request<Digest>, u32, Result<Bytes, bool>)>;
+
 pub(crate) struct Resolver<TContext> {
     context: ContextCell<TContext>,
     config: Config,
@@ -96,7 +111,7 @@ pub(crate) struct Resolver<TContext> {
 
 impl<TContext> Resolver<TContext>
 where
-    TContext: Spawner,
+    TContext: Clock + Spawner,
 {
     async fn run(mut self) {
         loop {
@@ -112,7 +127,7 @@ where
 
                 Some(msg) = self.mailbox.recv() => {
                     match msg {
-                        Message::Fetch { keys, } => {
+                        Message::Fetch { keys } => {
                             self.handle_fetch_request(keys);
                         }
                         Message::Cancel { key } => {
@@ -137,14 +152,14 @@ where
     #[instrument(skip_all)]
     fn handle_fetch_request(&mut self, keys: Vec<handler::Request<Digest>>) {
         for key in keys {
-            self.schedule_request(key);
+            self.schedule_request(key, 0);
         }
     }
 
     #[instrument(skip_all)]
     fn handle_fetch_resolution(
         &mut self,
-        (key, resolution): (handler::Request<Digest>, Result<Bytes, bool>),
+        (key, attempt, resolution): (handler::Request<Digest>, u32, Result<Bytes, bool>),
     ) {
         match resolution {
             Ok(value) => {
@@ -160,36 +175,47 @@ where
                 });
             }
             Err(true) => {
-                debug!(%key, "fetch failed, rescheduling");
+                debug!(%key, attempt, "fetch failed, rescheduling");
                 self.requests.remove(&key);
-                self.schedule_request(key);
+                self.schedule_request(key, attempt.saturating_add(1));
             }
             Err(false) => {
-                debug!(%key, "fetch failed, dropping");
+                debug!(%key, "fetch failed permanently, dropping");
                 self.requests.remove(&key);
             }
         }
     }
 
-    fn schedule_request(&mut self, key: handler::Request<Digest>) {
+    fn schedule_request(&mut self, key: handler::Request<Digest>, attempt: u32) {
         if !self.requests.contains_key(&key) {
+            let delay = retry_delay(attempt);
             let aborter = match &key {
                 handler::Request::Block(digest) => {
+                    let context = self.context.clone();
                     let execution_node = self.config.execution_node.clone();
+                    let upstream = self.config.upstream.clone();
                     let digest = *digest;
                     let key = key.clone();
                     self.fetches.push(async move {
-                        let response = resolve_block(&execution_node, digest);
-                        (key, response)
+                        if !delay.is_zero() {
+                            context.sleep(delay).await;
+                        }
+
+                        let response = resolve_block(&execution_node, upstream, digest).await;
+                        (key, attempt, response)
                     })
                 }
                 handler::Request::Finalized { height } => {
+                    let context = self.context.clone();
                     let upstream = self.config.upstream.clone();
                     let height = *height;
                     let key = key.clone();
                     self.fetches.push(async move {
-                        let response = resolve_finalized_new(upstream, height).await;
-                        (key, response)
+                        if !delay.is_zero() {
+                            context.sleep(delay).await;
+                        }
+                        let response = resolve_finalized(upstream, height).await;
+                        (key, attempt, response)
                     })
                 }
                 handler::Request::Notarized { .. } => {
@@ -197,7 +223,7 @@ where
                     return;
                 }
             };
-            debug!(%key, "scheduled new request");
+            debug!(%key, attempt, ?delay, "scheduled new request");
             self.requests.insert(key, aborter);
         } else {
             debug!(%key, "request already scheduled");
@@ -205,34 +231,43 @@ where
     }
 }
 
-/// Resolves an encoded block from the local execution layer.
-#[instrument(skip(execution_node))]
-fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result<Bytes, bool> {
-    let Ok(Some(block)) = execution_node
+/// Resolves an encoded block from the execution layer, falling back to the upstream node.
+#[instrument(skip(execution_node, upstream))]
+async fn resolve_block(
+    execution_node: &TempoFullNode,
+    upstream: super::upstream::Mailbox,
+    block_digest: Digest,
+) -> Result<Bytes, bool> {
+    match execution_node
         .provider
         .find_sealed_or_recovered_block(block_digest.0, BlockSource::Any)
         .map_err(Report::new)
-        .inspect_err(
-            |error| error!(%error, "unable to communicate with execution layer to lookup block"),
-        )
-    else {
-        return Err(false);
-    };
-    // Follow-mode recovery reads from the EL database, which persists only the block.
-    // BAL is p2p side data, so it is unavailable here.
-    let consensus_block = Block::from_execution_block_unchecked(block, None);
-    Ok(consensus_block.encode())
+        .inspect_err(|error| error!(%error, "execution layer error looking up block"))
+    {
+        Err(_) => Err(true),
+        Ok(Some(block)) => {
+            let consensus_block = Block::from_execution_block_unchecked(block, None);
+            Ok(consensus_block.encode())
+        }
+        Ok(None) => {
+            let Some(block) = upstream.get_block(block_digest).await else {
+                return Err(true);
+            };
+
+            Ok(block.encode())
+        }
+    }
 }
 
-/// Resolves a request for a finalized.
+/// Resolves a finalization (cert + block) by height from the upstream node.
 #[instrument(skip_all, fields(%height))]
-async fn resolve_finalized_new(
+async fn resolve_finalized(
     upstream: super::upstream::Mailbox,
     height: Height,
 ) -> Result<Bytes, bool> {
     let certified_block = match upstream.get_finalization(height).await {
         Some(certified_block) => certified_block,
-        None => return Err(false),
+        None => return Err(true),
     };
 
     let Ok(finalization) = alloy_primitives::hex::decode(&certified_block.certificate)
@@ -287,5 +322,22 @@ impl commonware_resolver::Resolver for Mailbox {
         self.inner.send_lossy(Message::Retain {
             predicate: Box::new(predicate),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_RETRY_DELAY, retry_delay};
+    use std::time::Duration;
+
+    #[test]
+    fn retry_delay_grows_exponentially_and_caps() {
+        assert_eq!(retry_delay(0), Duration::ZERO);
+        assert_eq!(retry_delay(1), Duration::from_millis(250));
+        assert_eq!(retry_delay(2), Duration::from_millis(500));
+        assert_eq!(retry_delay(3), Duration::from_secs(1));
+        assert_eq!(retry_delay(7), Duration::from_secs(16));
+        assert_eq!(retry_delay(8), MAX_RETRY_DELAY);
+        assert_eq!(retry_delay(u32::MAX), MAX_RETRY_DELAY);
     }
 }
