@@ -1243,6 +1243,11 @@ where
         } else {
             pool_transactions_included as f64 / pool_transactions_yielded as f64
         };
+        let txpool_prewarming_hit_rate = if total_transactions == 0 {
+            0.0
+        } else {
+            txpool_prewarmed_transactions as f64 / total_transactions as f64
+        };
         self.metrics
             .pool_transactions_yielded
             .record(pool_transactions_yielded as f64);
@@ -1261,6 +1266,12 @@ where
         self.metrics
             .parallel_transactions_executed_last
             .set(parallel_transactions_executed as f64);
+        self.metrics
+            .txpool_prewarming_hit_rate
+            .record(txpool_prewarming_hit_rate);
+        self.metrics
+            .txpool_prewarming_hit_rate_last
+            .set(txpool_prewarming_hit_rate);
         self.metrics
             .invalid_pool_transaction_execution_attempts
             .record(invalid_pool_transaction_execution_attempts as f64);
@@ -1318,6 +1329,7 @@ where
             pool_transactions_included,
             parallel_transactions_executed,
             txpool_prewarmed_transactions,
+            txpool_prewarming_hit_rate,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
             subblock_transactions,
