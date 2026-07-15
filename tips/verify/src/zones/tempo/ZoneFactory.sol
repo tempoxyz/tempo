@@ -45,15 +45,20 @@ abstract contract ZoneFactory is IZoneFactory {
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
     address internal _messenger;
+    address internal _owner;
+    address internal _pendingOwner;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address initialVerifier, address sharedMessenger) {
+    constructor(address initialOwner, address initialVerifier, address sharedMessenger) {
+        if (initialOwner == address(0)) revert InvalidOwner();
         if (initialVerifier == address(0)) revert InvalidVerifier();
         require(sharedMessenger != address(0), "invalid messenger");
 
+        _owner = initialOwner;
+        emit OwnershipTransferred(address(0), initialOwner);
         _validVerifiers[initialVerifier] = true;
         _verifier = initialVerifier;
         _messenger = sharedMessenger;
@@ -67,6 +72,8 @@ abstract contract ZoneFactory is IZoneFactory {
         external
         returns (uint32 zoneId, address portal)
     {
+        if (msg.sender != _owner) revert NotOwner();
+
         if (!ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS).isTIP20(params.initialToken)) {
             revert InvalidToken();
         }
@@ -138,6 +145,25 @@ abstract contract ZoneFactory is IZoneFactory {
         );
     }
 
+    /// @inheritdoc IZoneFactory
+    function transferOwnership(address newOwner) external {
+        if (msg.sender != _owner) revert NotOwner();
+        if (newOwner == address(0)) revert InvalidOwner();
+
+        _pendingOwner = newOwner;
+        emit OwnershipTransferStarted(_owner, newOwner);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function acceptOwnership() external {
+        if (msg.sender != _pendingOwner) revert NotPendingOwner();
+
+        address previousOwner = _owner;
+        _owner = msg.sender;
+        _pendingOwner = address(0);
+        emit OwnershipTransferred(previousOwner, msg.sender);
+    }
+
     /// @notice Returns the deterministic portal vanity address for a zone ID.
     function portalAddress(uint32 zoneId) public pure returns (address) {
         uint160 prefix = uint160(bytes20(ZONE_PORTAL_PREFIX));
@@ -159,6 +185,14 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Returns the number of zones created, excluding reserved zone 0.
     function zoneCount() external view returns (uint32) {
         return _nextZoneId - 1;
+    }
+
+    function owner() external view returns (address) {
+        return _owner;
+    }
+
+    function pendingOwner() external view returns (address) {
+        return _pendingOwner;
     }
 
     function zones(uint32 zoneId) external view returns (ZoneInfo memory) {
