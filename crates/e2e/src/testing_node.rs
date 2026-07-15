@@ -153,7 +153,7 @@ where
     /// Get the metric prefix used by the most recently started instance.
     ///
     /// # Panics
-    /// Panics if the node has was never started.
+    /// Panics if the node was never started.
     pub fn metric_prefix(&self) -> String {
         assert!(self.n_starts > 0, "node has never been started");
         format!("{}_{}", self.uid, self.n_starts - 1)
