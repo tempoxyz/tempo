@@ -1,16 +1,16 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
-use crate::{mutate, mutate_void, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, preserve_storage_credits,
+    Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
     stablecoin_dex::{
         StablecoinDEX,
         orderbook::{BookId, compute_book_key},
     },
+    view,
 };
 
 impl Precompile for StablecoinDEX {
