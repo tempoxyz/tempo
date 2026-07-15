@@ -2,6 +2,7 @@ use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use ed25519_consensus::{VerificationKey, VerificationKeyBytes};
 
+/// Error returned when a byte string cannot be parsed as a valid Ed25519 `PublicKey`.
 #[derive(Debug)]
 pub struct InvalidPublicKey;
 
@@ -11,6 +12,13 @@ impl core::fmt::Display for InvalidPublicKey {
     }
 }
 
+/// An Ed25519 public key identifying a Tempo validator (for example the block proposer
+/// recorded in `TempoConsensusContext`).
+///
+/// Wraps an `ed25519_consensus::VerificationKey`. It RLP-encodes as its raw 32 bytes and,
+/// with the `serde` feature, (de)serializes as a `B256`. Both decoding and `B256` conversion
+/// reject byte strings that are not valid Ed25519 public keys (returning `InvalidPublicKey`
+/// for the conversion).
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "B256", try_from = "B256"))]
