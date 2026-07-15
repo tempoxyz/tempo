@@ -175,6 +175,7 @@ reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-t
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
 reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
+reth-network-p2p = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints", default-features = false }
 reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "pep/txpool-trie-prewarm-hints" }

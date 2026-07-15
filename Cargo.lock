@@ -12844,6 +12844,7 @@ dependencies = [
  "reth-etl",
  "reth-metrics",
  "reth-network-api",
+ "reth-network-p2p",
  "reth-network-peers",
  "reth-nippy-jar",
  "reth-node-builder",
