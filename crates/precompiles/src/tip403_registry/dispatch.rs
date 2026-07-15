@@ -1,9 +1,9 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch,
-    dispatch::tempo::{mutate, mutate_void, view},
+    Precompile, charge_input_cost, dispatch, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},
+    view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

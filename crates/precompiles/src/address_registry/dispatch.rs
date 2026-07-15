@@ -1,8 +1,5 @@
 use crate::{
-    Precompile,
-    address_registry::AddressRegistry,
-    charge_input_cost, dispatch,
-    dispatch::tempo::{mutate, view},
+    Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

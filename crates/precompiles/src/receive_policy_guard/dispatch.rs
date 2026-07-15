@@ -1,9 +1,8 @@
 //! ABI dispatch for the [`ReceivePolicyGuard`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch,
-    dispatch::tempo::{mutate_void, view},
-    receive_policy_guard::ReceivePolicyGuard,
+    Precompile, charge_input_cost, dispatch, mutate_void, receive_policy_guard::ReceivePolicyGuard,
+    view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;

@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
-use crate::dispatch::tempo::{mutate, mutate_void, view};
+use crate::{mutate, mutate_void, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
