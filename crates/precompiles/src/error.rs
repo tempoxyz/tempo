@@ -366,10 +366,10 @@ pub trait IntoPrecompileResult {
     fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult;
 }
 
-impl IntoPrecompileResult for TempoPrecompileError {
+impl<E: Into<TempoPrecompileError>> IntoPrecompileResult for E {
     #[inline]
     fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
-        Self::into_precompile_result(self, gas, reservoir)
+        self.into().into_precompile_result(gas, reservoir)
     }
 }
 
