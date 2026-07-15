@@ -23,8 +23,14 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
 
-    /// @notice Protocol-managed account that stores the central ZonePortal logic bytecode.
-    address public constant ZONE_PORTAL_LOGIC_ADDRESS = 0x5AD1000000000000000000000000000000000000;
+    /// @notice Protocol-managed account that stores the central ZonePortal implementation.
+    address public constant ZONE_PORTAL_IMPL_ADDRESS = 0x5AD1000000000000000000000000000000000000;
+
+    /// @notice Protocol-managed verifier account (0x56 is ASCII "V").
+    address public constant ZONE_VERIFIER_ADDRESS = 0x5a56000000000000000000000000000000000000;
+
+    /// @notice Protocol-managed shared messenger account (0x4d is ASCII "M").
+    address public constant ZONE_MESSENGER_ADDRESS = 0x5A4d000000000000000000000000000000000000;
 
     /// @notice Runtime prefix for an EIP-1167-style delegatecall proxy.
     bytes10 internal constant PORTAL_PROXY_PREFIX = 0x363d3d373d3d3d363d73;
@@ -42,26 +48,9 @@ abstract contract ZoneFactory is IZoneFactory {
 
     mapping(uint32 => ZoneInfo) internal _zones;
     mapping(address => bool) internal _isZonePortal;
-    mapping(address => bool) internal _validVerifiers;
-    address internal _verifier;
-    address internal _messenger;
+
+    /// @notice Initial value is configured by the T9 activation; exact address TBD.
     address public owner;
-
-    /*//////////////////////////////////////////////////////////////
-                              CONSTRUCTOR
-    //////////////////////////////////////////////////////////////*/
-
-    constructor(address initialOwner, address initialVerifier, address sharedMessenger) {
-        if (initialOwner == address(0)) revert InvalidOwner();
-        if (initialVerifier == address(0)) revert InvalidVerifier();
-        require(sharedMessenger != address(0), "invalid messenger");
-
-        owner = initialOwner;
-        emit OwnershipTransferred(address(0), initialOwner);
-        _validVerifiers[initialVerifier] = true;
-        _verifier = initialVerifier;
-        _messenger = sharedMessenger;
-    }
 
     /*//////////////////////////////////////////////////////////////
                             ZONE CREATION
@@ -78,7 +67,7 @@ abstract contract ZoneFactory is IZoneFactory {
         }
         if (params.admin == address(0)) revert InvalidAdmin();
         if (params.sequencer == address(0)) revert InvalidSequencer();
-        if (!_validVerifiers[params.verifier]) revert InvalidVerifier();
+        if (params.verifier != ZONE_VERIFIER_ADDRESS) revert InvalidVerifier();
         if (gasleft() < ZONE_CREATION_GAS) revert InsufficientGas();
 
         zoneId = _nextZoneId;
@@ -93,7 +82,7 @@ abstract contract ZoneFactory is IZoneFactory {
         //    delegation and that no non-protocol deployment path can target it.
         // 2. The protocol etches minimal portal proxy/caller bytecode directly into
         //    the `portal` account. The runtime delegatecalls into
-        //    ZONE_PORTAL_LOGIC_ADDRESS, the single protocol-managed ZonePortal logic
+        //    ZONE_PORTAL_IMPL_ADDRESS, the single protocol-managed ZonePortal logic
         //    implementation.
         // 3. This factory calls the portal's one-time initializer with the zone ID,
         //    initial token, shared messenger, admin, sequencer, verifier, genesis block
@@ -107,7 +96,7 @@ abstract contract ZoneFactory is IZoneFactory {
             .initialize(
                 zoneId,
                 params.initialToken,
-                _messenger,
+                ZONE_MESSENGER_ADDRESS,
                 params.admin,
                 params.sequencer,
                 params.verifier,
@@ -162,7 +151,7 @@ abstract contract ZoneFactory is IZoneFactory {
 
     /// @notice Returns the exact runtime bytecode etched into each portal account.
     function portalProxyRuntime() public pure returns (bytes memory) {
-        return abi.encodePacked(PORTAL_PROXY_PREFIX, ZONE_PORTAL_LOGIC_ADDRESS, PORTAL_PROXY_SUFFIX);
+        return abi.encodePacked(PORTAL_PROXY_PREFIX, ZONE_PORTAL_IMPL_ADDRESS, PORTAL_PROXY_SUFFIX);
     }
 
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
@@ -185,16 +174,16 @@ abstract contract ZoneFactory is IZoneFactory {
         return _isZonePortal[portal];
     }
 
-    function isValidVerifier(address v) external view returns (bool) {
-        return _validVerifiers[v];
+    function isValidVerifier(address v) external pure returns (bool) {
+        return v == ZONE_VERIFIER_ADDRESS;
     }
 
-    function verifier() external view returns (address) {
-        return _verifier;
+    function verifier() external pure returns (address) {
+        return ZONE_VERIFIER_ADDRESS;
     }
 
-    function messenger() external view returns (address) {
-        return _messenger;
+    function messenger() external pure returns (address) {
+        return ZONE_MESSENGER_ADDRESS;
     }
 
 }
