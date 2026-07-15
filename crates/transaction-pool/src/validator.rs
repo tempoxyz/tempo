@@ -411,10 +411,23 @@ where
                 "pool intake stats"
             );
         }
+        static INFLIGHT: AtomicU64 = AtomicU64::new(0);
+        static MAX_INFLIGHT: AtomicU64 = AtomicU64::new(0);
+        let cur = INFLIGHT.fetch_add(1, Relaxed) + 1;
+        MAX_INFLIGHT.fetch_max(cur, Relaxed);
+        if n >= last + 100_000 {
+            tracing::info!(
+                target: "flatmpt",
+                inflight_now = cur,
+                inflight_max = MAX_INFLIGHT.swap(0, Relaxed),
+                "pool intake concurrency"
+            );
+        }
         let t_batch = std::time::Instant::now();
         let record =
             |r: Vec<TransactionValidationOutcome<TempoPooledTransaction>>| {
                 NS.fetch_add(t_batch.elapsed().as_nanos() as u64, Relaxed);
+                INFLIGHT.fetch_sub(1, Relaxed);
                 r
             };
 
@@ -777,13 +790,10 @@ where
             }
         };
 
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            core::iter::once((origin, transaction)),
-        )
-        .pop()
-        .expect("validate_batch returns one outcome per transaction")
+        let _ = (&state_provider, &cached_state);
+        self.validate_batch_parallel(vec![(origin, transaction)])
+            .pop()
+            .expect("validate_batch_parallel returns one outcome per transaction")
     }
 
     async fn validate_transactions(
