@@ -3653,6 +3653,7 @@ pub(crate) mod tests {
                 U256::ZERO
             );
             assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
             token.approve(
                 Address::random(),
                 ITIP20::approveCall {
@@ -3669,7 +3670,7 @@ pub(crate) mod tests {
                 },
             )?;
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
-            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             // An existing registry binding is skipped and cannot be overwritten.
             assert_eq!(
