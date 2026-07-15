@@ -13,7 +13,7 @@ use alloy_primitives::{
     map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use parking_lot::RwLock;
-use reth_chainspec::ChainSpecProvider;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::StateProvider;
@@ -29,7 +29,7 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -38,7 +38,7 @@ use tempo_precompiles::{
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
-use tempo_primitives::Block;
+use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -55,7 +55,9 @@ pub struct TempoTransactionPool<Client> {
 
 impl<Client> TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
 {
     pub fn new(
         protocol_pool: Pool<
@@ -74,7 +76,9 @@ where
 }
 impl<Client> TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
 {
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
@@ -618,7 +622,7 @@ impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
 impl<Client> TransactionPool for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + Send
         + Sync
         + 'static,
@@ -1225,7 +1229,9 @@ where
 
 impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
 {
     type Block = Block;
 
