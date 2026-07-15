@@ -159,6 +159,14 @@ impl GenerateStateBloat {
         let file = File::create(&out).wrap_err("failed to create output file")?;
         let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
 
+        if keccak_signable {
+            println!(
+                "\nKeccak-signable mode; first addresses: {} {} {}",
+                derive_address_keccak_signable(&seed, 0),
+                derive_address_keccak_signable(&seed, 1),
+                derive_address_keccak_signable(&seed, 2),
+            );
+        }
         println!("\nGenerating and writing in {num_chunks} chunks...");
 
         let pb = ProgressBar::new(total_accounts as u64);
@@ -173,11 +181,14 @@ impl GenerateStateBloat {
         let mut is_first_chunk = true;
 
         for chunk in &(0..total_accounts).chunks(chunk_size) {
-            let chunk_indices: Vec<_> = chunk.collect();
+            let chunk_indices: Vec<usize> = chunk.collect();
             let chunk_len = chunk_indices.len();
 
-            // Derive addresses and compute slot bytes for this chunk only
+            // Derive addresses and compute slot bytes for this chunk only.
+            // In keccak-signable mode this list is re-derived per token below
+            // (global index), so it only serves the legacy modes here.
             let slot_bytes: Vec<[u8; 32]> = chunk_indices
+                .clone()
                 .into_par_iter()
                 .map(|i| {
                     let addr = if keccak_signable {
@@ -201,6 +212,28 @@ impl GenerateStateBloat {
             for (token_idx, token_addr) in token_addresses.iter().enumerate() {
                 let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
 
+                // Keccak-signable mode: each token funds a DISTINCT global
+                // index range (token_idx * accounts_per_token + i), so N
+                // tokens hold N * accounts_per_token distinct signable
+                // accounts instead of the same list repeated.
+                let token_slot_bytes: Vec<[u8; 32]> = if keccak_signable {
+                    let offset = token_idx as u64 * accounts_per_token;
+                    chunk_indices
+                        .clone()
+                        .into_par_iter()
+                        .map(|i| {
+                            let addr =
+                                derive_address_keccak_signable(&seed, offset + i as u64);
+                            compute_mapping_slot(addr, tip20_slots::BALANCES)
+                                .to_be_bytes::<32>()
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let slot_bytes: &[[u8; 32]] =
+                    if keccak_signable { &token_slot_bytes } else { &slot_bytes };
+
                 write_header(&mut writer, *token_addr, pair_count)?;
 
                 // Only write total_supply in the first chunk for each token
@@ -211,7 +244,7 @@ impl GenerateStateBloat {
 
                 // Write balance entries in chunks
                 chunk_buf.clear();
-                for slot in &slot_bytes {
+                for slot in slot_bytes {
                     chunk_buf.extend_from_slice(slot);
                     chunk_buf.extend_from_slice(&balance_bytes);
                 }

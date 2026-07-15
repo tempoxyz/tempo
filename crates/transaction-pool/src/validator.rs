@@ -374,6 +374,73 @@ where
             .collect()
     }
 
+    /// Validates a batch across scoped threads, each with its own state
+    /// provider and throwaway EVM.
+    ///
+    /// A sequential batch pays the full state-read latency per transaction:
+    /// with a large state a cold fee-balance read is ~100µs, capping intake
+    /// around 10k tx/s no matter how many validation tasks run upstream
+    /// (they all funnel whole batches through one `validate_batch`).
+    /// Chunking the batch across threads scales intake with cores while
+    /// preserving outcome order; the tip-scoped [`StateCache`] is shared, so
+    /// warm reads still amortize across the whole batch.
+    fn validate_batch_parallel(
+        &self,
+        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
+    ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
+        const PAR: usize = 8;
+        const MIN_PER_THREAD: usize = 4;
+
+        let error_outcomes = |transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
+                              err: reth_provider::ProviderError| {
+            transactions
+                .into_iter()
+                .map(|(_, tx)| {
+                    TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        if transactions.len() < 2 * MIN_PER_THREAD {
+            return match self.latest_state_provider_and_cache() {
+                Ok((state_provider, cached_state)) => {
+                    self.validate_batch(state_provider, cached_state, transactions)
+                }
+                Err(err) => error_outcomes(transactions, err),
+            };
+        }
+
+        let threads = PAR.min(transactions.len() / MIN_PER_THREAD).max(1);
+        let per = transactions.len().div_ceil(threads);
+        let mut chunks = Vec::with_capacity(threads);
+        let mut it = transactions.into_iter();
+        loop {
+            let chunk: Vec<_> = it.by_ref().take(per).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            chunks.push(chunk);
+        }
+
+        std::thread::scope(|s| {
+            let handles: Vec<_> = chunks
+                .into_iter()
+                .map(|chunk| {
+                    s.spawn(move || match self.latest_state_provider_and_cache() {
+                        Ok((state_provider, cached_state)) => {
+                            self.validate_batch(state_provider, cached_state, chunk)
+                        }
+                        Err(err) => error_outcomes(chunk, err),
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("validation thread panicked"))
+                .collect()
+        })
+    }
+
     /// Returns the latest state provider and a state cache valid for the provider's tip.
     fn latest_state_provider_and_cache(
         &self,
@@ -697,19 +764,7 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch_parallel(transactions.into_iter().collect())
     }
 
     async fn validate_transactions_with_origin(
@@ -717,22 +772,8 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            transactions.into_iter().map(|tx| (origin, tx)),
+        self.validate_batch_parallel(
+            transactions.into_iter().map(|tx| (origin, tx)).collect(),
         )
     }
 
