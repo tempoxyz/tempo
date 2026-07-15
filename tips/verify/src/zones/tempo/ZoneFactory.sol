@@ -45,15 +45,19 @@ abstract contract ZoneFactory is IZoneFactory {
     mapping(address => bool) internal _validVerifiers;
     address internal _verifier;
     address internal _messenger;
+    address public owner;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address initialVerifier, address sharedMessenger) {
+    constructor(address initialOwner, address initialVerifier, address sharedMessenger) {
+        if (initialOwner == address(0)) revert InvalidOwner();
         if (initialVerifier == address(0)) revert InvalidVerifier();
         require(sharedMessenger != address(0), "invalid messenger");
 
+        owner = initialOwner;
+        emit OwnershipTransferred(address(0), initialOwner);
         _validVerifiers[initialVerifier] = true;
         _verifier = initialVerifier;
         _messenger = sharedMessenger;
@@ -67,6 +71,8 @@ abstract contract ZoneFactory is IZoneFactory {
         external
         returns (uint32 zoneId, address portal)
     {
+        if (msg.sender != owner) revert NotOwner();
+
         if (!ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS).isTIP20(params.initialToken)) {
             revert InvalidToken();
         }
@@ -136,6 +142,16 @@ abstract contract ZoneFactory is IZoneFactory {
             params.zoneParams.genesisTempoBlockHash,
             params.zoneParams.genesisTempoBlockNumber
         );
+    }
+
+    /// @inheritdoc IZoneFactory
+    function transferOwnership(address newOwner) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (newOwner == address(0)) revert InvalidOwner();
+
+        address previousOwner = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(previousOwner, newOwner);
     }
 
     /// @notice Returns the deterministic portal vanity address for a zone ID.
