@@ -136,7 +136,6 @@ account, for example:
 
 ```bash
 clickhouse-client \
-  --database "${CLICKHOUSE_DATABASE:-default}" \
   --queries-file contrib/bench/clickhouse/001_execution_microbench_results.sql
 ```
 
@@ -145,7 +144,7 @@ on `tempo_execution_microbench_results`: `INSERT` publishes the batch and `SELEC
 deduplicated row count. With `CLICKHOUSE_URL`,
 `CLICKHOUSE_USER`, and `CLICKHOUSE_PASSWORD` configured, it publishes rows through
 `contrib/bench/upload-execution-microbench-results.sh`; `CLICKHOUSE_DATABASE` is a repository
-variable and defaults to `default`. ClickHouse credentials are scoped only to the publication
+variable and defaults to `tempo_repricing`. ClickHouse credentials are scoped only to the publication
 step in a separate GitHub-hosted job. The credential-free self-hosted job uploads its artifact;
 the hosted job downloads, validates, and publishes it. Publication runs only from
 `refs/heads/main`; dispatch the workflow on `main` to seed or update dashboard data. The

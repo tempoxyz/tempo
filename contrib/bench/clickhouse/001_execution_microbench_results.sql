@@ -1,7 +1,9 @@
 -- Native execution microbenchmarks. A run uses a stable (run_id, case_id)
 -- identity, and ReplacingMergeTree makes retried inserts idempotent after merge.
 -- Queries that must observe deduplication immediately should use FINAL.
-CREATE TABLE IF NOT EXISTS tempo_execution_microbench_results
+CREATE DATABASE IF NOT EXISTS tempo_repricing;
+
+CREATE TABLE IF NOT EXISTS tempo_repricing.tempo_execution_microbench_results
 (
     schema_version UInt16,
     run_id String,

@@ -262,7 +262,7 @@ jobs:
           CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
           CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-          CLICKHOUSE_DATABASE: ${{ vars.CLICKHOUSE_DATABASE || 'default' }}
+          CLICKHOUSE_DATABASE: ${{ vars.CLICKHOUSE_DATABASE || 'tempo_repricing' }}
         run: |
           if [ -n "$CLICKHOUSE_URL" ]; then echo "::add-mask::$CLICKHOUSE_URL"; fi
           if [ -n "$CLICKHOUSE_USER" ]; then echo "::add-mask::$CLICKHOUSE_USER"; fi

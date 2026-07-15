@@ -8,7 +8,7 @@
 #   CLICKHOUSE_URL       ClickHouse HTTP endpoint (for example, https://host:8443)
 #   CLICKHOUSE_USER      Benchmark user with INSERT and SELECT on the result table
 #   CLICKHOUSE_PASSWORD  Benchmark user password
-#   CLICKHOUSE_DATABASE  Database name (default: default)
+#   CLICKHOUSE_DATABASE  Database name (default: tempo_repricing)
 #
 # Usage: upload-execution-microbench-results.sh <clickhouse-rows.jsonl>
 
@@ -16,7 +16,7 @@ set -euo pipefail
 
 TABLE="tempo_execution_microbench_results"
 ROWS_PATH="${1:-}"
-DATABASE="${CLICKHOUSE_DATABASE:-default}"
+DATABASE="${CLICKHOUSE_DATABASE:-tempo_repricing}"
 
 credential_count=0
 [ -n "${CLICKHOUSE_URL:-}" ] && credential_count=$((credential_count + 1))
