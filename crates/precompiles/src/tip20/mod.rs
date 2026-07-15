@@ -283,16 +283,6 @@ impl TIP20Token {
         ))
     }
 
-    /// Copies the token's legacy transfer policy ID into TIP-403.
-    ///
-    /// This migration is permissionless and idempotent when the registry already contains the
-    /// same policy ID. It never changes the token-local policy ID.
-    pub fn migrate_transfer_policy_id(&mut self) -> Result<u64> {
-        let policy_id = self.legacy_transfer_policy_id()?;
-        TIP403Registry::new().migrate_token_transfer_policy(self.address, policy_id)?;
-        Ok(policy_id)
-    }
-
     /// Sets a new supply cap. Must be ≥ current total supply and ≤ [`U128_MAX`].
     ///
     /// # Errors
@@ -3613,15 +3603,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_migrate_transfer_policy_id_to_registry() -> eyre::Result<()> {
+    fn test_migrate_transfer_policy_ids_to_registry() -> eyre::Result<()> {
         let admin = Address::random();
+        let invalid_token = Address::random();
         let spender = Address::random();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
 
         StorageCtx::enter(&mut storage, || {
             // Simulate an existing token created before TIP-1092 activation.
             let mut token = TIP20Setup::path_usd(admin).apply()?;
-            let registry = TIP403Registry::new();
+            let mut registry = TIP403Registry::new();
             assert!(!registry.has_token_transfer_policy_for(token.address)?);
             assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
 
@@ -3636,9 +3627,23 @@ pub(crate) mod tests {
                 ALLOW_ALL_POLICY_ID
             );
 
-            // Migration is permissionless and idempotent, and normal TIP-20 operations continue.
-            assert_eq!(token.migrate_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
-            assert_eq!(token.migrate_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            // Invalid and duplicate addresses are skipped. Normal TIP-20 operations continue.
+            assert_eq!(
+                registry.migrate_transfer_policy_ids(
+                    ITIP403Registry::migrateTransferPolicyIdsCall {
+                        tokens: vec![invalid_token, token.address, token.address],
+                    },
+                )?,
+                U256::ONE
+            );
+            assert_eq!(
+                registry.migrate_transfer_policy_ids(
+                    ITIP403Registry::migrateTransferPolicyIdsCall {
+                        tokens: vec![token.address, invalid_token],
+                    },
+                )?,
+                U256::ZERO
+            );
             assert!(registry.has_token_transfer_policy_for(token.address)?);
             token.approve(
                 Address::random(),
@@ -3658,8 +3663,15 @@ pub(crate) mod tests {
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
             assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
 
-            // Migration cannot overwrite a different active registry binding.
-            assert!(token.migrate_transfer_policy_id().is_err());
+            // An existing registry binding is skipped and cannot be overwritten.
+            assert_eq!(
+                registry.migrate_transfer_policy_ids(
+                    ITIP403Registry::migrateTransferPolicyIdsCall {
+                        tokens: vec![token.address],
+                    },
+                )?,
+                U256::ZERO
+            );
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
 
             Ok(())

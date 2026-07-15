@@ -59,10 +59,6 @@ impl Precompile for TIP20Token {
                     changeTransferPolicyId(call) => mutate_void(call, msg_sender, |s, c| {
                         self.change_transfer_policy_id(s, c)
                     }),
-                    #[schedule(since = T9)]
-                    migrateTransferPolicyId(call) => mutate(call, msg_sender, |_, _| {
-                        self.migrate_transfer_policy_id()
-                    }),
                     setSupplyCap(call) => mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c)),
                     #[schedule(since = T5)]
                     setLogoURI(call) => mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c)),
@@ -648,8 +644,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T9 hardfork so all selectors are active.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        // Use T5 hardfork so all selectors are active.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -668,28 +664,6 @@ mod tests {
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_migrate_transfer_policy_id_selector_is_t9_gated() -> eyre::Result<()> {
-        let admin = Address::random();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::path_usd(admin).apply()?;
-            let calldata = ITIP20::migrateTransferPolicyIdCall {}.abi_encode();
-
-            let result = token.call(&calldata, Address::random())?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            StorageCtx.set_spec(TempoHardfork::T9);
-            let result = token.call(&calldata, Address::random())?;
-            assert!(result.status.is_success());
-            assert_eq!(u64::abi_decode(&result.bytes)?, 1);
-
             Ok(())
         })
     }

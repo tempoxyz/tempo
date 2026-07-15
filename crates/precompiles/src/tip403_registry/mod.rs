@@ -27,7 +27,7 @@ use crate::{
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
@@ -292,23 +292,26 @@ impl TIP403Registry {
         })
     }
 
-    /// Copies a token's legacy policy ID into TIP-403. Repeating the same migration is a no-op;
-    /// attempting to overwrite a different registry value reverts.
-    pub(crate) fn migrate_token_transfer_policy(
+    /// Migrates valid, unregistered TIP-20 tokens to registry-owned transfer policy bindings.
+    /// Invalid and already-registered token addresses are skipped.
+    pub fn migrate_transfer_policy_ids(
         &mut self,
-        token: Address,
-        policy_id: u64,
-    ) -> Result<()> {
-        let binding = self.token_transfer_policies[token].read()?;
-        if binding.is_set {
-            return if binding.policy_id == policy_id {
-                Ok(())
-            } else {
-                Err(tempo_contracts::precompiles::TIP20Error::invalid_transfer_policy_id().into())
-            };
+        call: ITIP403Registry::migrateTransferPolicyIdsCall,
+    ) -> Result<U256> {
+        let factory = TIP20Factory::new();
+        let mut migrated = U256::ZERO;
+
+        for token in call.tokens {
+            if !factory.is_tip20(token)? || self.has_token_transfer_policy_for(token)? {
+                continue;
+            }
+
+            let policy_id = TIP20Token::from_address(token)?.legacy_transfer_policy_id()?;
+            self.set_token_transfer_policy(token, policy_id)?;
+            migrated += U256::ONE;
         }
 
-        self.set_token_transfer_policy(token, policy_id)
+        Ok(migrated)
     }
 
     /// Returns the type and admin of a policy. Reverts if the policy does not exist or has an

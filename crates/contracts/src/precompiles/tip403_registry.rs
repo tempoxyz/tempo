@@ -41,6 +41,7 @@ crate::sol! {
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
         function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
         function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
+        function migrateTransferPolicyIds(address[] calldata tokens) external returns (uint256 migrated);
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);

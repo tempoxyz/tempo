@@ -57,6 +57,10 @@ impl Precompile for TIP403Registry {
                     }),
                     #[schedule(since = T6)]
                     setReceivePolicy(call) => mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c)),
+                    #[schedule(since = T9)]
+                    migrateTransferPolicyIds(call) => mutate(call, msg_sender, |_, c| {
+                        self.migrate_transfer_policy_ids(c)
+                    }),
                     createPolicy(call) => mutate(call, msg_sender, |s, c| self.create_policy(s, c)),
                     createPolicyWithAccounts(call) => mutate(call, msg_sender, |s, c| {
                         self.create_policy_with_accounts(s, c)
@@ -80,7 +84,10 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::{SolCall, SolError, SolValue};
+    use alloy::{
+        primitives::U256,
+        sol_types::{SolCall, SolError, SolValue},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
@@ -603,6 +610,10 @@ mod tests {
         let calls = [
             ITIP403Registry::hasTokenTransferPolicyCall { token }.abi_encode(),
             ITIP403Registry::tokenTransferPolicyIdCall { token }.abi_encode(),
+            ITIP403Registry::migrateTransferPolicyIdsCall {
+                tokens: vec![token],
+            }
+            .abi_encode(),
         ];
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
@@ -627,6 +638,11 @@ mod tests {
             let result = registry.call(&calls[1], Address::ZERO)?;
             assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_err());
+
+            // Batch migration recognizes the selector and skips the invalid token.
+            let result = registry.call(&calls[2], Address::random())?;
+            assert!(result.status.is_success());
+            assert_eq!(U256::abi_decode(&result.bytes)?, U256::ZERO);
             Ok(())
         })
     }

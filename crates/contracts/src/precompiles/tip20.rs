@@ -92,7 +92,6 @@ crate::sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
-        function migrateTransferPolicyId() external returns (uint64 policyId);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
