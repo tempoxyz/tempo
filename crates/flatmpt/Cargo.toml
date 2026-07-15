@@ -25,6 +25,7 @@ reth-primitives-traits.workspace = true
 revm.workspace = true
 parking_lot.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+bincode = "1"
 tracing.workspace = true
 anyhow = "1"
 

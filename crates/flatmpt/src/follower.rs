@@ -273,6 +273,19 @@ impl Follower {
         expected_root: B256,
     ) {
         ops.sort_by(|a, b| a.0.cmp(&b.0));
+        // TEMPO_FLATMPT_DUMP_OPS=<dir>: persist each block's canonical ops
+        // (bincode) for offline divergence replay.
+        if let Ok(dir) = std::env::var("TEMPO_FLATMPT_DUMP_OPS") {
+            let path = format!("{dir}/ops-{:08}.bin", parent_number + 1);
+            match bincode::serialize(&(parent_number, parent_root, &ops, expected_root)) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&path, bytes) {
+                        tracing::warn!(target: "flatmpt", %e, path, "ops dump failed");
+                    }
+                }
+                Err(e) => tracing::warn!(target: "flatmpt", %e, "ops encode failed"),
+            }
+        }
         note_pending(parent_root, crate::ops_fingerprint(&ops), expected_root);
         // Empty blocks change nothing: the root is the parent's, there is
         // nothing to apply, and registering them would insert a self-loop
