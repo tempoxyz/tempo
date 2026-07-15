@@ -149,6 +149,10 @@ contract ZonePortal is IZonePortal {
                              INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev This constructor executes only for the temporary template deployment used to
+    ///      produce runtime code. It is not executed at `portalLogic` when the protocol
+    ///      installs that runtime there; `portalLogic` identifies that canonical address
+    ///      for the direct-call guard.
     constructor(address factory, address portalLogic) {
         _factory = factory;
         _portalLogic = portalLogic;
