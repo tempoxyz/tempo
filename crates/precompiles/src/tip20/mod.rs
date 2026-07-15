@@ -3688,6 +3688,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_change_transfer_policy_id_migrates_and_clears_legacy_policy() -> eyre::Result<()> {
+        let admin = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(admin).apply()?;
+            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+
+            StorageCtx.set_spec(TempoHardfork::T9);
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+
+            let registry = TIP403Registry::new();
+            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_new_t9_token_registers_transfer_policy() -> eyre::Result<()> {
         let admin = Address::random();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
