@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::B256;
@@ -9,7 +12,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -18,6 +21,10 @@ use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<PrewarmEvmState> = const { RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -82,7 +89,9 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.broadcast(pool.current_num_threads(), |_| {
+                    PREWARM_EVM_STATE.with_borrow_mut(|state| *state = prewarm.evm_for_ctx());
+                });
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -161,7 +170,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            PREWARM_EVM_STATE.with_borrow_mut(|state| *state = None);
+        });
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -177,12 +188,15 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = PREWARM_EVM_STATE.with_borrow_mut(|state| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            if state.is_none() {
+                *state = prewarm.evm_for_ctx();
+            }
+            let evm = state.as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
