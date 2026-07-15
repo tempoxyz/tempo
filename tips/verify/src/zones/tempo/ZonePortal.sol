@@ -150,7 +150,7 @@ contract ZonePortal is IZonePortal {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev This constructor executes only for the temporary template deployment used to
-    ///      produce runtime code. It is not executed when the protocol etches that runtime
+    ///      produce runtime code. It is not executed when the protocol installs that runtime
     ///      at `ZONE_PORTAL_LOGIC_ADDRESS`.
     constructor(address factory) {
         _factory = factory;
