@@ -63,9 +63,6 @@ pub struct TIP403Registry {
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
     receive_policies: Mapping<Address, ReceivePolicy>,
-    /// TIP-1092 token-to-policy bindings. Unset entries fall back to the policy ID stored on the
-    /// TIP-20 token.
-    token_transfer_policies: Mapping<Address, TokenTransferPolicy>,
 }
 
 /// Packed TIP-1092 token-to-policy binding.
@@ -75,6 +72,19 @@ struct TokenTransferPolicy {
     policy_id: u64,
     /// Distinguishes an unset binding from the valid reject-all policy ID `0`.
     is_set: bool,
+}
+
+impl TokenTransferPolicy {
+    /// Returns the handler for a token's non-standard direct-address storage slot.
+    ///
+    /// TIP-20 addresses occupy the reserved `0x20C0...` namespace, so their zero-padded address
+    /// values cannot collide with TIP-403's sequential Solidity storage slots.
+    fn at(token: Address) -> TokenTransferPolicyHandler {
+        TokenTransferPolicyHandler::new(
+            U256::from_be_slice(token.as_slice()),
+            TIP403_REGISTRY_ADDRESS,
+        )
+    }
 }
 
 /// Per-account TIP-1028 receive policy configuration.
@@ -276,7 +286,7 @@ impl TIP403Registry {
         &self,
         token: Address,
     ) -> Result<Option<u64>> {
-        let binding = self.token_transfer_policies[token].read()?;
+        let binding = TokenTransferPolicy::at(token).read()?;
         Ok(binding.is_set.then_some(binding.policy_id))
     }
 
@@ -286,7 +296,7 @@ impl TIP403Registry {
         token: Address,
         policy_id: u64,
     ) -> Result<()> {
-        self.token_transfer_policies[token].write(TokenTransferPolicy {
+        TokenTransferPolicy::at(token).write(TokenTransferPolicy {
             policy_id,
             is_set: true,
         })
@@ -1040,7 +1050,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
-        primitives::{Address, Log},
+        primitives::{Address, Log, address},
         sol_types::SolEvent,
     };
     use rand_08::Rng;
@@ -1048,6 +1058,36 @@ mod tests {
         PATH_USD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
     };
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+
+    #[test]
+    fn test_token_transfer_policy_uses_token_address_as_slot() -> eyre::Result<()> {
+        let token = address!("20c0000000000000000000000000000000001234");
+        let token_slot = U256::from_be_slice(token.as_slice());
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.set_token_transfer_policy(token, 42)?;
+
+            assert_eq!(
+                registry.registered_token_transfer_policy_id(token)?,
+                Some(42)
+            );
+            Ok::<(), TempoPrecompileError>(())
+        })?;
+
+        let entries = storage.into_storage().collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![(
+                TIP403_REGISTRY_ADDRESS,
+                token_slot,
+                U256::from(42) | (U256::ONE << 64),
+            )]
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {

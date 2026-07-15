@@ -21,8 +21,7 @@ fn test_tip403_registry_layout() {
         policy_id_counter,
         policy_records,
         policy_set,
-        receive_policies,
-        token_transfer_policies
+        receive_policies
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
@@ -60,17 +59,6 @@ fn test_tip403_registry_layout() {
             compare_nested_struct_type(&solc_layout, "CompoundPolicyData", &rust_compound)
         {
             panic_layout_mismatch("CompoundPolicyData struct layout", errors, &sol_path);
-        }
-    }
-
-    // Verify `TokenTransferPolicy` packs the ID and set bit into one slot.
-    {
-        use tempo_precompiles::tip403_registry::__packing_token_transfer_policy::*;
-        let rust_binding = struct_fields!(slots::TOKEN_TRANSFER_POLICIES, policy_id, is_set);
-        if let Err(errors) =
-            compare_nested_struct_type(&solc_layout, "TokenTransferPolicy", &rust_binding)
-        {
-            panic_layout_mismatch("TokenTransferPolicy struct layout", errors, &sol_path);
         }
     }
 }

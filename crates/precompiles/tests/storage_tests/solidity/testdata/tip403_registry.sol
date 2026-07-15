@@ -36,11 +36,6 @@ contract TIP403Registry {
         address recoveryAddress;
     }
 
-    struct TokenTransferPolicy {
-        uint64 policyId;
-        bool isSet;
-    }
-
     // ========== Storage ==========
 
     /// Counter for policy IDs
@@ -55,7 +50,4 @@ contract TIP403Registry {
 
     /// Account receive policy configuration
     mapping(address => ReceivePolicy) internal receivePolicies;
-
-    /// TIP-1092 token-to-policy bindings
-    mapping(address => TokenTransferPolicy) internal tokenTransferPolicies;
 }
