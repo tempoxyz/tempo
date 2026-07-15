@@ -65,6 +65,10 @@ contract ZonePortal is IZonePortal {
     ///      This is protocol-wide code configuration and does not consume proxy storage.
     address internal immutable _factory;
 
+    /// @dev Canonical account that holds this implementation's runtime code.
+    ///      This is supplied separately because the runtime is copied from a template deployment.
+    address internal immutable _implementation;
+
     /// @notice Encrypted deposit payloads always encrypt `(address to, bytes32 memo)`.
     uint256 internal constant ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE = 64;
 
@@ -145,8 +149,9 @@ contract ZonePortal is IZonePortal {
                              INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address factory) {
+    constructor(address factory, address implementation) {
         _factory = factory;
+        _implementation = implementation;
     }
 
     function initialize(
@@ -161,6 +166,7 @@ contract ZonePortal is IZonePortal {
         string calldata _rpcUrl
     )
         external
+        onlyDelegateCall
     {
         if (msg.sender != _factory) revert NotFactory();
         if (_initialized) revert AlreadyInitialized();
@@ -182,6 +188,12 @@ contract ZonePortal is IZonePortal {
     /*//////////////////////////////////////////////////////////////
                                MODIFIERS
     //////////////////////////////////////////////////////////////*/
+
+    /// @dev Initialization is valid only in a portal proxy's storage context.
+    modifier onlyDelegateCall() {
+        if (address(this) == _implementation) revert MustDelegateCall();
+        _;
+    }
 
     modifier onlySequencer() {
         if (msg.sender != sequencer) revert NotSequencer();

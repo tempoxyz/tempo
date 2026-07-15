@@ -590,6 +590,7 @@ interface IZonePortal {
     error NotAdmin();
     error NotFactory();
     error AlreadyInitialized();
+    error MustDelegateCall();
     error NotPendingSequencer();
     error NotPendingAdmin();
     error InvalidProof();
