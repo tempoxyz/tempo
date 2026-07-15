@@ -14,7 +14,6 @@ use alloy_rpc_types_eth::{
     TransactionInput,
     state::{AccountOverride, StateOverride},
 };
-use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
@@ -37,9 +36,9 @@ fn extract_revert_data(
 /// Expected revert bytes for `Panic(UnderOverflow)`.
 fn under_overflow_revert() -> Bytes {
     TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
+        .into_precompile_result()
         .unwrap()
-        .bytes
+        .into_bytes()
 }
 
 /// Builds a `StateOverride` targeting `address` with the given slot→value diffs.
@@ -184,8 +183,8 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
         let Delta::Changed(ChangedType { from, to }) = sender_balance else {
             panic!("Unexpected delta");
         };
-        assert_eq!(from.into_u256(), mint_amount);
-        assert_eq!(to.into_u256(), U256::ZERO);
+        assert_eq!(U256::from_be_slice(from.as_slice()), mint_amount);
+        assert_eq!(U256::from_be_slice(to.as_slice()), U256::ZERO);
 
         // Assert recipient token balance is changed
         let slot = TIP20Token::from_address(token_address)
@@ -200,8 +199,8 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
         let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
             panic!("Unexpected delta");
         };
-        assert_eq!(from.into_u256(), U256::ZERO);
-        assert_eq!(to.into_u256(), mint_amount);
+        assert_eq!(U256::from_be_slice(from.as_slice()), U256::ZERO);
+        assert_eq!(U256::from_be_slice(to.as_slice()), mint_amount);
 
         Ok(())
     })

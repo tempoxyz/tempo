@@ -4,7 +4,7 @@ use crate::{
     Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch, mutate_void, view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::ICurrentCommittee;
 #[cfg(test)]
 use tempo_contracts::precompiles::ICurrentCommittee::ICurrentCommitteeCalls;
@@ -77,7 +77,7 @@ mod tests {
             expect_precompile_revert(&unauthorized, CurrentCommitteeError::unauthorized());
 
             let system = committee.call(&call.abi_encode(), Address::ZERO);
-            assert!(system.is_ok_and(|output| output.is_success()));
+            assert!(system.is_ok());
 
             let ret = committee.get_committee_members()?;
             assert_eq!(ret.epoch, call.epoch);

@@ -10,7 +10,7 @@ use crate::{
     view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IFeeManager;
 impl Precompile for TipFeeManager {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -106,14 +106,12 @@ mod tests {
                 token: token.address(),
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, validator)?;
-            assert!(result.status.is_success());
+            fee_manager.call(&calldata, validator)?;
 
             // Verify token was set
             let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
             let result = fee_manager.call(&calldata, validator)?;
-            assert!(result.status.is_success());
-            let returned_token = Address::abi_decode(&result.bytes)?;
+            let returned_token = Address::abi_decode(result.bytes())?;
             assert_eq!(returned_token, token.address());
 
             Ok(())
@@ -151,14 +149,12 @@ mod tests {
                 token: token.address(),
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, user)?;
-            assert!(result.status.is_success());
+            fee_manager.call(&calldata, user)?;
 
             // Verify token was set
             let calldata = IFeeManager::userTokensCall { user }.abi_encode();
             let result = fee_manager.call(&calldata, user)?;
-            assert!(result.status.is_success());
-            let returned_token = Address::abi_decode(&result.bytes)?;
+            let returned_token = Address::abi_decode(result.bytes())?;
             assert_eq!(returned_token, token.address());
 
             Ok(())
@@ -198,9 +194,8 @@ mod tests {
             }
             .abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert!(result.status.is_success());
 
-            let returned_id = B256::abi_decode(&result.bytes)?;
+            let returned_id = B256::abi_decode(result.bytes())?;
             let expected_id = PoolKey::new(token_a, token_b).get_id();
             assert_eq!(returned_id, expected_id);
 
@@ -224,10 +219,9 @@ mod tests {
             };
             let calldata = get_pool_call.abi_encode();
             let result = fee_manager.call(&calldata, sender)?;
-            assert!(result.status.is_success());
 
             // Decode and verify pool (should be empty initially)
-            let pool = ITIPFeeAMM::Pool::abi_decode(&result.bytes)?;
+            let pool = ITIPFeeAMM::Pool::abi_decode(result.bytes())?;
             assert_eq!(pool.reserveUserToken, 0);
             assert_eq!(pool.reserveValidatorToken, 0);
 
@@ -251,7 +245,7 @@ mod tests {
             }
             .abi_encode();
             let result1 = fee_manager.call(&calldata1, sender)?;
-            let id1 = B256::abi_decode(&result1.bytes)?;
+            let id1 = B256::abi_decode(result1.bytes())?;
 
             // Get pool ID with tokens reversed (b, a)
             let calldata2 = ITIPFeeAMM::getPoolIdCall {
@@ -260,7 +254,7 @@ mod tests {
             }
             .abi_encode();
             let result2 = fee_manager.call(&calldata2, sender)?;
-            let id2 = B256::abi_decode(&result2.bytes)?;
+            let id2 = B256::abi_decode(result2.bytes())?;
 
             // Pool IDs should be different since tokens are ordered
             assert_ne!(id1, id2);
@@ -304,17 +298,16 @@ mod tests {
 
             let result =
                 fee_manager.call(&ITIPFeeAMM::MIN_LIQUIDITYCall {}.abi_encode(), sender)?;
-            assert!(!result.is_revert());
-            assert_eq!(U256::abi_decode(&result.bytes)?, MIN_LIQUIDITY);
+            assert_eq!(U256::abi_decode(result.bytes())?, MIN_LIQUIDITY);
 
             let result = fee_manager.call(&ITIPFeeAMM::MCall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(&result.bytes)?, M);
+            assert_eq!(U256::abi_decode(result.bytes())?, M);
 
             let result = fee_manager.call(&ITIPFeeAMM::NCall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(&result.bytes)?, N);
+            assert_eq!(U256::abi_decode(result.bytes())?, N);
 
             let result = fee_manager.call(&ITIPFeeAMM::SCALECall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(&result.bytes)?, SCALE);
+            assert_eq!(U256::abi_decode(result.bytes())?, SCALE);
 
             Ok(())
         })

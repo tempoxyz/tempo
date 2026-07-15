@@ -6,9 +6,8 @@ use std::sync::{
 
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
-use reth_evm::{Evm, EvmEnvFor};
-use reth_revm::database::StateProviderDatabase;
-use reth_storage_api::{StateProviderBox, StateProviderFactory};
+use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
+use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
@@ -17,7 +16,7 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
-pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -189,12 +188,10 @@ impl BestTransactionsPrewarming {
             }
 
             let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
+            tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
 
-            let result = match evm.transact_raw(tx_env) {
-                Ok(result) => result.result,
+            let result = match evm.transact(&tx_env) {
+                Ok(executed) => executed.detach(),
                 Err(err) => {
                     trace!(
                         target: "payload_builder",
@@ -212,17 +209,15 @@ impl BestTransactionsPrewarming {
                 return None;
             }
 
-            let actions = evm.take_actions()?;
+            if result.result.error_code.is_some() {
+                return None;
+            }
+            let actions = evm.ext().actions.take()?;
             let expiring_nonce = tx
                 .transaction
                 .is_expiring_nonce()
                 .then(|| {
-                    let valid_before = tx
-                        .transaction
-                        .tx_env()
-                        .tempo_tx_env
-                        .as_ref()?
-                        .valid_before?;
+                    let valid_before = tx.transaction.inner().as_aa()?.tx().valid_before?.get();
                     Some(ExpiringNonceReplay {
                         hash: tx.transaction.expiring_nonce_hash()?,
                         valid_before,
@@ -238,9 +233,9 @@ impl BestTransactionsPrewarming {
             );
 
             Some(Box::new(StorageActionReplay {
-                result,
+                validator_fee: result.result.ext.validator_fee,
+                result: result.result,
                 actions,
-                validator_fee: evm.validator_fee(),
                 expiring_nonce,
             }))
         });
@@ -337,6 +332,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     parent_hash: B256,
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
+    evm_config: TempoEvmConfig,
     stop: Arc<AtomicBool>,
     parallel: bool,
 }
@@ -351,6 +347,7 @@ where
         cache: Option<SavedCache>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
+        evm_config: TempoEvmConfig,
         parallel: bool,
     ) -> Self {
         Self {
@@ -359,6 +356,7 @@ where
             parent_hash,
             cache,
             evm_env,
+            evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
         }
@@ -390,15 +388,16 @@ where
         let mut evm_env = self.evm_env.clone();
 
         if !self.parallel {
-            evm_env.cfg_env.disable_nonce_check = true;
-            evm_env.cfg_env.disable_balance_check = true;
+            evm_env = evm_env
+                .with_nonce_check_disabled()
+                .with_balance_check_disabled();
         }
 
-        let mut evm = TempoEvm::new(state_provider, evm_env);
+        let mut evm = self.evm_config.evm_with_database(state_provider, evm_env);
 
         // Record storage actions for future replay
         if self.parallel {
-            evm = evm.with_actions();
+            evm.ext_mut().actions.enable();
         }
 
         Some(evm)
@@ -668,6 +667,7 @@ mod tests {
                 parent_hash: parent_header.hash(),
                 cache: None,
                 evm_env,
+                evm_config,
                 stop: Arc::default(),
                 parallel: false,
             },

@@ -6,7 +6,6 @@ use crate::{
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use core::num::NonZeroU64;
@@ -410,12 +409,6 @@ impl EthChainSpec for TempoChainSpec {
 impl EthereumHardforks for TempoChainSpec {
     fn ethereum_fork_activation(&self, fork: EthereumHardfork) -> ForkCondition {
         self.inner.ethereum_fork_activation(fork)
-    }
-}
-
-impl EthExecutorSpec for TempoChainSpec {
-    fn deposit_contract_address(&self) -> Option<Address> {
-        self.inner.deposit_contract_address()
     }
 }
 

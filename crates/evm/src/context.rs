@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::{Address, B256};
 use reth_evm::NextBlockEnvAttributes;
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_primitives::{TempoConsensusContext, subblock::PartialValidatorKey};
 
 /// Execution context for Tempo block.

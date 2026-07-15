@@ -5,7 +5,6 @@ use crate::{
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
-use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
@@ -160,17 +159,17 @@ where
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
-        for (&address, account) in &result.result().state {
+        for (&address, account) in &result.state_changes().accounts {
             if !is_tip20_prefix(address) {
                 continue;
             }
 
             for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
+                if storage_slot.current < storage_slot.original {
                     self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
+                        .insert((address, slot), storage_slot.current);
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
+                    *balance = storage_slot.current;
                 }
             }
         }

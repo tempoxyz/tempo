@@ -304,7 +304,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
             .call()
             .await;
 
-        // TODO: update to expect the exact error once PrecompileError is propagated through revm
+        // TODO: update to expect the exact error once PrecompileError is propagated through EVM2
         assert!(
             excess_result.is_err(),
             "Transfer should fail when exceeding allowance"
@@ -480,7 +480,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         let token = ITIP20::new(*token.address(), provider);
 
         let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
-        // TODO: assert the actual error once PrecompileError is propagated through revm
+        // TODO: assert the actual error once PrecompileError is propagated through EVM2
         assert!(transfer_result.is_err(),);
     }
 
@@ -497,7 +497,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
                 .transfer(blacklisted.address(), U256::ONE)
                 .call()
                 .await;
-            // TODO: assert the actual error once PrecompileError is propagated through revm
+            // TODO: assert the actual error once PrecompileError is propagated through EVM2
             assert!(transfer_result.is_err(),);
 
             token
@@ -635,7 +635,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Ensure whitelisted accounts can't send to non-whitelisted receivers
     for sender in whitelisted_senders.iter() {
         let transfer_result = sender.transfer(Address::random(), U256::ONE).call().await;
-        // TODO: assert the actual error once PrecompileError is propagated through revm
+        // TODO: assert the actual error once PrecompileError is propagated through EVM2
         assert!(transfer_result.is_err());
     }
 

@@ -9,7 +9,7 @@ use alloy::{
     sol,
     sol_types::{SolCall, SolError},
 };
-use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
+use evm2::precompiles::{PrecompileError, PrecompileHalt, PrecompileResult};
 
 sol! {
     error StaticCallNotAllowed();
@@ -23,7 +23,7 @@ pub mod typed {
     pub fn metadata<T: SolCall, E: IntoPrecompileResult>(
         f: impl FnOnce() -> core::result::Result<T::Return, E>,
     ) -> PrecompileResult {
-        f().encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+        f().encode_precompile_result(|ret| T::abi_encode_returns(&ret).into())
     }
 
     /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
@@ -32,7 +32,7 @@ pub mod typed {
         call: T,
         f: impl FnOnce(T) -> core::result::Result<T::Return, E>,
     ) -> PrecompileResult {
-        f(call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+        f(call).encode_precompile_result(|ret| T::abi_encode_returns(&ret).into())
     }
 
     /// Dispatches a state-mutating call that returns ABI-encoded data.
@@ -45,13 +45,11 @@ pub mod typed {
         f: impl FnOnce(Address, T) -> core::result::Result<T::Return, E>,
     ) -> PrecompileResult {
         if StorageCtx.is_static() {
-            return Ok(PrecompileOutput::revert(
-                0,
+            return Err(PrecompileError::Revert(
                 StaticCallNotAllowed {}.abi_encode().into(),
-                StorageCtx.reservoir(),
             ));
         }
-        f(sender, call).encode_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+        f(sender, call).encode_precompile_result(|ret| T::abi_encode_returns(&ret).into())
     }
 
     /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
@@ -64,26 +62,24 @@ pub mod typed {
         f: impl FnOnce(Address, T) -> core::result::Result<(), E>,
     ) -> PrecompileResult {
         if StorageCtx.is_static() {
-            return Ok(PrecompileOutput::revert(
-                0,
+            return Err(PrecompileError::Revert(
                 StaticCallNotAllowed {}.abi_encode().into(),
-                StorageCtx.reservoir(),
             ));
         }
-        f(sender, call).encode_precompile_result(0, 0, |()| Bytes::new())
+        f(sender, call).encode_precompile_result(|()| Bytes::new())
     }
 }
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
 pub fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    typed::metadata::<T, crate::error::TempoPrecompileError>(f)
+    typed::metadata::<T, error::TempoPrecompileError>(f)
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
 pub fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    typed::view::<T, crate::error::TempoPrecompileError>(call, f)
+    typed::view::<T, error::TempoPrecompileError>(call, f)
 }
 
 /// Dispatches a state-mutating call that returns ABI-encoded data.
@@ -95,7 +91,7 @@ pub fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
-    typed::mutate::<T, crate::error::TempoPrecompileError>(call, sender, f)
+    typed::mutate::<T, error::TempoPrecompileError>(call, sender, f)
 }
 
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
@@ -107,7 +103,7 @@ pub fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
-    typed::mutate_void::<T, crate::error::TempoPrecompileError>(call, sender, f)
+    typed::mutate_void::<T, error::TempoPrecompileError>(call, sender, f)
 }
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
@@ -126,42 +122,12 @@ pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 #[inline]
 pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<PrecompileResult> {
     if storage.deduct_gas(input_cost(calldata.len())).is_err() {
-        return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
+        return Some(Err(PrecompileHalt::OutOfGas.into()));
     }
     None
 }
 
-/// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
-///
-/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
-/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
-/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
-///
-/// SSTORE refund propagation is activated unconditionally at T4 so the
-/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
-/// blocks were executed without refund propagation, so we cannot change their gas
-/// accounting.
-#[inline]
-fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
-        output.gas_refunded = storage.gas_refunded();
-    }
-
-    if storage.amsterdam_eip8037_enabled() {
-        if output.is_success() {
-            // On success: parent takes the child's final reservoir.
-            output.reservoir = storage.reservoir();
-            output.state_gas_used = storage.state_gas_used();
-        } else {
-            // On revert or halt: state changes are undone, so ALL state gas returns
-            // to the parent's reservoir.
-            output.reservoir = storage.state_gas_used() + storage.reservoir();
-            output.state_gas_used = 0;
-        }
-    }
-}
-
-/// Decodes and classifies precompile calldata without executing the `decoded` call.
+/// Decodes calldata via `decode`, then dispatches to `f`.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
 /// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
@@ -185,22 +151,7 @@ pub fn decode_call<T>(
     }
 }
 
-/// Finalizes gas, refund, and state-gas reservoir accounting for a dispatched result.
-///
-/// This must be called while the [`StorageCtx`] used to execute the call is active.
-/// Fatal errors are returned unchanged.
-#[inline]
-pub fn finalize_dispatch_result(result: PrecompileResult) -> PrecompileResult {
-    let storage = StorageCtx::default();
-    result.map(|mut output| {
-        // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
-        output.gas_used = storage.gas_used();
-        fill_state_gas(&mut output, &storage);
-        output
-    })
-}
-
-/// Decodes calldata via [`decode_call`], dispatches to `f`, and finalizes its accounting.
+/// Decodes calldata via [`decode_call`] and dispatches to `f`.
 #[inline]
 pub fn dispatch_call<T>(
     calldata: &[u8],
@@ -211,7 +162,7 @@ pub fn dispatch_call<T>(
         Ok(call) => call,
         Err(result) => return result,
     };
-    finalize_dispatch_result(f(call))
+    f(call)
 }
 
 #[macro_export]
@@ -268,11 +219,9 @@ pub fn missing_selector_result() -> PrecompileResult {
     let storage = StorageCtx::default();
 
     if storage.spec().is_t1() {
-        Ok(storage.revert_output(Bytes::new()))
+        Err(PrecompileError::Revert(Bytes::new()))
     } else {
-        Ok(storage.halt_output(PrecompileHalt::Other(
-            "Invalid input: missing function selector".into(),
-        )))
+        Err(PrecompileHalt::Other("Invalid input: missing function selector".into()).into())
     }
 }
 
@@ -305,7 +254,6 @@ mod tests {
         primitives::U256,
         sol_types::{SolCall, SolError},
     };
-    use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileStatus};
     use tempo_chainspec::hardfork::TempoHardfork;
 
     sol! {
@@ -324,14 +272,10 @@ mod tests {
     }
 
     impl IntoPrecompileResult for CustomError {
-        fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+        fn into_precompile_result(self) -> PrecompileResult {
             match self {
-                Self::Typed(error) => Ok(PrecompileOutput::revert(
-                    gas,
-                    error.abi_encode().into(),
-                    reservoir,
-                )),
-                Self::Tempo(error) => error.into_precompile_result(gas, reservoir),
+                Self::Typed(error) => Err(PrecompileError::Revert(error.abi_encode().into())),
+                Self::Tempo(error) => error.into_precompile_result(),
             }
         }
     }
@@ -344,10 +288,9 @@ mod tests {
             },
             |c| core::result::Result::<_, CustomError>::Ok(c.value + U256::from(1)),
         )?;
-        assert!(output.is_success());
         assert_eq!(
-            output.bytes,
-            ITestDispatch::getCall::abi_encode_returns(&U256::from(42))
+            output.bytes(),
+            ITestDispatch::getCall::abi_encode_returns(&U256::from(42)).as_slice()
         );
 
         let sender = Address::ZERO;
@@ -360,10 +303,9 @@ mod tests {
                 sender,
                 |_, c| core::result::Result::<_, CustomError>::Ok(c.value),
             )?;
-            assert!(output.is_success());
             assert_eq!(
-                output.bytes,
-                ITestDispatch::setCall::abi_encode_returns(&U256::from(7))
+                output.bytes(),
+                ITestDispatch::setCall::abi_encode_returns(&U256::from(7)).as_slice()
             );
 
             let output = typed::mutate_void(
@@ -373,8 +315,7 @@ mod tests {
                 sender,
                 |_, _| core::result::Result::<_, CustomError>::Ok(()),
             )?;
-            assert!(output.is_success());
-            assert!(output.bytes.is_empty());
+            assert!(output.bytes().is_empty());
             Ok(())
         })
     }
@@ -384,28 +325,29 @@ mod tests {
         let error = CustomTypedError {
             code: U256::from(9),
         };
-        let output = typed::view(ITestDispatch::getCall { value: U256::ZERO }, |_| {
+        let result = typed::view(ITestDispatch::getCall { value: U256::ZERO }, |_| {
             core::result::Result::<U256, _>::Err(CustomError::Typed(error.clone()))
-        })?;
-        assert!(output.is_revert());
-        assert_eq!(output.bytes, error.abi_encode());
+        });
+        assert!(matches!(
+            result,
+            Err(PrecompileError::Revert(bytes)) if bytes == error.abi_encode()
+        ));
         Ok(())
     }
 
     #[test]
     fn tempo_error_behavior_is_preserved_through_extension_trait() -> eyre::Result<()> {
-        let output =
-            CustomError::Tempo(TempoPrecompileError::OutOfGas).into_precompile_result(123, 456)?;
+        let error =
+            CustomError::Tempo(TempoPrecompileError::OutOfGas).into_precompile_result().unwrap_err();
         assert!(matches!(
-            output.status,
-            PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
+            error,
+            PrecompileError::Halt(PrecompileHalt::OutOfGas)
         ));
-        assert_eq!(output.reservoir, 456);
 
         let error = CustomError::Tempo(TempoPrecompileError::Fatal("boom".into()))
-            .into_precompile_result(0, 0)
+            .into_precompile_result()
             .unwrap_err();
-        assert!(matches!(error, PrecompileError::Fatal(message) if message == "boom"));
+        assert!(matches!(error, PrecompileError::Fatal(message) if message.to_string() == "boom"));
         Ok(())
     }
 }

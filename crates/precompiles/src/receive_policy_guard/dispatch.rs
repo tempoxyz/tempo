@@ -5,7 +5,7 @@ use crate::{
     view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IReceivePolicyGuard;
 impl Precompile for ReceivePolicyGuard {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {

@@ -40,7 +40,7 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, actions::StorageActions},
+    storage::{StorageCtx, actions::StorageActions, evm::EvmPrecompileStorageProvider},
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
@@ -53,17 +53,16 @@ use crate::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
-use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
-use revm::{
-    context::CfgEnv,
-    handler::EthPrecompiles,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
-    primitives::hardfork::SpecId,
+use evm2::{
+    Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
+    evm::precompile::PrecompileProvider,
+    interpreter::{GasTracker, Message, MessageKind},
+    precompiles::{PrecompileError, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -106,277 +105,136 @@ pub trait Precompile {
     /// 4-byte function selector from `calldata` and route to the matching method using
     /// `dispatch_call` combined with the `view`, `mutate`, or `mutate_void` helpers.
     ///
-    /// Business-logic errors are returned as reverted [`PrecompileOutput`]s with ABI-encoded
-    /// error data, while fatal failures (e.g. out-of-gas) are returned as
-    /// [`PrecompileError`](revm::precompile::PrecompileError).
+    /// Business-logic errors are returned as EVM reverts with ABI-encoded error data, while
+    /// fatal failures (e.g. out-of-gas) are returned as [`PrecompileError`]s.
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
-/// Shared execution environment captured by Tempo precompile wrappers.
-#[derive(Clone)]
-pub struct PrecompileEnv {
-    cfg: CfgEnv<TempoHardfork>,
+/// Tempo's built-in and protocol precompiles for EVM2.
+#[derive(Debug)]
+pub struct TempoPrecompiles<T: EvmTypesHost> {
+    base: BasePrecompiles<T>,
+    spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
 
-impl PrecompileEnv {
+impl<T: EvmTypesHost> TempoPrecompiles<T> {
+    /// Creates the precompile provider for a Tempo hardfork.
     pub fn new(
-        cfg: &CfgEnv<TempoHardfork>,
+        spec: TempoHardfork,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
+        // Tempo used Prague's built-ins before T1C and follows its configured EVM fork after it.
+        let base_spec = if spec.is_t1c() {
+            spec.into()
+        } else {
+            SpecId::PRAGUE
+        };
         Self {
-            cfg: cfg.clone(),
+            base: BasePrecompiles::base(base_spec),
+            spec,
             actions,
             non_creditable_slots,
         }
     }
-}
 
-/// Returns the full Tempo precompile set for the given EVM config.
-///
-/// Pre-T1C hardforks use Prague built-in precompiles; T1C+ uses Osaka built-ins. Tempo-specific
-/// precompiles are then registered via [`extend_tempo_precompiles`].
-///
-/// [`StorageActions`] records logical precompile storage operations (`SLOAD`, `SSTORE`, `SINC`,
-/// `SDEC`, and domain-specific actions such as `FeeAmmSwap`) for node/validator/builder
-/// integrations that use the trace for performance; tooling can pass [`StorageActions::disabled`].
-///
-/// [`NonCreditableSlots`] identifies transaction-local protocol slots whose clears must not mint
-/// TIP-1060 storage credits: the fee payer's fee-token balance and, when applicable, the keychain
-/// fee key's spending limit. They are part of credit/gas accounting, so gas estimation should pass
-/// values derived from the real transaction context rather than mocks.
-pub fn tempo_precompiles(
-    cfg: &CfgEnv<TempoHardfork>,
-    actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
-) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
-    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
-    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
-    precompiles
-}
+    #[inline]
+    fn contains_tempo(&self, address: &Address) -> bool {
+        address.is_tip20()
+            || SYSTEM_PRECOMPILES
+                .iter()
+                .any(|(candidate, activation)| candidate == address && self.spec >= *activation)
+    }
 
-/// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
-/// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
-/// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
-/// AccountKeychain, ValidatorConfigV2, and CurrentCommittee. Each precompile is wrapped via the
-/// `tempo_precompile!` macro which enforces direct-call-only (no delegatecall) and sets up the
-/// storage context.
-///
-/// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
-pub fn extend_tempo_precompiles(
-    precompiles: &mut PrecompilesMap,
-    cfg: &CfgEnv<TempoHardfork>,
-    actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
-) {
-    let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
-
-    precompiles.set_precompile_lookup(move |address: &Address| {
+    fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &env))
-        } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20Factory::create_precompile(&env))
-        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && env.cfg.spec.is_t5() {
-            Some(TIP20ChannelReserve::create_precompile(&env))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS && env.cfg.spec.is_t3() {
-            Some(AddressRegistry::create_precompile(&env))
-        } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403Registry::create_precompile(&env))
-        } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManager::create_precompile(&env))
-        } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEX::create_precompile(&env))
-        } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NonceManager::create_precompile(&env))
-        } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfig::create_precompile(&env))
-        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychain::create_precompile(&env))
-        } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
-            Some(ValidatorConfigV2::create_precompile(&env))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
-            Some(SignatureVerifier::create_precompile(&env))
-        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
-            Some(ReceivePolicyGuard::create_precompile(&env))
-        } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
-            Some(StorageCredits::create_precompile(&env))
-        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t8() {
-            Some(CurrentCommittee::create_precompile(&env))
-        } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t9() {
-            Some(ZoneFactory::create_precompile(&env))
+            TIP20Token::from_address(address)
+                .expect("TIP-20 prefix already checked")
+                .call(calldata, caller)
+        } else if address == TIP20_FACTORY_ADDRESS {
+            TIP20Factory::new().call(calldata, caller)
+        } else if address == TIP20_CHANNEL_RESERVE_ADDRESS {
+            TIP20ChannelReserve::new().call(calldata, caller)
+        } else if address == ADDRESS_REGISTRY_ADDRESS {
+            AddressRegistry::new().call(calldata, caller)
+        } else if address == TIP403_REGISTRY_ADDRESS {
+            TIP403Registry::new().call(calldata, caller)
+        } else if address == TIP_FEE_MANAGER_ADDRESS {
+            TipFeeManager::new().call(calldata, caller)
+        } else if address == STABLECOIN_DEX_ADDRESS {
+            StablecoinDEX::new().call(calldata, caller)
+        } else if address == NONCE_PRECOMPILE_ADDRESS {
+            NonceManager::new().call(calldata, caller)
+        } else if address == VALIDATOR_CONFIG_ADDRESS {
+            ValidatorConfig::new().call(calldata, caller)
+        } else if address == ACCOUNT_KEYCHAIN_ADDRESS {
+            AccountKeychain::new().call(calldata, caller)
+        } else if address == VALIDATOR_CONFIG_V2_ADDRESS {
+            ValidatorConfigV2::new().call(calldata, caller)
+        } else if address == SIGNATURE_VERIFIER_ADDRESS {
+            SignatureVerifier::new().call(calldata, caller)
+        } else if address == RECEIVE_POLICY_GUARD_ADDRESS {
+            ReceivePolicyGuard::new().call(calldata, caller)
+        } else if address == STORAGE_CREDITS_ADDRESS {
+            StorageCredits::new().call(calldata, caller)
+        } else if address == CURRENT_COMMITTEE_ADDRESS {
+            CurrentCommittee::new().call(calldata, caller)
         } else {
-            None
+            unreachable!("Tempo precompile address checked before dispatch")
         }
-    });
+    }
 }
 
 sol! {
     error DelegateCallNotAllowed();
 }
 
-macro_rules! tempo_precompile {
-    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
-        #[cfg(not(test))]
-        compile_error!("tempo_precompile! without actions is only available in tests");
-        #[cfg(test)]
-        let env = PrecompileEnv::new(
-            $cfg,
-            StorageActions::disabled(),
-            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
+where
+    T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+{
+    fn addresses(&self) -> Vec<Address> {
+        let mut addresses = self.base.addresses();
+        addresses.extend(
+            SYSTEM_PRECOMPILES
+                .iter()
+                .filter_map(|(address, activation)| (self.spec >= *activation).then_some(*address)),
         );
-        tempo_precompile!($id, env: &env, |$input| $impl)
-    }};
-    ($id:expr, env: $env:expr, |$input:ident| $impl:expr) => {{
-        let env = $env.clone();
-        let spec = env.cfg.spec;
-        let amsterdam_eip8037_enabled = env.cfg.enable_amsterdam_eip8037;
-        let gas_params = env.cfg.gas_params.clone();
-        let actions = env.actions.clone();
-        let non_creditable_slots = env.non_creditable_slots.clone();
-        DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
-            if !$input.is_direct_call() {
-                return Ok(PrecompileOutput::revert(
-                    0,
-                    DelegateCallNotAllowed {}.abi_encode().into(),
-                    $input.reservoir,
-                ));
-            }
-            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
-                $input.internals,
-                $input.gas,
-                $input.reservoir,
-                spec,
-                amsterdam_eip8037_enabled,
-                $input.is_static,
-                gas_params.clone(),
-            )
-            .with_actions(actions.clone())
-            .with_non_creditable_slots(non_creditable_slots.clone());
-            crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
-            })
-        })
-    }};
-}
-
-impl TipFeeManager {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", env: env, |input| { Self::new() })
+        addresses
     }
-}
 
-impl AddressRegistry {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("AddressRegistry", env: env, |input| { Self::new() })
+    fn contains(&self, address: &Address) -> bool {
+        self.base.contains(address) || self.contains_tempo(address)
     }
-}
 
-impl TIP403Registry {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", env: env, |input| { Self::new() })
-    }
-}
+    fn execute(
+        &mut self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> Option<PrecompileResult> {
+        if let Some(result) = self.base.execute(evm, message, gas) {
+            return Some(result);
+        }
+        if !self.contains_tempo(&message.code_address) {
+            return None;
+        }
+        if message.destination != message.code_address {
+            return Some(Err(PrecompileError::Revert(
+                DelegateCallNotAllowed {}.abi_encode().into(),
+            )));
+        }
 
-impl TIP20Factory {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", env: env, |input| { Self::new() })
-    }
-}
-
-impl TIP20Token {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(address: Address, env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TIP20Token", env: env, |input| {
-            Self::from_address(address).expect("TIP20 prefix already verified")
-        })
-    }
-}
-
-impl ZoneFactory {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("ZoneFactory", env: env, |input| { Self::new() })
-    }
-}
-
-impl StablecoinDEX {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("StablecoinDEX", env: env, |input| { Self::new() })
-    }
-}
-
-impl NonceManager {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("NonceManager", env: env, |input| { Self::new() })
-    }
-}
-
-impl AccountKeychain {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("AccountKeychain", env: env, |input| { Self::new() })
-    }
-}
-
-impl ValidatorConfig {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfig", env: env, |input| { Self::new() })
-    }
-}
-
-impl ValidatorConfigV2 {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfigV2", env: env, |input| { Self::new() })
-    }
-}
-
-impl CurrentCommittee {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("CurrentCommittee", env: env, |input| { Self::new() })
-    }
-}
-
-impl SignatureVerifier {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("SignatureVerifier", env: env, |input| { Self::new() })
-    }
-}
-
-impl TIP20ChannelReserve {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TIP20ChannelReserve", env: env, |input| { Self::new() })
-    }
-}
-
-impl ReceivePolicyGuard {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("ReceivePolicyGuard", env: env, |input| { Self::new() })
-    }
-}
-
-impl StorageCredits {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        let mut storage =
+            EvmPrecompileStorageProvider::new(evm.internals(), gas, self.spec, is_static)
+                .with_actions(self.actions.clone())
+                .with_non_creditable_slots(self.non_creditable_slots.clone());
+        Some(StorageCtx::enter(&mut storage, || {
+            self.call_tempo(message.code_address, &message.input, message.caller)
+        }))
     }
 }
 
@@ -387,12 +245,11 @@ where
     E: SolInterface + PartialEq + std::fmt::Debug,
 {
     match result {
-        Ok(result) => {
-            assert!(result.is_revert());
-            let decoded = E::abi_decode(&result.bytes).unwrap();
+        Err(PrecompileError::Revert(bytes)) => {
+            let decoded = E::abi_decode(bytes).unwrap();
             assert_eq!(decoded, expected_error);
         }
-        Err(other) => {
+        other => {
             panic!("expected reverted output, got: {other:?}");
         }
     }
@@ -401,108 +258,152 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        tip20::TIP20Token,
-    };
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{
-        primitives::{Address, Bytes, U256, bytes},
+        primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
     };
-    use alloy_evm::{
-        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
-        precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
-    };
-    use revm::{
-        context::{ContextTr, TxEnv},
-        database::{CacheDB, EmptyDB},
-        state::{AccountInfo, Bytecode},
+    use evm2::{
+        BaseEvmConfigSelector, ExecutionConfig,
+        bytecode::Bytecode,
+        evm::{
+            AccountInfo, InMemoryDB,
+            precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
+        },
+        registry::TxRegistry,
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+    use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
-    fn test_tempo_precompiles(cfg_env: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
-        tempo_precompiles(
-            cfg_env,
+    struct TestTypes;
+
+    impl EvmTypesHost for TestTypes {
+        type ConfigSelector = BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = ();
+        type EvmExt = ();
+        type MessageExt = ();
+        type MessageResultExt = ();
+        type TxEnvExt = ();
+        type TxResultExt = ();
+        type BlockEnvExt = TempoBlockExt;
+        type Host<'a> = Evm<'a, Self>;
+    }
+
+    fn test_tempo_precompiles(spec: TempoHardfork) -> TempoPrecompiles<TestTypes> {
+        TempoPrecompiles::new(
+            spec,
             StorageActions::disabled(),
             Rc::new(RefCell::new(NonCreditableSlots::empty())),
         )
     }
 
+    fn test_evm(spec: TempoHardfork, initialized_token: bool) -> Evm<'static, TestTypes> {
+        test_evm_with_amsterdam(spec, initialized_token, false)
+    }
+
+    fn test_evm_with_amsterdam(
+        spec: TempoHardfork,
+        initialized_token: bool,
+        amsterdam_eip8037_enabled: bool,
+    ) -> Evm<'static, TestTypes> {
+        let mut database = InMemoryDB::default();
+        if initialized_token {
+            database.insert_account_info(
+                &PATH_USD_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_raw(bytes!("0xEF"))),
+            );
+        }
+        let version =
+            tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, amsterdam_eip8037_enabled);
+        Evm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            TempoBlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            NoPrecompiles::default(),
+        )
+    }
+
+    fn call_tempo(
+        spec: TempoHardfork,
+        calldata: Bytes,
+        kind: MessageKind,
+        destination: Address,
+        code_address: Address,
+        initialized_token: bool,
+    ) -> (PrecompileResult, GasTracker) {
+        let mut evm = test_evm(spec, initialized_token);
+        call_tempo_on(
+            &mut evm,
+            spec,
+            calldata,
+            kind,
+            destination,
+            code_address,
+            Address::ZERO,
+        )
+    }
+
+    fn call_tempo_on(
+        evm: &mut Evm<'_, TestTypes>,
+        spec: TempoHardfork,
+        calldata: Bytes,
+        kind: MessageKind,
+        destination: Address,
+        code_address: Address,
+        caller: Address,
+    ) -> (PrecompileResult, GasTracker) {
+        let mut precompiles = test_tempo_precompiles(spec);
+        let message = Message {
+            kind,
+            gas_limit: 1_000_000,
+            destination,
+            code_address,
+            input: calldata,
+            caller,
+            ..Default::default()
+        };
+        let mut gas = GasTracker::new(message.gas_limit);
+        let result = precompiles
+            .execute(evm, &message, &mut gas)
+            .expect("Tempo precompile must be registered");
+        (result, gas)
+    }
+
     #[test]
     fn test_precompile_delegatecall() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
-        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-        });
-
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-        let block = evm.block.clone();
-        let tx = TxEnv::default();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-        let target_address = Address::random();
-        let bytecode_address = Address::random();
-        let input = PrecompileInput {
-            data: &Bytes::new(),
-            caller: Address::ZERO,
-            internals: evm_internals,
-            gas: 0,
-            value: U256::ZERO,
-            is_static: false,
-            target_address,
-            bytecode_address,
-            reservoir: 0,
-        };
-
-        let result = AlloyEvmPrecompile::call(&precompile, input);
+        let (result, _) = call_tempo(
+            TempoHardfork::T3,
+            Bytes::new(),
+            MessageKind::DelegateCall,
+            Address::random(),
+            PATH_USD_ADDRESS,
+            true,
+        );
 
         match result {
-            Ok(output) => {
-                assert!(output.is_revert());
-                let decoded = DelegateCallNotAllowed::abi_decode(&output.bytes).unwrap();
+            Err(PrecompileError::Revert(output)) => {
+                let decoded = DelegateCallNotAllowed::abi_decode(&output).unwrap();
                 assert!(matches!(decoded, DelegateCallNotAllowed {}));
             }
-            Err(_) => panic!("expected reverted output"),
+            _ => panic!("expected reverted output"),
         }
     }
 
     #[test]
     fn test_precompile_static_call() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
-        let tx = TxEnv::default();
-        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-        });
-
-        let token_address = PATH_USD_ADDRESS;
-
         let call_static = |calldata: Bytes| {
-            let mut db = CacheDB::new(EmptyDB::new());
-            db.insert_account_info(
-                token_address,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
-                    ..Default::default()
-                },
-            );
-            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-            let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-            let input = PrecompileInput {
-                data: &calldata,
-                caller: Address::ZERO,
-                internals: evm_internals,
-                gas: 1_000_000,
-                is_static: true,
-                value: U256::ZERO,
-                target_address: token_address,
-                bytecode_address: token_address,
-                reservoir: 0,
-            };
-
-            AlloyEvmPrecompile::call(&precompile, input)
+            call_tempo(
+                TempoHardfork::T3,
+                calldata,
+                MessageKind::StaticCall,
+                PATH_USD_ADDRESS,
+                PATH_USD_ADDRESS,
+                true,
+            )
+            .0
         };
 
         // Static calls into mutating functions should fail
@@ -513,9 +414,10 @@ mod tests {
             }
             .abi_encode(),
         ));
-        let output = result.expect("expected Ok");
-        assert!(output.is_revert());
-        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+        let Err(PrecompileError::Revert(output)) = result else {
+            panic!("expected reverted output");
+        };
+        assert!(StaticCallNotAllowed::abi_decode(&output).is_ok());
 
         // Static calls into mutate void functions should fail
         let result = call_static(Bytes::from(
@@ -525,9 +427,10 @@ mod tests {
             }
             .abi_encode(),
         ));
-        let output = result.expect("expected Ok");
-        assert!(output.is_revert());
-        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+        let Err(PrecompileError::Revert(output)) = result else {
+            panic!("expected reverted output");
+        };
+        assert!(StaticCallNotAllowed::abi_decode(&output).is_ok());
 
         // Static calls into view functions should succeed
         let result = call_static(Bytes::from(
@@ -536,34 +439,19 @@ mod tests {
             }
             .abi_encode(),
         ));
-        let output = result.expect("expected Ok");
         assert!(
-            !output.is_revert(),
+            result.is_ok(),
             "view function should not revert in static context"
         );
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly
-    /// report gas_used. When a TIP-20 precompile reverts before reaching `dispatch_call`
+    /// report gas used. When a TIP-20 precompile reverts before reaching `dispatch_call`
     /// (e.g., uninitialized token), the gas consumed for input decoding and account info
-    /// checks must still be reported in the `PrecompileOutput.gas_used` field.
+    /// checks must still be reported by the EVM2 gas tracker.
     #[test]
     fn test_early_return_revert_reports_gas_used() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T1);
-        let tx = TxEnv::default();
-        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-        });
-
-        let token_address = PATH_USD_ADDRESS;
-
         // NO bytecode set -- token is uninitialized, early revert before dispatch_call
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-        let block = evm.block.clone();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
         let calldata = Bytes::from(
             ITIP20::transferCall {
                 to: Address::random(),
@@ -571,192 +459,126 @@ mod tests {
             }
             .abi_encode(),
         );
-
-        let input = PrecompileInput {
-            data: &calldata,
-            caller: Address::ZERO,
-            internals: evm_internals,
-            gas: 1_000_000,
-            is_static: false,
-            value: U256::ZERO,
-            target_address: token_address,
-            bytecode_address: token_address,
-            reservoir: 0,
-        };
-
-        let result = AlloyEvmPrecompile::call(&precompile, input);
-        let output = result.expect("expected Ok");
+        let (result, gas) = call_tempo(
+            TempoHardfork::T1,
+            calldata,
+            MessageKind::Call,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+            false,
+        );
         assert!(
-            output.status.is_revert(),
+            matches!(result, Err(PrecompileError::Revert(_))),
             "uninitialized token should revert"
         );
         // Gas used should include input_cost(68) = 18 + with_account_info cost
         assert!(
-            output.gas_used > 0,
+            gas.spent() > 0,
             "early-return revert should report non-zero gas_used, got {}",
-            output.gas_used
+            gas.spent()
         );
     }
 
     #[test]
     fn test_invalid_calldata_hardfork_behavior() {
         let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(spec);
-            let tx = TxEnv::default();
-            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-            });
-
-            let mut db = CacheDB::new(EmptyDB::new());
-            db.insert_account_info(
+            call_tempo(
+                spec,
+                calldata,
+                MessageKind::Call,
                 PATH_USD_ADDRESS,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
-                    ..Default::default()
-                },
-            );
-            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-            let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-            let input = PrecompileInput {
-                data: &calldata,
-                caller: Address::ZERO,
-                internals: evm_internals,
-                gas: 1_000_000,
-                is_static: false,
-                value: U256::ZERO,
-                target_address: PATH_USD_ADDRESS,
-                bytecode_address: PATH_USD_ADDRESS,
-                reservoir: 0,
-            };
-
-            AlloyEvmPrecompile::call(&precompile, input)
+                PATH_USD_ADDRESS,
+                true,
+            )
         };
 
         // T1: empty calldata (missing selector) should return a reverted output
-        let empty = call_with_spec(Bytes::new(), TempoHardfork::T1)
-            .expect("T1: expected Ok with reverted output");
-        assert!(empty.is_revert(), "T1: expected reverted output");
-        assert!(empty.bytes.is_empty());
+        let (empty, empty_gas) = call_with_spec(Bytes::new(), TempoHardfork::T1);
+        let Err(PrecompileError::Revert(empty)) = empty else {
+            panic!("T1: expected reverted output");
+        };
+        assert!(empty.is_empty());
         // Gas was consumed
-        assert!(empty.gas_used > 0);
+        assert!(empty_gas.spent() > 0);
 
         // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
-        let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
-            .expect("T1: expected Ok with reverted output");
-        assert!(unknown.is_revert(), "T1: expected reverted output");
-
+        let (unknown, unknown_gas) = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1);
+        let Err(PrecompileError::Revert(unknown)) = unknown else {
+            panic!("T1: expected reverted output");
+        };
         // Verify it's an UnknownFunctionSelector error with the correct selector
-        let decoded =
-            tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&unknown.bytes)
-                .expect("T1: expected UnknownFunctionSelector error");
+        let decoded = tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&unknown)
+            .expect("T1: expected UnknownFunctionSelector error");
         assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
-
         // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
-        assert!(unknown.gas_used >= empty.gas_used);
+        assert!(unknown_gas.spent() >= empty_gas.spent());
 
         // Pre-T1 (T0): invalid calldata should return a halted output
-        let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
-        let output = result.expect("T0: expected Ok(halt) for invalid calldata");
+        let (result, _) = call_with_spec(Bytes::new(), TempoHardfork::T0);
         assert!(
-            output.is_halt(),
+            matches!(result, Err(PrecompileError::Halt(_))),
             "T0: expected halted output for invalid calldata"
         );
     }
 
-    /// Pre-T4 precompile calls must not report state_gas_used, because the new revm's
-    /// reservoir model propagates it via `handle_reservoir_remaining_gas` on revert/halt,
-    /// corrupting `tx_gas_used()`.
+    /// Pre-T4 precompile calls must not report state gas, because state-gas accounting is not
+    /// active before TIP-1016.
     #[test]
     fn test_precompile_state_gas_zero_pre_t4() {
-        let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(spec);
-            let tx = TxEnv::default();
-            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-            });
-
-            let mut db = CacheDB::new(EmptyDB::new());
-            db.insert_account_info(
-                PATH_USD_ADDRESS,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
-                    ..Default::default()
-                },
-            );
-            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-            let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-            let input = PrecompileInput {
-                data: &calldata,
-                caller: Address::ZERO,
-                internals: evm_internals,
-                gas: 1_000_000,
-                is_static: false,
-                value: U256::ZERO,
-                target_address: PATH_USD_ADDRESS,
-                bytecode_address: PATH_USD_ADDRESS,
-                reservoir: 0,
-            };
-
-            AlloyEvmPrecompile::call(&precompile, input)
-        };
-
-        // Pre-T4 (T2): state_gas_used must be 0
-        let result = call_with_spec(
-            ITIP20::balanceOfCall::new((Address::ZERO,))
-                .abi_encode()
-                .into(),
+        // Pre-T4 (T2): state gas used must be 0
+        let calldata = ITIP20::balanceOfCall::new((Address::ZERO,))
+            .abi_encode()
+            .into();
+        let (result, gas) = call_tempo(
             TempoHardfork::T2,
-        )
-        .expect("T2 balanceOf should succeed");
-        assert!(result.gas_used > 0, "precompile should consume gas");
+            calldata,
+            MessageKind::Call,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+            true,
+        );
+        assert!(result.is_ok(), "T2 balanceOf should succeed");
+        assert!(gas.spent() > 0, "precompile should consume gas");
         assert_eq!(
-            result.state_gas_used, 0,
+            gas.state_gas_spent(),
+            0,
             "pre-T4 precompile must not report state_gas_used, got {}",
-            result.state_gas_used
+            gas.state_gas_spent()
         );
 
-        // Pre-T4 (T1): reverted call should also have state_gas_used == 0
-        let reverted =
-            call_with_spec(Bytes::new(), TempoHardfork::T1).expect("T1 empty should revert");
-        assert!(reverted.status.is_revert());
+        // Pre-T4 (T1): reverted call should also have zero state gas used
+        let (reverted, gas) = call_tempo(
+            TempoHardfork::T1,
+            Bytes::new(),
+            MessageKind::Call,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+            true,
+        );
+        assert!(
+            matches!(reverted, Err(PrecompileError::Revert(_))),
+            "T1 empty should revert"
+        );
         assert_eq!(
-            reverted.state_gas_used, 0,
+            gas.state_gas_spent(),
+            0,
             "pre-T4 reverted precompile must not report state_gas_used"
         );
     }
 
-    /// T4+ precompile `state_gas_used` must only include state-creating gas (cold SSTORE
-    /// zero->non-zero), not all gas consumed. A read-only operation like `balanceOf` must
-    /// have `state_gas_used == 0` even though `gas_used > 0`.
+    /// T4+ precompile state gas must only include state-creating gas, not all gas consumed. A
+    /// read-only operation and a nonzero-to-nonzero storage update must both use no state gas.
     #[test]
     fn test_t4_state_gas_only_includes_state_creating_ops() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
-
+        let spec = TempoHardfork::T4;
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);
-
-        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-        });
-
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let mut evm = test_evm_with_amsterdam(spec, false, true);
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let block = evm.block.clone();
-            let tx = TxEnv::default();
-            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-            let mut provider =
-                crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
-            crate::storage::StorageCtx::enter(&mut provider, || {
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm.internals(), spec);
+            StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
                     .with_mint(sender, U256::from(1000))
@@ -765,110 +587,82 @@ mod tests {
             .expect("TIP20 setup should succeed");
         }
 
-        // 1) Read-only: balanceOf must have state_gas_used == 0
+        // 1) Read-only: balanceOf must have state gas used == 0
         let calldata: Bytes = ITIP20::balanceOfCall { account: sender }
             .abi_encode()
             .into();
-        let block = evm.block.clone();
-        let tx = TxEnv::default();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-        let input = PrecompileInput {
-            data: &calldata,
-            caller: sender,
-            internals: evm_internals,
-            gas: 1_000_000,
-            is_static: false,
-            value: U256::ZERO,
-            target_address: PATH_USD_ADDRESS,
-            bytecode_address: PATH_USD_ADDRESS,
-            reservoir: 0,
-        };
-        let output =
-            AlloyEvmPrecompile::call(&precompile, input).expect("balanceOf should succeed");
-        assert!(output.is_success());
-        assert!(output.gas_used > 0, "balanceOf should consume gas");
+        let (output, gas) = call_tempo_on(
+            &mut evm,
+            spec,
+            calldata,
+            MessageKind::Call,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+            sender,
+        );
+        assert!(output.is_ok(), "balanceOf should succeed");
+        assert!(gas.spent() > 0, "balanceOf should consume gas");
         assert_eq!(
-            output.state_gas_used, 0,
+            gas.state_gas_spent(),
+            0,
             "read-only balanceOf must have state_gas_used == 0, got {}",
-            output.state_gas_used
+            gas.state_gas_spent()
         );
 
         // 2) Transfer to existing account (warm SSTORE, not zero->non-zero for recipient
-        //    since we pre-fund recipient): state_gas_used must be less than gas_used
+        //    since we pre-fund recipient): state gas used must be less than gas used
         {
             // Pre-fund recipient so the transfer is warm SSTORE (nonzero->nonzero)
-            let block = evm.block.clone();
-            let tx = TxEnv::default();
-            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-            let mut provider =
-                crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
-            crate::storage::StorageCtx::enter(&mut provider, || {
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm.internals(), spec);
+            StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_mint(recipient, U256::from(1))
                     .apply()
             })
             .expect("TIP20 setup should succeed");
         }
+
         let calldata: Bytes = ITIP20::transferCall {
             to: recipient,
             amount: U256::from(100),
         }
         .abi_encode()
         .into();
-        let block = evm.block.clone();
-        let tx = TxEnv::default();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-        let input = PrecompileInput {
-            data: &calldata,
-            caller: sender,
-            internals: evm_internals,
-            gas: 1_000_000,
-            is_static: false,
-            value: U256::ZERO,
-            target_address: PATH_USD_ADDRESS,
-            bytecode_address: PATH_USD_ADDRESS,
-            reservoir: 0,
-        };
-        let output = AlloyEvmPrecompile::call(&precompile, input).expect("transfer should succeed");
-        assert!(output.is_success());
-        assert!(output.gas_used > 0, "transfer should consume gas");
+        let (output, gas) = call_tempo_on(
+            &mut evm,
+            spec,
+            calldata,
+            MessageKind::Call,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+            sender,
+        );
+        assert!(output.is_ok(), "transfer should succeed");
+        assert!(gas.spent() > 0, "transfer should consume gas");
         assert_eq!(
-            output.state_gas_used, 0,
+            gas.state_gas_spent(),
+            0,
             "transfer to existing account (nonzero->nonzero SSTORE) must have state_gas_used == 0, got {}",
-            output.state_gas_used
+            gas.state_gas_spent()
         );
     }
 
-    /// T4+ precompile calls that trigger SSTORE refunds must encode the refund
-    /// in the `reservoir` field of `PrecompileOutput`, so the wrapper
-    /// `PrecompileProvider` can extract and apply it via `record_refund`.
+    /// T4+ precompile calls that trigger SSTORE refunds must record the refund
+    /// in the EVM2 gas tracker so transaction settlement can apply it.
     /// Pre-T4 blocks were executed without refund propagation, so they must NOT
-    /// encode refunds.
+    /// record refunds.
     #[test]
     fn test_precompile_gas_refund_in_reservoir_t4() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T4);
-        // TIP-1016 gates state-gas refund propagation on `enable_amsterdam_eip8037`.
-        cfg.enable_amsterdam_eip8037 = true;
-
+        let spec = TempoHardfork::T4;
+        // TIP-1016 gates state-gas refund propagation on Amsterdam EIP-8037.
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);
-
-        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-        });
-
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let mut evm = test_evm_with_amsterdam(spec, false, true);
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let block = evm.block.clone();
-            let tx = TxEnv::default();
-            let internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-            let mut provider =
-                crate::storage::evm::EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
-            crate::storage::StorageCtx::enter(&mut provider, || {
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm.internals(), spec);
+            StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
                     .with_mint(sender, U256::from(1000))
@@ -885,30 +679,21 @@ mod tests {
         }
         .abi_encode()
         .into();
+        let (output, gas) = call_tempo_on(
+            &mut evm,
+            spec,
+            calldata,
+            MessageKind::Call,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+            sender,
+        );
+        assert!(output.is_ok(), "transfer should be successful");
 
-        let block = evm.block.clone();
-        let tx = TxEnv::default();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-        let input = PrecompileInput {
-            data: &calldata,
-            caller: sender,
-            internals: evm_internals,
-            gas: 1_000_000,
-            is_static: false,
-            value: U256::ZERO,
-            target_address: PATH_USD_ADDRESS,
-            bytecode_address: PATH_USD_ADDRESS,
-            reservoir: 0,
-        };
-
-        let output = AlloyEvmPrecompile::call(&precompile, input).expect("transfer should succeed");
-        assert!(output.is_success(), "transfer should be successful");
-
-        // T4+: gas refund must be encoded in the gas_refunded field
+        // T4+: gas refund must be recorded in the gas tracker
         assert!(
-            output.gas_refunded != 0,
-            "T4+ successful precompile with SSTORE refund must encode refund in gas_refunded, got 0"
+            gas.refunded() != 0,
+            "T4+ successful precompile with SSTORE refund must record a refund, got 0"
         );
     }
 
@@ -929,11 +714,11 @@ mod tests {
                     calldata,
                     |call| match call {
                         ISelectorGatedTest::ISelectorGatedTestCalls {
-                            stable(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0)),
+                            stable(_) => Ok(PrecompileOutput::new(Bytes::from_static(b"stable"))),
                             #[schedule(since = T2)]
-                            t2Added(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0)),
+                            t2Added(_) => Ok(PrecompileOutput::new(Bytes::from_static(b"added"))),
                             #[schedule(until = T3)]
-                            t3Removed(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0)),
+                            t3Removed(_) => Ok(PrecompileOutput::new(Bytes::from_static(b"removed"))),
                         }
                     }
                 )
@@ -944,28 +729,30 @@ mod tests {
         let t3_removed_calldata = ISelectorGatedTest::t3RemovedCall {}.abi_encode();
 
         // pre-T2: selectors introduced at T2 must still look unknown.
-        let pre_t2_added = call_with_spec(TempoHardfork::T1, &t2_added_calldata)?;
-        assert!(pre_t2_added.is_revert());
-        let decoded = UnknownFunctionSelector::abi_decode(&pre_t2_added.bytes)?;
+        let pre_t2_added = call_with_spec(TempoHardfork::T1, &t2_added_calldata);
+        let Err(PrecompileError::Revert(pre_t2_added)) = pre_t2_added else {
+            panic!("pre-T2 selector should revert");
+        };
+        let decoded = UnknownFunctionSelector::abi_decode(&pre_t2_added)?;
         assert_eq!(
             decoded.selector.as_slice(),
             &ISelectorGatedTest::t2AddedCall::SELECTOR
         );
 
         // T2+: that selector becomes available and dispatches normally.
-        let post_t2_added = call_with_spec(TempoHardfork::T2, &t2_added_calldata)?;
-        assert!(!post_t2_added.is_revert());
-        assert_eq!(post_t2_added.bytes.as_ref(), b"added");
+        let post_t2_added = call_with_spec(TempoHardfork::T2, &t2_added_calldata);
+        assert_eq!(post_t2_added?.bytes(), b"added");
 
         // pre-T3: selectors removed at T3 still dispatch normally.
-        let pre_t3_removed = call_with_spec(TempoHardfork::T2, &t3_removed_calldata)?;
-        assert!(!pre_t3_removed.is_revert());
-        assert_eq!(pre_t3_removed.bytes.as_ref(), b"removed");
+        let pre_t3_removed = call_with_spec(TempoHardfork::T2, &t3_removed_calldata);
+        assert_eq!(pre_t3_removed?.bytes(), b"removed");
 
         // T3+: the removed selector must now revert as unknown.
-        let post_t3_removed = call_with_spec(TempoHardfork::T3, &t3_removed_calldata)?;
-        assert!(post_t3_removed.is_revert());
-        let decoded = UnknownFunctionSelector::abi_decode(&post_t3_removed.bytes)?;
+        let post_t3_removed = call_with_spec(TempoHardfork::T3, &t3_removed_calldata);
+        let Err(PrecompileError::Revert(post_t3_removed)) = post_t3_removed else {
+            panic!("post-T3 removed selector should revert");
+        };
+        let decoded = UnknownFunctionSelector::abi_decode(&post_t3_removed)?;
         assert_eq!(
             decoded.selector.as_slice(),
             &ISelectorGatedTest::t3RemovedCall::SELECTOR
@@ -975,9 +762,11 @@ mod tests {
         let malformed_added = call_with_spec(
             TempoHardfork::T1,
             &ISelectorGatedTest::t2AddedCall::SELECTOR,
-        )?;
-        assert!(malformed_added.is_revert());
-        let decoded = UnknownFunctionSelector::abi_decode(&malformed_added.bytes)?;
+        );
+        let Err(PrecompileError::Revert(malformed_added)) = malformed_added else {
+            panic!("pre-T2 malformed selector should revert");
+        };
+        let decoded = UnknownFunctionSelector::abi_decode(&malformed_added)?;
         assert_eq!(
             decoded.selector.as_slice(),
             &ISelectorGatedTest::t2AddedCall::SELECTOR
@@ -1003,103 +792,76 @@ mod tests {
 
     #[test]
     fn test_extend_tempo_precompiles_registers_precompiles() {
-        let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T3);
-        let precompiles = test_tempo_precompiles(&cfg);
+        let precompiles = test_tempo_precompiles(TempoHardfork::T3);
 
         // TIP20Factory should be registered
-        let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
-        assert!(
-            factory_precompile.is_some(),
-            "TIP20Factory should be registered"
-        );
+        let factory_precompile = precompiles.contains(&TIP20_FACTORY_ADDRESS);
+        assert!(factory_precompile, "TIP20Factory should be registered");
 
         // TIP403Registry should be registered
-        let registry_precompile = precompiles.get(&TIP403_REGISTRY_ADDRESS);
-        assert!(
-            registry_precompile.is_some(),
-            "TIP403Registry should be registered"
-        );
+        let registry_precompile = precompiles.contains(&TIP403_REGISTRY_ADDRESS);
+        assert!(registry_precompile, "TIP403Registry should be registered");
 
         // TipFeeManager should be registered
-        let fee_manager_precompile = precompiles.get(&TIP_FEE_MANAGER_ADDRESS);
-        assert!(
-            fee_manager_precompile.is_some(),
-            "TipFeeManager should be registered"
-        );
+        let fee_manager_precompile = precompiles.contains(&TIP_FEE_MANAGER_ADDRESS);
+        assert!(fee_manager_precompile, "TipFeeManager should be registered");
 
         // StablecoinDEX should be registered
-        let dex_precompile = precompiles.get(&STABLECOIN_DEX_ADDRESS);
-        assert!(
-            dex_precompile.is_some(),
-            "StablecoinDEX should be registered"
-        );
+        let dex_precompile = precompiles.contains(&STABLECOIN_DEX_ADDRESS);
+        assert!(dex_precompile, "StablecoinDEX should be registered");
 
         // NonceManager should be registered
-        let nonce_precompile = precompiles.get(&NONCE_PRECOMPILE_ADDRESS);
-        assert!(
-            nonce_precompile.is_some(),
-            "NonceManager should be registered"
-        );
+        let nonce_precompile = precompiles.contains(&NONCE_PRECOMPILE_ADDRESS);
+        assert!(nonce_precompile, "NonceManager should be registered");
 
         // ValidatorConfig should be registered
-        let validator_precompile = precompiles.get(&VALIDATOR_CONFIG_ADDRESS);
-        assert!(
-            validator_precompile.is_some(),
-            "ValidatorConfig should be registered"
-        );
+        let validator_precompile = precompiles.contains(&VALIDATOR_CONFIG_ADDRESS);
+        assert!(validator_precompile, "ValidatorConfig should be registered");
 
         // ValidatorConfigV2 should be registered
-        let validator_v2_precompile = precompiles.get(&VALIDATOR_CONFIG_V2_ADDRESS);
+        let validator_v2_precompile = precompiles.contains(&VALIDATOR_CONFIG_V2_ADDRESS);
         assert!(
-            validator_v2_precompile.is_some(),
+            validator_v2_precompile,
             "ValidatorConfigV2 should be registered"
         );
 
         // AccountKeychain should be registered
-        let keychain_precompile = precompiles.get(&ACCOUNT_KEYCHAIN_ADDRESS);
-        assert!(
-            keychain_precompile.is_some(),
-            "AccountKeychain should be registered"
-        );
+        let keychain_precompile = precompiles.contains(&ACCOUNT_KEYCHAIN_ADDRESS);
+        assert!(keychain_precompile, "AccountKeychain should be registered");
 
         // SignatureVerifier should be registered at T3
-        let sig_verifier_precompile = precompiles.get(&SIGNATURE_VERIFIER_ADDRESS);
+        let sig_verifier_precompile = precompiles.contains(&SIGNATURE_VERIFIER_ADDRESS);
         assert!(
-            sig_verifier_precompile.is_some(),
+            sig_verifier_precompile,
             "SignatureVerifier should be registered at T3"
         );
 
         // Channel reserve should be registered at T5
-        let channel_reserve_precompile = precompiles.get(&TIP20_CHANNEL_RESERVE_ADDRESS);
+        let channel_reserve_precompile = precompiles.contains(&TIP20_CHANNEL_RESERVE_ADDRESS);
         assert!(
-            channel_reserve_precompile.is_none(),
+            !channel_reserve_precompile,
             "TIP20 channel reserve should not be registered before T5"
         );
 
         // TIP20 tokens with prefix should be registered
-        let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
-        assert!(
-            tip20_precompile.is_some(),
-            "TIP20 tokens should be registered"
-        );
+        let tip20_precompile = precompiles.contains(&PATH_USD_ADDRESS);
+        assert!(tip20_precompile, "TIP20 tokens should be registered");
 
         // Random address without TIP20 prefix should NOT be registered
         let random_address = Address::random();
-        let random_precompile = precompiles.get(&random_address);
+        let random_precompile = precompiles.contains(&random_address);
         assert!(
-            random_precompile.is_none(),
+            !random_precompile,
             "Random address should not be a precompile"
         );
     }
 
     #[test]
     fn test_signature_verifier_not_registered_pre_t3() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
-        let precompiles = test_tempo_precompiles(&cfg);
+        let precompiles = test_tempo_precompiles(TempoHardfork::T0);
 
         assert!(
-            precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
+            !precompiles.contains(&SIGNATURE_VERIFIER_ADDRESS),
             "SignatureVerifier should NOT be registered before T3"
         );
     }
@@ -1129,20 +891,13 @@ mod tests {
 
     #[test]
     fn test_channel_reserve_registered_at_t5_only() {
-        let pre_t5 = CfgEnv::<TempoHardfork>::default();
         assert!(
-            test_tempo_precompiles(&pre_t5)
-                .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
-                .is_none(),
+            !test_tempo_precompiles(TempoHardfork::T4).contains(&TIP20_CHANNEL_RESERVE_ADDRESS),
             "TIP20 channel reserve should NOT be registered before T5"
         );
 
-        let mut t5 = CfgEnv::<TempoHardfork>::default();
-        t5.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
         assert!(
-            test_tempo_precompiles(&t5)
-                .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
-                .is_some(),
+            test_tempo_precompiles(TempoHardfork::T5).contains(&TIP20_CHANNEL_RESERVE_ADDRESS),
             "TIP20 channel reserve should be registered at T5"
         );
     }
@@ -1153,9 +908,7 @@ mod tests {
             // P256VERIFY lives at address 0x100 (256), added in Osaka
             let p256_addr = Address::from_word(U256::from(256).into());
 
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(spec);
-            test_tempo_precompiles(&cfg).get(&p256_addr).is_some()
+            test_tempo_precompiles(spec).contains(&p256_addr)
         };
 
         // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)

@@ -2,9 +2,9 @@ use std::convert::Infallible;
 
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::error::EthRpcErrorCode;
+use evm2::interpreter::InstrStop;
 use jsonrpsee::types::error::ErrorObject;
 use reth_errors::ProviderError;
-use reth_evm::revm::context::result::EVMError;
 use reth_node_core::rpc::result::rpc_err;
 use reth_rpc_eth_api::AsEthApiError;
 use reth_rpc_eth_types::{
@@ -14,7 +14,7 @@ use reth_rpc_eth_types::{
         api::{FromEvmHalt, FromRevert},
     },
 };
-use tempo_evm::{TempoHaltReason, TempoInvalidTransaction};
+use tempo_evm::TempoInvalidTransaction;
 use tempo_transaction_pool::transaction::TempoPoolTransactionError;
 
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +30,7 @@ impl From<TempoEthApiError> for jsonrpsee::types::error::ErrorObject<'static> {
         )) = &error
             && let Some(TempoPoolTransactionError::Evm(err)) =
                 err.as_any().downcast_ref::<TempoPoolTransactionError>()
+            && let Some(err) = err.external_ref::<TempoInvalidTransaction>()
             && let Some(rpc_error) = fee_token_rpc_error(err)
         {
             return rpc_error;
@@ -65,21 +66,6 @@ impl From<ProviderError> for TempoEthApiError {
         EthApiError::from(error).into()
     }
 }
-impl<T> From<EVMError<T, TempoInvalidTransaction>> for TempoEthApiError
-where
-    T: Into<EthApiError>,
-{
-    fn from(error: EVMError<T, TempoInvalidTransaction>) -> Self {
-        if let EVMError::Transaction(err) = &error
-            && let Some(rpc_error) = fee_token_rpc_error(err)
-        {
-            return Self::EthApiError(EthApiError::Other(Box::new(rpc_error)));
-        }
-
-        EthApiError::from(error).into()
-    }
-}
-
 fn fee_token_rpc_error(err: &TempoInvalidTransaction) -> Option<ErrorObject<'static>> {
     let data = match err {
         TempoInvalidTransaction::FeeTokenNotTip20 { address } => serde_json::json!({
@@ -107,8 +93,8 @@ fn fee_token_rpc_error(err: &TempoInvalidTransaction) -> Option<ErrorObject<'sta
     ))
 }
 
-impl FromEvmHalt<TempoHaltReason> for TempoEthApiError {
-    fn from_evm_halt(halt: TempoHaltReason, gas_limit: u64) -> Self {
+impl FromEvmHalt<InstrStop> for TempoEthApiError {
+    fn from_evm_halt(halt: InstrStop, gas_limit: u64) -> Self {
         EthApiError::from_evm_halt(halt, gas_limit).into()
     }
 }
@@ -129,12 +115,12 @@ impl FromRevert for TempoEthApiError {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::Address;
+    use evm2::registry::HandlerError;
 
     use super::*;
 
     fn into_rpc_error(err: TempoInvalidTransaction) -> ErrorObject<'static> {
-        let api_error = TempoEthApiError::from(EVMError::<ProviderError, _>::Transaction(err));
-        api_error.into()
+        fee_token_rpc_error(&err).expect("fee token error")
     }
 
     fn rpc_error_data(error: &ErrorObject<'static>) -> serde_json::Value {
@@ -193,7 +179,7 @@ mod tests {
         let address = Address::repeat_byte(0x20);
         let error = TempoEthApiError::EthApiError(EthApiError::PoolError(
             RpcPoolError::PoolTransactionError(Box::new(TempoPoolTransactionError::Evm(
-                TempoInvalidTransaction::FeeTokenNotTip20 { address },
+                HandlerError::external(TempoInvalidTransaction::FeeTokenNotTip20 { address }),
             ))),
         ));
 

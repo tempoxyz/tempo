@@ -14,10 +14,10 @@ use alloy::{
     primitives::{FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
-use alloy_evm::EvmInternalsError;
-use revm::{
-    context::journaled_state::JournalLoadError,
-    precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
+use evm2::{
+    ErrorCode,
+    evm::precompile::PrecompileOutput,
+    precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError, NonceError,
@@ -116,6 +116,11 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// Fatal EVM2 host or database error.
+    #[error("Fatal EVM2 error: {0:?}")]
+    #[from(skip)]
+    EvmError(ErrorCode),
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -126,28 +131,12 @@ pub enum TempoPrecompileError {
     Fatal(String),
 }
 
-impl From<EvmInternalsError> for TempoPrecompileError {
-    fn from(value: EvmInternalsError) -> Self {
-        match value {
-            EvmInternalsError::Database(e) => Self::Fatal(e.to_string()),
-        }
-    }
-}
-
-impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
-    fn from(value: JournalLoadError<EvmInternalsError>) -> Self {
-        match value {
-            JournalLoadError::DBError(e) => Self::from(e),
-            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
-        }
-    }
-}
-
-impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError {
-    fn from(value: JournalLoadError<revm::context::ErasedError>) -> Self {
-        match value {
-            JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
-            JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
+impl From<ErrorCode> for TempoPrecompileError {
+    fn from(code: ErrorCode) -> Self {
+        if code == ErrorCode::COLD_LOAD_SKIPPED {
+            Self::OutOfGas
+        } else {
+            Self::EvmError(code)
         }
     }
 }
@@ -179,7 +168,7 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::EvmError(_) | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -188,9 +177,11 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) | Self::StorageDeltaUnderflow(_) => {
-                true
-            }
+            Self::OutOfGas
+            | Self::EvmError(_)
+            | Self::Fatal(_)
+            | Self::Panic(_)
+            | Self::StorageDeltaUnderflow(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -233,12 +224,8 @@ impl TempoPrecompileError {
         Self::Panic(PanicKind::ArrayOutOfBounds)
     }
 
-    /// ABI-encodes this error and wraps it as a reverted [`PrecompileResult`].
-    ///
-    /// # Errors
-    /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
-    /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
-    pub fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+    /// Converts this error into EVM2's native precompile result.
+    pub fn into_precompile_result(self) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
@@ -273,7 +260,10 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
-                return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
+                return Err(PrecompileHalt::OutOfGas.into());
+            }
+            Self::EvmError(code) => {
+                return Err(format!("EVM2 database error {code:?}").into());
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -281,10 +271,10 @@ impl TempoPrecompileError {
             .abi_encode()
             .into(),
             Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg));
+                return Err(msg.into());
             }
         };
-        Ok(PrecompileOutput::revert(gas, bytes, reservoir))
+        Err(PrecompileError::Revert(bytes))
     }
 }
 
@@ -372,13 +362,13 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
 /// Extension trait to convert an error into a [`PrecompileResult`].
 pub trait IntoPrecompileResult {
     /// Converts `self` into a [`PrecompileResult`].
-    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult;
+    fn into_precompile_result(self) -> PrecompileResult;
 }
 
 impl<E: Into<TempoPrecompileError>> IntoPrecompileResult for E {
     #[inline]
-    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
-        self.into().into_precompile_result(gas, reservoir)
+    fn into_precompile_result(self) -> PrecompileResult {
+        self.into().into_precompile_result()
     }
 }
 
@@ -387,8 +377,6 @@ pub trait EncodePrecompileResult<T> {
     /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
     fn encode_precompile_result(
         self,
-        gas: u64,
-        reservoir: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult;
 }
@@ -399,13 +387,11 @@ where
 {
     fn encode_precompile_result(
         self,
-        gas: u64,
-        reservoir: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
         match self {
-            Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), reservoir)),
-            Err(err) => err.into_precompile_result(gas, reservoir),
+            Ok(res) => Ok(PrecompileOutput::new(encode_ok(res))),
+            Err(err) => err.into_precompile_result(),
         }
     }
 }
@@ -424,6 +410,18 @@ impl StorageCreditsErr for TempoPrecompileError {
 mod tests {
     use super::*;
     use tempo_contracts::precompiles::StablecoinDEXError;
+
+    #[test]
+    fn evm2_state_errors_match_storage_load_semantics() {
+        assert_eq!(
+            TempoPrecompileError::from(ErrorCode::COLD_LOAD_SKIPPED),
+            TempoPrecompileError::OutOfGas
+        );
+        assert_eq!(
+            TempoPrecompileError::from(ErrorCode::BAL_NOT_COVERED),
+            TempoPrecompileError::EvmError(ErrorCode::BAL_NOT_COVERED)
+        );
+    }
 
     #[test]
     fn test_add_errors_to_registry_populates_registry() {
@@ -511,21 +509,18 @@ mod tests {
     #[test]
     fn test_into_precompile_result_revert() {
         let error = TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist());
-        let result = error.into_precompile_result(0, 0);
-
-        let output = result.expect("business-logic revert should be Ok");
-        assert!(output.status.is_revert());
+        let result = error.into_precompile_result();
+        assert!(matches!(result, Err(PrecompileError::Revert(_))));
     }
 
     #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.encode_precompile_result(0, 0, |val| {
+        let precompile_result = result.encode_precompile_result(|val| {
             alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
         });
 
-        let output = precompile_result.expect("success should be Ok");
-        assert!(output.status.is_success());
+        assert!(precompile_result.is_ok());
     }
 
     #[test]

@@ -10,12 +10,12 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::Ingress;
 use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
-use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-use reth_node_builder::ConfigureEvm as _;
+use reth_evm::database::StateProviderDatabase;
 use reth_provider::{HeaderProvider as _, StateProviderBox, StateProviderFactory as _};
-use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+use tempo_node::{TempoFullNode, evm::TempoStateAccess};
 use tempo_precompiles::{
-    storage::{StorageActions, StorageCtx},
+    storage::StorageActions,
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
 use tempo_primitives::TempoHeader;
@@ -35,11 +35,7 @@ pub(crate) trait ExecutionNode {
 
     fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox>;
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>>;
+    fn tempo_spec(&self, header: &TempoHeader) -> TempoHardfork;
 }
 
 impl ExecutionNode for TempoFullNode {
@@ -56,14 +52,10 @@ impl ExecutionNode for TempoFullNode {
             .map_err(eyre::Report::new)
     }
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+    fn tempo_spec(&self, header: &TempoHeader) -> TempoHardfork {
         self.evm_config
-            .evm_for_block(db, header)
-            .map_err(eyre::Report::new)
+            .chain_spec()
+            .tempo_hardfork_at(header.timestamp())
     }
 }
 
@@ -79,12 +71,8 @@ where
         (*self).state_by_block_hash(block_hash)
     }
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<StateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
-        (*self).evm_for_block(db, header)
+    fn tempo_spec(&self, header: &TempoHeader) -> TempoHardfork {
+        (*self).tempo_spec(header)
     }
 }
 
@@ -154,27 +142,13 @@ where
 
     debug!(height = header.number(), "header found");
 
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(
-            node.state_by_block_hash(block_hash).wrap_err_with(|| {
-                format!("failed to get state from node provider for hash `{block_hash}`")
-            })?,
-        ))
-        .build();
-
-    let mut evm = node
-        .evm_for_block(db, &header)
-        .wrap_err("failed instantiating evm for block")?;
-
-    let ctx = evm.ctx_mut();
-    let res = StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
-        StorageActions::disabled(),
-        || read_fn(&C::default()),
-    )?;
+    let spec = node.tempo_spec(&header);
+    let state = node.state_by_block_hash(block_hash).wrap_err_with(|| {
+        format!("failed to get state from node provider for hash `{block_hash}`")
+    })?;
+    let mut database = StateProviderDatabase::new(state);
+    let res = database
+        .with_read_only_storage_ctx(spec, StorageActions::disabled(), || read_fn(&C::default()))?;
     Ok((header.number(), block_hash, res))
 }
 

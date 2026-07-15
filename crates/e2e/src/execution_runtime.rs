@@ -12,9 +12,8 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
 use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, B256, Keccak256, U256};
+use alloy_primitives::{Address, B256, Keccak256};
 use commonware_codec::Encode;
 use commonware_cryptography::{
     Signer,
@@ -22,15 +21,15 @@ use commonware_cryptography::{
 };
 use commonware_runtime::Clock;
 use commonware_utils::ordered;
+use evm2::{
+    bytecode::Bytecode,
+    evm::{InMemoryDB, precompile::NoPrecompiles},
+};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
-    evm::{
-        primitives::EvmEnv,
-        revm::db::{CacheDB, EmptyDB},
-    },
     network::{
         Peers as _,
         api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
@@ -48,15 +47,15 @@ use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_evm::{TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
 use tempo_node::{
     TempoFullNode,
-    evm::{TempoEvmFactory, evm::TempoEvm},
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
-    storage::{StorageActions, StorageCtx},
+    storage::StorageCtx,
     validator_config_v2::{
         IValidatorConfigV2, VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE, ValidatorConfigV2,
     },
@@ -142,78 +141,85 @@ impl Builder {
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
 
         let mut evm = setup_tempo_evm(genesis.config.chain_id);
-        {
-            let cx = evm.ctx_mut();
-            StorageCtx::enter_evm(
-                &mut cx.journaled_state,
-                &cx.block,
-                &cx.cfg,
-                &cx.tx,
-                StorageActions::disabled(),
-                || {
-                    let mut validator_config_v2 = ValidatorConfigV2::new();
+        StorageCtx::enter_evm(&mut evm, || {
+            let mut validator_config_v2 = ValidatorConfigV2::new();
+            validator_config_v2
+                .initialize(admin())
+                .wrap_err("failed to initialize validator config v2")
+                .unwrap();
+
+            for (public_key, validator) in validators {
+                if let ConsensusNodeConfig {
+                    address,
+                    ingress,
+                    egress,
+                    fee_recipient,
+                    private_key,
+                    share: Some(_),
+                } = validator
+                {
                     validator_config_v2
-                        .initialize(admin())
-                        .wrap_err("failed to initialize validator config v2")
-                        .unwrap();
-
-                    for (public_key, validator) in validators {
-                        if let ConsensusNodeConfig {
-                            address,
-                            ingress,
-                            egress,
-                            fee_recipient,
-                            private_key,
-                            share: Some(_),
-                        } = validator
-                        {
-                            validator_config_v2
-                                .add_validator(
-                                    admin(),
-                                    IValidatorConfigV2::addValidatorCall {
-                                        validatorAddress: address,
-                                        publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                                        ingress: ingress.to_string(),
-                                        egress: egress.ip().to_string(),
-                                        feeRecipient: fee_recipient,
-                                        signature: sign_add_validator_args(
-                                            genesis.config.chain_id,
-                                            &private_key,
-                                            address,
-                                            ingress,
-                                            egress.ip(),
-                                            fee_recipient,
-                                        )
-                                        .encode()
-                                        .to_vec()
-                                        .into(),
-                                    },
+                        .add_validator(
+                            admin(),
+                            IValidatorConfigV2::addValidatorCall {
+                                validatorAddress: address,
+                                publicKey: public_key.encode().as_ref().try_into().unwrap(),
+                                ingress: ingress.to_string(),
+                                egress: egress.ip().to_string(),
+                                feeRecipient: fee_recipient,
+                                signature: sign_add_validator_args(
+                                    genesis.config.chain_id,
+                                    &private_key,
+                                    address,
+                                    ingress,
+                                    egress.ip(),
+                                    fee_recipient,
                                 )
-                                .unwrap();
-                        }
-                    }
-                },
-            );
-        }
+                                .encode()
+                                .to_vec()
+                                .into(),
+                            },
+                        )
+                        .unwrap();
+                }
+            }
+        });
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
 
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        for (address, account) in evm_state.iter() {
-            let storage = if !account.storage.is_empty() {
-                Some(
-                    account
-                        .storage
+        let state = &evm.overlay_db().cache;
+        let addresses = state
+            .accounts
+            .keys()
+            .chain(state.storage.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for address in addresses {
+            let account = state
+                .accounts
+                .get(&address)
+                .and_then(Option::as_ref)
+                .cloned()
+                .unwrap_or_default();
+            let storage = state.storage.get(&address).and_then(|storage| {
+                (!storage.slots.is_empty()).then(|| {
+                    storage
+                        .slots
                         .iter()
-                        .map(|(key, val)| ((*key).into(), val.present_value.into()))
-                        .collect(),
-                )
-            } else {
-                None
-            };
+                        .map(|(key, value)| ((*key).into(), (*value).into()))
+                        .collect()
+                })
+            });
             genesis.alloc.insert(
-                *address,
+                address,
                 GenesisAccount {
-                    nonce: Some(account.info.nonce),
-                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
+                    nonce: Some(account.nonce),
+                    balance: account.balance,
+                    code: state
+                        .contracts
+                        .get(&account.code_hash)
+                        .filter(|code| !code.is_empty())
+                        .map(Bytecode::original_bytes),
                     storage,
                     ..Default::default()
                 },
@@ -1049,14 +1055,15 @@ pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
-    // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
-    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
-    env.cfg_env.chain_id = chain_id;
-
-    let factory = TempoEvmFactory::default();
-    factory.create_evm(db, env)
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<'static> {
+    build_tempo_evm(
+        tempo_chainspec::hardfork::TempoHardfork::T0,
+        chain_id,
+        TempoBlockEnv::default(),
+        InMemoryDB::default(),
+        NoPrecompiles::default(),
+        TempoEvmExt::default(),
+    )
 }
 
 fn sign_add_validator_args(

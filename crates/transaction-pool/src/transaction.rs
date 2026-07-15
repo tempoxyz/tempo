@@ -9,11 +9,11 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
-use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
 use alloy_sol_types::SolInterface;
+use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::ITIP20;
+use tempo_evm::{TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -34,7 +35,6 @@ use tempo_precompiles::{
     tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
-use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -281,7 +281,7 @@ impl TempoPooledTransaction {
 
     /// Computes the [`TempoTxEnv`] for this transaction.
     pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+        TempoTxEnv::from(self.inner().clone())
     }
 
     /// Pre-computes and caches the [`TempoTxEnv`].
@@ -310,9 +310,9 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
-    /// Returns a tuple that can be passed to block executor.
-    pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+    /// Returns the transaction environment consumed by the EVM2 block executor.
+    pub fn executable(&self) -> TempoTxEnv {
+        self.tx_env().clone()
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -675,18 +675,37 @@ pub enum TempoPoolTransactionError {
 
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
-    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
-    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
-    /// pool error. The pool also uses this wrapper for AMM liquidity failures
-    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
+    /// Thrown when an EVM2 handler rejects the transaction with an error that is
+    /// not mapped to a standard reth pool error. Tempo-specific validation errors
+    /// are stored as [`HandlerError::External`].
     #[error(transparent)]
-    Evm(TempoInvalidTransaction),
+    Evm(HandlerError),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::Evm(err) => err.is_bad_transaction(),
+            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or_else(
+                || {
+                    matches!(
+                        err,
+                        HandlerError::InvalidChainId { .. }
+                            | HandlerError::MissingChainId
+                            | HandlerError::IntrinsicGasTooLow { .. }
+                            | HandlerError::NonceOverflow
+                            | HandlerError::TxGasLimitGreaterThanCap { .. }
+                            | HandlerError::CreateInitCodeSizeLimit { .. }
+                            | HandlerError::EmptyAuthorizationList
+                            | HandlerError::EmptyBlobs
+                            | HandlerError::TooManyBlobs { .. }
+                            | HandlerError::BlobVersionNotSupported
+                            | HandlerError::PriorityFeeGreaterThanMaxFee
+                            | HandlerError::UnsupportedTransactionType(_)
+                            | HandlerError::WrongTransactionType { .. }
+                    )
+                },
+                TempoInvalidTransaction::is_bad_transaction,
+            ),
             Self::ExceedsNonPaymentLimit
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
@@ -1158,28 +1177,34 @@ mod tests {
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
-                    "nonce error".to_string(),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
                 )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotTip20 {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address: Address::repeat_byte(0x20),
-                    currency: "EUR".to_string(),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: Address::repeat_byte(0x20),
+                        currency: "EUR".to_string(),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenPaused {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
@@ -1198,8 +1223,8 @@ mod tests {
             ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
-                    "calls error",
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::CallsValidation("calls error"),
                 )),
                 true,
             ),

@@ -13,7 +13,7 @@ pub mod ed25519;
 #[cfg(feature = "evm")]
 mod block;
 #[cfg(feature = "evm")]
-pub use block::TempoBlockEnv;
+pub use block::{TempoBlockEnv, TempoBlockExt};
 
 pub mod transaction;
 pub use transaction::{

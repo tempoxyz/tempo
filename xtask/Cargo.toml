@@ -24,7 +24,6 @@ tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
-tempo-revm.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
@@ -65,7 +64,7 @@ reth-db-api.workspace = true
 reth-provider.workspace = true
 reth-primitives-traits.workspace = true
 reth-network-peers = { workspace = true, features = ["secp256k1"] }
-revm.workspace = true
+evm2 = { workspace = true, features = ["std"] }
 secp256k1 = { workspace = true, features = ["rand"] }
 serde.workspace = true
 serde_json.workspace = true
