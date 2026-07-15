@@ -22,6 +22,8 @@ crate::sol! {
         // View Functions
         function policyIdCounter() external view returns (uint64);
         function policyExists(uint64 policyId) external view returns (bool);
+        function hasTokenTransferPolicy(address token) external view returns (bool);
+        function tokenTransferPolicyId(address token) external view returns (uint64 policyId);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
         function isAuthorizedSender(uint64 policyId, address user) external view returns (bool);

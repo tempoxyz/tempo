@@ -24,6 +24,8 @@ use crate::{
     RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
+    tip20::TIP20Token,
+    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::Address;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -61,6 +63,18 @@ pub struct TIP403Registry {
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
     receive_policies: Mapping<Address, ReceivePolicy>,
+    /// TIP-1092 token-to-policy bindings. Unset entries fall back to the policy ID stored on the
+    /// TIP-20 token.
+    token_transfer_policies: Mapping<Address, TokenTransferPolicy>,
+}
+
+/// Packed TIP-1092 token-to-policy binding.
+#[derive(Debug, Clone, Default, Storable)]
+struct TokenTransferPolicy {
+    /// Active transfer policy ID.
+    policy_id: u64,
+    /// Distinguishes an unset binding from the valid reject-all policy ID `0`.
+    is_set: bool,
 }
 
 /// Per-account TIP-1028 receive policy configuration.
@@ -221,6 +235,80 @@ impl TIP403Registry {
         // Check if policy ID is within the range of created policies
         let counter = self.policy_id_counter()?;
         Ok(call.policyId < counter)
+    }
+
+    /// Returns whether TIP-403 stores a transfer-policy binding for `token`.
+    pub fn has_token_transfer_policy(
+        &self,
+        call: ITIP403Registry::hasTokenTransferPolicyCall,
+    ) -> Result<bool> {
+        self.has_token_transfer_policy_for(call.token)
+    }
+
+    /// Returns the TIP-403 policy binding for `token`, falling back to the legacy token-local
+    /// policy ID when no binding has been registered.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `token` is not a deployed TIP-20 token
+    pub fn token_transfer_policy_id(
+        &self,
+        call: ITIP403Registry::tokenTransferPolicyIdCall,
+    ) -> Result<u64> {
+        if !TIP20Factory::new().is_tip20(call.token)? {
+            return Err(tempo_contracts::precompiles::TIP20Error::invalid_token().into());
+        }
+
+        if let Some(policy_id) = self.registered_token_transfer_policy_id(call.token)? {
+            return Ok(policy_id);
+        }
+
+        TIP20Token::from_address(call.token)?.legacy_transfer_policy_id()
+    }
+
+    /// Returns whether a registry binding exists without validating the token address.
+    pub(crate) fn has_token_transfer_policy_for(&self, token: Address) -> Result<bool> {
+        self.registered_token_transfer_policy_id(token)
+            .map(|policy_id| policy_id.is_some())
+    }
+
+    /// Returns the registered policy ID without validating the token address.
+    pub(crate) fn registered_token_transfer_policy_id(
+        &self,
+        token: Address,
+    ) -> Result<Option<u64>> {
+        let binding = self.token_transfer_policies[token].read()?;
+        Ok(binding.is_set.then_some(binding.policy_id))
+    }
+
+    /// Writes the active registry binding for a TIP-20 token.
+    pub(crate) fn set_token_transfer_policy(
+        &mut self,
+        token: Address,
+        policy_id: u64,
+    ) -> Result<()> {
+        self.token_transfer_policies[token].write(TokenTransferPolicy {
+            policy_id,
+            is_set: true,
+        })
+    }
+
+    /// Copies a token's legacy policy ID into TIP-403. Repeating the same migration is a no-op;
+    /// attempting to overwrite a different registry value reverts.
+    pub(crate) fn migrate_token_transfer_policy(
+        &mut self,
+        token: Address,
+        policy_id: u64,
+    ) -> Result<()> {
+        let binding = self.token_transfer_policies[token].read()?;
+        if binding.is_set {
+            return if binding.policy_id == policy_id {
+                Ok(())
+            } else {
+                Err(tempo_contracts::precompiles::TIP20Error::invalid_transfer_policy_id().into())
+            };
+        }
+
+        self.set_token_transfer_policy(token, policy_id)
     }
 
     /// Returns the type and admin of a policy. Reverts if the policy does not exist or has an

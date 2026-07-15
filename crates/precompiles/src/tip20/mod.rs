@@ -21,7 +21,7 @@ pub use tempo_primitives::is_tip20_prefix;
 pub use slots as tip20_slots;
 
 use crate::{
-    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, StorageCtx, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
@@ -194,6 +194,18 @@ impl TIP20Token {
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
     pub fn transfer_policy_id(&self) -> Result<u64> {
+        if StorageCtx.spec().is_t9()
+            && let Some(policy_id) =
+                TIP403Registry::new().registered_token_transfer_policy_id(self.address)?
+        {
+            return Ok(policy_id);
+        }
+
+        self.legacy_transfer_policy_id()
+    }
+
+    /// Returns the policy ID stored in the legacy TIP-20 storage slot.
+    pub(crate) fn legacy_transfer_policy_id(&self) -> Result<u64> {
         self.transfer_policy_id.read()
     }
 
@@ -258,12 +270,27 @@ impl TIP20Token {
             return Err(TIP20Error::invalid_transfer_policy_id().into());
         }
 
-        self.transfer_policy_id.write(call.newPolicyId)?;
+        let mut registry = TIP403Registry::new();
+        if StorageCtx.spec().is_t9() && registry.has_token_transfer_policy_for(self.address)? {
+            registry.set_token_transfer_policy(self.address, call.newPolicyId)?;
+        } else {
+            self.transfer_policy_id.write(call.newPolicyId)?;
+        }
 
         self.emit_event(TIP20Event::transfer_policy_update(
             msg_sender,
             call.newPolicyId,
         ))
+    }
+
+    /// Copies the token's legacy transfer policy ID into TIP-403.
+    ///
+    /// This migration is permissionless and idempotent when the registry already contains the
+    /// same policy ID. It never changes the token-local policy ID.
+    pub fn migrate_transfer_policy_id(&mut self) -> Result<u64> {
+        let policy_id = self.legacy_transfer_policy_id()?;
+        TIP403Registry::new().migrate_token_transfer_policy(self.address, policy_id)?;
+        Ok(policy_id)
     }
 
     /// Sets a new supply cap. Must be ≥ current total supply and ≤ [`U128_MAX`].
@@ -984,6 +1011,9 @@ impl TIP20Token {
         // Set default values
         self.supply_cap.write(U128_MAX)?;
         self.transfer_policy_id.write(1)?;
+        if StorageCtx.spec().is_t9() {
+            TIP403Registry::new().set_token_transfer_policy(self.address, 1)?;
+        }
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
@@ -1565,7 +1595,7 @@ pub(crate) mod tests {
         receive_policy_guard::ReceivePolicyGuard,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
-        tip403_registry::REJECT_ALL_POLICY_ID,
+        tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
@@ -3577,6 +3607,82 @@ pub(crate) mod tests {
                 assert!(result.is_ok());
                 assert_eq!(token.transfer_policy_id()?, policy_id);
             }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_migrate_transfer_policy_id_to_registry() -> eyre::Result<()> {
+        let admin = Address::random();
+        let spender = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+
+        StorageCtx::enter(&mut storage, || {
+            // Simulate an existing token created before TIP-1092 activation.
+            let mut token = TIP20Setup::path_usd(admin).apply()?;
+            let registry = TIP403Registry::new();
+            assert!(!registry.has_token_transfer_policy_for(token.address)?);
+            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+
+            StorageCtx.set_spec(TempoHardfork::T9);
+
+            // Unmigrated tokens fall back to their token-local policy ID.
+            assert_eq!(token.transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(
+                registry.token_transfer_policy_id(ITIP403Registry::tokenTransferPolicyIdCall {
+                    token: token.address,
+                },)?,
+                ALLOW_ALL_POLICY_ID
+            );
+
+            // Migration is permissionless and idempotent, and normal TIP-20 operations continue.
+            assert_eq!(token.migrate_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.migrate_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            token.approve(
+                Address::random(),
+                ITIP20::approveCall {
+                    spender,
+                    amount: U256::from(1),
+                },
+            )?;
+
+            // Once migrated, admin updates only the TIP-403 binding.
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+            assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+
+            // Migration cannot overwrite a different active registry binding.
+            assert!(token.migrate_transfer_policy_id().is_err());
+            assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_new_t9_token_registers_transfer_policy() -> eyre::Result<()> {
+        let admin = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
+            let registry = TIP403Registry::new();
+
+            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert_eq!(
+                registry.token_transfer_policy_id(ITIP403Registry::tokenTransferPolicyIdCall {
+                    token: token.address,
+                },)?,
+                ALLOW_ALL_POLICY_ID
+            );
+            assert_eq!(token.transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
 
             Ok(())
         })
