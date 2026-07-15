@@ -1029,7 +1029,7 @@ where
         {
             hashed_state
         } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
+            Arc::new(finish_provider.hashed_post_state(&db.bundle_state))
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1094,7 +1094,7 @@ where
             )
         } else {
             let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
+                .state_root_with_updates((*hashed_state).clone())
                 .map_err(BlockExecutionError::other)?;
 
             (state_root, Arc::new(trie_updates), None)
@@ -1299,7 +1299,7 @@ where
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
+            hashed_state,
             trie_updates,
             changed_paths,
         };
