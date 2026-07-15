@@ -202,7 +202,7 @@ impl SigningKey {
 
 fn create_private_key_file(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
 
     #[cfg(unix)]
     {
@@ -212,17 +212,7 @@ fn create_private_key_file(path: &Path) -> std::io::Result<std::fs::File> {
         options.mode(0o600);
     }
 
-    let file = options.open(path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        // Also restrict an existing destination that may have had broader permissions.
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(file)
+    options.open(path)
 }
 
 impl From<PrivateKey> for SigningKey {
