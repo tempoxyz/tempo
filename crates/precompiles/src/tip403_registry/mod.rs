@@ -306,8 +306,10 @@ impl TIP403Registry {
                 continue;
             }
 
-            let policy_id = TIP20Token::from_address(token)?.legacy_transfer_policy_id()?;
+            let mut token_contract = TIP20Token::from_address(token)?;
+            let policy_id = token_contract.legacy_transfer_policy_id()?;
             self.set_token_transfer_policy(token, policy_id)?;
+            token_contract.delete_legacy_transfer_policy_id()?;
             migrated += U256::ONE;
         }
 
