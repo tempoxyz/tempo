@@ -209,6 +209,11 @@ impl TIP20Token {
         self.transfer_policy_id.read()
     }
 
+    /// Clears the legacy TIP-20 policy slot after its value has moved to TIP-403.
+    pub(crate) fn delete_legacy_transfer_policy_id(&mut self) -> Result<()> {
+        self.transfer_policy_id.delete()
+    }
+
     /// Returns the PAUSE_ROLE constant
     ///
     /// This role identifier grants permission to pause the token contract.
@@ -271,7 +276,10 @@ impl TIP20Token {
         }
 
         let mut registry = TIP403Registry::new();
-        if StorageCtx.spec().is_t9() && registry.has_token_transfer_policy_for(self.address)? {
+        if StorageCtx.spec().is_t9() {
+            if !registry.has_token_transfer_policy_for(self.address)? {
+                self.delete_legacy_transfer_policy_id()?;
+            }
             registry.set_token_transfer_policy(self.address, call.newPolicyId)?;
         } else {
             self.transfer_policy_id.write(call.newPolicyId)?;
