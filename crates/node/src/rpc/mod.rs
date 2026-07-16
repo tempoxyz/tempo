@@ -31,7 +31,7 @@ pub use token::{TempoToken, TempoTokenApiServer};
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};
 use alloy_evm::{EvmFactory, block::BlockExecutorFactory};
-use reth_chainspec::{EthereumHardforks, Hardforks};
+use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -528,15 +528,15 @@ where
 /// Converter for Tempo receipts.
 #[derive(Debug, Clone)]
 #[expect(clippy::type_complexity)]
-pub struct TempoReceiptConverter {
+pub struct TempoReceiptConverter<ChainSpec = TempoChainSpec> {
     inner: EthReceiptConverter<
-        TempoChainSpec,
+        ChainSpec,
         fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
     >,
 }
 
-impl TempoReceiptConverter {
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+impl<ChainSpec> TempoReceiptConverter<ChainSpec> {
+    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
         Self {
             inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
@@ -563,7 +563,10 @@ impl TempoReceiptConverter {
     }
 }
 
-impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
+impl<ChainSpec> ReceiptConverter<TempoPrimitives> for TempoReceiptConverter<ChainSpec>
+where
+    ChainSpec: EthChainSpec + 'static,
+{
     type RpcReceipt = TempoTransactionReceipt;
     type Error = EthApiError;
 
@@ -630,12 +633,12 @@ impl<N> TempoEthApiBuilder<N> {
 impl<N> EthApiBuilder<N> for TempoEthApiBuilder<N>
 where
     N: FullNodeComponents<
-            Types: NodeTypes<ChainSpec = TempoChainSpec, Primitives = TempoPrimitives>,
+            Types: NodeTypes<Primitives = TempoPrimitives>,
             Pool = <N as RpcNodeCore>::Pool,
             Evm = <N as RpcNodeCore>::Evm,
         > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
         + TempoEthApiBounds,
-    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = <N::Types as NodeTypes>::ChainSpec>,
     <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {

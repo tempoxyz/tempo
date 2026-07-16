@@ -57,7 +57,7 @@ const TEST_PARTITION_PREFIX: &str = "test";
 /// height (and the implicit parent linkage). The block is then sealed via
 /// [`SealedBlock::seal_slow`] so its hash matches what the production code
 /// would compute.
-pub(in crate::storage::hybrid) fn make_block(height: u64, parent_hash: B256) -> Block {
+pub(in crate::storage) fn make_block(height: u64, parent_hash: B256) -> Block {
     let header = TempoHeader {
         inner: Header {
             parent_hash,
@@ -74,7 +74,7 @@ pub(in crate::storage::hybrid) fn make_block(height: u64, parent_hash: B256) -> 
 
 /// Build a contiguous chain `[start..start+count]` of [`Block`]s, each
 /// pointing at its predecessor.
-pub(in crate::storage::hybrid) fn make_chain(start: u64, count: usize) -> Vec<Block> {
+pub(in crate::storage) fn make_chain(start: u64, count: usize) -> Vec<Block> {
     let mut chain = Vec::with_capacity(count);
     let mut parent = B256::ZERO;
     for offset in 0..count {
@@ -153,13 +153,11 @@ impl FinalizedBlocksProvider for StubProvider {
             return err;
         }
         // Mirror the production [`BlockchainProvider`] impl: only
-        // blocks at or below reth's finalized watermark are reachable.
-        // Heights above the watermark (or every height when the
-        // watermark is unset) miss, regardless of what was seeded via
-        // [`Self::add_block`].
-        let Some(finalized) = *self.reth_finalized.lock() else {
-            return Ok(None);
-        };
+        // blocks at or below reth's finalized watermark are reachable,
+        // regardless of what was seeded via [`Self::add_block`]. An
+        // unset watermark still covers genesis (height 0), which is
+        // implicitly finalized.
+        let finalized = self.reth_finalized.lock().unwrap_or_default();
         if height > finalized {
             return Ok(None);
         }
@@ -175,7 +173,7 @@ impl FinalizedBlocksProvider for StubProvider {
 }
 
 /// Build a fresh page cache rooted in `context`.
-pub(in crate::storage::hybrid) fn fresh_page_cache<TContext>(context: &TContext) -> CacheRef
+pub(in crate::storage) fn fresh_page_cache<TContext>(context: &TContext) -> CacheRef
 where
     TContext: BufferPooler,
 {
@@ -190,7 +188,7 @@ where
 /// individual heights — the prunable archive's `prune(min)` is rounded down
 /// to the nearest section boundary, so a 4 096-item section would never
 /// drop a handful of low-numbered test heights.
-pub(in crate::storage::hybrid) async fn fresh_prunable_with_section_size<TContext>(
+pub(in crate::storage) async fn fresh_prunable_with_section_size<TContext>(
     context: &TContext,
     items_per_section: std::num::NonZeroU64,
 ) -> Prunable<TContext>

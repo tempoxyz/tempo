@@ -1,0 +1,195 @@
+# Scheduled multi-region e2e regression benchmarks.
+#
+# Runs nightly at 03:00 UTC. The feature is the current tempoxyz/tempo main
+# commit, and the baseline is main from the last successful scheduled run.
+# Manual runs accept sizing overrides so this workflow can be tested cheaply.
+
+name: bench-e2e-multi-region-scheduled
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Force a run when Tempo main has not changed.
+        type: boolean
+        required: false
+        default: false
+      duration:
+        description: Benchmark duration in seconds.
+        type: string
+        required: true
+        default: "90"
+      bloat:
+        description: State bloat size in GB.
+        type: choice
+        required: true
+        default: "100"
+        options:
+          - "0"
+          - "1"
+          - "10"
+          - "100"
+      validator-count:
+        description: Number of validators.
+        type: string
+        required: true
+        default: "50"
+      regions:
+        description: Comma-separated AWS regions.
+        type: string
+        required: true
+        default: "us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1"
+      tps:
+        description: Target transactions per second.
+        type: string
+        required: true
+        default: "50000"
+      accounts:
+        description: Number of benchmark accounts.
+        type: string
+        required: true
+        default: "1000"
+      max-concurrent-requests:
+        description: Max concurrent sender requests.
+        type: string
+        required: true
+        default: "100"
+      run-pairs:
+        description: Number of baseline/feature run pairs.
+        type: string
+        required: true
+        default: "3"
+
+permissions: {}
+
+jobs:
+  resolve-refs:
+    name: resolve-refs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
+      baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      feature-ref: ${{ steps.refs.outputs.feature-ref }}
+      feature-name: ${{ steps.refs.outputs.feature-name }}
+      should-run: ${{ steps.refs.outputs.should-run }}
+    steps:
+      - name: Checkout Tempo main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: tempoxyz/tempo
+          ref: main
+          fetch-depth: 0
+          path: tempo
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Resolve nightly refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_FORCE: ${{ inputs.force || 'false' }}
+          STATE_ARTIFACT: tempo-e2e-multi-region-nightly-state
+        run: |
+          feature_ref="$(git -C tempo rev-parse HEAD)"
+          baseline_ref=""
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT" \
+            --jq '.artifacts | map(select(.expired == false)) | first | .id // empty')"
+
+          if [ -n "$artifact_id" ]; then
+            state_dir="$(mktemp -d)"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$state_dir/state.zip"
+            unzip -q "$state_dir/state.zip" -d "$state_dir"
+            baseline_ref="$(tr -d '[:space:]' < "$state_dir/tempo-main-ref")"
+            rm -rf "$state_dir"
+            git -C tempo cat-file -e "${baseline_ref}^{commit}"
+            echo "Using Tempo main from the last successful scheduled run: $baseline_ref"
+          else
+            baseline_ref="$feature_ref"
+            echo "No successful scheduled state exists; comparing main against itself"
+          fi
+
+          should_run="true"
+          if [ "$baseline_ref" = "$feature_ref" ] && [ "$INPUT_FORCE" != "true" ] && [ -n "$artifact_id" ]; then
+            should_run="false"
+            echo "Tempo main has not changed since the last successful scheduled run; skipping"
+          fi
+
+          baseline_date="$(git -C tempo show -s --format=%cs "$baseline_ref")"
+          feature_date="$(git -C tempo show -s --format=%cs "$feature_ref")"
+
+          {
+            echo "baseline-ref=$baseline_ref"
+            echo "baseline-name=nightly-${baseline_date}-${baseline_ref:0:8}"
+            echo "feature-ref=$feature_ref"
+            echo "feature-name=main-${feature_date}-${feature_ref:0:8}"
+            echo "should-run=$should_run"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Tempo refs"
+            echo ""
+            echo "- Baseline: \`$baseline_ref\` (last successful scheduled main)"
+            echo "- Feature: \`$feature_ref\` (current main)"
+            echo "- Run: \`$should_run\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  bench-e2e-multi-region:
+    needs: resolve-refs
+    if: needs.resolve-refs.outputs.should-run == 'true'
+    name: bench-e2e-multi-region-scheduled
+    uses: ./.github/workflows/bench-e2e-multi-region.yml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+    with:
+      baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
+      baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
+      feature: ${{ needs.resolve-refs.outputs.feature-ref }}
+      feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
+      duration: ${{ inputs.duration || '90' }}
+      bloat: ${{ inputs.bloat || '100' }}
+      validator-count: ${{ inputs['validator-count'] || '50' }}
+      regions: ${{ inputs.regions || 'us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1' }}
+      tps: ${{ inputs.tps || '50000' }}
+      accounts: ${{ inputs.accounts || '1000' }}
+      max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '100' }}
+      run-pairs: ${{ inputs['run-pairs'] || '3' }}
+    secrets:
+      BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
+      BENCH_METRICS_PUSH_URL: ${{ secrets.BENCH_METRICS_PUSH_URL }}
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+
+  save-state:
+    needs: [resolve-refs, bench-e2e-multi-region]
+    if: |
+      always() &&
+      github.event_name == 'schedule' &&
+      needs.bench-e2e-multi-region.result == 'success'
+    name: save-state
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Write successful Tempo main ref
+        env:
+          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+        run: |
+          mkdir -p nightly-state
+          printf '%s\n' "$FEATURE_REF" > nightly-state/tempo-main-ref
+
+      - name: Upload nightly state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-e2e-multi-region-nightly-state
+          path: nightly-state/tempo-main-ref
+          retention-days: 90
+          if-no-files-found: error

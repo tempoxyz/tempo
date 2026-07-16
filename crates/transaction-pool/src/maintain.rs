@@ -13,7 +13,7 @@ use alloy_primitives::{
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use itertools::{Either, Itertools};
-use reth_chainspec::ChainSpecProvider;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -584,7 +584,7 @@ pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
         + HeaderProvider<Header = TempoHeader>
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
