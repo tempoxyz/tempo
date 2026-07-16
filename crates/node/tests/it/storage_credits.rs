@@ -58,7 +58,7 @@ async fn wait_for_latest_beneficiary<P: Provider>(
         .ok_or_else(|| eyre::eyre!("latest block missing"))?
         .header
         .beneficiary;
-    eyre::bail!("latest beneficiary {beneficiary:?} did not become {expected:?}")
+    eyre::bail!("latest beneficiary {beneficiary:?} did not become {expected:?}");
 }
 
 fn transfer_blocked(
