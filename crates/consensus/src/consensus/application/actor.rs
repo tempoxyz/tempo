@@ -20,6 +20,7 @@ use alloy_primitives::{B256, Bytes};
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
+    marshal::core::DigestFallback,
     simplex::Plan,
     types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
@@ -27,14 +28,15 @@ use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
+    ContextCell, FutureExt as _, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
+    telemetry::metrics::Registered,
 };
 use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc, future::try_join};
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -188,25 +190,25 @@ where
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Broadcast(broadcast) => {
-                self.context.with_label("broadcast").spawn({
+                self.context.child("broadcast").spawn({
                     let inner = self.inner.clone();
                     move |_| inner.handle_broadcast(*broadcast)
                 });
             }
             Message::Genesis(genesis) => {
-                self.context.with_label("genesis").spawn({
+                self.context.child("genesis").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_genesis(genesis, context)
                 });
             }
             Message::Propose(propose) => {
-                self.context.with_label("propose").spawn({
+                self.context.child("propose").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
-                self.context.with_label("verify").spawn({
+                self.context.child("verify").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_verify(*verify, context)
                 });
@@ -247,7 +249,7 @@ impl Inner<Init> {
             Plan::Propose { round } => (round, Recipients::All),
             Plan::Forward { round, recipients } => (round, recipients),
         };
-        self.marshal.forward(round, digest, recipients).await;
+        self.marshal.forward(round, digest, recipients);
     }
 
     #[instrument(
@@ -319,7 +321,7 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext: Pacer>(
+    async fn handle_propose<TContext: Pacer + Supervisor>(
         self,
         request: Propose,
         context: TContext,
@@ -356,7 +358,7 @@ impl Inner<Init> {
                 futures::pin_mut!(already_verified);
 
                 let mut proposal = Box::pin(self.clone().propose(
-                    context.clone(),
+                    context.child("propose"),
                     BuildProposalArgs {
                         propose_start,
                         parent_view,
@@ -392,7 +394,10 @@ impl Inner<Init> {
 
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
-                    if !self.marshal.proposed(round, block.clone()).await {
+                    // `verified` persists the proposal without broadcasting it;
+                    // marshal's `proposed` would also broadcast, which is left
+                    // to the relay `forward` path when consensus asks for it.
+                    if !self.marshal.verified(round, block.clone()).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
                     observe_marshal_persist(
@@ -497,7 +502,7 @@ impl Inner<Init> {
         Ok(())
     }
 
-    async fn propose<TContext: Pacer>(
+    async fn propose<TContext: Pacer + Supervisor>(
         self,
         context: TContext,
         args: BuildProposalArgs,
@@ -538,11 +543,13 @@ impl Inner<Init> {
             {
                 self.marshal
                     .subscribe_by_digest(
-                        Some(Round::new(round.epoch(), parent_view)),
                         parent_digest,
+                        DigestFallback::FetchByRound {
+                            round: Round::new(round.epoch(), parent_view),
+                        },
                     )
                     .await
-                    .await
+                    .map(Arc::unwrap_or_clone)
                     .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
             } else {
                 parent
@@ -567,7 +574,7 @@ impl Inner<Init> {
         // it.
         if !is_genesis_parent
             && verify_block(
-                context.clone(),
+                context.child("verify_parent"),
                 parent_epoch_info.epoch(),
                 &self.epoch_strategy,
                 self.execution_node
@@ -1008,7 +1015,9 @@ async fn verify_block<TContext: Pacer>(
     // Scheme registration precedes engine creation, so the scheme must exist
     let scheme = scheme_provider
         .scoped(epoch)
-        .ok_or_eyre("cannot determine participants in the current epoch")?;
+        .ok_or_eyre("cannot determine participants in the current epoch")?
+        .into_scheme()
+        .ok_or_eyre("scheme scope is verify-only and exposes no participants")?;
 
     let validator_set = Some(
         scheme
@@ -1159,9 +1168,9 @@ async fn subscribe(
         Block::from_execution_block_unchecked(block, None)
     } else {
         marshal
-            .subscribe_by_digest(Some(round), digest)
+            .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
             .await
-            .await
+            .map(Arc::unwrap_or_clone)
             .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
     };
     Ok(block)
@@ -1169,7 +1178,7 @@ async fn subscribe(
 
 #[derive(Clone)]
 struct Metrics {
-    parent_ahead_of_local_time: Counter,
+    parent_ahead_of_local_time: Registered<Counter>,
 }
 
 impl Metrics {
@@ -1177,11 +1186,10 @@ impl Metrics {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let parent_ahead_of_local_time = Counter::default();
-        context.register(
+        let parent_ahead_of_local_time = context.register(
             "parent_ahead_of_local_time",
             "number of times the parent block timestamp was ahead of local time",
-            parent_ahead_of_local_time.clone(),
+            Counter::default(),
         );
 
         Self {

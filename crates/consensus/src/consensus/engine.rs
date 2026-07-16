@@ -22,7 +22,7 @@ use commonware_runtime::{
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -154,7 +154,7 @@ where
             finalized_floor,
             finalized_tip,
         } = alias::marshal::init(
-            context.clone(),
+            context.child("marshal"),
             page_cache_ref.clone(),
             execution_node.clone(),
             alias::marshal::Config {
@@ -175,7 +175,7 @@ where
         .wrap_err("failed to initialize marshal")?;
 
         let (executor, executor_mailbox) = crate::executor::init(
-            context.with_label("executor"),
+            context.child("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
@@ -188,7 +188,7 @@ where
         .wrap_err("failed initialization executor actor")?;
 
         let (peer_manager, peer_manager_mailbox) = peer_manager::init(
-            context.with_label("peer_manager"),
+            context.child("peer_manager"),
             peer_manager::Config {
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
@@ -199,10 +199,11 @@ where
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.with_label("broadcast"),
+            context.child("broadcast"),
             buffered::Config {
                 public_key: self.signer.public_key(),
-                mailbox_size: self.mailbox_size,
+                mailbox_size: NonZeroUsize::new(self.mailbox_size)
+                    .ok_or_eyre("broadcast mailbox size must be non-zero")?,
                 deque_size: self.deque_size,
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
@@ -216,7 +217,8 @@ where
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
             peer_provider: peer_manager_mailbox.clone(),
-            mailbox_size: self.mailbox_size,
+            mailbox_size: NonZeroUsize::new(self.mailbox_size)
+                .ok_or_eyre("resolver mailbox size must be non-zero")?,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
@@ -227,7 +229,7 @@ where
 
         let subblocks = self.with_subblocks.then(|| {
             subblocks::Actor::new(subblocks::Config {
-                context: context.clone(),
+                context: context.child("subblocks"),
                 signer: self.signer.clone(),
                 scheme_provider: scheme_provider.clone(),
                 node: execution_node.clone(),
@@ -242,13 +244,13 @@ where
         });
 
         let (feed, feed_mailbox) = crate::feed::init(
-            context.with_label("feed"),
+            context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {
-            context: context.with_label("application"),
+            context: context.child("application"),
             public_key: self.signer.public_key(),
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
@@ -263,7 +265,7 @@ where
         .wrap_err("failed initializing application actor")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            context.with_label("epoch_manager"),
+            context.child("epoch_manager"),
             epoch::manager::Config {
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
@@ -285,7 +287,7 @@ where
         );
 
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
-            context.with_label("dkg_manager"),
+            context.child("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
@@ -454,7 +456,7 @@ where
         reason = "following commonware's style of writing"
     )]
     async fn run(
-        self,
+        mut self,
         votes_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -487,8 +489,11 @@ where
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
-        let resolver =
-            marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
+        let resolver = marshal::resolver::p2p::init(
+            self.context.child("marshal_resolver"),
+            self.resolver_config,
+            marshal_channel,
+        );
 
         let application = self.application.start(self.dkg_manager_mailbox.clone());
         let executor = self.executor.start();
@@ -525,7 +530,11 @@ where
         ];
 
         if let Some(subblocks) = self.subblocks {
-            tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
+            tasks.push(
+                self.context
+                    .take()
+                    .spawn(|_| subblocks.run(subblocks_channel)),
+            );
         } else {
             drop(subblocks_channel);
         }

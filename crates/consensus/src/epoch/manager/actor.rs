@@ -47,7 +47,7 @@ use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Reporters,
-    marshal::Update,
+    marshal::{Update, core::DigestFallback},
     simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _, Height},
 };
@@ -59,14 +59,14 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
-    telemetry::metrics::status::GaugeExt as _,
+    BufferPooler, Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
+    telemetry::metrics::{GaugeExt, Registered},
 };
 use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -80,7 +80,7 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 
 pub(crate) struct Actor<TContext, TBlocker> {
-    active_epochs: BTreeMap<Epoch, (Handle<()>, ContextCell<TContext>)>,
+    active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     confirmed_latest_network_epoch: Option<Epoch>,
@@ -107,36 +107,30 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
-        let active_epochs = Gauge::default();
-        let latest_epoch = Gauge::default();
-        let latest_participants = Gauge::default();
-        let how_often_signer = Counter::default();
-        let how_often_verifier = Counter::default();
-
-        context.register(
+        let active_epochs = context.register(
             "active_epochs",
             "the number of epochs currently managed by the epoch manager",
-            active_epochs.clone(),
+            Gauge::default(),
         );
-        context.register(
+        let latest_epoch = context.register(
             "latest_epoch",
             "the latest epoch managed by this epoch manager",
-            latest_epoch.clone(),
+            Gauge::default(),
         );
-        context.register(
+        let latest_participants = context.register(
             "latest_participants",
             "the number of participants in the most recently started epoch",
-            latest_participants.clone(),
+            Gauge::default(),
         );
-        context.register(
+        let how_often_signer = context.register(
             "how_often_signer",
             "how often a node is a signer; a node is a signer if it has a share",
-            how_often_signer.clone(),
+            Counter::default(),
         );
-        context.register(
+        let how_often_verifier = context.register(
             "how_often_verifier",
             "how often a node is a verifier; a node is a verifier if it does not have a share",
-            how_often_verifier.clone(),
+            Counter::default(),
         );
 
         Self {
@@ -189,7 +183,7 @@ where
         ),
     ) {
         let (mux, mut vote_mux, mut vote_backup) = Muxer::builder(
-            self.context.with_label("vote_mux"),
+            self.context.child("vote_mux"),
             vote_sender,
             vote_receiver,
             self.config.mailbox_size,
@@ -199,7 +193,7 @@ where
         mux.start();
 
         let (mux, mut certificate_mux) = Muxer::builder(
-            self.context.with_label("certificate_mux"),
+            self.context.child("certificate_mux"),
             certificate_sender,
             certificate_receiver,
             self.config.mailbox_size,
@@ -208,7 +202,7 @@ where
         mux.start();
 
         let (mux, mut resolver_mux) = Muxer::new(
-            self.context.with_label("resolver_mux"),
+            self.context.child("resolver_mux"),
             resolver_sender,
             resolver_receiver,
             self.config.mailbox_size,
@@ -320,16 +314,22 @@ where
         };
         self.config.scheme_provider.register(epoch, scheme.clone());
 
-        // Manage the context so we can explicitly drop during cleanup, releasing
-        // all metrics associated with this context.
-        let engine_ctx = self
-            .context
-            .with_label("simplex")
-            .with_attribute("epoch", epoch)
-            .with_scope();
+        // The engine owns this context; aborting the engine tears down its
+        // supervision subtree and releases all metrics registered under it.
+        let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
+
+        let floor = simplex::config::Floor::Genesis(
+            self.config
+                .application
+                .clone()
+                .genesis(epoch)
+                .await
+                .await
+                .map_err(|_| eyre!("application no longer serving genesis requests"))?,
+        );
 
         let engine = simplex::Engine::new(
-            engine_ctx.clone(),
+            engine_ctx,
             simplex::Config {
                 scheme,
                 elector: elector::Random,
@@ -344,8 +344,10 @@ where
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
                 ),
-                mailbox_size: self.config.mailbox_size,
+                mailbox_size: NonZeroUsize::new(self.config.mailbox_size)
+                    .ok_or_else(|| eyre!("consensus mailbox size must be non-zero"))?,
                 epoch,
+                floor,
 
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
@@ -358,7 +360,8 @@ where
                 activity_timeout: self.config.views_to_track,
                 skip_timeout: self.config.views_until_leader_skip,
 
-                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
+                fetch_concurrent: NonZeroUsize::new(crate::config::NUMBER_CONCURRENT_FETCHES)
+                    .ok_or_else(|| eyre!("fetch concurrency must be non-zero"))?,
 
                 forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
 
@@ -372,10 +375,7 @@ where
 
         assert!(
             self.active_epochs
-                .insert(
-                    epoch,
-                    (engine.start(vote, certificate, resolver), engine_ctx)
-                )
+                .insert(epoch, engine.start(vote, certificate, resolver))
                 .is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
@@ -399,8 +399,7 @@ where
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
-        if let Some((engine, engine_ctx)) = self.active_epochs.remove(&epoch) {
-            drop(engine_ctx);
+        if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
             info!("stopped engine backing epoch");
         } else {
@@ -470,8 +469,7 @@ where
             let block = self
                 .config
                 .marshal
-                .subscribe_by_digest(None, digest)
-                .await
+                .subscribe_by_digest(digest, DigestFallback::Wait)
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
@@ -544,15 +542,14 @@ where
         );
         self.config
             .marshal
-            .hint_finalized(boundary_height, NonEmptyVec::new(from))
-            .await;
+            .hint_finalized(boundary_height, NonEmptyVec::new(from));
     }
 }
 
 struct Metrics {
-    active_epochs: Gauge,
-    latest_epoch: Gauge,
-    latest_participants: Gauge,
-    how_often_signer: Counter,
-    how_often_verifier: Counter,
+    active_epochs: Registered<Gauge>,
+    latest_epoch: Registered<Gauge>,
+    latest_participants: Registered<Gauge>,
+    how_often_signer: Registered<Counter>,
+    how_often_verifier: Registered<Counter>,
 }

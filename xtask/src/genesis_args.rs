@@ -9,7 +9,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, Output},
+        dkg::feldman_desmedt::{self as dkg, Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
@@ -20,6 +20,7 @@ use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand_08::SeedableRng as _;
+use rand_10::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -1131,7 +1132,7 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+    let mut rng = rand_10::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_10::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())

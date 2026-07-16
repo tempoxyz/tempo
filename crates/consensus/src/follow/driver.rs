@@ -25,7 +25,7 @@ use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
 use reth_provider::HeaderProvider as _;
@@ -180,8 +180,9 @@ pub(super) struct EventReporter(Mailbox);
 impl Reporter for EventReporter {
     type Activity = Event;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> commonware_actor::Feedback {
         self.0.send(activity);
+        commonware_actor::Feedback::Ok
     }
 }
 
@@ -191,8 +192,9 @@ pub(super) struct MarshalReporter(Mailbox);
 impl Reporter for MarshalReporter {
     type Activity = marshal::Update<Block>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> commonware_actor::Feedback {
         self.0.send(activity);
+        commonware_actor::Feedback::Ok
     }
 }
 
@@ -337,7 +339,12 @@ where
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
-        let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
+        let scheme = match self
+            .config
+            .scheme_provider
+            .scoped(finalization_epoch)
+            .and_then(|scheme| scheme.into_scheme())
+        {
             Some(scheme) => scheme,
             None if can_use_network_identity_fallback => self.network_scheme.clone(),
             None => bail!(
@@ -347,7 +354,7 @@ where
         };
 
         let identity = scheme.identity();
-        if !finalization.verify(&mut self.context, &scheme, &Sequential) {
+        if !finalization.verify(&mut self.context, scheme.as_ref(), &Sequential) {
             debug!(
                 "failed to verify finalization {} against scheme: {identity}",
                 finalization.proposal.payload
@@ -373,8 +380,7 @@ where
 
             self.config
                 .marshal
-                .hint_finalized(boundary_height, stub_peers)
-                .await;
+                .hint_finalized(boundary_height, stub_peers);
 
             return Ok(());
         }
@@ -383,8 +389,8 @@ where
         let activity = Activity::Finalization(finalization);
 
         let _ = self.config.marshal.certified(round, consensus_block).await;
-        self.config.marshal.report(activity.clone()).await;
-        self.config.feed.report(activity).await;
+        self.config.marshal.report(activity.clone());
+        self.config.feed.report(activity);
         Ok(())
     }
 

@@ -81,6 +81,7 @@ tracing-subscriber.workspace = true
 alloy-network.workspace = true
 
 rand_08.workspace = true
+rand_10.workspace = true
 
 [lints]
 workspace = true

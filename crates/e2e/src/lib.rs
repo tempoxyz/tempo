@@ -17,7 +17,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self},
+        dkg::feldman_desmedt as dkg,
         primitives::{group::Share, sharing::Mode},
     },
     ed25519::{PrivateKey, PublicKey},
@@ -27,13 +27,13 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Metrics as _, Runner as _,
+    Runner as _, Supervisor as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use reth_node_metrics::recorder::PrometheusRecorder;
 use tempo_consensus::{consensus, feed::FeedStateHandle};
 
@@ -53,7 +53,7 @@ pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
 fn generate_consensus_node_config(
-    rng: &mut impl CryptoRngCore,
+    rng: &mut impl CryptoRng,
     signers: u32,
     verifiers: u32,
     fee_recipient: Address,
@@ -241,7 +241,7 @@ pub async fn setup_validators(
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
-        context.with_label("network"),
+        context.child("network"),
         simulated::Config {
             max_size: 1024 * 1024,
             disconnect_on_block: true,

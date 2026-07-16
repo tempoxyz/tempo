@@ -16,6 +16,7 @@
 use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
+    marshal::core::DigestFallback,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
     types::{Epoch, Round, View},
 };
@@ -29,6 +30,7 @@ use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -54,11 +56,11 @@ pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FeedActivit
 struct PendingSubscription {
     round: Round,
     activity: Option<FeedActivity>,
-    block_rx: oneshot::Receiver<Block>,
+    block_rx: oneshot::Receiver<Arc<Block>>,
 }
 
 impl PendingSubscription {
-    fn new(round: Round, activity: FeedActivity, block_rx: oneshot::Receiver<Block>) -> Self {
+    fn new(round: Round, activity: FeedActivity, block_rx: oneshot::Receiver<Arc<Block>>) -> Self {
         Self {
             round,
             activity: Some(activity),
@@ -74,7 +76,7 @@ impl Future for PendingSubscription {
         match self.block_rx.poll_unpin(cx) {
             Poll::Ready(Ok(block)) => {
                 let activity = self.activity.take().expect("polled after completion");
-                Poll::Ready(Ok((self.round, activity, block)))
+                Poll::Ready(Ok((self.round, activity, (*block).clone())))
             }
             Poll::Ready(Err(_)) => Poll::Ready(Err(eyre::eyre!("block subscription cancelled"))),
             Poll::Pending => Poll::Pending,
@@ -184,7 +186,9 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         }
 
-        let block_rx = self.marshal.subscribe_by_digest(Some(round), payload).await;
+        let block_rx = self
+            .marshal
+            .subscribe_by_digest(payload, DigestFallback::FetchByRound { round });
         let pending = PendingSubscription::new(round, activity, block_rx);
         self.pending.insert(round, pending);
     }

@@ -29,9 +29,12 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> commonware_actor::Feedback {
         if self.sender.unbounded_send(activity).is_err() {
             error!("failed sending activity to feed because it is no longer running");
+            commonware_actor::Feedback::Closed
+        } else {
+            commonware_actor::Feedback::Ok
         }
     }
 }

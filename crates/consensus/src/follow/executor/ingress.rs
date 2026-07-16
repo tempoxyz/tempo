@@ -17,9 +17,10 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, update: Self::Activity) {
-        self.sender
-            .unbounded_send(update)
-            .expect("executor is present and ready to receive marshal updates");
+    fn report(&mut self, update: Self::Activity) -> commonware_actor::Feedback {
+        match self.sender.unbounded_send(update) {
+            Ok(()) => commonware_actor::Feedback::Ok,
+            Err(_) => commonware_actor::Feedback::Closed,
+        }
     }
 }

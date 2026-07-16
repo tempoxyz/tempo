@@ -5,7 +5,7 @@ use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::Priva
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -23,7 +23,7 @@ pub(crate) async fn init<TContext>(
     config: Config,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
 where
-    TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
 {
     let (tx, rx) = mpsc::unbounded();
 

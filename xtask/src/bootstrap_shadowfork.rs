@@ -11,18 +11,18 @@ use commonware_codec::{Encode as _, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
-        dkg::Output,
+        dkg::feldman_desmedt::Output,
         primitives::{group::Share, sharing::ModeVersion, variant::MinSig},
     },
     ed25519::PublicKey,
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
-use commonware_runtime::{Metrics as _, Runner as _};
+use commonware_runtime::{Runner as _, Supervisor as _};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::{NZU32, ordered};
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
-use rand_08::SeedableRng as _;
+use rand_10::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};
 use reth_db_api::{
     cursor::{DbCursorRO as _, DbCursorRW as _, DbDupCursorRO as _, DbDupCursorRW as _},
@@ -1090,7 +1090,7 @@ fn seed_consensus_state(
 
             runner.start(|context| async move {
                 let mut states = Metadata::<_, u64, BootstrapDkgState>::init(
-                    context.with_label("states"),
+                    context.child("states"),
                     MetadataConfig {
                         partition: DKG_STATES_METADATA_PARTITION.to_string(),
                         codec_config: MAXIMUM_VALIDATORS,
@@ -1109,7 +1109,7 @@ fn seed_consensus_state(
                     states.clear();
                 }
 
-                let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed);
+                let mut rng = rand_10::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
                     epoch: outcome.epoch,
                     seed: Summary::random(&mut rng),

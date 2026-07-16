@@ -385,7 +385,8 @@ impl commonware_consensus::CertifiableBlock for Block {
     fn context(&self) -> Self::Context {
         match self.consensus_context {
             Some(ctx) => Context {
-                leader: ctx.proposer.get().into(),
+                leader: PublicKey::read_cfg(&mut &ctx.proposer.get().to_bytes()[..], &())
+                    .expect("shared ed25519 implementation for consensus proposer keys"),
                 round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
                 parent: (View::new(ctx.parent_view), self.parent_digest()),
             },

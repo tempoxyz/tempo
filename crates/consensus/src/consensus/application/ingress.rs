@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay,
     simplex::{Plan, types::Context},
@@ -19,6 +20,21 @@ pub(crate) struct Mailbox {
 impl Mailbox {
     pub(super) fn from_sender(inner: mpsc::Sender<Message>) -> Self {
         Self { inner }
+    }
+
+    pub(crate) async fn genesis(&mut self, epoch: Epoch) -> oneshot::Receiver<Digest> {
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .send(
+                Genesis {
+                    epoch,
+                    response: tx,
+                }
+                .into(),
+            )
+            .await
+            .expect("application is present and ready to receive genesis requests");
+        rx
     }
 }
 
@@ -86,24 +102,6 @@ impl Automaton for Mailbox {
 
     type Digest = Digest;
 
-    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
-        let (tx, rx) = oneshot::channel();
-        // XXX: Cannot propagate the error upstream because of the trait def.
-        // But if the actor no longer responds the application is dead.
-        self.inner
-            .send(
-                Genesis {
-                    epoch,
-                    response: tx,
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive genesis");
-        rx.await
-            .expect("application returns the digest of the genesis")
-    }
-
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
         // XXX: Cannot propagate the error upstream because of the trait def.
         // But if the actor no longer responds the application is dead.
@@ -164,11 +162,15 @@ impl Relay for Mailbox {
     type PublicKey = PublicKey;
     type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.inner
-            .send(Broadcast { digest, plan }.into())
-            .await
-            .expect("application is present and ready to receive broadcasts");
+    fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) -> Feedback {
+        if self
+            .inner
+            .try_send(Broadcast { digest, plan }.into())
+            .is_ok()
+        {
+            Feedback::Ok
+        } else {
+            Feedback::Closed
+        }
     }
 }

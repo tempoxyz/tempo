@@ -4,11 +4,11 @@
 //! actually used because the follower never broadcasts blocks.
 
 use commonware_broadcast::buffered;
+use commonware_codec::{FixedSize as _, ReadExt as _};
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_math::algebra::Random as _;
 use commonware_p2p::utils::StaticProvider;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner};
 use commonware_utils::ordered::Set;
@@ -27,12 +27,17 @@ pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
 ) -> buffered::Mailbox<PublicKey, Block> {
     // Generate a random public key for the unused broadcast engine
     let mut rng = rand_08::rngs::StdRng::seed_from_u64(0);
-    let private_key = PrivateKey::random(&mut rng);
+    let private_key = {
+        let mut bytes = [0u8; PrivateKey::SIZE];
+        rand_08::RngCore::fill_bytes(&mut rng, &mut bytes);
+        PrivateKey::read(&mut bytes.as_slice()).expect("valid ed25519 private key bytes")
+    };
     let public_key = private_key.public_key();
 
     let config = buffered::Config {
         public_key,
-        mailbox_size,
+        mailbox_size: std::num::NonZeroUsize::new(mailbox_size)
+            .expect("follow broadcast mailbox size must be non-zero"),
         deque_size: 0,
         priority: false,
         codec_config: (),

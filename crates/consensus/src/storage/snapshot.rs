@@ -63,7 +63,7 @@ pub async fn prepare<TContext, P>(
     archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<State>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
@@ -136,7 +136,7 @@ pub async fn write_archive<TContext>(
     mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let mut finalizations =
@@ -200,7 +200,7 @@ async fn stream_finalization_archive_entries<TContext>(
     archive_entries: &tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let mut height = anchor_height;
 
@@ -247,7 +247,7 @@ async fn stream_block_archive_entries<TContext>(
     archive_entries: &tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let Some(first_height) = execution_finalized_height.checked_add(1) else {
         return Ok(());
@@ -283,7 +283,7 @@ async fn find_anchor_and_tip_finalizations<TContext>(
     execution_finalized_height: u64,
 ) -> eyre::Result<AnchorAndTipFinalizations>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let tip_height = finalizations
         .last_index()
@@ -357,7 +357,7 @@ async fn find_first_prunable_hole<TContext>(
     floor: u64,
 ) -> eyre::Result<Option<u64>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     while height > floor {
         if prunable
@@ -385,7 +385,7 @@ async fn find_nearest_finalization_below<TContext>(
     mut height: u64,
 ) -> eyre::Result<Option<(u64, Digest)>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     loop {
         let Some(next_height) = height.checked_sub(1) else {

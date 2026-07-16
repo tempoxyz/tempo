@@ -308,7 +308,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         //
         // TODO(hamdi): When finalizing a boundary block, the scheme for the next epoch is not yet registered meaning
         // we skip the subblock building task. This issue is scoped to the boundary and will be fixed.
-        let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
+        let Some(scheme) = self
+            .scheme_provider
+            .scoped(epoch_of_next_block)
+            .and_then(|scheme| scheme.into_scheme())
+        else {
             debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
         };
@@ -352,7 +356,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let span = Span::current();
         let handle = self
             .context
-            .with_label("validate_subblock")
+            .child("validate_subblock")
             .shared(true)
             .spawn(move |_| {
                 build_subblock(
@@ -418,13 +422,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         // We only send it after we've validated the tip to make sure that our view
         // of the chain matches the one of the view of subblock sender. Otherwise,
         // we expect to receive the subblock again.
-        let _ = network_tx
-            .send(
-                Recipients::One(sender.clone()),
-                SubblocksMessage::Ack(subblock.signature_hash()).encode(),
-                true,
-            )
-            .await;
+        let _ = network_tx.send(
+            Recipients::One(sender.clone()),
+            SubblocksMessage::Ack(subblock.signature_hash()).encode(),
+            true,
+        );
 
         debug!("validating new subblock");
 
@@ -434,17 +436,20 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let scheme_provider = self.scheme_provider.clone();
         let epoch_strategy = self.epoch_strategy.clone();
         let span = Span::current();
-        self.context.clone().shared(true).spawn(move |_| {
-            validate_subblock(
-                sender.clone(),
-                node,
-                subblock,
-                validated_subblocks_tx,
-                scheme_provider,
-                epoch_strategy,
-            )
-            .instrument(span)
-        });
+        self.context
+            .child("validate_subblock")
+            .shared(true)
+            .spawn(move |_| {
+                validate_subblock(
+                    sender.clone(),
+                    node,
+                    subblock,
+                    validated_subblocks_tx,
+                    scheme_provider,
+                    epoch_strategy,
+                )
+                .instrument(span)
+            });
 
         Ok(())
     }
@@ -506,13 +511,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         );
 
         if built.proposer != self.signer.public_key() {
-            let _ = network_tx
-                .send(
-                    Recipients::One(built.proposer.clone()),
-                    SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
-                    true,
-                )
-                .await;
+            let _ = network_tx.send(
+                Recipients::One(built.proposer.clone()),
+                SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
+                true,
+            );
         } else {
             let subblock = built.subblock.clone();
             built.stop_broadcasting();
@@ -663,10 +666,11 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-    async fn report(&mut self, activity: Self::Activity) -> () {
+    fn report(&mut self, activity: Self::Activity) -> commonware_actor::Feedback {
         let _ = self
             .tx
             .unbounded_send(Message::Consensus(Box::new(activity)));
+        commonware_actor::Feedback::Ok
     }
 }
 
@@ -837,6 +841,7 @@ async fn validate_subblock(
         .epoch();
     let scheme = scheme_provider
         .scoped(epoch)
+        .and_then(|scheme| scheme.into_scheme())
         .ok_or_eyre("scheme not found")?;
     let participants = scheme.participants().len() as usize;
 

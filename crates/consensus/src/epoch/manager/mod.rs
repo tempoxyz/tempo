@@ -12,7 +12,7 @@ use commonware_p2p::Blocker;
 use commonware_runtime::{
     BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
 };
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 
 use crate::{epoch::scheme_provider::SchemeProvider, feed, subblocks};
 

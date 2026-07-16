@@ -36,6 +36,7 @@ axum.workspace = true
 bytes.workspace = true
 clap.workspace = true
 
+commonware-actor.workspace = true
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -58,6 +59,7 @@ jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 pin-project = "1.1.10"
 prometheus-client.workspace = true
+rand_10.workspace = true
 rand_08.workspace = true
 
 reth-consensus-common.workspace = true

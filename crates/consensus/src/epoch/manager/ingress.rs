@@ -100,7 +100,7 @@ pub(super) struct Exit {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> commonware_actor::Feedback {
         if self
             .inner
             .unbounded_send(Message::in_current_span(activity))
@@ -110,6 +110,9 @@ impl Reporter for Mailbox {
                 "failed sending finalization activity to epoch manager because \
                 it is no longer running"
             );
+            commonware_actor::Feedback::Closed
+        } else {
+            commonware_actor::Feedback::Ok
         }
     }
 }

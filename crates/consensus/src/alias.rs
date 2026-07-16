@@ -17,10 +17,10 @@ pub(crate) mod marshal {
     use commonware_storage::archive::{Archive as _, Identifier, immutable};
     use commonware_utils::acknowledgement::Exact;
     use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
-    use rand_08::{CryptoRng, Rng};
+    use rand_10::{CryptoRng, Rng};
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
-    use reth_provider::providers::BlockchainProvider;
+    use reth_provider::{BlockReader as _, providers::BlockchainProvider};
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tracing::{info, instrument};
 
@@ -122,16 +122,8 @@ pub(crate) mod marshal {
         config: Config,
     ) -> eyre::Result<Initialized<TContext>>
     where
-        TContext: Clock
-            + Metrics
-            + Spawner
-            + Storage
-            + BufferPooler
-            + Rng
-            + CryptoRng
-            + Clone
-            + Send
-            + 'static,
+        TContext:
+            Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
@@ -169,15 +161,27 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
+        let genesis_block = execution_node
+            .provider
+            .block_by_number(0)
+            .wrap_err("failed reading genesis block from execution layer")?
+            .ok_or_eyre("execution layer did not return a genesis block")?;
+        let genesis_block = Block::from_execution_block_unchecked(
+            reth_primitives_traits::SealedBlock::seal_slow(genesis_block),
+            None,
+        );
+
         let (actor, mailbox, marshal_stored_height) = core::Actor::init(
-            context.with_label("marshal"),
+            context.child("marshal"),
             finalizations_by_height,
             finalized_blocks,
             marshal::Config {
                 provider: config.scheme_provider,
                 epocher: config.epoch_strategy,
+                start: marshal::Start::Genesis(genesis_block),
                 partition_prefix: config.partition_prefix,
-                mailbox_size: config.mailbox_size,
+                mailbox_size: NonZeroUsize::new(config.mailbox_size)
+                    .ok_or_eyre("marshal mailbox size must be non-zero")?,
                 view_retention_timeout: config.view_retention_timeout,
                 prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
                 page_cache,
@@ -193,14 +197,15 @@ pub(crate) mod marshal {
         .await;
 
         let startup_floor_height = finalized_floor.0;
-        let last_finalized_height = marshal_stored_height.max(startup_floor_height);
+        let last_finalized_height = marshal_stored_height.map_or(startup_floor_height, |stored| {
+            stored.max(startup_floor_height)
+        });
         info!(
-            marshal_stored = %marshal_stored_height,
+            marshal_stored = ?marshal_stored_height,
             selected_floor = %startup_floor_height,
             strict_startup = config.strict_startup,
-            "setting marshal sync floor"
+            "selected marshal startup floor"
         );
-        mailbox.set_floor(last_finalized_height).await;
 
         Ok(Initialized {
             actor,

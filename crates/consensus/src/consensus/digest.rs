@@ -40,7 +40,7 @@ impl commonware_math::algebra::Random for Digest {
     ///
     /// One-to-one copy of [`commonware_cryptography::Digest`]
     /// for [`commonware_cryptography::sha256::Digest`].
-    fn random(mut rng: impl rand_core::CryptoRngCore) -> Self {
+    fn random(mut rng: impl rand_core::CryptoRng) -> Self {
         let mut array = B256::ZERO;
         rng.fill_bytes(&mut *array);
         Self(array)

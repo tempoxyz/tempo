@@ -123,9 +123,10 @@ impl From<Update<Block>> for Command {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, update: Self::Activity) {
-        self.inner
-            .unbounded_send(Message::in_current_span(update))
-            .expect("actor is present and ready to receive broadcasts");
+    fn report(&mut self, update: Self::Activity) -> commonware_actor::Feedback {
+        match self.inner.unbounded_send(Message::in_current_span(update)) {
+            Ok(()) => commonware_actor::Feedback::Ok,
+            Err(_) => commonware_actor::Feedback::Closed,
+        }
     }
 }

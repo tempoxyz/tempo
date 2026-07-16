@@ -103,7 +103,7 @@ where
                                 "connecting to upstream node failed, attempting again",
                             ));
                             self.pending_connect.replace({
-                                let context = self.context.clone();
+                                let context = self.context.child("reconnect");
                                 let url = self.url;
                                 async move {
                                     context.sleep(reconnect_in).await;
@@ -138,7 +138,7 @@ where
                             debug_span!("consensus_event").in_scope(|| debug!(
                                 ?event, "received consensus event, forwarding to reporter"
                             ));
-                            reporter.report(event).await;
+                            reporter.report(event);
                         }
                         Some(Err(error)) => {
                             warn_span!("event").in_scope(|| warn!(
@@ -211,13 +211,13 @@ where
                 super::ingress::Message::GetFinalization { height, response } => {
                     let client = client.clone();
                     self.context
-                        .with_label("get_finalization")
+                        .child("get_finalization")
                         .spawn(move |_| get_finalization(client, height, response));
                 }
                 super::ingress::Message::GetBlock { digest, response } => {
                     let client = client.clone();
                     self.context
-                        .with_label("get_block")
+                        .child("get_block")
                         .spawn(move |_| get_block(client, digest, response));
                 }
             }

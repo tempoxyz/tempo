@@ -10,7 +10,7 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 
 use eyre::WrapErr as _;
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
 mod actor;

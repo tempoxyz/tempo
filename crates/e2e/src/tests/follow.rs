@@ -21,7 +21,7 @@ use commonware_runtime::{
     deterministic::{self, Context, Runner},
 };
 use futures::future::join_all;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
@@ -117,7 +117,7 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRngCore + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
         use tempo_consensus::follow::upstream::in_process;
         let Self {
@@ -169,7 +169,7 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label("upstream"),
+            context.child("upstream"),
             in_process::Config {
                 execution_node: upstream_execution_node,
                 feed: upstream_feed_state,
@@ -200,7 +200,9 @@ impl FollowerBuilder {
         };
 
         let handle = config
-            .try_init(context.with_label(&name))
+            // Labels must be 'static; leaking is fine for the bounded number
+            // of followers in tests and keeps `name` as the metric prefix.
+            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
             .await
             .expect("failed to initialize follow engine")
             .start();

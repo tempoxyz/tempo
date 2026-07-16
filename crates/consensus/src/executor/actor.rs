@@ -7,10 +7,12 @@
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
+use commonware_codec::Read as _;
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics as RuntimeMetrics, Pacer, Spawner, spawn_cell,
+    telemetry::metrics::Registered,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, bail, ensure};
@@ -152,7 +154,7 @@ pub(crate) struct Actor<TContext> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: Counter,
+    finalized_blocks_proposed_by_self: Registered<Counter>,
 }
 
 impl Metrics {
@@ -160,11 +162,10 @@ impl Metrics {
     where
         TContext: RuntimeMetrics,
     {
-        let finalized_blocks_proposed_by_self = Counter::default();
-        context.register(
+        let finalized_blocks_proposed_by_self = context.register(
             "finalized_blocks_proposed_by_self",
             "number of finalized blocks whose proposer matches this node's public key",
-            finalized_blocks_proposed_by_self.clone(),
+            Counter::default(),
         );
         Self {
             finalized_blocks_proposed_by_self,
@@ -270,7 +271,7 @@ where
                             if let Some(job) = payload_job {
                                 self.payload_jobs.push(
                                     run_payload_job(
-                                        self.context.clone(),
+                                        self.context.child("payload_job"),
                                         self.execution_node.clone(),
                                         job,
                                     )
@@ -339,7 +340,7 @@ where
             };
 
             if let Some(canonicalized) = forward_finalized(
-                &self.context,
+                &*self.context,
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
@@ -431,7 +432,7 @@ where
                     self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(
                         FinalizedBlockRequest {
                             cause,
-                            block,
+                            block: (*block).clone(),
                             acknowledgment: acknowledgement,
                         },
                     )));
@@ -480,7 +481,7 @@ where
         let request = self.execution_queue.pop_front().expect("front exists");
 
         let task = execute_request(
-            self.context.clone(),
+            ContextCell::new(self.context.child("execute_request")),
             self.execution_node.clone(),
             self.public_key.clone(),
             self.metrics.clone(),
@@ -596,7 +597,7 @@ where
         ExecutionRequest::Heartbeat { cause } => {
             if let Err(error) = submit_forkchoice_update(
                 &execution_node,
-                &context,
+                &*context,
                 cause,
                 canonicalized,
                 None,
@@ -613,7 +614,7 @@ where
         }
         ExecutionRequest::Canonicalize(request) => {
             let (canonicalized, payload_job) =
-                run_canonicalize_task(&context, execution_node, canonicalized, *request).await;
+                run_canonicalize_task(&*context, execution_node, canonicalized, *request).await;
             ExecutionTaskResult::Completed {
                 canonicalized,
                 payload_job,
@@ -621,7 +622,7 @@ where
         }
         ExecutionRequest::FinalizeBlock(request) => {
             match forward_finalized(
-                &context,
+                &*context,
                 execution_node,
                 public_key,
                 metrics,
@@ -971,8 +972,11 @@ async fn forward_finalized<TContext: Pacer>(
     };
 
     if let Some(public_key) = public_key.as_ref()
-        && consensus_context
-            .is_some_and(|context| &PublicKey::from(context.proposer.get()) == public_key)
+        && consensus_context.is_some_and(|context| {
+            let proposer = PublicKey::read_cfg(&mut &context.proposer.get().to_bytes()[..], &())
+                .expect("shared ed25519 implementation for consensus proposer keys");
+            &proposer == public_key
+        })
     {
         metrics.finalized_blocks_proposed_by_self.inc();
     }

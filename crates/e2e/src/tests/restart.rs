@@ -13,7 +13,7 @@ use commonware_runtime::{
 };
 use commonware_utils::NZU64;
 use futures::future::join_all;
-use rand_08::Rng;
+use rand_10::RngExt as _;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use tracing::debug;
@@ -269,7 +269,7 @@ impl RestartSetup {
             wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
 
             // Randomly select a validator to kill
-            let idx = context.gen_range(0..validators.len());
+            let idx = context.random_range(0..validators.len());
             validators[idx].stop().await;
 
             debug!(public_key = %validators[idx].public_key(), "stopped a random validator");

@@ -19,10 +19,10 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZUsize, channel::mpsc};
+use commonware_utils::NZUsize;
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
-use rand_08::{CryptoRng, Rng};
+use rand_10::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::TempoFullNode;
 use tracing::{info, info_span};
@@ -89,9 +89,9 @@ impl<TUpstream> Config<TUpstream> {
             + Metrics
             + Pacer
             + Spawner
+            + commonware_runtime::Supervisor
             + Storage
             + BufferPooler
-            + Clone
             + Send
             + 'static,
     {
@@ -111,7 +111,7 @@ impl<TUpstream> Config<TUpstream> {
             finalized_floor: last_finalized_height,
             finalized_tip: _,
         } = alias::marshal::init(
-            context.clone(),
+            context.child("marshal"),
             page_cache_ref,
             self.execution_node.clone(),
             alias::marshal::Config {
@@ -136,7 +136,7 @@ impl<TUpstream> Config<TUpstream> {
         });
 
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
-            context.with_label("resolver"),
+            context.child("resolver"),
             resolver::Config {
                 execution_node: self.execution_node.clone(),
                 upstream: self.upstream_mailbox.clone(),
@@ -145,13 +145,13 @@ impl<TUpstream> Config<TUpstream> {
         );
 
         let (feed_actor, feed_mailbox) = feed::init(
-            context.with_label("feed"),
+            context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
 
         let (executor_actor, executor_mailbox) = executor::init(
-            context.with_label("executor"),
+            context.child("executor"),
             executor::Config {
                 execution_node: self.execution_node.clone(),
                 marshal: marshal_mailbox.clone(),
@@ -162,10 +162,10 @@ impl<TUpstream> Config<TUpstream> {
         );
 
         // No broadcast is needed in follow mode.
-        let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
+        let broadcast = stubs::null_broadcast(context.child("broadcast"), self.mailbox_size);
 
         let (driver, driver_mailbox) = driver::try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             driver::Config {
                 execution_node: self.execution_node.clone(),
                 scheme_provider: scheme_provider.clone(),
@@ -205,7 +205,7 @@ where
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
     resolver_mailbox: resolver::Mailbox,
-    resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
+    resolver_rx: commonware_consensus::marshal::resolver::handler::Receiver<Digest>,
     marshal: crate::alias::marshal::Actor<TContext>,
     executor: executor::Actor<TContext>,
     executor_mailbox: executor::Mailbox,
@@ -222,9 +222,9 @@ where
         + Metrics
         + Pacer
         + Spawner
+        + commonware_runtime::Supervisor
         + Storage
         + BufferPooler
-        + Clone
         + Send
         + 'static,
     TUpstreamActor: upstream::UpstreamActor,

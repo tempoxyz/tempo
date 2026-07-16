@@ -786,10 +786,12 @@ mod tests {
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
-    use commonware_cryptography::{Signer, bls12381::dkg, ed25519::PrivateKey};
+    use commonware_cryptography::{
+        Signer, bls12381::dkg::feldman_desmedt as dkg, ed25519::PrivateKey,
+    };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand_08::SeedableRng as _;
+    use rand_10::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
@@ -839,7 +841,7 @@ mod tests {
     }
 
     fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
-        let mut rng = rand_08::rngs::StdRng::seed_from_u64(epoch);
+        let mut rng = rand_10::rngs::StdRng::seed_from_u64(epoch);
         let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(players)
             .collect::<Vec<_>>();

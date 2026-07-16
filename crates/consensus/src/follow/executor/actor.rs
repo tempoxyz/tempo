@@ -141,7 +141,7 @@ where
                 Some(update) = self.mailbox.next() => {
                     match update {
                         Update::Block(block, ack) => {
-                            self.block_queue.push_back((block, ack));
+                            self.block_queue.push_back(((*block).clone(), ack));
                         }
                         Update::Tip(_, height, digest) => {
                             if height > self.latest_tip.height {
@@ -183,10 +183,11 @@ where
         };
 
         let last_fcu = self.last_fcu;
-        let context = self.context.clone();
+        let context = self.context.child("execute_request");
         let execution_node = self.execution_node.clone();
-        self.execution_task
-            .replace(execute_request(context, execution_node, last_fcu, request).boxed());
+        self.execution_task.replace(
+            execute_request(ContextCell::new(context), execution_node, last_fcu, request).boxed(),
+        );
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
@@ -226,8 +227,8 @@ where
             return Ok(());
         };
 
-        debug!(%finalized_height, %floor_height, %floor_digest, "advancing marshal floor");
-        self.marshal.set_floor(floor_height).await;
+        debug!(%finalized_height, %floor_height, %floor_digest, "pruning marshal floor");
+        self.marshal.prune(floor_height);
         self.floor = floor_height;
 
         Ok(())
@@ -252,7 +253,7 @@ async fn execute_request<TContext: Pacer>(
 ) -> ExecutionTaskResult {
     match request {
         ExecutionRequest::Forkchoice(tip) => {
-            match submit_forkchoice_update(&context, &execution_node, &tip).await {
+            match submit_forkchoice_update(&*context, &execution_node, &tip).await {
                 Ok(()) => ExecutionTaskResult::Completed(tip),
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
@@ -263,12 +264,12 @@ async fn execute_request<TContext: Pacer>(
                 digest: block.digest(),
             };
 
-            if let Err(error) = submit_new_payload(&context, &execution_node, block).await {
+            if let Err(error) = submit_new_payload(&*context, &execution_node, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
 
             let last_fcu = if tip.height > last_fcu.height {
-                if let Err(error) = submit_forkchoice_update(&context, &execution_node, &tip).await
+                if let Err(error) = submit_forkchoice_update(&*context, &execution_node, &tip).await
                 {
                     return ExecutionTaskResult::Fatal(error);
                 }

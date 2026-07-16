@@ -1,7 +1,10 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
-    Extension, Router,
+    Router,
     body::Body,
     http::{Response, StatusCode, header},
     routing::get,
@@ -27,18 +30,27 @@ pub fn install(context: Context, listen_addr: SocketAddr) -> Handle<eyre::Result
             .wrap_err("failed to bind provided address")?;
 
         // Create a router for the metrics server
-        let app = Router::new()
-            .route(
-                "/metrics",
-                get(|Extension(ctx): Extension<Context>| async move {
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
-                        .body(Body::from(ctx.encode()))
-                        .expect("Failed to create response")
-                }),
-            )
-            .layer(Extension(context));
+        let metrics_context = Arc::new(Mutex::new(context));
+        let app = Router::new().route(
+            "/metrics",
+            get({
+                let metrics_context = Arc::clone(&metrics_context);
+                move || {
+                    let metrics_context = Arc::clone(&metrics_context);
+                    async move {
+                        let body = metrics_context
+                            .lock()
+                            .expect("metrics context mutex must not be poisoned")
+                            .encode();
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+                            .body(Body::from(body))
+                            .expect("Failed to create response")
+                    }
+                }
+            }),
+        );
 
         // Serve the metrics over HTTP.
         //

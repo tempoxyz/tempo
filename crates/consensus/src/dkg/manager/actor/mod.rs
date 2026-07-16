@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
+use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc, task::Poll};
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
@@ -6,14 +6,15 @@ use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
-    marshal::{self, Update},
+    marshal::{Update, core::DigestFallback},
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{
-            self, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog, observe,
+        dkg::feldman_desmedt::{
+            self as dkg, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog,
+            observe,
         },
         primitives::{group::Share, variant::MinSig},
     },
@@ -26,7 +27,10 @@ use commonware_p2p::{
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
-use commonware_runtime::{Clock, ContextCell, Handle, IoBuf, Metrics as _, Spawner, spawn_cell};
+use commonware_runtime::{
+    Clock, ContextCell, Handle, IoBuf, Spawner, spawn_cell,
+    telemetry::metrics::{Registered, histogram::Timed},
+};
 use commonware_utils::{Acknowledgement, N3f1, NZU32, acknowledgement::Exact, ordered};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
@@ -37,7 +41,7 @@ use futures::{
     stream::{FusedStream, FuturesOrdered},
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use reth_provider::HeaderProvider as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -138,7 +142,7 @@ impl<TContext> Actor<TContext>
 where
     TContext: commonware_runtime::BufferPooler
         + Clock
-        + CryptoRngCore
+        + CryptoRng
         + commonware_runtime::Metrics
         + Spawner
         + commonware_runtime::Storage,
@@ -150,7 +154,7 @@ where
     ) -> eyre::Result<Self> {
         let context = ContextCell::new(context);
 
-        let metrics = Metrics::init(&context);
+        let metrics = Metrics::init(&*context);
 
         Ok(Self {
             config,
@@ -181,7 +185,7 @@ where
         let Ok(mut storage) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
             .initial_state({
-                let mut context = self.context.clone();
+                let mut context = self.context.child("initial_state");
                 let execution_node = self.config.execution_node.clone();
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
@@ -199,7 +203,7 @@ where
                     .await
                 }
             })
-            .init(self.context.with_label("state"))
+            .init(self.context.child("state"))
             .await
         else {
             // NOTE: Builder::init emits en error event.
@@ -220,7 +224,7 @@ where
         }
 
         let (mux, mut dkg_mux) = mux::Muxer::new(
-            self.context.with_label("dkg_mux"),
+            self.context.child("dkg_mux"),
             sender,
             receiver,
             self.config.mailbox_size,
@@ -247,7 +251,10 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
@@ -402,7 +409,9 @@ where
                                         "received finalized block",
                                     ));
                                     self.pending_finalized_blocks.push_back(ready((
-                                        msg.cause, block, ack,
+                                        msg.cause,
+                                        (*block).clone(),
+                                        ack,
                                     )));
                                 }
                             }
@@ -448,7 +457,16 @@ where
                                 )
                                 .await
                             {
-                                let stream = match self.config.marshal.ancestry((None, hole)).await {
+                                let stream = match self
+                                    .config
+                                    .marshal
+                                    .ancestry(
+                                        Arc::new(self.context.child("ancestry")),
+                                        (DigestFallback::Wait, hole),
+                                        self.metrics.ancestry_fetch_duration.clone(),
+                                    )
+                                    .await
+                                {
                                     Some(stream) => stream,
                                     None => break Err(eyre!("marshal mailbox is closed")),
                                 };
@@ -477,7 +495,16 @@ where
                         .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
                         .await
                     {
-                        let stream = match self.config.marshal.ancestry((None, hole)).await {
+                        let stream = match self
+                            .config
+                            .marshal
+                            .ancestry(
+                                Arc::new(self.context.child("ancestry")),
+                                (DigestFallback::Wait, hole),
+                                self.metrics.ancestry_fetch_duration.clone(),
+                            )
+                            .await
+                        {
                             Some(stream) => stream,
                             None => break Err(eyre!("marshal mailbox is closed")),
                         };
@@ -497,7 +524,10 @@ where
         storage: &mut state::Storage<TStorageContext>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
     {
         let state = storage.current();
         let round = state::Round::from_state(&state, &self.config.namespace);
@@ -571,7 +601,10 @@ where
         dealer_state: Option<&mut state::Dealer>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
     {
         let height = Height::new(header.number());
         if !header.extra_data().is_empty() {
@@ -696,7 +729,10 @@ where
         header: TempoHeader,
     ) -> eyre::Result<Option<State>>
     where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let height = Height::new(header.number());
@@ -785,10 +821,7 @@ where
                         info!("local DKG ceremony was a success");
                         Some((new_output, state::ShareState::Plaintext(Some(new_share))))
                     }
-                    Err(
-                        reason
-                        @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
-                    ) => {
+                    Err(reason @ dkg::Error::MissingPlayerDealing) => {
                         warn!(
                             reason = %eyre::Report::new(reason),
                             "missing critical DKG state to reconstruct a share in this epoch; has \
@@ -873,7 +906,10 @@ where
         player_state: &mut Option<state::Player>,
         round_channel: &mut TSender,
     ) where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let me = self.config.me.public_key();
@@ -900,24 +936,15 @@ where
             } else {
                 // Send to remote player
                 let payload = Message::Dealer(pub_msg, priv_msg).encode();
-                match round_channel
-                    .send(Recipients::One(player.clone()), payload, true)
-                    .await
-                {
-                    Ok(success) => {
-                        if success.is_empty() {
-                            // TODO(janis): figure out what it means if the response
-                            // is empty. Does it just mean the other party failed
-                            // to respond?
-                            info!(%player, "failed to send share");
-                        } else {
-                            self.metrics.shares_distributed.inc();
-                            info!(%player, "share sent");
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%player, %error, "error sending share");
-                    }
+                let success = round_channel.send(Recipients::One(player.clone()), payload, true);
+                if success.is_empty() {
+                    // TODO(janis): figure out what it means if the response
+                    // is empty. Does it just mean the other party failed
+                    // to respond?
+                    info!(%player, "failed to send share");
+                } else {
+                    self.metrics.shares_distributed.inc();
+                    info!(%player, "share sent");
                 }
             }
         }
@@ -946,7 +973,10 @@ where
         mut message: IoBuf,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
@@ -961,22 +991,17 @@ where
                         .await
                         .wrap_err("failed storing dealing")?;
 
-                    if let Err(error) = round_channel
-                        .send(
-                            Recipients::One(from.clone()),
-                            Message::Ack(ack).encode(),
-                            true,
-                        )
-                        .await
-                    {
+                    let acked = round_channel.send(
+                        Recipients::One(from.clone()),
+                        Message::Ack(ack).encode(),
+                        true,
+                    );
+                    if acked.is_empty() {
                         // FIXME(janis): the GATs in the Sender (and LimitedSender)
                         // lead to `borrowed data escapes outside of method` errors.
                         // `wrap_err` with early return does not work, and neither
                         // does `Report::new` nor `&error as &dyn std::error::Error`.
-                        warn!(
-                            reason = ?error,
-                            "failed returning ACK to dealer",
-                        );
+                        warn!("failed returning ACK to dealer");
                         bail!("failed returning ACK to dealer");
                     }
                     info!("returned ACK to dealer");
@@ -1032,7 +1057,10 @@ where
         request: GetDkgOutcome,
     ) -> eyre::Result<Option<(Digest, GetDkgOutcome)>>
     where
-        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage
+            + commonware_runtime::BufferPooler,
     {
         let epoch_info = self
             .config
@@ -1122,10 +1150,7 @@ where
                             info!("local DKG ceremony was a success");
                             Some((new_output, state::ShareState::Plaintext(Some(new_share))))
                         }
-                        Err(
-                            reason
-                            @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
-                        ) => {
+                        Err(reason @ dkg::Error::MissingPlayerDealing) => {
                             warn!(
                                 reason = %eyre::Report::new(reason),
                                 "missing critical DKG state to reconstruct a share in this epoch; has \
@@ -1236,7 +1261,7 @@ async fn establish_initial_state<TContext>(
     marshal: &mut crate::alias::marshal::Mailbox,
 ) -> eyre::Result<State>
 where
-    TContext: Clock + CryptoRngCore,
+    TContext: Clock + CryptoRng,
 {
     let latest_boundary = latest_boundary_at_or_before(epoch_strategy, last_finalized_height);
     info!(
@@ -1391,21 +1416,23 @@ mod tests {
 
 #[derive(Clone)]
 struct Metrics {
-    shares_distributed: Gauge,
-    shares_received: Gauge,
-    acks_received: Gauge,
-    acks_sent: Gauge,
-    dealings_read: Gauge,
-    bad_dealings: Gauge,
+    shares_distributed: Registered<Gauge>,
+    shares_received: Registered<Gauge>,
+    acks_received: Registered<Gauge>,
+    acks_sent: Registered<Gauge>,
+    dealings_read: Registered<Gauge>,
+    bad_dealings: Registered<Gauge>,
 
-    failures: Counter,
-    successes: Counter,
+    failures: Registered<Counter>,
+    successes: Registered<Counter>,
 
-    dealers: Gauge,
-    players: Gauge,
+    dealers: Registered<Gauge>,
+    players: Registered<Gauge>,
 
-    how_often_dealer: Counter,
-    how_often_player: Counter,
+    how_often_dealer: Registered<Counter>,
+    how_often_player: Registered<Counter>,
+
+    ancestry_fetch_duration: Timed,
 }
 
 impl Metrics {
@@ -1413,86 +1440,80 @@ impl Metrics {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let failures = Counter::default();
-        context.register(
+        let failures = context.register(
             "ceremony_failures",
             "the number of failed ceremonies a node participated in",
-            failures.clone(),
+            Counter::default(),
         );
 
-        let successes = Counter::default();
-        context.register(
+        let successes = context.register(
             "ceremony_successes",
             "the number of successful ceremonies a node participated in",
-            successes.clone(),
+            Counter::default(),
         );
 
-        let dealers = Gauge::default();
-        context.register(
+        let dealers = context.register(
             "ceremony_dealers",
             "the number of dealers in the currently running ceremony",
-            dealers.clone(),
+            Gauge::default(),
         );
-        let players = Gauge::default();
-        context.register(
+        let players = context.register(
             "ceremony_players",
             "the number of players in the currently running ceremony",
-            players.clone(),
+            Gauge::default(),
         );
 
-        let how_often_dealer = Counter::default();
-        context.register(
+        let how_often_dealer = context.register(
             "how_often_dealer",
             "number of the times as node was active as a dealer",
-            how_often_dealer.clone(),
+            Counter::default(),
         );
-        let how_often_player = Counter::default();
-        context.register(
+        let how_often_player = context.register(
             "how_often_player",
             "number of the times as node was active as a player",
-            how_often_player.clone(),
+            Counter::default(),
         );
 
-        let shares_distributed = Gauge::default();
-        context.register(
+        let shares_distributed = context.register(
             "ceremony_shares_distributed",
             "the number of shares distributed by this node as a dealer in the current ceremony",
-            shares_distributed.clone(),
+            Gauge::default(),
         );
 
-        let shares_received = Gauge::default();
-        context.register(
+        let shares_received = context.register(
             "ceremony_shares_received",
             "the number of shares received by this node as a player in the current ceremony",
-            shares_received.clone(),
+            Gauge::default(),
         );
 
-        let acks_received = Gauge::default();
-        context.register(
+        let acks_received = context.register(
             "ceremony_acks_received",
             "the number of acknowledgments received by this node as a dealer in the current ceremony",
-            acks_received.clone(),
+            Gauge::default(),
         );
 
-        let acks_sent = Gauge::default();
-        context.register(
+        let acks_sent = context.register(
             "ceremony_acks_sent",
             "the number of acknowledgments sent by this node as a player in the current ceremony",
-            acks_sent.clone(),
+            Gauge::default(),
         );
 
-        let dealings_read = Gauge::default();
-        context.register(
+        let dealings_read = context.register(
             "ceremony_dealings_read",
             "the number of dealings read from the blockchain in the current ceremony",
-            dealings_read.clone(),
+            Gauge::default(),
         );
 
-        let bad_dealings = Gauge::default();
-        context.register(
+        let bad_dealings = context.register(
             "ceremony_bad_dealings",
             "the number of blocks where decoding and verifying dealings failed in the current ceremony",
-            bad_dealings.clone(),
+            Gauge::default(),
+        );
+
+        let ancestry_fetch_duration = Timed::register(
+            context,
+            "ceremony_ancestry_fetch_duration",
+            "duration of marshal ancestry fetches while recovering DKG outcomes",
         );
 
         Self {
@@ -1508,6 +1529,7 @@ impl Metrics {
             how_often_player,
             failures,
             successes,
+            ancestry_fetch_duration,
         }
     }
 
@@ -1528,7 +1550,7 @@ impl Metrics {
 /// is also set.
 struct AncestorStream {
     pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>>,
+    inner: Option<std::pin::Pin<Box<dyn Stream<Item = Arc<Block>> + Send>>>,
 }
 
 impl AncestorStream {
@@ -1547,10 +1569,10 @@ impl AncestorStream {
     fn set(
         &mut self,
         pending_request: (Span, GetDkgOutcome),
-        stream: marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>,
+        stream: impl Stream<Item = Arc<Block>> + Send + 'static,
     ) {
         self.pending_request.replace(pending_request);
-        self.inner.replace(stream);
+        self.inner.replace(Box::pin(stream));
     }
 
     fn tip(&self) -> Option<Digest> {
@@ -1574,14 +1596,14 @@ impl Stream for AncestorStream {
                 Some(inner) => inner,
                 None => return Poll::Ready(None),
             };
-            this.poll_next_unpin(cx)
+            std::pin::Pin::new(this).poll_next(cx)
         };
         match futures::ready!(item) {
             None => {
                 self.inner.take();
                 Poll::Ready(None)
             }
-            Some(block) => Poll::Ready(Some(block)),
+            Some(block) => Poll::Ready(Some((*block).clone())),
         }
     }
 }

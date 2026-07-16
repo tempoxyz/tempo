@@ -15,8 +15,7 @@ use commonware_cryptography::{
     bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_math::algebra::Random as _;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use secrecy::{ExposeSecret as _, ExposeSecretMut as _, SecretBox, SecretString};
 
 #[cfg(test)]
@@ -84,9 +83,13 @@ impl SigningKey {
     }
 
     /// Generates a fresh, cryptographically random signing key using `rng`.
-    pub fn random<R: CryptoRngCore>(rng: R) -> Self {
+    pub fn random<R: CryptoRng>(mut rng: R) -> Self {
+        let mut bytes = [0u8; PrivateKey::SIZE];
+        rng.fill_bytes(&mut bytes);
+
         Self {
-            inner: PrivateKey::random(rng),
+            // Any 32-byte sequence decodes into an ed25519 private key.
+            inner: PrivateKey::decode(&bytes[..]).expect("valid ed25519 private key bytes"),
         }
     }
 
