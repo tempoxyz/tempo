@@ -47,7 +47,6 @@ abstract contract ZoneFactory is IZoneFactory {
     uint32 internal _nextZoneId = 1;
 
     mapping(uint32 => ZoneInfo) internal _zones;
-    mapping(address => bool) internal _isZonePortal;
 
     /// @notice Initial value is configured by the T9 activation; exact address TBD.
     address public owner;
@@ -118,8 +117,6 @@ abstract contract ZoneFactory is IZoneFactory {
             rpcUrl: params.rpcUrl
         });
 
-        _isZonePortal[portal] = true;
-
         emit ZoneCreated(
             zoneId,
             portal,
@@ -171,7 +168,8 @@ abstract contract ZoneFactory is IZoneFactory {
     }
 
     function isZonePortal(address portal) external view returns (bool) {
-        return _isZonePortal[portal];
+        uint64 zoneId = uint64(uint160(portal));
+        return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < _nextZoneId;
     }
 
     function isValidVerifier(address v) external pure returns (bool) {
