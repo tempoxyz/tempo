@@ -27,13 +27,15 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
-    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
-    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+use tempo_contracts::{
+    precompiles::{
+        ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+        RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+        TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+        ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    },
+    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
 };
-use tempo_contracts::zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -890,11 +892,11 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{
-        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS,
-    };
-    use tempo_contracts::zones::{
-        ZONE_MESSENGER_RUNTIME_HASH, ZONE_PORTAL_RUNTIME_HASH, ZONE_VERIFIER_RUNTIME_HASH,
+    use tempo_contracts::{
+        precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS},
+        zones::{
+            ZONE_MESSENGER_RUNTIME_HASH, ZONE_PORTAL_RUNTIME_HASH, ZONE_VERIFIER_RUNTIME_HASH,
+        },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
