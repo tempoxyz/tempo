@@ -66,7 +66,6 @@ abstract contract ZoneFactory is IZoneFactory {
         }
         if (params.admin == address(0)) revert InvalidAdmin();
         if (params.sequencer == address(0)) revert InvalidSequencer();
-        if (params.verifier != ZONE_VERIFIER_ADDRESS) revert InvalidVerifier();
         if (gasleft() < ZONE_CREATION_GAS) revert InsufficientGas();
 
         zoneId = nextZoneId;
@@ -96,7 +95,7 @@ abstract contract ZoneFactory is IZoneFactory {
                 ZONE_MESSENGER_ADDRESS,
                 params.admin,
                 params.sequencer,
-                params.verifier,
+                ZONE_VERIFIER_ADDRESS,
                 params.zoneParams.genesisBlockHash,
                 params.zoneParams.genesisTempoBlockNumber,
                 params.rpcUrl
@@ -120,7 +119,7 @@ abstract contract ZoneFactory is IZoneFactory {
             params.initialToken,
             params.admin,
             params.sequencer,
-            params.verifier,
+            ZONE_VERIFIER_ADDRESS,
             params.zoneParams.genesisBlockHash,
             params.zoneParams.genesisTempoBlockHash,
             params.zoneParams.genesisTempoBlockNumber

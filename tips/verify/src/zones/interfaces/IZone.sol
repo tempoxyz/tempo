@@ -414,7 +414,6 @@ interface IZoneFactory {
         address initialToken; // first TIP-20 to enable (sequencer can enable more later)
         address admin;
         address sequencer;
-        address verifier;
         ZoneParams zoneParams;
         string rpcUrl;
     }
@@ -436,7 +435,6 @@ interface IZoneFactory {
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencer();
-    error InvalidVerifier();
     error InsufficientGas();
     error ZoneIdOverflow();
 
@@ -446,17 +444,17 @@ interface IZoneFactory {
     /// @notice Transfers zone-creation authority to `newOwner`.
     function transferOwnership(address newOwner) external;
 
-    /// @notice Returns whether a verifier contract is approved for zone creation.
+    /// @notice Returns whether a verifier contract is protocol-approved.
     /// @param verifier The verifier contract address to check.
-    /// @return valid True if `verifier` can be passed to `createZone`.
+    /// @return valid True if `verifier` is the protocol-managed verifier.
     function isValidVerifier(address verifier) external view returns (bool);
 
-    /// @notice Returns the default verifier deployed by the factory.
-    /// @return verifier The default verifier contract address.
+    /// @notice Returns the protocol-managed verifier.
+    /// @return verifier The protocol-managed verifier contract address.
     function verifier() external view returns (address);
 
     /// @notice Creates a new zone and deploys its portal contract.
-    /// @param params The initial token, sequencer, verifier, and genesis parameters for the zone.
+    /// @param params The initial token, admin, sequencer, and genesis parameters for the zone.
     /// @return zoneId The newly assigned zone ID.
     /// @return portal The deployed portal address for the new zone.
     function createZone(CreateZoneParams calldata params)
