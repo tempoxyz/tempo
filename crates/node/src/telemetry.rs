@@ -52,6 +52,10 @@ pub struct HardwareMetricsConfig {
 /// Disk names and mount sources are deliberately not collected because they can expose internal
 /// infrastructure details for network-mounted filesystems.
 pub fn install_hardware_metrics(config: HardwareMetricsConfig) {
+    // Ensure metrics are recorded even when the local metrics server is disabled and only the
+    // telemetry push exporter consumes the recorder.
+    let _ = install_prometheus_recorder();
+
     let system = System::new_all();
     let cpu = system.cpus().first();
     let disks = Disks::new_with_refreshed_list();
