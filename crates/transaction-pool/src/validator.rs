@@ -1024,6 +1024,29 @@ mod tests {
         validator
     }
 
+    #[tokio::test]
+    async fn empty_amm_validator_token_index_is_validation_error() {
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .build();
+        let validator = setup_validator(&transaction, 0);
+        validator.amm_liquidity_cache.clear();
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Error(_, err) => assert_eq!(
+                err.to_string(),
+                "AMM liquidity cache validator-token index is unexpectedly empty"
+            ),
+            other => panic!(
+                "empty validator-token index must not be reported as insufficient liquidity: {other:?}"
+            ),
+        }
+    }
+
     #[test]
     fn state_cache_for_tip_reuses_only_matching_tip_cache() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();

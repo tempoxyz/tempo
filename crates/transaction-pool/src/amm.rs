@@ -31,6 +31,12 @@ use tempo_revm::IntoAddress;
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
 
+#[derive(Debug, thiserror::Error)]
+enum AmmLiquidityCacheError {
+    #[error("AMM liquidity cache validator-token index is unexpectedly empty")]
+    EmptyValidatorTokenIndex,
+}
+
 #[derive(Debug, Clone)]
 pub struct AmmLiquidityCache {
     inner: Arc<RwLock<AmmLiquidityCacheInner>>,
@@ -69,11 +75,19 @@ impl AmmLiquidityCache {
     {
         let mut missing_in_cache = Vec::new();
         let hardfork;
+        let generation;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
+            if inner.unique_tokens.is_empty() {
+                return Err(ProviderError::other(
+                    AmmLiquidityCacheError::EmptyValidatorTokenIndex,
+                ));
+            }
+
             hardfork = inner.hardfork;
+            generation = inner.generation;
 
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
@@ -136,16 +150,17 @@ impl AmmLiquidityCache {
                         let (route, intermediate, pools) =
                             manager.plan_fee_route(user_token, validator_token, fee)?;
                         if !pools.is_empty() || intermediate.is_some() {
-                            let mut inner = self.inner.write();
-                            for &(pair, reserve) in &pools {
-                                let id = manager.pool_id(pair.0, pair.1);
-                                let slot = manager.pools[id].base_slot();
-                                inner.pool_cache.insert(pair, U256::from(reserve));
-                                inner.slot_to_pool.insert(slot, pair);
-                            }
-                            if let Some(hop) = intermediate {
-                                inner.quote_token_cache.insert(user_token, hop);
-                            }
+                            self.update_if_current_generation(generation, |inner| {
+                                for &(pair, reserve) in &pools {
+                                    let id = manager.pool_id(pair.0, pair.1);
+                                    let slot = manager.pools[id].base_slot();
+                                    inner.pool_cache.insert(pair, U256::from(reserve));
+                                    inner.slot_to_pool.insert(slot, pair);
+                                }
+                                if let Some(hop) = intermediate {
+                                    inner.quote_token_cache.insert(user_token, hop);
+                                }
+                            });
                         }
                         // If there is enough liquidity, short circuit and return `true`
                         if route.is_some() {
@@ -159,27 +174,73 @@ impl AmmLiquidityCache {
             .map_err(ProviderError::other)
     }
 
-    /// Clears all cached state. Used on reorg to invalidate stale entries
-    /// from orphaned blocks.
-    pub fn clear(&self) {
-        *self.inner.write() = AmmLiquidityCacheInner::default();
+    /// Applies a slow-path cache update only if no full cache replacement occurred since the
+    /// corresponding lookup snapshot was read.
+    fn update_if_current_generation(
+        &self,
+        generation: u64,
+        update: impl FnOnce(&mut AmmLiquidityCacheInner),
+    ) {
+        let mut inner = self.inner.write();
+        if inner.generation == generation {
+            update(&mut inner);
+        }
     }
 
-    /// Clears all cached state and repopulates from the current canonical chain.
+    /// Explicitly clears all cached state.
+    ///
+    /// Liquidity checks report an internal cache error until the cache is populated again.
+    pub fn clear(&self) {
+        let previous = {
+            let mut inner = self.inner.write();
+            let generation = inner.generation.wrapping_add(1);
+            std::mem::replace(
+                &mut *inner,
+                AmmLiquidityCacheInner {
+                    generation,
+                    ..Default::default()
+                },
+            )
+        };
+        drop(previous);
+    }
+
+    /// Builds a replacement cache from the current canonical chain and publishes it atomically.
     ///
     /// This should be called on reorg to ensure stale entries from orphaned
-    /// blocks are replaced with data from the new canonical chain.
+    /// blocks are replaced with data from the new canonical chain. If rebuilding fails, the
+    /// existing cache remains available to concurrent transaction validation.
     pub fn repopulate<Client>(&self, client: &Client) -> ProviderResult<()>
     where
         Client: StateProviderFactory
             + HeaderProvider<Header = TempoHeader>
             + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>,
     {
-        self.clear();
         let tip = client.best_block_number()?;
         let headers =
             client.sealed_headers_range(tip.saturating_sub(LAST_SEEN_WINDOW as u64 + 1)..=tip)?;
-        self.on_new_blocks(headers.iter(), client)
+
+        let replacement = Self {
+            inner: Default::default(),
+        };
+        replacement.on_new_blocks(headers.iter(), client)?;
+
+        let mut replacement = Arc::into_inner(replacement.inner)
+            .expect("private AMM cache cannot be shared")
+            .into_inner();
+        if replacement.unique_tokens.is_empty() {
+            return Err(ProviderError::other(
+                AmmLiquidityCacheError::EmptyValidatorTokenIndex,
+            ));
+        }
+
+        let previous = {
+            let mut inner = self.inner.write();
+            replacement.generation = inner.generation.wrapping_add(1);
+            std::mem::replace(&mut *inner, replacement)
+        };
+        drop(previous);
+        Ok(())
     }
 
     /// Processes a new [`ExecutionOutcome`] and caches new validator
@@ -313,6 +374,10 @@ impl AmmLiquidityCache {
 
 #[derive(Debug, Default)]
 struct AmmLiquidityCacheInner {
+    /// Changes whenever the entire cache is replaced, preventing in-flight lookups from warming a
+    /// newer cache generation with values read from an older state provider.
+    generation: u64,
+
     /// Hardfork active at the most recently observed canonical header.
     hardfork: TempoHardfork,
 
@@ -409,7 +474,167 @@ impl AmmLiquidityCache {
 mod tests {
     use super::*;
     use crate::test_utils::create_mock_provider;
-    use alloy_primitives::address;
+    use alloy_eips::{BlockNumHash, BlockNumberOrTag};
+    use alloy_primitives::{B256, BlockHash, BlockNumber, address};
+    use reth_chainspec::ChainInfo;
+    use reth_provider::{
+        BlockHashReader, BlockIdReader, BlockNumReader, StateProviderBox,
+        test_utils::{ExtendedAccount, MockEthProvider},
+    };
+    use std::{ops::RangeBounds, sync::Barrier};
+    use tempo_chainspec::TempoChainSpec;
+    use tempo_precompiles::PATH_USD_ADDRESS;
+    use tempo_primitives::TempoPrimitives;
+
+    type TestMockProvider = MockEthProvider<TempoPrimitives, TempoChainSpec>;
+
+    #[derive(Debug, Clone)]
+    enum StateReadControl {
+        Block {
+            entered: Arc<Barrier>,
+            release: Arc<Barrier>,
+        },
+        Fail,
+    }
+
+    /// Provider wrapper that pauses or fails after `repopulate` has loaded canonical headers.
+    #[derive(Debug, Clone)]
+    struct ControlledProvider {
+        inner: TestMockProvider,
+        state_read: StateReadControl,
+    }
+
+    impl BlockHashReader for ControlledProvider {
+        fn block_hash(&self, number: BlockNumber) -> ProviderResult<Option<B256>> {
+            BlockHashReader::block_hash(&self.inner, number)
+        }
+
+        fn canonical_hashes_range(
+            &self,
+            start: BlockNumber,
+            end: BlockNumber,
+        ) -> ProviderResult<Vec<B256>> {
+            BlockHashReader::canonical_hashes_range(&self.inner, start, end)
+        }
+    }
+
+    impl BlockNumReader for ControlledProvider {
+        fn chain_info(&self) -> ProviderResult<ChainInfo> {
+            BlockNumReader::chain_info(&self.inner)
+        }
+
+        fn best_block_number(&self) -> ProviderResult<BlockNumber> {
+            BlockNumReader::best_block_number(&self.inner)
+        }
+
+        fn last_block_number(&self) -> ProviderResult<BlockNumber> {
+            BlockNumReader::last_block_number(&self.inner)
+        }
+
+        fn block_number(&self, hash: B256) -> ProviderResult<Option<BlockNumber>> {
+            BlockNumReader::block_number(&self.inner, hash)
+        }
+    }
+
+    impl BlockIdReader for ControlledProvider {
+        fn pending_block_num_hash(&self) -> ProviderResult<Option<BlockNumHash>> {
+            BlockIdReader::pending_block_num_hash(&self.inner)
+        }
+
+        fn safe_block_num_hash(&self) -> ProviderResult<Option<BlockNumHash>> {
+            BlockIdReader::safe_block_num_hash(&self.inner)
+        }
+
+        fn finalized_block_num_hash(&self) -> ProviderResult<Option<BlockNumHash>> {
+            BlockIdReader::finalized_block_num_hash(&self.inner)
+        }
+    }
+
+    impl HeaderProvider for ControlledProvider {
+        type Header = TempoHeader;
+
+        fn header(&self, hash: BlockHash) -> ProviderResult<Option<Self::Header>> {
+            HeaderProvider::header(&self.inner, hash)
+        }
+
+        fn header_by_number(&self, number: BlockNumber) -> ProviderResult<Option<Self::Header>> {
+            HeaderProvider::header_by_number(&self.inner, number)
+        }
+
+        fn headers_range(
+            &self,
+            range: impl RangeBounds<BlockNumber>,
+        ) -> ProviderResult<Vec<Self::Header>> {
+            HeaderProvider::headers_range(&self.inner, range)
+        }
+
+        fn sealed_header(
+            &self,
+            number: BlockNumber,
+        ) -> ProviderResult<Option<SealedHeader<Self::Header>>> {
+            HeaderProvider::sealed_header(&self.inner, number)
+        }
+
+        fn sealed_headers_while(
+            &self,
+            range: impl RangeBounds<BlockNumber>,
+            predicate: impl FnMut(&SealedHeader<Self::Header>) -> bool,
+        ) -> ProviderResult<Vec<SealedHeader<Self::Header>>> {
+            HeaderProvider::sealed_headers_while(&self.inner, range, predicate)
+        }
+    }
+
+    impl StateProviderFactory for ControlledProvider {
+        fn latest(&self) -> ProviderResult<StateProviderBox> {
+            StateProviderFactory::latest(&self.inner)
+        }
+
+        fn state_by_block_number_or_tag(
+            &self,
+            block: BlockNumberOrTag,
+        ) -> ProviderResult<StateProviderBox> {
+            StateProviderFactory::state_by_block_number_or_tag(&self.inner, block)
+        }
+
+        fn history_by_block_number(&self, block: BlockNumber) -> ProviderResult<StateProviderBox> {
+            StateProviderFactory::history_by_block_number(&self.inner, block)
+        }
+
+        fn history_by_block_hash(&self, block: BlockHash) -> ProviderResult<StateProviderBox> {
+            StateProviderFactory::history_by_block_hash(&self.inner, block)
+        }
+
+        fn state_by_block_hash(&self, block: BlockHash) -> ProviderResult<StateProviderBox> {
+            match &self.state_read {
+                StateReadControl::Block { entered, release } => {
+                    entered.wait();
+                    release.wait();
+                    StateProviderFactory::state_by_block_hash(&self.inner, block)
+                }
+                StateReadControl::Fail => Err(ProviderError::StateForHashNotFound(block)),
+            }
+        }
+
+        fn pending(&self) -> ProviderResult<StateProviderBox> {
+            StateProviderFactory::pending(&self.inner)
+        }
+
+        fn pending_state_by_hash(&self, block: B256) -> ProviderResult<Option<StateProviderBox>> {
+            StateProviderFactory::pending_state_by_hash(&self.inner, block)
+        }
+
+        fn maybe_pending(&self) -> ProviderResult<Option<StateProviderBox>> {
+            StateProviderFactory::maybe_pending(&self.inner)
+        }
+    }
+
+    impl ChainSpecProvider for ControlledProvider {
+        type ChainSpec = TempoChainSpec;
+
+        fn chain_spec(&self) -> Arc<Self::ChainSpec> {
+            ChainSpecProvider::chain_spec(&self.inner)
+        }
+    }
 
     // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
@@ -494,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_enough_liquidity_no_unique_tokens() {
+    fn test_has_enough_liquidity_empty_validator_token_index_is_internal_error() {
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
@@ -502,12 +727,15 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
-        assert!(result.is_ok());
+        let err = cache
+            .has_enough_liquidity(PATH_USD_ADDRESS, U256::from(1000), &state)
+            .expect_err("an empty validator-token index must be an internal cache error");
         assert!(
-            !result.unwrap(),
-            "Should return false when no unique tokens"
+            matches!(
+                err.downcast_other_ref::<AmmLiquidityCacheError>(),
+                Some(AmmLiquidityCacheError::EmptyValidatorTokenIndex)
+            ),
+            "empty index must not be reported as genuine insufficient liquidity"
         );
     }
 
@@ -814,94 +1042,160 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_resets_all_state() {
-        let user_token = Address::random();
-        let validator_token = Address::random();
-        let validator = Address::random();
-
+    fn test_stale_generation_cannot_warm_replaced_cache() {
+        let user_token = address!("20C0000000000000000000000000000000000001");
+        let validator_token = address!("20C0000000000000000000000000000000000002");
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                pool_cache: {
-                    let mut m = HashMap::default();
-                    m.insert((user_token, validator_token), U256::from(1000));
-                    m
-                },
-                quote_token_cache: {
-                    let mut m = AddressMap::default();
-                    m.insert(user_token, validator_token);
-                    m
-                },
-                slot_to_pool: {
-                    let mut m = U256Map::default();
-                    m.insert(U256::from(1), (user_token, validator_token));
-                    m
-                },
-                last_seen_tokens: VecDeque::from(vec![validator_token]),
+                generation: 2,
                 unique_tokens: vec![validator_token],
-                last_seen_validators: VecDeque::from(vec![validator]),
-                unique_validators: vec![validator],
-                validator_preferences: {
-                    let mut m = AddressMap::default();
-                    m.insert(validator, validator_token);
-                    m
-                },
-                slot_to_validator: {
-                    let mut m = U256Map::default();
-                    m.insert(U256::from(2), validator);
-                    m
-                },
                 ..Default::default()
             })),
         };
 
-        cache.clear();
+        cache.update_if_current_generation(1, |inner| {
+            inner
+                .pool_cache
+                .insert((user_token, validator_token), U256::MAX);
+        });
+
+        assert!(cache.inner.read().pool_cache.is_empty());
+    }
+
+    #[test]
+    fn test_repopulate_keeps_live_cache_available_while_canonical_read_is_blocked() {
+        use alloy_consensus::Header;
+
+        let validator = address!("1111111111111111111111111111111111111111");
+        let canonical_token = address!("20C0000000000000000000000000000000000001");
+        let provider = create_mock_provider();
+        provider.add_header(
+            B256::new([1; 32]),
+            TempoHeader {
+                inner: Header {
+                    beneficiary: validator,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let validator_token_slot = TipFeeManager::new().validator_tokens[validator].slot();
+        provider.add_account(
+            TIP_FEE_MANAGER_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                validator_token_slot.into(),
+                canonical_token.into_word().into(),
+            )]),
+        );
+        let state = provider
+            .latest()
+            .expect("state provider should be available");
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let provider = ControlledProvider {
+            inner: provider,
+            state_read: StateReadControl::Block {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+        };
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                last_seen_tokens: VecDeque::from([PATH_USD_ADDRESS]),
+                unique_tokens: vec![PATH_USD_ADDRESS],
+                last_seen_validators: VecDeque::from([validator]),
+                unique_validators: vec![validator],
+                ..Default::default()
+            })),
+        };
+
+        let rebuilding_cache = cache.clone();
+        let rebuild = std::thread::spawn(move || rebuilding_cache.repopulate(&provider));
+
+        entered.wait();
+        let liquidity = cache.has_enough_liquidity(PATH_USD_ADDRESS, U256::from(1), &state);
+        let tokens_during_rebuild = cache.inner.read().unique_tokens.clone();
+        release.wait();
+
+        rebuild
+            .join()
+            .expect("rebuild thread should not panic")
+            .expect("rebuild should succeed after the provider is released");
+        assert!(
+            liquidity.expect("the complete live cache should remain usable"),
+            "same-token PathUSD validation must not fail while rebuilding"
+        );
+        assert_eq!(tokens_during_rebuild, vec![PATH_USD_ADDRESS]);
+        let rebuilt = cache.inner.read();
+        assert_eq!(rebuilt.unique_tokens, vec![canonical_token]);
+        assert_eq!(rebuilt.generation, 1);
+    }
+
+    #[test]
+    fn test_failed_repopulate_preserves_previous_cache() {
+        use alloy_consensus::Header;
+
+        let validator = address!("1111111111111111111111111111111111111111");
+        let validator_token = address!("20C0000000000000000000000000000000000001");
+        let user_token = address!("20C0000000000000000000000000000000000002");
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                generation: 7,
+                hardfork: TempoHardfork::T5,
+                pool_cache: HashMap::from_iter([((user_token, validator_token), U256::from(9999))]),
+                last_seen_tokens: VecDeque::from([validator_token]),
+                unique_tokens: vec![validator_token],
+                last_seen_validators: VecDeque::from([validator]),
+                unique_validators: vec![validator],
+                validator_preferences: AddressMap::from_iter([(validator, validator_token)]),
+                ..Default::default()
+            })),
+        };
+
+        let provider = create_mock_provider();
+        provider.add_header(
+            B256::new([1; 32]),
+            TempoHeader {
+                inner: Header {
+                    beneficiary: validator,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let provider = ControlledProvider {
+            inner: provider,
+            state_read: StateReadControl::Fail,
+        };
+        let err = cache
+            .repopulate(&provider)
+            .expect_err("a canonical state read failure should abort rebuilding");
+        assert!(matches!(err, ProviderError::StateForHashNotFound(_)));
 
         let inner = cache.inner.read();
-        assert!(
-            inner.pool_cache.is_empty(),
-            "pools should be empty after clear"
+        assert_eq!(inner.generation, 7);
+        assert!(matches!(inner.hardfork, TempoHardfork::T5));
+        assert_eq!(inner.unique_tokens, vec![validator_token]);
+        assert_eq!(inner.last_seen_tokens, VecDeque::from([validator_token]));
+        assert_eq!(inner.unique_validators, vec![validator]);
+        assert_eq!(
+            inner.pool_cache.get(&(user_token, validator_token)),
+            Some(&U256::from(9999))
         );
-        assert!(
-            inner.quote_token_cache.is_empty(),
-            "quote_tokens should be empty after clear"
-        );
-        assert!(
-            inner.slot_to_pool.is_empty(),
-            "slot_to_pool should be empty after clear"
-        );
-        assert!(
-            inner.last_seen_tokens.is_empty(),
-            "last_seen_tokens should be empty after clear"
-        );
-        assert!(
-            inner.unique_tokens.is_empty(),
-            "unique_tokens should be empty after clear"
-        );
-        assert!(
-            inner.last_seen_validators.is_empty(),
-            "last_seen_validators should be empty after clear"
-        );
-        assert!(
-            inner.unique_validators.is_empty(),
-            "unique_validators should be empty after clear"
-        );
-        assert!(
-            inner.validator_preferences.is_empty(),
-            "validator_preferences should be empty after clear"
-        );
-        assert!(
-            inner.slot_to_validator.is_empty(),
-            "slot_to_validator should be empty after clear"
+        assert_eq!(
+            inner.validator_preferences.get(&validator),
+            Some(&validator_token)
         );
     }
 
     #[test]
-    fn test_repopulate_clears_stale_data_and_rebuilds_from_canonical_chain() {
+    fn test_successful_repopulate_atomically_replaces_previous_cache() {
         use alloy_consensus::Header;
 
-        let stale_validator = Address::random();
-        let stale_token = Address::random();
-        let stale_user_token = Address::random();
+        let stale_validator = address!("1111111111111111111111111111111111111111");
+        let stale_token = address!("20C0000000000000000000000000000000000001");
+        let stale_user_token = address!("20C0000000000000000000000000000000000002");
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -943,7 +1237,7 @@ mod tests {
             );
         }
 
-        let new_validator = Address::random();
+        let new_validator = address!("2222222222222222222222222222222222222222");
         let provider = create_mock_provider();
         for i in 0..3u64 {
             let header = TempoHeader {
@@ -954,7 +1248,7 @@ mod tests {
                 },
                 ..Default::default()
             };
-            provider.add_header(alloy_primitives::B256::random(), header);
+            provider.add_header(B256::new([i as u8 + 1; 32]), header);
         }
 
         cache
@@ -967,9 +1261,10 @@ mod tests {
             !inner.unique_validators.contains(&stale_validator),
             "stale validator should be gone after repopulate"
         );
-        assert!(
-            !inner.unique_tokens.contains(&stale_token),
-            "stale token should be gone after repopulate"
+        assert_eq!(
+            inner.unique_tokens,
+            vec![PATH_USD_ADDRESS],
+            "the canonical validator-token set should replace the previous set"
         );
         assert!(
             !inner

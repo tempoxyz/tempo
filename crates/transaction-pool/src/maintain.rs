@@ -621,7 +621,7 @@ where
 
             // Process all maintenance operations on new block commit or reorg
             Some(event) = chain_events.next() => {
-                let new = match event {
+                let (new, update_amm_incrementally) = match event {
                     CanonStateNotification::Reorg { old: _, new } => {
                         // Repopulate AMM liquidity cache from the new canonical chain
                         // to invalidate stale entries from orphaned blocks.
@@ -629,9 +629,12 @@ where
                             error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                         }
 
-                        new
+                        // The rebuild already includes the new canonical tip. Skipping these
+                        // incremental updates also avoids mixing them into the previous snapshot
+                        // if rebuilding failed.
+                        (new, false)
                     }
-                    CanonStateNotification::Commit { new } => new,
+                    CanonStateNotification::Commit { new } => (new, true),
                 };
 
                 let block_update_start = Instant::now();
@@ -654,11 +657,14 @@ where
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.
                 let amm_start = Instant::now();
-                amm_cache.on_new_state(tip.execution_outcome());
-                if let Err(err) = amm_cache
-                    .on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client())
-                {
-                    error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+                if update_amm_incrementally {
+                    amm_cache.on_new_state(tip.execution_outcome());
+                    if let Err(err) = amm_cache.on_new_blocks(
+                        tip.blocks_iter().map(|block| block.sealed_header()),
+                        pool.client(),
+                    ) {
+                        error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+                    }
                 }
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
