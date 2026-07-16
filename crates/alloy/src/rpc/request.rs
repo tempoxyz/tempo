@@ -109,6 +109,21 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    /// Returns whether this request contains fields that require Tempo AA transaction semantics.
+    pub(crate) fn has_aa_fields(&self) -> bool {
+        !self.calls.is_empty()
+            || self.nonce_key.is_some()
+            || self.fee_token.is_some()
+            || !self.tempo_authorization_list.is_empty()
+            || self.key_authorization.is_some()
+            || self.key_id.is_some()
+            || self.key_type.is_some()
+            || self.key_data.is_some()
+            || self.valid_before.is_some()
+            || self.valid_after.is_some()
+            || self.fee_payer_signature.is_some()
+    }
+
     /// Set the fee token for the [`TempoTransaction`] transaction.
     pub fn set_fee_token(&mut self, fee_token: Address) {
         self.fee_token = Some(fee_token);
