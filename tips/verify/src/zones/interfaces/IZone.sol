@@ -464,9 +464,8 @@ interface IZoneFactory {
         external
         returns (uint32 zoneId, address portal);
 
-    /// @notice Returns the number of zones created so far.
-    /// @return count The total number of created zones, excluding reserved zone ID 0.
-    function zoneCount() external view returns (uint32);
+    /// @notice Returns the next zone ID that will be assigned.
+    function nextZoneId() external view returns (uint32);
 
     /// @notice Returns the stored metadata for a zone.
     /// @param zoneId The zone ID to query.
