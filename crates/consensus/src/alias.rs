@@ -91,9 +91,8 @@ pub(crate) mod marshal {
         /// Mailbox for sending messages to [`Self::actor`].
         pub mailbox: Mailbox,
 
-        /// Startup backfill target. This is marshal's stored finalized height
-        /// unless marshal is empty, in which case it is seeded from the
-        /// execution-layer finalized height.
+        /// Startup backfill target, selected from marshal's stored finalized
+        /// height and the startup floor height.
         pub finalized_floor: Height,
 
         /// Finalized tip selected at startup. In strict mode this comes from
@@ -104,8 +103,8 @@ pub(crate) mod marshal {
 
     /// Initialize the marshal actor and its backing finalized-blocks store
     /// (the finalizations-by-height archive plus the [`Hybrid`] finalized
-    /// blocks store), select the startup finalized floor, and seed marshal's
-    /// sync floor when it has no persisted progress.
+    /// blocks store), select the startup finalized floor, and advance
+    /// marshal's sync floor when needed.
     ///
     /// Both the consensus and follow engines must initialize marshal in
     /// exactly the same way so that nodes can switch modes without data
@@ -195,23 +194,17 @@ pub(crate) mod marshal {
 
         let startup_floor_height = finalized_floor.0;
         let last_finalized_height = if marshal_stored_height.is_zero() {
-            info!(
-                marshal_stored = %marshal_stored_height,
-                execution_finalized = %startup_floor_height,
-                strict_startup = config.strict_startup,
-                "seeding marshal sync floor from execution finalized watermark"
-            );
-            mailbox.set_floor(startup_floor_height).await;
             startup_floor_height
         } else {
-            info!(
-                marshal_stored = %marshal_stored_height,
-                execution_finalized = %startup_floor_height,
-                strict_startup = config.strict_startup,
-                "using persisted marshal sync floor"
-            );
             marshal_stored_height
         };
+        info!(
+            marshal_stored = %marshal_stored_height,
+            selected_floor = %startup_floor_height,
+            strict_startup = config.strict_startup,
+            "setting marshal sync floor"
+        );
+        mailbox.set_floor(last_finalized_height).await;
 
         Ok(Initialized {
             actor,
