@@ -22,6 +22,7 @@ use url::Url;
 struct HardwareInfo {
     cpu_vendor: String,
     cpu_brand: String,
+    cpu_frequency_mhz: u64,
     physical_core_count: usize,
     logical_core_count: usize,
     total_memory_bytes: u64,
@@ -53,6 +54,7 @@ fn hardware_metrics(config: &PrometheusMetricsConfig) -> eyre::Result<String> {
     let labels = HardwareInfo {
         cpu_vendor: cpu.map_or_else(String::new, |cpu| cpu.vendor_id().to_owned()),
         cpu_brand: cpu.map_or_else(String::new, |cpu| cpu.brand().to_owned()),
+        cpu_frequency_mhz: cpu.map_or(0, |cpu| cpu.frequency()),
         physical_core_count: System::physical_core_count().unwrap_or_default(),
         logical_core_count: std::thread::available_parallelism()
             .map_or_else(|_| system.cpus().len(), |count| count.get()),
