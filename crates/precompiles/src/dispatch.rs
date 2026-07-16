@@ -303,7 +303,7 @@ mod tests {
     };
     use alloy::{
         primitives::U256,
-        sol_types::{SolCall, SolError, SolInterface},
+        sol_types::{SolCall, SolError},
     };
     use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileStatus};
     use tempo_chainspec::hardfork::TempoHardfork;
