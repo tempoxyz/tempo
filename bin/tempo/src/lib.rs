@@ -280,13 +280,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
-        if !args.has_consensus_engine(node.config.dev.dev) {
-            return futures::executor::block_on(async move {
-                shutdown_token_clone.cancelled().await;
-                Ok(())
-            });
-        }
-
         let datadir = node
             .config
             .datadir
@@ -297,6 +290,19 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .storage_dir
             .clone()
             .unwrap_or_else(|| datadir.data_dir().join("consensus"));
+
+        install_hardware_metrics(HardwareMetricsConfig {
+            datadir: datadir.data_dir().to_path_buf(),
+            static_files_dir: datadir.static_files().to_path_buf(),
+            consensus_dir: consensus_storage.clone(),
+        });
+
+        if !args.has_consensus_engine(node.config.dev.dev) {
+            return futures::executor::block_on(async move {
+                shutdown_token_clone.cancelled().await;
+                Ok(())
+            });
+        }
 
         info_span!("prepare_consensus").in_scope(|| {
             info!(
@@ -313,12 +319,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
-            install_hardware_metrics(HardwareMetricsConfig {
-                datadir: datadir.data_dir().to_path_buf(),
-                static_files_dir: datadir.static_files().to_path_buf(),
-                consensus_dir: consensus_storage.clone(),
-            });
-
             let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.with_label("metrics"),
                 args.consensus.metrics_address,
