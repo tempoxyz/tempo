@@ -340,10 +340,12 @@ where
         let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
             Some(scheme) => scheme,
             None if can_use_network_identity_fallback => self.network_scheme.clone(),
-            None => bail!(
-                "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`",
-                self.config.network_identity.from_epoch,
-            ),
+            None => {
+                bail!(
+                    "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`",
+                    self.config.network_identity.from_epoch,
+                );
+            }
         };
 
         let identity = scheme.identity();
