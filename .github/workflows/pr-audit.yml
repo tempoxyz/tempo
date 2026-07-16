@@ -12,6 +12,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && (github.event.label.name == 'cyclops' || github.event.label.name == 'agentic-audit')
+    permissions:
+      issues: write
+      statuses: write
     steps:
       - name: Publish event
         run: |
@@ -34,6 +37,26 @@ jobs:
               }
             }'
 
+      - name: Record audit run
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: '<!-- cyclops-audit-run -->\nCyclops audit event published.',
+            });
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'success',
+              context: 'Cyclops audit run',
+              description: 'A Cyclops audit was run for this pull request',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.payload.pull_request.number}`,
+            });
+
   publish-comment:
     runs-on: ubuntu-latest
     if: >-
@@ -48,6 +71,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+      statuses: write
     steps:
       - name: Check org membership
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -300,3 +324,30 @@ jobs:
               body,
             });
             if (!success) core.setFailed('Failed to publish pr_audit event');
+
+      - name: Record audit run
+        if: ${{ steps.publish.outcome == 'success' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '<!-- cyclops-audit-run -->\nCyclops audit event published.',
+            });
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pull.head.sha,
+              state: 'success',
+              context: 'Cyclops audit run',
+              description: 'A Cyclops audit was run for this pull request',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+            });
