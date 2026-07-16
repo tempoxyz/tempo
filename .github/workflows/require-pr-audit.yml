@@ -1,0 +1,47 @@
+name: Require pull request audit
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for a Cyclops audit run
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pullNumber = context.payload.pull_request.number;
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+            });
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const auditWasRun = comments.some(comment =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.includes('<!-- cyclops-audit-run -->')
+            );
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pull.head.sha,
+              state: auditWasRun ? 'success' : 'pending',
+              context: 'Cyclops audit run',
+              description: auditWasRun
+                ? 'A Cyclops audit was run for this pull request'
+                : 'Run a Cyclops audit before merging',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${pullNumber}`,
+            });
