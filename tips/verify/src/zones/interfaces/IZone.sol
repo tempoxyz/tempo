@@ -24,7 +24,6 @@ struct ZoneInfo {
     address initialToken; // first TIP-20 enabled at zone creation (additional tokens enabled via enableToken)
     address admin;
     address sequencer;
-    address verifier;
     bytes32 genesisBlockHash;
     bytes32 genesisTempoBlockHash;
     uint64 genesisTempoBlockNumber;
