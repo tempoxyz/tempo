@@ -162,16 +162,4 @@ abstract contract ZoneFactory is IZoneFactory {
         return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
     }
 
-    function isValidVerifier(address v) external pure returns (bool) {
-        return v == ZONE_VERIFIER_ADDRESS;
-    }
-
-    function verifier() external pure returns (address) {
-        return ZONE_VERIFIER_ADDRESS;
-    }
-
-    function messenger() external pure returns (address) {
-        return ZONE_MESSENGER_ADDRESS;
-    }
-
 }
