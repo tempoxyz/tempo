@@ -461,7 +461,7 @@ macro_rules! tempo_hardforks_trait {
     };
 }
 
-tempo_hardfork::tempo_post_genesis_hardforks!(tempo_hardforks_trait);
+tempo_hardfork::tempo_post_genesis_hardforks!(@items tempo_hardforks_trait);
 
 impl TempoHardforks for TempoChainSpec {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
