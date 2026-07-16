@@ -19,7 +19,7 @@
 
 The blockchain for payments at scale.
 
-General-purpose blockchains were not designed around the volume and reliability requirements of stablecoin payments. Tempo serves fintechs, payment processors, and enterprises that need predictable payment infrastructure at scale.
+Stablecoin payments on general-purpose blockchains are slow, expensive, and unpredictable — networks built for trading weren't designed for payment volume and reliability. Tempo exists to fix that: it's built for fintechs, payment processors, and enterprises who need payment infrastructure that behaves predictably at scale.
 
 [Tempo](https://tempo.xyz/), incubated by [Stripe](https://stripe.com) and [Paradigm](https://www.paradigm.xyz), is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
@@ -50,9 +50,7 @@ You can get started today by integrating with the [Tempo testnet](https://tempo.
   - Built on the [Reth SDK](https://github.com/paradigmxyz/reth), the most performant and flexible EVM (Ethereum Virtual Machine) execution client.
   - Simplex Consensus (via [Commonware](https://commonware.xyz/)): fast, sub‑second finality in normal conditions; graceful degradation under adverse networks.
 
-- [Machine Payments Protocol (MPP)](https://mpp.dev)
-
-  - Tempo is a payment method for MPP, an open standard co-authored by Tempo and Stripe. MPP enables AI agents and applications to pay for resources within an HTTP request, without requiring a billing account or checkout flow in advance.
+- Tempo also powers the [Machine Payments Protocol (MPP)](https://mpp.dev), an open standard for machine-to-machine payments co-developed by Tempo and Stripe, enabling AI agents and apps to pay for resources inline with a request — no API keys required.
 
 - Coming soon
 
@@ -156,6 +154,8 @@ just localnet
 - [`tempoxyz/tidx`](https://github.com/tempoxyz/tidx): Chain indexer for querying Tempo blocks, transactions, and logs.
 - [`tempoxyz/wallet-cli`](https://github.com/tempoxyz/wallet-cli): Command-line wallet and HTTP client for Tempo and MPP-enabled services.
 - [`tempoxyz/mpp`](https://github.com/tempoxyz/mpp): Documentation, protocol explainers, and service directory for MPP.
+- [`tempoxyz/mpp-specs`](https://github.com/tempoxyz/mpp-specs): Specifications for the Machine Payments Protocol.
+- [`tempoxyz/mpp-rs`](https://github.com/tempoxyz/mpp-rs): Rust SDK for the Machine Payments Protocol.
 
 ## Contributing
 
