@@ -15,9 +15,13 @@ use crate::ed25519::PublicKey;
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct TempoConsensusContext {
+    /// Consensus epoch this block belongs to.
     pub epoch: u64,
+    /// Consensus view (round) in which this block was proposed.
     pub view: u64,
+    /// Consensus view of the parent block.
     pub parent_view: u64,
+    /// Ed25519 public key of the block's proposer.
     pub proposer: PublicKey,
 }
 
