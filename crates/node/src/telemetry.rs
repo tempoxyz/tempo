@@ -116,6 +116,8 @@ pub fn install_prometheus_metrics(
         extra_label.push_str(&format!(",consensus_pubkey={pubkey}"));
     }
 
+    let hardware_metrics = hardware_metrics(&config)?;
+
     let mut endpoint = config.endpoint;
     endpoint
         .query_pairs_mut()
@@ -123,7 +125,6 @@ pub fn install_prometheus_metrics(
 
     let url = endpoint.to_string();
     let client = reqwest::Client::new();
-    let hardware_metrics = hardware_metrics(&config)?;
     let auth_header = config.auth_header;
 
     let reth_recorder = install_prometheus_recorder();
