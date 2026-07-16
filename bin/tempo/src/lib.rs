@@ -293,7 +293,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         install_hardware_metrics(HardwareMetricsConfig {
             datadir: datadir.data_dir().to_path_buf(),
-            static_files_dir: datadir.static_files().to_path_buf(),
+            static_files_dir: datadir.static_files(),
             consensus_dir: consensus_storage.clone(),
         });
 
@@ -314,7 +314,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let runtime_config = commonware_runtime::tokio::Config::default()
             .with_tcp_nodelay(Some(true))
             .with_worker_threads(args.consensus.worker_threads)
-            .with_storage_directory(consensus_storage.clone())
+            .with_storage_directory(consensus_storage)
             .with_catch_panics(true);
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
