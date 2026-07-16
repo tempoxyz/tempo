@@ -50,8 +50,39 @@ fn main() -> anyhow::Result<()> {
         }
         let t = Instant::now();
         let n = ops.len();
+        let ops_copy = ops.clone();
         let (root, _inv) = db.apply_block(ops).map_err(|e| anyhow::anyhow!("{e:#}"))?;
         let ms = t.elapsed().as_millis();
+        // REPLAY_GC=1: run the follower's per-block gc pass (the live node
+        // does; evacuation is the divergence suspect).
+        if std::env::var("REPLAY_GC").as_deref() == Ok("1") {
+            db.gc_step().map_err(|e| anyhow::anyhow!("gc: {e:#}"))?;
+            // REPLAY_AUDIT_FROM=N: full forensic audit after each gc pass
+            // from block N on — the first unclean audit names the corrupting
+            // pass and the exact record.
+            if let Ok(from) = std::env::var("REPLAY_AUDIT_FROM") {
+                if block >= from.parse::<u64>().unwrap_or(u64::MAX) {
+                    let t_a = Instant::now();
+                    let audit = db.audit_hashes().map_err(|e| anyhow::anyhow!("{e:#}"))?;
+                    // Legacy golden records carry storage-relative prefixes;
+                    // bad_prefixes is expected on pre-composite files. Hash
+                    // consistency is the corruption oracle.
+                    let hash_clean = audit.bad_disk_roots == 0
+                        && audit.bad_mem_roots == 0
+                        && audit.stale_cells == 0
+                        && audit.bad_record_nrefs == 0
+                        && audit.bad_record_storage_roots == 0;
+                    eprintln!(
+                        "block {block}: audit hash_clean={hash_clean} ({}s) {:?}",
+                        t_a.elapsed().as_secs(),
+                        if hash_clean { None } else { Some(&audit) }
+                    );
+                    if !hash_clean {
+                        anyhow::bail!("audit hash-unclean after gc of block {block}");
+                    }
+                }
+            }
+        }
         let ok = root == expected.0;
         eprintln!(
             "block {block}: n_ops={n} apply_ms={ms} root={} {}",
@@ -60,6 +91,37 @@ fn main() -> anyhow::Result<()> {
         );
         if !ok {
             eprintln!("expected sparse root: {expected}");
+            // Which side is right? If every op's value reads back exactly,
+            // the flat state IS parent+ops and the flat root is the true
+            // root — the recorded sparse root was mis-computed.
+            let (mut checked, mut bad) = (0u64, 0u64);
+            for (key, op) in &ops_copy {
+                match op {
+                    StateOp::SetStorage { slot, value } => {
+                        let got = db.get_storage(key, slot).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+                        checked += 1;
+                        if got.as_deref() != Some(value.as_slice()) {
+                            bad += 1;
+                            if bad <= 5 {
+                                eprintln!(
+                                    "OP MISMATCH: key={} slot={} want={} got={:?}",
+                                    hex::encode(&key[..8]),
+                                    hex::encode(&slot[..8]),
+                                    hex::encode(value),
+                                    got.map(|v| hex::encode(v))
+                                );
+                            }
+                        }
+                    }
+                    StateOp::DeleteStorage { slot } => {
+                        let got = db.get_storage(key, slot).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+                        checked += 1;
+                        if got.is_some() { bad += 1; }
+                    }
+                    _ => {}
+                }
+            }
+            eprintln!("op read-back: {checked} checked, {bad} mismatched");
             anyhow::bail!("diverged at block {block}");
         }
     }
