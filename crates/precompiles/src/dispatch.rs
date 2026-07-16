@@ -161,36 +161,57 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 }
 
-/// Decodes calldata via `decode`, then dispatches to `f`.
+/// Decodes and classifies precompile calldata without executing the `decoded` call.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
 /// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
+#[inline]
+pub fn decode_call<T>(
+    calldata: &[u8],
+    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+) -> core::result::Result<T, PrecompileResult> {
+    if calldata.len() < 4 {
+        return Err(missing_selector_result());
+    }
+
+    match decode(calldata) {
+        Ok(call) => Ok(call),
+        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+            Err(StorageCtx::default().error_result(
+                error::TempoPrecompileError::UnknownFunctionSelector(*selector),
+            ))
+        }
+        Err(_) => Err(Ok(StorageCtx::default().revert_output(Bytes::new()))),
+    }
+}
+
+/// Finalizes gas, refund, and state-gas reservoir accounting for a dispatched result.
+///
+/// This must be called while the [`StorageCtx`] used to execute the call is active.
+/// Fatal errors are returned unchanged.
+#[inline]
+pub fn finalize_dispatch_result(result: PrecompileResult) -> PrecompileResult {
+    let storage = StorageCtx::default();
+    result.map(|mut output| {
+        // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
+        output.gas_used = storage.gas_used();
+        fill_state_gas(&mut output, &storage);
+        output
+    })
+}
+
+/// Decodes calldata via [`decode_call`], dispatches to `f`, and finalizes its accounting.
 #[inline]
 pub fn dispatch_call<T>(
     calldata: &[u8],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
-    let storage = StorageCtx::default();
-
-    if calldata.len() < 4 {
-        return missing_selector_result();
-    }
-
-    let result = decode(calldata);
-
-    match result {
-        Ok(call) => f(call).map(|mut res| {
-            // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
-            res.gas_used = storage.gas_used();
-            fill_state_gas(&mut res, &storage);
-            res
-        }),
-        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => storage.error_result(
-            error::TempoPrecompileError::UnknownFunctionSelector(*selector),
-        ),
-        Err(_) => Ok(storage.revert_output(Bytes::new())),
-    }
+    let call = match decode_call(calldata, decode) {
+        Ok(call) => call,
+        Err(result) => return result,
+    };
+    finalize_dispatch_result(f(call))
 }
 
 #[macro_export]
