@@ -113,7 +113,7 @@ impl TempoGenesisInfo {
             };
         }
 
-        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
+        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match);
     }
 }
 
