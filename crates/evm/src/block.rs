@@ -23,15 +23,17 @@ use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::{ExecutionResult, ResultAndState},
-    state::{Account, Bytecode, EvmState},
+    state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
+use tempo_contracts::zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -237,6 +239,90 @@ where
             let state = EvmState::from_iter([(address, account)]);
             self.inner.evm.db_mut().commit(state);
         }
+        Ok(())
+    }
+
+    /// Installs and initializes the TIP-1091 ZoneFactory when T9 first becomes active.
+    ///
+    /// The code marker is the one-time activation sentinel. A scheduled T9 chain without a
+    /// nonzero `zoneFactoryOwner` fails closed instead of activating an unusable factory.
+    fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let owner = self
+            .inner
+            .spec
+            .info
+            .zone_factory_owner()
+            .filter(|owner| !owner.is_zero())
+            .ok_or_else(|| {
+                BlockValidationError::msg("T9 activation requires a nonzero zoneFactoryOwner")
+            })?;
+
+        let info = self
+            .inner
+            .evm
+            .db_mut()
+            .basic(ZONE_FACTORY_ADDRESS)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if !info.is_empty_code_hash() {
+            return Ok(());
+        }
+
+        let next_zone_id_slot = U256::ZERO;
+        let owner_slot = U256::from(2);
+        let original_next_zone_id = self
+            .inner
+            .evm
+            .db_mut()
+            .storage(ZONE_FACTORY_ADDRESS, next_zone_id_slot)
+            .map_err(BlockExecutionError::other)?;
+        let original_owner = self
+            .inner
+            .evm
+            .db_mut()
+            .storage(ZONE_FACTORY_ADDRESS, owner_slot)
+            .map_err(BlockExecutionError::other)?;
+
+        let mut factory_account = Account::from(info);
+        let code = Bytecode::new_legacy([0xef].into());
+        factory_account.info.code_hash = code.hash_slow();
+        factory_account.info.code = Some(code);
+        factory_account.storage.insert(
+            next_zone_id_slot,
+            EvmStorageSlot::new_changed(original_next_zone_id, U256::from(1), TransactionId::ZERO),
+        );
+        factory_account.storage.insert(
+            owner_slot,
+            EvmStorageSlot::new_changed(
+                original_owner,
+                U256::from_be_slice(owner.as_slice()),
+                TransactionId::ZERO,
+            ),
+        );
+        factory_account.mark_touch();
+
+        let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory_account)]);
+        for (address, runtime) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        ] {
+            let info = self
+                .inner
+                .evm
+                .db_mut()
+                .basic(address)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            let mut account = Account::from(info);
+            let code = Bytecode::new_legacy(Bytes::from_static(runtime));
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
+            account.mark_touch();
+            state.insert(address, account);
+        }
+
+        self.inner.evm.db_mut().commit(state);
         Ok(())
     }
 
@@ -581,6 +667,9 @@ where
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
         }
+        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+            self.deploy_zone_factory_at_boundary()?;
+        }
 
         Ok(())
     }
@@ -782,7 +871,7 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut, keccak256};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
@@ -800,9 +889,12 @@ mod tests {
         iter::repeat_with,
         sync::{Arc, Mutex},
     };
-    use tempo_chainspec::{TempoHardfork, spec::DEV};
+    use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::{
         CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS,
+    };
+    use tempo_contracts::zones::{
+        ZONE_MESSENGER_RUNTIME_HASH, ZONE_PORTAL_RUNTIME_HASH, ZONE_VERIFIER_RUNTIME_HASH,
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -2002,6 +2094,97 @@ mod tests {
             calls[0][&addr].original_info(),
             original_info,
             "state hook account should preserve existing original_info"
+        );
+    }
+
+    #[test]
+    fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let owner = chainspec.info.zone_factory_owner().unwrap();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
+
+        executor.deploy_zone_factory_at_boundary().unwrap();
+        executor.deploy_zone_factory_at_boundary().unwrap();
+        drop(executor);
+
+        let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
+        assert_eq!(
+            factory
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap()
+                .original_bytes(),
+            Bytes::from_static(&[0xef])
+        );
+        assert_eq!(factory.storage_slot(U256::ZERO), Some(U256::from(1)));
+        assert_eq!(
+            factory.storage_slot(U256::from(2)),
+            Some(U256::from_be_slice(owner.as_slice()))
+        );
+
+        for (address, expected_hash) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME_HASH),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME_HASH),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME_HASH),
+        ] {
+            let info = db
+                .load_cache_account(address)
+                .unwrap()
+                .account_info()
+                .unwrap();
+            assert_eq!(
+                keccak256(info.code.unwrap().original_bytes()),
+                expected_hash
+            );
+        }
+
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
+        for address in [
+            ZONE_FACTORY_ADDRESS,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ] {
+            assert!(calls[0].contains_key(&address));
+        }
+    }
+
+    #[test]
+    fn test_deploy_zone_factory_at_boundary_requires_owner() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.extra_fields.remove("zoneFactoryOwner");
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let err = executor.deploy_zone_factory_at_boundary().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("T9 activation requires a nonzero zoneFactoryOwner")
+        );
+        drop(executor);
+
+        let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
+        assert!(
+            factory
+                .account_info()
+                .is_none_or(|info| info.is_empty_code_hash())
         );
     }
 

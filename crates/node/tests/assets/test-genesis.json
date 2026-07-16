@@ -33,6 +33,7 @@
     "t7Time": 0,
     "t8Time": 0,
     "t9Time": 0,
+    "zoneFactoryOwner": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
     "depositContractAddress": "0x0000000000000000000000000000000000000000"
   },
   "nonce": "0x42",

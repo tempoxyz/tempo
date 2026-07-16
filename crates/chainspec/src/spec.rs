@@ -77,6 +77,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T9 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t9_time: Option<u64>,
+    /// Initial TIP-1091 ZoneFactory owner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zone_factory_owner: Option<Address>,
 }
 
 impl TempoGenesisInfo {
@@ -95,6 +98,11 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Returns the initial TIP-1091 ZoneFactory owner.
+    pub fn zone_factory_owner(&self) -> Option<Address> {
+        self.zone_factory_owner
     }
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
