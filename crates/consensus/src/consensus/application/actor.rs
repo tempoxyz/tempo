@@ -1041,14 +1041,14 @@ async fn verify_block<TContext: Pacer>(
             bail!(
                 "failed validating block because payload was accepted, meaning \
                 that this was not actually executed by the execution layer for some reason"
-            )
+            );
         }
         PayloadStatusEnum::Syncing => {
             bail!(
                 "failed validating block because payload is still syncing, \
                 this means the parent block was available to the consensus \
                 layer but not the execution layer"
-            )
+            );
         }
     }
 }

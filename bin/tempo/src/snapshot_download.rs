@@ -105,7 +105,9 @@ async fn load_consensus_manifest(
     manifest_path: Option<PathBuf>,
 ) -> eyre::Result<LoadedConsensusManifest> {
     let (manifest_bytes, source) = match (manifest_path, manifest_url) {
-        (None, None) => bail!("--manifest-url or --manifest-path must be set"),
+        (None, None) => {
+            bail!("--manifest-url or --manifest-path must be set");
+        }
         (Some(path), _) => (
             fs::read(&path).wrap_err("failed to read manifest file")?,
             ManifestSource::Path(path),
@@ -164,7 +166,9 @@ async fn fetch_manifest_bytes_from_source(
                 let bytes = fs::read(&path).wrap_err("failed to read manifest file")?;
                 Ok((bytes, ManifestSource::Path(path)))
             }
-            scheme => bail!("unsupported manifest URL scheme: {scheme}"),
+            scheme => {
+                bail!("unsupported manifest URL scheme: {scheme}");
+            }
         };
     }
 
@@ -218,7 +222,9 @@ fn resolve_consensus_archive_source(
                     path.pop();
                     Ok(ConsensusArchiveSource::Path(path.join(archive_file)))
                 }
-                scheme => bail!("unsupported manifest URL scheme: {scheme}"),
+                scheme => {
+                    bail!("unsupported manifest URL scheme: {scheme}");
+                }
             }
         }
         ManifestSource::Path(manifest_path) => {
@@ -237,7 +243,9 @@ fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
             url.to_file_path()
                 .map_err(|_| eyre::eyre!("invalid file:// archive URL"))?,
         )),
-        scheme => bail!("unsupported consensus archive URL scheme: {scheme}"),
+        scheme => {
+            bail!("unsupported consensus archive URL scheme: {scheme}");
+        }
     }
 }
 
