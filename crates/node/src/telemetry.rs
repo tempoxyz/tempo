@@ -114,7 +114,7 @@ pub fn install_prometheus_metrics(
         .wrap_err("invalid metrics duration")?;
 
     let mut extra_label = format!("peer_id={}", config.peer_id);
-    if let Some(pubkey) = config.consensus_pubkey {
+    if let Some(ref pubkey) = config.consensus_pubkey {
         extra_label.push_str(&format!(",consensus_pubkey={pubkey}"));
     }
 
