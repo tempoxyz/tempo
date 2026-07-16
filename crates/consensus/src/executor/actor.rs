@@ -887,7 +887,8 @@ async fn forward_finalized<TContext: Pacer>(
         .wrap_err("failed reading finalized block num hash from execution layer")?
         .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
-    if block.height().get() <= execution_finalized.number {
+    let consensus_context = block.header().consensus_context;
+    let new_canonicalized = if block.height().get() <= execution_finalized.number {
         let canonical_hash = execution_node
             .provider
             .block_hash(block.height().get())
@@ -915,59 +916,59 @@ async fn forward_finalized<TContext: Pacer>(
             "finalized block is already part of the execution layer's canonical \
             chain; acknowledging without forwarding",
         );
-        acknowledgment.acknowledge();
-        return Ok(None);
-    }
+        None
+    } else {
+        // Rebase the tracked forkchoice state onto the watermark the execution
+        // layer reported before extending it with the new block, so that the
+        // forkchoice update below always finalizes the block.
+        let new_canonicalized = LastCanonicalized {
+            forkchoice: ForkchoiceState {
+                safe_block_hash: execution_finalized.hash,
+                finalized_block_hash: execution_finalized.hash,
+                ..canonicalized.forkchoice
+            },
+            head_height: canonicalized.head_height,
+            finalized_height: Height::new(execution_finalized.number),
+        }
+        .update_finalized(block.height(), block.digest());
 
-    // Rebase the tracked forkchoice state onto the watermark the execution
-    // layer reported before extending it with the new block, so that the
-    // forkchoice update below always finalizes the block.
-    let new_canonicalized = LastCanonicalized {
-        forkchoice: ForkchoiceState {
-            safe_block_hash: execution_finalized.hash,
-            finalized_block_hash: execution_finalized.hash,
-            ..canonicalized.forkchoice
-        },
-        head_height: canonicalized.head_height,
-        finalized_height: Height::new(execution_finalized.number),
-    }
-    .update_finalized(block.height(), block.digest());
+        let (block, block_access_list) = block.into_parts();
+        let payload_status = execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(TempoExecutionData {
+                block,
+                block_access_list,
+                // can be omitted for finalized blocks
+                validator_set: None,
+            })
+            .pace(context, Duration::from_millis(20))
+            .await
+            .wrap_err(
+                "failed sending new-payload request to execution engine to \
+                    query payload status of finalized block",
+            )?;
 
-    let (block, block_access_list) = block.into_parts();
-    let consensus_context = block.header().consensus_context;
-    let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-            // can be omitted for finalized blocks
-            validator_set: None,
-        })
-        .pace(context, Duration::from_millis(20))
-        .await
-        .wrap_err(
-            "failed sending new-payload request to execution engine to \
-                query payload status of finalized block",
-        )?;
+        ensure!(
+            payload_status.is_valid() || payload_status.is_syncing(),
+            "this is a problem: payload status of block-to-be-finalized was \
+                neither valid nor syncing: `{payload_status}`"
+        );
 
-    ensure!(
-        payload_status.is_valid() || payload_status.is_syncing(),
-        "this is a problem: payload status of block-to-be-finalized was \
-            neither valid nor syncing: `{payload_status}`"
-    );
+        submit_forkchoice_update(
+            &execution_node,
+            context,
+            cause.clone(),
+            new_canonicalized,
+            None,
+            ForkchoiceUpdateKind::Canonicalize {
+                head_or_finalized: HeadOrFinalized::Finalized,
+            },
+        )
+        .await?;
 
-    submit_forkchoice_update(
-        &execution_node,
-        context,
-        cause.clone(),
-        new_canonicalized,
-        None,
-        ForkchoiceUpdateKind::Canonicalize {
-            head_or_finalized: HeadOrFinalized::Finalized,
-        },
-    )
-    .await?;
+        Some(new_canonicalized)
+    };
 
     if let Some(public_key) = public_key.as_ref()
         && consensus_context
@@ -978,7 +979,7 @@ async fn forward_finalized<TContext: Pacer>(
 
     acknowledgment.acknowledge();
 
-    Ok(Some(new_canonicalized))
+    Ok(new_canonicalized)
 }
 
 /// Marker to indicate whether the head hash or finalized hash should be updated.

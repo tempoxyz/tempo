@@ -27,12 +27,11 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_node::TempoFullNode;
 use tracing::{info, info_span};
 
-use super::{driver, resolver, resolver::Resolver, stubs};
+use super::{driver, executor, resolver, resolver::Resolver, stubs};
 use crate::{
     alias,
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
-    executor,
     feed::{self, FeedStateHandle},
     follow::upstream,
     storage,
@@ -110,7 +109,7 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip,
+            finalized_tip: _,
         } = alias::marshal::init(
             context.clone(),
             page_cache_ref,
@@ -155,14 +154,12 @@ impl<TUpstream> Config<TUpstream> {
             context.with_label("executor"),
             executor::Config {
                 execution_node: self.execution_node.clone(),
-                finalized_floor: last_finalized_height,
-                finalized_tip,
                 marshal: marshal_mailbox.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                floor: last_finalized_height,
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
-                public_key: None,
             },
-        )
-        .wrap_err("failed to initialize executor")?;
+        );
 
         // No broadcast is needed in follow mode.
         let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
