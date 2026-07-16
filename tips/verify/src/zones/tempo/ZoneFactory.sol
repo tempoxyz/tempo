@@ -77,13 +77,11 @@ abstract contract ZoneFactory is IZoneFactory {
 
         // Native precompile operation, not EVM CREATE or CREATE2:
         //
-        // 1. The protocol asserts that `portal` has no code, storage, or EIP-7702
-        //    delegation and that no non-protocol deployment path can target it.
-        // 2. The protocol etches minimal portal proxy/caller bytecode directly into
-        //    the `portal` account. The runtime delegatecalls into
+        // 1. The protocol etches minimal portal proxy/caller bytecode directly into
+        //    the reserved `portal` account. The runtime delegatecalls into
         //    ZONE_PORTAL_IMPL_ADDRESS, the single protocol-managed ZonePortal logic
         //    implementation.
-        // 3. This factory calls the portal's one-time initializer with the zone ID,
+        // 2. This factory calls the portal's one-time initializer with the zone ID,
         //    initial token, shared messenger, admin, sequencer, verifier, genesis block
         //    hash, genesis Tempo block number, and RPC URL.
         //
