@@ -111,19 +111,59 @@ pub struct SparseStats {
     pub fin_overlay_ms: u64,
 }
 
+/// Soundness anchor for a pooled trie's blind regions. A blind path is only
+/// guaranteed untouched since the trie's CREATION, so revealing it from a
+/// flat snapshot older than that creation state serves pre-update content —
+/// silently wrong siblings, wrong root (the r148 block-349 divergence: trie
+/// lost at flood end, recreated blind at an empty block, then revealed a
+/// 4k-op block from a snapshot 64 blocks behind the creation root).
+#[derive(Clone, Copy, Debug)]
+enum Anchor {
+    /// Trie created fresh while building on this parent root. Blind regions
+    /// match flat state only from that root onward; arbitrary-lineage
+    /// reveals stay unsound until the follower is known to have reached it.
+    Pending(B256),
+    /// The follower reached the anchor at this apply sequence; any snapshot
+    /// stamped at or after it serves blind regions correctly.
+    Satisfied(u64),
+}
+
+/// Follower apply sequence, bumped once per applied block (`prune_overlays`).
+/// Snapshots are stamped with the value at capture; stamps may lag the true
+/// state by a race window, which only ever denies a sound reveal, never
+/// permits an unsound one.
+static APPLY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Ring of (root, seq) for recently applied blocks, so a Pending anchor can
+/// be resolved even when the follower passed it while the trie was checked
+/// out of the pool. Unwinds don't rewrite history here: an entry means "flat
+/// WAS this state at seq", which is all the anchor check needs on a linear
+/// chain; a reorg drops the pooled trie via the root-match rule anyway.
+static RECENT_ROOTS: parking_lot::Mutex<std::collections::VecDeque<(B256, u64)>> =
+    parking_lot::Mutex::new(std::collections::VecDeque::new());
+
+const RECENT_ROOTS_CAP: usize = 8192;
+
+/// Earliest apply sequence at which the follower held `root`, if tracked.
+fn root_seq(root: B256) -> Option<u64> {
+    RECENT_ROOTS.lock().iter().find(|(r, _)| *r == root).map(|(_, s)| *s)
+}
+
 /// The revealed sparse trie carried across blocks, tagged with the state root
-/// it represents. The next block's worker consumes it iff building on that
-/// exact root; at steady state the hot set is already revealed and proof
-/// targets collapse to newly-touched keys. A cancelled build (worker dropped
-/// mid-block) discards it — reveals may be half-applied. The follower's
+/// it represents and its soundness anchor. The next block's worker consumes
+/// it iff building on that exact root; at steady state the hot set is already
+/// revealed and proof targets collapse to newly-touched keys. A cancelled
+/// build (worker dropped mid-block) repools it only if still clean — reveals
+/// are parent-state facts, applied leaf updates are not. The follower's
 /// per-block root cross-check remains the loud gate against any staleness.
-static TRIE_POOL: parking_lot::Mutex<Option<(B256, SparseStateTrie)>> =
+static TRIE_POOL: parking_lot::Mutex<Option<(B256, Anchor, SparseStateTrie)>> =
     parking_lot::Mutex::new(None);
 
-/// The last flat snapshot any worker held, carried across blocks like the
-/// trie pool: a worker on a pool-hit block can reveal from ANY lineage root,
-/// so it never needs to wait for the shadow lock to get a snapshot.
-static SNAP_POOL: parking_lot::Mutex<Option<mpt_flat_poc::FlatSnapshot>> =
+/// The last flat snapshot any worker held, stamped with the apply sequence at
+/// capture, carried across blocks like the trie pool: a worker on a pool-hit
+/// block whose anchor clears the stamp can reveal from it without ever
+/// waiting for the shadow lock.
+static SNAP_POOL: parking_lot::Mutex<Option<(mpt_flat_poc::FlatSnapshot, u64)>> =
     parking_lot::Mutex::new(None);
 
 /// One committed-but-not-yet-applied block's effect on the trie, kept so
@@ -146,8 +186,11 @@ static OVERLAYS: parking_lot::Mutex<std::collections::VecDeque<OverlayBlock>> =
     parking_lot::Mutex::new(std::collections::VecDeque::new());
 
 /// Bound on tracked un-applied blocks; beyond this the oldest is dropped and
-/// fetches for deep descendants degrade to waiting for the follower.
-const OVERLAY_CAP: usize = 8;
+/// fetches for deep descendants degrade to waiting for the follower. Sized
+/// past the deepest follower lag seen at flood (64 blocks): a fresh trie
+/// whose anchor is still pending must be able to proof-walk through the
+/// whole un-applied stack instead of stalling on wait_for_parent.
+const OVERLAY_CAP: usize = 96;
 
 /// Register a block's overlay slot (synchronously, preserving order); the
 /// returned handle is filled by the async overlay build.
@@ -217,8 +260,24 @@ fn overlay_chain(
     found.then(|| (std::sync::Arc::new(trie.into_sorted()), std::sync::Arc::new(post.into_sorted())))
 }
 
-/// Drop overlays the follower has caught up past.
+/// Drop overlays the follower has caught up past. Also the follower-progress
+/// tick: bumps the apply sequence, records the reached root, and satisfies a
+/// pooled trie's pending anchor when the follower reaches it.
 pub(crate) fn prune_overlays(flat_root: B256) {
+    let seq = APPLY_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    {
+        let mut ring = RECENT_ROOTS.lock();
+        ring.push_back((flat_root, seq));
+        while ring.len() > RECENT_ROOTS_CAP {
+            ring.pop_front();
+        }
+    }
+    if let Some((_, anchor, _)) = TRIE_POOL.lock().as_mut()
+        && let Anchor::Pending(r) = *anchor
+        && r == flat_root
+    {
+        *anchor = Anchor::Satisfied(seq);
+    }
     let mut q = OVERLAYS.lock();
     while let Some(front) = q.front() {
         if front.parent_root == flat_root {
@@ -650,9 +709,12 @@ impl SparseWorker {
                     }
                 }
                 if !finished {
-                    // Channel closed without Finish: cancelled build. The
-                    // consumed pooled trie (if any) stays discarded.
-                    tracing::debug!(target: "flatmpt", "sparse worker dropped (cancelled build)");
+                    // Channel closed without Finish: cancelled build. Repool
+                    // the trie if it is still clean (reveals only) so the
+                    // next build doesn't start blind — losing it here is what
+                    // set up the r148 stale-reveal divergence.
+                    let repooled = w.repool_cancelled();
+                    tracing::debug!(target: "flatmpt", repooled, "sparse worker dropped (cancelled build)");
                 }
             })
             .expect("spawn flatmpt-sparse");
@@ -698,11 +760,20 @@ struct Worker {
     parent_root: B256,
     /// Lock-free read snapshot of the flat store, refreshed opportunistically
     /// (try_read); reveals run against it and never wait behind the
-    /// follower's write-locked applies. Sound at any lineage root when the
-    /// pooled trie carried over (blinded ⇒ untouched); a fresh trie
-    /// (pool miss) requires the snapshot to be exactly at the parent.
+    /// follower's write-locked applies. Sound for the pooled trie's blind
+    /// regions (blinded ⇒ untouched since trie creation) iff the snapshot's
+    /// stamp clears the trie's anchor; a fresh trie (pool miss) requires the
+    /// snapshot to be exactly at the parent.
     snap: Option<mpt_flat_poc::FlatSnapshot>,
     snap_at_parent: bool,
+    /// Apply sequence at which `snap` was captured (conservative: may lag).
+    snap_seq: u64,
+    /// Blind-region soundness anchor of `trie` (see [`Anchor`]).
+    anchor: Anchor,
+    /// True once any leaf update has been applied to the trie: the trie no
+    /// longer represents plain parent state and must not be repooled on
+    /// cancel. Reveals alone don't dirty it — they are parent-state facts.
+    dirty: bool,
     trie: SparseStateTrie,
     account_updates: B256Map<LeafUpdate>,
     storage_updates: B256Map<B256Map<LeafUpdate>>,
@@ -725,9 +796,12 @@ impl Worker {
         // Reuse the previous block's revealed trie when stacking directly on
         // its root — the steady-state case. Anything else (first block,
         // rebuild candidate, post-cancel) starts blind.
-        let (mut trie, pool_hit) = match TRIE_POOL.lock().take() {
-            Some((root, trie)) if root == parent_root => (trie, true),
-            _ => (SparseStateTrie::new(), false),
+        let (mut trie, pool_hit, anchor) = match TRIE_POOL.lock().take() {
+            Some((root, anchor, trie)) if root == parent_root => (trie, true, anchor),
+            // Fresh trie: its blind regions are only pinned to the parent
+            // state from here on, so arbitrary-lineage reveals are unsound
+            // until the follower reaches this root (see `Anchor`).
+            _ => (SparseStateTrie::new(), false, Anchor::Pending(parent_root)),
         };
         // Retain branch-node updates: finish() publishes them as the block's
         // overlay so descendants' proofs need not wait for the flat apply.
@@ -739,6 +813,9 @@ impl Worker {
             parent_root,
             snap: None,
             snap_at_parent: false,
+            snap_seq: 0,
+            anchor,
+            dirty: false,
             trie,
             account_updates: B256Map::default(),
             storage_updates: B256Map::default(),
@@ -757,11 +834,44 @@ impl Worker {
         if mem <= trie_mem_cap() {
             self.stats.trie_mem_mb = (mem >> 20) as u64;
             let trie = std::mem::take(&mut self.trie);
-            *TRIE_POOL.lock() = Some((root, trie));
+            *TRIE_POOL.lock() = Some((root, self.anchor, trie));
         } else {
             self.stats.trie_mem_mb = 0;
             tracing::info!(target: "flatmpt", mem_mb = mem >> 20, "pooled sparse trie over cap; dropping");
             *TRIE_POOL.lock() = None;
+        }
+    }
+
+    /// A cancelled build's trie still represents plain parent state as long
+    /// as no leaf update was applied (reveals are parent-state facts), so
+    /// repool it instead of losing the warm trie — the r148 loss path: a
+    /// build raced at flood end stole the trie, and its blind replacement
+    /// went on to reveal from a stale snapshot. Never clobbers a newer entry.
+    fn repool_cancelled(mut self) -> bool {
+        if self.dirty || self.trie.memory_size() > trie_mem_cap() {
+            return false;
+        }
+        let mut pool = TRIE_POOL.lock();
+        if pool.is_none() {
+            *pool = Some((self.parent_root, self.anchor, std::mem::take(&mut self.trie)));
+            return true;
+        }
+        false
+    }
+
+    /// True iff the current snapshot is sound for this trie's blind regions:
+    /// the follower reached the trie's creation root at some sequence the
+    /// snapshot's stamp clears. Resolves a Pending anchor via the applied-
+    /// roots ring (covers anchors passed while the trie was checked out).
+    fn anchor_ok(&mut self) -> bool {
+        if let Anchor::Pending(r) = self.anchor
+            && let Some(s) = root_seq(r)
+        {
+            self.anchor = Anchor::Satisfied(s);
+        }
+        match self.anchor {
+            Anchor::Satisfied(s) => self.snap_seq >= s,
+            Anchor::Pending(_) => false,
         }
     }
 
@@ -988,6 +1098,29 @@ impl Worker {
         // threads; the serial version was the largest finish phase (~28ms of
         // 67 at 110k ops).
         let t_phase = Instant::now();
+        // Accounts whose storage changed without an account op still need
+        // their leaf re-encoded with the new storage root. Execution-derived
+        // ops always pair storage changes with a SetAccount, so this is a
+        // no-op live — but replayed or synthetic ops may not, and silently
+        // keeping the old storage root poisons the account trie. The drain
+        // above revealed these leaves (their `Touched` updates), so the
+        // stored value is available here.
+        let storage_touched: Vec<B256> = self
+            .storage_updates
+            .keys()
+            .chain(self.streamed_storage.keys())
+            .copied()
+            .collect();
+        for acct in storage_touched {
+            if !pending_accounts.contains_key(&acct) && !destroyed.contains(&acct) {
+                let value = self.trie.get_account_value(&acct).ok_or_else(|| {
+                    anyhow::anyhow!("storage-changed account {acct} not revealed at promote")
+                })?;
+                let account = TrieAccount::decode(&mut value.as_slice())
+                    .map_err(|e| anyhow::anyhow!("stored account rlp: {e}"))?;
+                pending_accounts.insert(acct, Some(account));
+            }
+        }
         let t_sroot = Instant::now();
         let mut hashed_sroots: B256Map<B256> = B256Map::default();
         for (acct, account) in &pending_accounts {
@@ -1102,8 +1235,8 @@ impl Worker {
     }
 
     /// Refresh the read snapshot if the writer isn't busy; keep the old one
-    /// otherwise (stale snapshots stay sound on pool-hit blocks). Falls back
-    /// to the cross-block snapshot pool before ever considering blocking.
+    /// otherwise (stale snapshots stay sound when the anchor clears them).
+    /// Falls back to the cross-block snapshot pool before ever blocking.
     fn refresh_snap(&mut self, block: bool) {
         let guard = if block {
             Some(self.shadow.read())
@@ -1112,11 +1245,25 @@ impl Worker {
         };
         if let Some(g) = guard {
             self.snap_at_parent = g.at_parent(self.parent_root);
+            self.snap_seq = APPLY_SEQ.load(std::sync::atomic::Ordering::SeqCst);
+            // A snapshot AT the parent is ground truth for every target, so
+            // it also satisfies a pending anchor for all later snapshots:
+            // paths still blind then were untouched by every build since
+            // creation, hence identical from here on. This is the anchor's
+            // only satisfaction path when the creation root never shows up
+            // in the follower's applied roots (e.g. the golden-genesis
+            // header-root escape).
+            if self.snap_at_parent && matches!(self.anchor, Anchor::Pending(_)) {
+                self.anchor = Anchor::Satisfied(self.snap_seq);
+            }
             let snap = g.db().snapshot();
-            *SNAP_POOL.lock() = Some(snap.clone());
+            *SNAP_POOL.lock() = Some((snap.clone(), self.snap_seq));
             self.snap = Some(snap);
         } else if self.snap.is_none() {
-            self.snap = SNAP_POOL.lock().clone();
+            if let Some((snap, seq)) = SNAP_POOL.lock().clone() {
+                self.snap = Some(snap);
+                self.snap_seq = seq;
+            }
             self.snap_at_parent = false;
         }
     }
@@ -1134,6 +1281,18 @@ impl Worker {
             // dedup rule.
             let mut acct_targets: B256Map<u8> = B256Map::default();
             let mut storage_targets: B256Map<B256Map<u8>> = B256Map::default();
+
+            // Value-bearing updates are about to hit the trie: it stops
+            // being plain parent state (Touched prewarms only reveal).
+            if !self.dirty
+                && (self.storage_updates.values().any(|u| !u.is_empty())
+                    || self
+                        .account_updates
+                        .values()
+                        .any(|u| matches!(u, LeafUpdate::Changed(_))))
+            {
+                self.dirty = true;
+            }
 
             for (acct, updates) in self.storage_updates.iter_mut() {
                 if updates.is_empty() {
@@ -1229,16 +1388,23 @@ impl Worker {
             }
             // Lock-free fast path first: refresh the snapshot if the writer
             // is idle, and reveal from it without ever waiting on the lock.
-            // Pool-hit blocks are sound at any lineage root; pool-miss
-            // (fresh trie) requires a snapshot taken at the parent.
+            // Sound iff the snapshot is at the parent (ground truth), or the
+            // trie carried over AND the snapshot is no older than the trie's
+            // creation state (blind ⇒ untouched since creation — NOT since
+            // forever: a freshly recreated trie is blind on paths the
+            // preceding blocks touched, and a lagging snapshot serves their
+            // pre-update content).
             let mut direct: Option<DecodedMultiProofV2> = None;
             if fast_reveal() {
                 self.refresh_snap(false);
-                if self.snap.is_none() || (!self.stats.pool_hit && !self.snap_at_parent) {
+                let mut sound =
+                    self.snap_at_parent || (self.stats.pool_hit && self.anchor_ok());
+                if self.snap.is_none() || !sound {
                     self.refresh_snap(true);
+                    sound = self.snap_at_parent || (self.stats.pool_hit && self.anchor_ok());
                 }
                 if let Some(snap) = &self.snap {
-                    if self.stats.pool_hit || self.snap_at_parent {
+                    if sound {
                         match direct_reveal(snap, &acct_targets, &storage_targets) {
                             Ok(p) => direct = Some(p),
                             Err(e)
@@ -1393,6 +1559,7 @@ pub(super) mod tests {
             *super::TRIE_POOL.lock() = None;
             *super::SNAP_POOL.lock() = None;
             super::OVERLAYS.lock().clear();
+            super::RECENT_ROOTS.lock().clear();
         }
         struct G(#[allow(dead_code)] parking_lot::MutexGuard<'static, ()>);
         impl Drop for G {
@@ -2138,6 +2305,99 @@ mod overlay_tests {
         let (o2, _) = oracle.apply_block(ops2).unwrap();
         assert_eq!(root2, B256::from(o2), "root diverges");
         assert_eq!(shadow.read().current_root(), g, "follower must have lagged");
+    }
+
+    /// The r148 block-349 divergence: the pooled trie is lost while the
+    /// follower lags, an EMPTY block recreates it blind (pool-hit for its
+    /// descendants, anchor pending), and the next op block's targets overlap
+    /// state the un-applied blocks changed. The old `pool_hit ⇒ any lineage
+    /// root` rule let direct_reveal serve those targets from the lagging
+    /// snapshot — pre-update siblings, silently wrong root. The anchor gate
+    /// must force the overlay proof path instead.
+    #[test]
+    fn young_pooled_trie_never_reveals_from_stale_snapshot() {
+        let _guard = tests::worker_statics_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anchor.flat");
+        let path = path.to_str().unwrap();
+
+        let mut genesis: Vec<(Key, StateOp)> = (0..64u8).map(|i| set_acct(i, 1)).collect();
+        for sl in 0..200u16 {
+            genesis.push(set_slot(2, sl, 1 + sl as u64));
+        }
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        // Block 1 (the "flood"): rewrites contract 2's slots and some
+        // accounts. The follower never applies it.
+        let mut ops1: Vec<(Key, StateOp)> = vec![set_acct(5, 42), set_acct(7, 43)];
+        for sl in 0..40u16 {
+            ops1.push(set_slot(2, sl, 100_000 + sl as u64));
+        }
+        let mut w1 = Worker::new(shadow, g);
+        let (root1, _) = w1.finish(ops1.clone()).unwrap();
+        let (o1, _) = oracle.apply_block({
+            let mut o = ops1.clone();
+            o.sort_by(|a, b| a.0.cmp(&b.0));
+            o
+        }).unwrap();
+        assert_eq!(root1, B256::from(o1), "block 1 diverged");
+
+        // Flood-end steal: a raced build consumed the trie and died with it.
+        *TRIE_POOL.lock() = None;
+
+        // Empty block on root1: fresh blind trie, pooled with a pending
+        // anchor (the follower is still at genesis).
+        let mut w2 = Worker::new(shadow, root1);
+        assert!(!w2.stats.pool_hit);
+        let (root2, _) = w2.finish(Vec::new()).unwrap();
+        assert_eq!(root2, root1);
+
+        // Op block on the same root: pool hit on the BLIND trie; its targets
+        // overlap block 1's writes, which the lagging snapshot serves stale.
+        let mut ops3: Vec<(Key, StateOp)> = vec![set_acct(5, 99)];
+        for sl in 0..8u16 {
+            ops3.push(set_slot(2, sl * 20, 900_000 + sl as u64));
+        }
+        ops3.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut w3 = Worker::new(shadow, root1);
+        assert!(w3.stats.pool_hit, "block 3 must reuse the young trie");
+        let (root3, _) = w3.finish(ops3.clone()).unwrap();
+        let (o3, _) = oracle.apply_block(ops3).unwrap();
+        assert_eq!(root3, B256::from(o3), "stale-snapshot reveal poisoned the root");
+        assert_eq!(shadow.read().current_root(), g, "follower must have lagged throughout");
+    }
+
+    /// Clean cancelled builds return the trie to the pool; dirty ones don't.
+    #[test]
+    fn cancelled_build_repools_only_clean_tries() {
+        let _guard = tests::worker_statics_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repool.flat");
+        let path = path.to_str().unwrap();
+
+        let genesis: Vec<(Key, StateOp)> = (0..16u8).map(|i| set_acct(i, 1)).collect();
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let g = B256::from(genesis_root);
+        let s = FlatShadow::init(path, genesis, g).unwrap();
+        let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
+
+        // Clean cancel (reveals only, no updates applied): repooled.
+        let w = Worker::new(shadow, g);
+        assert!(w.repool_cancelled());
+        assert!(TRIE_POOL.lock().is_some());
+
+        // Dirty cancel: dropped, and it must not clobber a pooled entry.
+        let mut w = Worker::new(shadow, g); // consumes the pool
+        w.dirty = true;
+        assert!(!w.repool_cancelled());
+        assert!(TRIE_POOL.lock().is_none());
     }
 }
 
