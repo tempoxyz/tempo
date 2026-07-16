@@ -7,18 +7,13 @@
 use commonware_runtime::{Metrics as _, Spawner as _, tokio::Context};
 use eyre::WrapErr as _;
 use jiff::SignedDuration;
-use prometheus_client::{
-    encoding::{EncodeLabelSet, text::encode},
-    metrics::info::Info,
-    registry::Registry,
-};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_tracing::tracing;
 use std::path::{Path, PathBuf};
 use sysinfo::{Disks, System};
 use url::Url;
 
-#[derive(Clone, Debug, EncodeLabelSet, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 struct HardwareInfo {
     cpu_vendor: String,
     cpu_brand: String,
@@ -42,11 +37,21 @@ fn file_system_for_path(disks: &Disks, path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Collects non-identifying hardware metadata and encodes it as a Prometheus info metric.
+/// Paths used to determine filesystem metadata for the node's storage directories.
+pub struct HardwareMetricsConfig {
+    /// Resolved execution data directory.
+    pub datadir: PathBuf,
+    /// Resolved static files directory.
+    pub static_files_dir: PathBuf,
+    /// Resolved consensus data directory.
+    pub consensus_dir: PathBuf,
+}
+
+/// Collects and registers non-identifying hardware metadata as a Prometheus info-style gauge.
 ///
 /// Disk names and mount sources are deliberately not collected because they can expose internal
 /// infrastructure details for network-mounted filesystems.
-fn hardware_metrics(config: &PrometheusMetricsConfig) -> eyre::Result<String> {
+pub fn install_hardware_metrics(config: HardwareMetricsConfig) {
     let system = System::new_all();
     let cpu = system.cpus().first();
     let disks = Disks::new_with_refreshed_list();
@@ -66,16 +71,23 @@ fn hardware_metrics(config: &PrometheusMetricsConfig) -> eyre::Result<String> {
         consensus_file_system: file_system_for_path(&disks, &config.consensus_dir),
     };
 
-    let mut registry = Registry::default();
-    registry.register(
-        "tempo_hardware",
-        "Static, non-identifying hardware information for the Tempo node",
-        Info::new(labels),
+    metrics::describe_gauge!(
+        "tempo_hardware_info",
+        "Static, non-identifying hardware information for the Tempo node"
     );
-
-    let mut encoded = String::new();
-    encode(&mut encoded, &registry).wrap_err("failed to encode hardware metrics")?;
-    Ok(encoded)
+    metrics::gauge!(
+        "tempo_hardware_info",
+        "cpu_vendor" => labels.cpu_vendor,
+        "cpu_brand" => labels.cpu_brand,
+        "cpu_frequency_mhz" => labels.cpu_frequency_mhz.to_string(),
+        "physical_core_count" => labels.physical_core_count.to_string(),
+        "logical_core_count" => labels.logical_core_count.to_string(),
+        "total_memory_bytes" => labels.total_memory_bytes.to_string(),
+        "datadir_file_system" => labels.datadir_file_system,
+        "static_files_file_system" => labels.static_files_file_system,
+        "consensus_file_system" => labels.consensus_file_system,
+    )
+    .set(1.0);
 }
 
 /// Configuration for Prometheus metrics push export.
@@ -90,12 +102,6 @@ pub struct PrometheusMetricsConfig {
     pub consensus_pubkey: Option<String>,
     /// Peer Id for this node.
     pub peer_id: String,
-    /// Resolved execution data directory.
-    pub datadir: PathBuf,
-    /// Resolved static files directory.
-    pub static_files_dir: PathBuf,
-    /// Resolved consensus data directory.
-    pub consensus_dir: PathBuf,
 }
 
 /// Spawns a task that periodically pushes both consensus and execution metrics to Victoria Metrics.
@@ -118,8 +124,6 @@ pub fn install_prometheus_metrics(
         extra_label.push_str(&format!(",consensus_pubkey={pubkey}"));
     }
 
-    let hardware_metrics = hardware_metrics(&config)?;
-
     let mut endpoint = config.endpoint;
     endpoint
         .query_pairs_mut()
@@ -140,7 +144,7 @@ pub fn install_prometheus_metrics(
 
             let consensus_metrics = context.encode();
             let reth_metrics = reth_recorder.handle().render();
-            let body = format!("{consensus_metrics}\n{reth_metrics}\n{hardware_metrics}");
+            let body = format!("{consensus_metrics}\n{reth_metrics}");
 
             // Push to Victoria Metrics
             let mut request = client

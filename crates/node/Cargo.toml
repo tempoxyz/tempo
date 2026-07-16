@@ -65,7 +65,7 @@ futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true
 reqwest.workspace = true
-prometheus-client.workspace = true
+metrics.workspace = true
 sysinfo.workspace = true
 url.workspace = true
 serde.workspace = true

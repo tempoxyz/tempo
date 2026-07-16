@@ -74,7 +74,10 @@ pub use tempo_node::{
 use tempo_node::{
     TempoFullNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
-    telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
+    telemetry::{
+        HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
+        install_prometheus_metrics,
+    },
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
@@ -310,6 +313,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
+            install_hardware_metrics(HardwareMetricsConfig {
+                datadir: datadir.data_dir().to_path_buf(),
+                static_files_dir: datadir.static_files().to_path_buf(),
+                consensus_dir: consensus_storage.clone(),
+            });
+
             let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.with_label("metrics"),
                 args.consensus.metrics_address,
@@ -331,9 +340,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     auth_header: config.metrics_auth_header,
                     consensus_pubkey,
                     peer_id: format!("{:x}", node.network.peer_id()),
-                    datadir: datadir.data_dir().to_path_buf(),
-                    static_files_dir: datadir.static_files().to_path_buf(),
-                    consensus_dir: consensus_storage.clone(),
                 };
 
                 install_prometheus_metrics(ctx.with_label("telemetry_metrics"), prometheus_config)
