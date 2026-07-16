@@ -44,7 +44,7 @@ abstract contract ZoneFactory is IZoneFactory {
 
     /// @notice Next zone ID to be assigned.
     /// @dev Starts at 1, reserving zone ID 0 for potential future use.
-    uint32 internal _nextZoneId = 1;
+    uint32 public override nextZoneId = 1;
 
     mapping(uint32 => ZoneInfo) internal _zones;
 
@@ -69,9 +69,9 @@ abstract contract ZoneFactory is IZoneFactory {
         if (params.verifier != ZONE_VERIFIER_ADDRESS) revert InvalidVerifier();
         if (gasleft() < ZONE_CREATION_GAS) revert InsufficientGas();
 
-        zoneId = _nextZoneId;
+        zoneId = nextZoneId;
         if (zoneId == type(uint32).max) revert ZoneIdOverflow();
-        _nextZoneId = zoneId + 1;
+        nextZoneId = zoneId + 1;
 
         portal = portalAddress(zoneId);
 
@@ -156,18 +156,13 @@ abstract contract ZoneFactory is IZoneFactory {
                                  VIEWS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Returns the number of zones created, excluding reserved zone 0.
-    function zoneCount() external view returns (uint32) {
-        return _nextZoneId - 1;
-    }
-
     function zones(uint32 zoneId) external view returns (ZoneInfo memory) {
         return _zones[zoneId];
     }
 
     function isZonePortal(address portal) external view returns (bool) {
         uint64 zoneId = uint64(uint160(portal));
-        return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < _nextZoneId;
+        return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
     }
 
     function isValidVerifier(address v) external pure returns (bool) {
