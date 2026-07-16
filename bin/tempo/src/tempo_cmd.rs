@@ -428,7 +428,7 @@ impl WalletArgs {
 
             Ok(EthereumWallet::new(signer))
         } else {
-            bail!("no wallet provided")
+            bail!("no wallet provided");
         }
     }
 }
@@ -477,7 +477,7 @@ impl ValidatorTransactionArgs {
             std::io::stdin().read_line(&mut input)?;
 
             if !matches!(input.trim(), "y" | "Y" | "yes" | "YES") {
-                bail!("transaction cancelled by user")
+                bail!("transaction cancelled by user");
             }
         }
 
