@@ -28,6 +28,7 @@ impl PartialValidatorKey {
     }
 }
 
+/// Version tag identifying the subblock encoding format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum SubBlockVersion {
@@ -70,6 +71,9 @@ impl Decodable for SubBlockVersion {
     }
 }
 
+/// A validator-submitted batch of transactions to be appended on top of a specific parent
+/// block, carrying its encoding version, the required parent hash, the fee recipient, and the
+/// included transactions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct SubBlock {
