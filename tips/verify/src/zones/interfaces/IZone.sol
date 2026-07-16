@@ -77,10 +77,6 @@ interface IZoneFactory {
 
     function transferOwnership(address newOwner) external;
 
-    function isValidVerifier(address verifier) external view returns (bool);
-
-    function verifier() external view returns (address);
-
     function createZone(CreateZoneParams calldata params)
         external
         returns (uint32 zoneId, address portal);
@@ -90,7 +86,5 @@ interface IZoneFactory {
     function zones(uint32 zoneId) external view returns (ZoneInfo memory);
 
     function isZonePortal(address portal) external view returns (bool);
-
-    function messenger() external view returns (address);
 
 }
