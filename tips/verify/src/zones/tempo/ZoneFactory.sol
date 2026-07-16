@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import { IZoneFactory, ZoneInfo } from "../interfaces/IZone.sol";
-import { ZonePortal } from "./ZonePortal.sol";
+import { IZoneFactory, IZonePortalInitializer, ZoneInfo } from "../interfaces/IZone.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 
@@ -88,7 +87,7 @@ abstract contract ZoneFactory is IZoneFactory {
         // precompile, represented by abstract hooks here so this artifact documents
         // the required behavior without pretending it is ordinary Solidity.
         _nativeEtchPortalProxy(portal, portalProxyRuntime());
-        ZonePortal(portal)
+        IZonePortalInitializer(portal)
             .initialize(
                 zoneId,
                 params.initialToken,
