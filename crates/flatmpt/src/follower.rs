@@ -249,7 +249,7 @@ pub fn follower(shadow: &'static RwLock<FlatShadow>) -> &'static Follower {
             .name("flatmpt-follower".into())
             .spawn(move || run(shadow, rx, d))
             .expect("spawn flatmpt-follower");
-        spawn_bg_gc(shadow);
+        spawn_bg_gc(shadow, depth.clone());
         Follower { tx, depth }
     })
 }
@@ -258,10 +258,18 @@ pub fn follower(shadow: &'static RwLock<FlatShadow>) -> &'static Follower {
 /// + head rewrites against a pinned snapshot), then briefly take the writer
 /// to re-verify and install the pointer swaps. Replaces the per-apply
 /// `gc_step` (whose region IO throttled the follower to ~4s/block at flood).
+///
+/// Contention-free by construction: a cycle only STARTS in a dead window
+/// (follower queue empty — the ~500ms gap between blocks at steady state),
+/// its snapshot is taken with try_read (never queues behind the writer),
+/// and the install uses try_write so it can never stall an apply or a
+/// proof reader; if the window closes mid-cycle the install retries in the
+/// next idle gap (the batch's snapshot pin keeps it sound) and gives up
+/// after 30s rather than pinning regions forever.
+///
 /// `TEMPO_FLATMPT_BG_GC=0` disables; `TEMPO_FLATMPT_GC_CHUNK` sets the
-/// victim-regions-per-cycle budget (default 512 = 64 MiB of region reads,
-/// install typically well under 200ms of write-lock hold).
-fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>) {
+/// victim-regions-per-cycle budget (default 512 = 64 MiB of region reads).
+fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>, depth: Arc<AtomicUsize>) {
     if std::env::var("TEMPO_FLATMPT_BG_GC").as_deref() == Ok("0") {
         return;
     }
@@ -272,7 +280,19 @@ fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>) {
     std::thread::Builder::new()
         .name("flatmpt-gc".into())
         .spawn(move || loop {
-            let snap = shadow.read().db().snapshot();
+            // Only start work in a dead window: no queued applies.
+            if depth.load(Ordering::SeqCst) > 0 {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            // Never wait behind the writer for the snapshot either.
+            let snap = match shadow.try_read() {
+                Some(g) => g.db().snapshot(),
+                None => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            };
             let t_collect = Instant::now();
             let batch = match snap.gc_collect(chunk) {
                 Ok(b) => b,
@@ -289,20 +309,46 @@ fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>) {
             }
             let collect_ms = t_collect.elapsed().as_millis() as u64;
             let (items, regions) = (batch.len(), batch.regions());
+            // Install only when idle AND the lock is free; a batch held
+            // across a closing window stays sound (its snapshot pin parks
+            // the old copies), so just retry in the next gap.
             let t_install = Instant::now();
-            match shadow.write().gc_install(batch) {
-                Ok((installed, discarded)) => tracing::debug!(
-                    target: "flatmpt",
-                    regions,
-                    items,
-                    installed,
-                    discarded,
-                    collect_ms,
-                    install_ms = t_install.elapsed().as_millis() as u64,
-                    "bg gc cycle"
-                ),
-                Err(e) => {
-                    tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "bg gc install failed")
+            let mut batch = Some(batch);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while let Some(b) = batch.take() {
+                if depth.load(Ordering::SeqCst) > 0 {
+                    if Instant::now() >= deadline {
+                        tracing::debug!(target: "flatmpt", regions, items, "bg gc batch dropped (no idle window)");
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                    batch = Some(b);
+                    continue;
+                }
+                match shadow.try_write() {
+                    Some(mut g) => match g.gc_install(b) {
+                        Ok((installed, discarded)) => tracing::debug!(
+                            target: "flatmpt",
+                            regions,
+                            items,
+                            installed,
+                            discarded,
+                            collect_ms,
+                            install_ms = t_install.elapsed().as_millis() as u64,
+                            "bg gc cycle"
+                        ),
+                        Err(e) => {
+                            tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "bg gc install failed")
+                        }
+                    },
+                    None => {
+                        if Instant::now() >= deadline {
+                            tracing::debug!(target: "flatmpt", regions, items, "bg gc batch dropped (lock busy)");
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                        batch = Some(b);
+                    }
                 }
             }
         })
