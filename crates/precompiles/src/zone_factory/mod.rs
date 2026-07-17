@@ -4,7 +4,7 @@ pub mod dispatch;
 
 use crate::{
     ZONE_FACTORY_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, Slot, vec::VecHandler},
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
@@ -13,7 +13,7 @@ use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, hex};
 use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
-    ZoneFactoryEvent, ZoneInfo, ZonePortalEvent,
+    ZoneFactoryEvent, ZonePortalEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -64,7 +64,7 @@ struct ZoneInfoStorage {
     rpc_url: String,
 }
 
-impl From<ZoneInfoStorage> for ZoneInfo {
+impl From<ZoneInfoStorage> for IZoneFactory::zonesReturn {
     fn from(value: ZoneInfoStorage) -> Self {
         Self {
             zoneId: value.zone_id,
@@ -153,10 +153,6 @@ impl ZoneFactory {
         }
 
         let zone_id = self.next_zone_id()?;
-        if zone_id == u32::MAX {
-            return Err(ZoneFactoryError::zone_id_overflow().into());
-        }
-
         let portal = portal_address(zone_id);
 
         // Read metadata before mutating factory or portal state. The TIP-20 validity check above
@@ -167,7 +163,11 @@ impl ZoneFactory {
         let token_symbol = token.symbol()?;
         let token_currency = token.currency()?;
 
-        self.next_zone_id.write(zone_id + 1)?;
+        self.next_zone_id.write(
+            zone_id
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
         self.initialize_portal(portal, zone_id, &call.params)?;
 
         self.zones[zone_id].write(ZoneInfoStorage {
@@ -217,7 +217,7 @@ impl ZoneFactory {
     }
 
     /// Returns stored metadata for `zone_id`, or the zero/default record if it does not exist.
-    pub fn zone(&self, zone_id: u32) -> Result<ZoneInfo> {
+    pub fn zone(&self, zone_id: u32) -> Result<IZoneFactory::zonesReturn> {
         Ok(self.zones[zone_id].read()?.into())
     }
 
@@ -352,7 +352,7 @@ mod tests {
             assert!(!factory.is_zone_portal(portal_address(2))?);
             assert_eq!(
                 factory.zone(1)?,
-                ZoneInfo {
+                IZoneFactory::zonesReturn {
                     zoneId: 1,
                     portal: created.portal,
                     initialToken: PATH_USD_ADDRESS,

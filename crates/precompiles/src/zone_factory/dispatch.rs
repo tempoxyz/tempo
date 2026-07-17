@@ -29,7 +29,7 @@ impl Precompile for ZoneFactory {
                         mutate(call, msg_sender, |sender, call| self.create_zone(sender, call))
                     },
                     nextZoneId(call) => view(call, |_| self.next_zone_id()),
-                    zones(call) => view(call, |call| self.zone(call.zoneId)),
+                    zones(call) => view(call, |call| self.zone(call.id)),
                     isZonePortal(call) => view(call, |call| self.is_zone_portal(call.portal)),
                 }
             }
