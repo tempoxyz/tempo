@@ -31,8 +31,9 @@ use tempo_contracts::{
     precompiles::{
         ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
         RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
-        ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        T9_ZONE_FACTORY_OWNER, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        ZONE_VERIFIER_ADDRESS,
     },
     zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
 };
@@ -246,19 +247,9 @@ where
 
     /// Installs and initializes the TIP-1091 ZoneFactory when T9 first becomes active.
     ///
-    /// The code marker is the one-time activation sentinel. A scheduled T9 chain without a
-    /// nonzero `zoneFactoryOwner` fails closed instead of activating an unusable factory.
+    /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
+    /// fixed T9 protocol constants.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let owner = self
-            .inner
-            .spec
-            .info
-            .zone_factory_owner()
-            .filter(|owner| !owner.is_zero())
-            .ok_or_else(|| {
-                BlockValidationError::msg("T9 activation requires a nonzero zoneFactoryOwner")
-            })?;
-
         let info = self
             .inner
             .evm
@@ -297,7 +288,7 @@ where
             owner_slot,
             EvmStorageSlot::new_changed(
                 original_owner,
-                U256::from_be_slice(owner.as_slice()),
+                U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()),
                 TransactionId::ZERO,
             ),
         );
@@ -2102,7 +2093,6 @@ mod tests {
     #[test]
     fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let owner = chainspec.info.zone_factory_owner().unwrap();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2134,7 +2124,7 @@ mod tests {
         assert_eq!(factory.storage_slot(U256::ZERO), Some(U256::from(1)));
         assert_eq!(
             factory.storage_slot(U256::from(2)),
-            Some(U256::from_be_slice(owner.as_slice()))
+            Some(U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()))
         );
 
         for (address, expected_hash) in [
@@ -2163,31 +2153,6 @@ mod tests {
         ] {
             assert!(calls[0].contains_key(&address));
         }
-    }
-
-    #[test]
-    fn test_deploy_zone_factory_at_boundary_requires_owner() {
-        let mut genesis = DEV.genesis().clone();
-        genesis.config.extra_fields.remove("zoneFactoryOwner");
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .build(&mut db, &chainspec);
-
-        let err = executor.deploy_zone_factory_at_boundary().unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("T9 activation requires a nonzero zoneFactoryOwner")
-        );
-        drop(executor);
-
-        let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
-        assert!(
-            factory
-                .account_info()
-                .is_none_or(|info| info.is_empty_code_hash())
-        );
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.

@@ -129,11 +129,6 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     validator_admin: Option<Address>,
 
-    /// Initial owner of the TIP-1091 ZoneFactory.
-    /// If not set, uses the first generated account.
-    #[arg(long)]
-    zone_factory_owner: Option<Address>,
-
     /// Custom onchain addresses for validators.
     /// Must match the number of validators if provided.
     #[arg(long, value_delimiter = ',')]
@@ -304,7 +299,6 @@ impl GenesisArgs {
 
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
-        let zone_factory_owner = self.zone_factory_owner.unwrap_or_else(|| addresses[0]);
         let mut evm = setup_tempo_evm(self.chain_id);
 
         deploy_arachnid_create2_factory(&mut evm);
@@ -627,9 +621,6 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t9Time".to_string(), self.t9_time)?;
-        chain_config
-            .extra_fields
-            .insert_value("zoneFactoryOwner".to_string(), zone_factory_owner)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
