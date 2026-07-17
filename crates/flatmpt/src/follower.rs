@@ -323,20 +323,26 @@ fn run(
                     Ok(root) if root == expected_root => {
                         publish_snapshot(shadow);
                         retire_pending(root);
-                        // Reclaim garbage between applies (bounded pass; off
-                        // the slot path). Without this the only gc entry
-                        // point was the periodic persist — far too little at
-                        // ~165k random writes per block.
-                        let t_gc = Instant::now();
-                        match shadow.write().gc_step() {
-                            Ok(n) if n > 0 => tracing::debug!(
-                                target: "flatmpt",
-                                evacuated = n,
-                                gc_ms = t_gc.elapsed().as_millis() as u64,
-                                "follower gc"
-                            ),
-                            Ok(_) => {}
-                            Err(e) => tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "gc failed"),
+                        // Per-block gc pass, opt-in (TEMPO_FLATMPT_BLOCK_GC=1).
+                        // Default OFF: the bounded pass reclaims ~8k units
+                        // (<1MB) while costing ~2s per flood block — it
+                        // throttled the follower to ~4s/block (r149, 10.1k
+                        // tps vs 14.2k without) without containing file
+                        // growth. Until gc is rebuilt around bulk reclamation
+                        // (task: gc effectiveness), persist-time gc is the
+                        // only default entry point.
+                        if std::env::var("TEMPO_FLATMPT_BLOCK_GC").as_deref() == Ok("1") {
+                            let t_gc = Instant::now();
+                            match shadow.write().gc_step() {
+                                Ok(n) if n > 0 => tracing::debug!(
+                                    target: "flatmpt",
+                                    evacuated = n,
+                                    gc_ms = t_gc.elapsed().as_millis() as u64,
+                                    "follower gc"
+                                ),
+                                Ok(_) => {}
+                                Err(e) => tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "gc failed"),
+                            }
                         }
                         crate::sparse::prune_overlays(root);
                         tracing::info!(
