@@ -271,7 +271,6 @@ impl TempoTransactionRequest {
         is_t1c: bool,
         force_aa: bool,
     ) -> Result<TempoTxEnv, ValueError<Self>> {
-        let caller = self.inner.from.unwrap_or_default();
         let is_aa = force_aa || self.has_aa_fields();
         if is_aa && self.calls.is_empty() && self.inner.to.is_none() {
             return Err(ValueError::new_static(self, "empty calls list"));
@@ -281,7 +280,7 @@ impl TempoTransactionRequest {
             self.clone()
                 .build_aa()
                 .ok()
-                .and_then(|tx| tx.recover_fee_payer(caller).ok())
+                .and_then(|tx| tx.recover_fee_payer(inner.caller).ok())
         });
 
         let Self {
@@ -319,7 +318,7 @@ impl TempoTransactionRequest {
                         key_type.unwrap_or(SignatureType::Secp256k1),
                         key_data,
                         key_id,
-                        caller,
+                        inner.caller,
                         is_t1c,
                     ),
                     tempo_authorization_list: tempo_authorization_list
@@ -780,6 +779,35 @@ mod tests {
             .expect_err("forced AA request without calls should fail");
 
         assert_eq!(err.to_string(), "empty calls list");
+    }
+
+    #[cfg(feature = "revm")]
+    #[test]
+    fn test_into_tempo_tx_env_uses_execution_caller_for_keychain_signature() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(address!("0x1111111111111111111111111111111111111111").into()),
+                ..Default::default()
+            },
+            key_id: Some(address!("0x2222222222222222222222222222222222222222")),
+            ..Default::default()
+        };
+        let caller = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let inner = revm::context::TxEnv {
+            caller,
+            ..Default::default()
+        };
+
+        let env = request
+            .into_tempo_tx_env(inner, false, false)
+            .expect("valid Tempo simulation environment");
+        let aa_env = env.tempo_tx_env.expect("AA environment");
+        let TempoSignature::Keychain(signature) = aa_env.signature else {
+            panic!("expected keychain signature");
+        };
+
+        assert_eq!(signature.user_address, caller);
     }
 
     #[test]

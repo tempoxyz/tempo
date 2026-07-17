@@ -396,8 +396,8 @@ def main():
         internal_deps = ws_path_deps - publish_keep
         text = strip_dep_lines(text, lambda n: n in internal_deps)
 
-        # Strip the `reth` feature block
-        text = strip_feature_blocks(text, ['reth'])
+        # Strip feature blocks backed by non-publishable internal dependencies
+        text = strip_feature_blocks(text, ['revm', 'reth'])
 
         # Strip "rpc" from tempo-primitives features (rpc feature is stripped during publish)
         text = re.sub(r', "rpc"', '', text)
