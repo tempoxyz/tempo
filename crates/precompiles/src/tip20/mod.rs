@@ -209,6 +209,11 @@ impl TIP20Token {
         self.transfer_policy_id.read()
     }
 
+    /// Clears the legacy TIP-20 policy slot after its value has moved to TIP-403.
+    pub(crate) fn delete_legacy_transfer_policy_id(&mut self) -> Result<()> {
+        self.transfer_policy_id.delete()
+    }
+
     /// Returns the PAUSE_ROLE constant
     ///
     /// This role identifier grants permission to pause the token contract.
@@ -271,7 +276,10 @@ impl TIP20Token {
         }
 
         let mut registry = TIP403Registry::new();
-        if StorageCtx.spec().is_t9() && registry.has_token_transfer_policy_for(self.address)? {
+        if StorageCtx.spec().is_t9() {
+            if !registry.has_token_transfer_policy_for(self.address)? {
+                self.delete_legacy_transfer_policy_id()?;
+            }
             registry.set_token_transfer_policy(self.address, call.newPolicyId)?;
         } else {
             self.transfer_policy_id.write(call.newPolicyId)?;
@@ -3645,6 +3653,7 @@ pub(crate) mod tests {
                 U256::ZERO
             );
             assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
             token.approve(
                 Address::random(),
                 ITIP20::approveCall {
@@ -3661,7 +3670,7 @@ pub(crate) mod tests {
                 },
             )?;
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
-            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             // An existing registry binding is skipped and cannot be overwritten.
             assert_eq!(
@@ -3673,6 +3682,33 @@ pub(crate) mod tests {
                 U256::ZERO
             );
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_transfer_policy_id_migrates_and_clears_legacy_policy() -> eyre::Result<()> {
+        let admin = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(admin).apply()?;
+            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+
+            StorageCtx.set_spec(TempoHardfork::T9);
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+
+            let registry = TIP403Registry::new();
+            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             Ok(())
         })
