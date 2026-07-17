@@ -193,7 +193,11 @@ pub(crate) mod marshal {
         .await;
 
         let startup_floor_height = finalized_floor.0;
-        let last_finalized_height = marshal_stored_height.max(startup_floor_height);
+        let last_finalized_height = if marshal_stored_height.is_zero() {
+            startup_floor_height
+        } else {
+            marshal_stored_height
+        };
         info!(
             marshal_stored = %marshal_stored_height,
             selected_floor = %startup_floor_height,

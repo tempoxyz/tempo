@@ -64,7 +64,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -1381,21 +1381,19 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm_without_tip1060_accounting(
-                journal,
-                block,
-                cfg,
-                tx,
-                actions.clone(),
-                || {
-                    fee_manager.collect_fee_pre_tx(
-                        fee_payer,
-                        fee_token,
-                        gas_balance_spending,
-                        block.beneficiary(),
-                        skip_liquidity_check,
-                    )
+            let result = fee_manager.collect_fee_pre_tx(
+                ProtocolFeeContext {
+                    journal,
+                    block_env: block,
+                    cfg,
+                    tx_env: tx,
+                    actions: actions.clone(),
                 },
+                fee_payer,
+                fee_token,
+                gas_balance_spending,
+                block.beneficiary(),
+                skip_liquidity_check,
             );
 
             if let Err(err) = result {
@@ -1693,32 +1691,30 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm_without_tip1060_accounting(
-            &mut *journal,
-            block,
-            &context.cfg,
-            tx,
-            actions,
-            || {
-                if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                    let fee_token = evm
-                        .fee_token
-                        .expect("set in `validate_against_state_and_deduct_caller`");
-                    fee_manager
-                        .collect_fee_post_tx(
-                            fee_payer,
-                            actual_spending,
-                            refund_amount,
-                            fee_token,
-                            beneficiary,
-                        )
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
-                } else {
-                    Ok(U256::ZERO)
-                }
-            },
-        )?;
+        let credited = if !actual_spending.is_zero() || !refund_amount.is_zero() {
+            let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+            let fee_token = evm
+                .fee_token
+                .expect("set in `validate_against_state_and_deduct_caller`");
+            fee_manager
+                .collect_fee_post_tx(
+                    ProtocolFeeContext {
+                        journal,
+                        block_env: block,
+                        cfg: &context.cfg,
+                        tx_env: tx,
+                        actions,
+                    },
+                    fee_payer,
+                    actual_spending,
+                    refund_amount,
+                    fee_token,
+                    beneficiary,
+                )
+                .map_err(|e| EVMError::Custom(format!("{e:?}")))?
+        } else {
+            U256::ZERO
+        };
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
@@ -2697,6 +2693,7 @@ mod tests {
 
         fn collect_fee_pre_tx(
             &self,
+            _ctx: ProtocolFeeContext<'_, DB>,
             _fee_payer: Address,
             _user_token: Address,
             _max_amount: U256,
@@ -2710,6 +2707,7 @@ mod tests {
 
         fn collect_fee_post_tx(
             &self,
+            _ctx: ProtocolFeeContext<'_, DB>,
             _fee_payer: Address,
             _actual_spending: U256,
             _refund_amount: U256,

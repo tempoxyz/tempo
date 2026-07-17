@@ -74,7 +74,10 @@ pub use tempo_node::{
 use tempo_node::{
     TempoFullNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
-    telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
+    telemetry::{
+        HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
+        install_prometheus_metrics,
+    },
 };
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
@@ -277,21 +280,29 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
+        let datadir = node
+            .config
+            .datadir
+            .clone()
+            .resolve_datadir(node.chain_spec().chain());
+        let consensus_storage = args
+            .consensus
+            .storage_dir
+            .clone()
+            .unwrap_or_else(|| datadir.data_dir().join("consensus"));
+
+        install_hardware_metrics(HardwareMetricsConfig {
+            datadir: datadir.data_dir().to_path_buf(),
+            static_files_dir: datadir.static_files(),
+            consensus_dir: consensus_storage.clone(),
+        });
+
         if !args.has_consensus_engine(node.config.dev.dev) {
             return futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
             });
         }
-
-        let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
-            node.config
-                .datadir
-                .clone()
-                .resolve_datadir(node.chain_spec().chain())
-                .data_dir()
-                .join("consensus")
-        });
 
         info_span!("prepare_consensus").in_scope(|| {
             info!(
