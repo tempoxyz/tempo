@@ -260,14 +260,17 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Converts this request into a Tempo transaction environment for RPC simulation.
+    /// Applies this request's Tempo-specific fields to a transaction environment for RPC
+    /// simulation.
     ///
-    /// Set `force_aa` when the original RPC request explicitly selected Tempo AA semantics in a
-    /// way that is not retained after deserialization, such as an explicitly empty `calls` list.
+    /// The caller must construct `env` from this request's inner Ethereum transaction using its
+    /// host-specific RPC conversion. Set `force_aa` when the original RPC request explicitly
+    /// selected Tempo AA semantics in a way that is not retained after deserialization, such as an
+    /// explicitly empty `calls` list.
     #[cfg(feature = "revm")]
-    pub fn into_tempo_tx_env(
+    pub fn apply_to_tempo_tx_env(
         self,
-        inner: revm::context::TxEnv,
+        mut env: TempoTxEnv,
         is_t1c: bool,
         force_aa: bool,
     ) -> Result<TempoTxEnv, ValueError<Self>> {
@@ -280,7 +283,7 @@ impl TempoTransactionRequest {
             self.clone()
                 .build_aa()
                 .ok()
-                .and_then(|tx| tx.recover_fee_payer(inner.caller).ok())
+                .and_then(|tx| tx.recover_fee_payer(env.inner.caller).ok())
         });
 
         let Self {
@@ -306,38 +309,36 @@ impl TempoTransactionRequest {
             });
         }
 
-        Ok(TempoTxEnv {
-            fee_token,
-            is_system_tx: false,
-            unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
-            fee_payer,
-            tempo_tx_env: is_aa.then(|| {
-                Box::new(TempoBatchCallEnv {
-                    aa_calls: calls,
-                    signature: create_mock_tempo_signature(
-                        key_type.unwrap_or(SignatureType::Secp256k1),
-                        key_data,
-                        key_id,
-                        inner.caller,
-                        is_t1c,
-                    ),
-                    tempo_authorization_list: tempo_authorization_list
-                        .into_iter()
-                        .map(RecoveredTempoAuthorization::new)
-                        .collect(),
-                    nonce_key: nonce_key.unwrap_or_default(),
-                    key_authorization,
-                    signature_hash: alloy_primitives::B256::ZERO,
-                    tx_hash: alloy_primitives::B256::ZERO,
-                    valid_before: valid_before.map(NonZeroU64::get),
-                    valid_after: valid_after.map(NonZeroU64::get),
-                    subblock_transaction: false,
-                    override_key_id: key_id,
-                    expiring_nonce_idx: None,
-                })
-            }),
-            inner,
-        })
+        env.fee_token = fee_token;
+        env.is_system_tx = false;
+        env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        env.fee_payer = fee_payer;
+        env.tempo_tx_env = is_aa.then(|| {
+            Box::new(TempoBatchCallEnv {
+                aa_calls: calls,
+                signature: create_mock_tempo_signature(
+                    key_type.unwrap_or(SignatureType::Secp256k1),
+                    key_data,
+                    key_id,
+                    env.inner.caller,
+                    is_t1c,
+                ),
+                tempo_authorization_list: tempo_authorization_list
+                    .into_iter()
+                    .map(RecoveredTempoAuthorization::new)
+                    .collect(),
+                nonce_key: nonce_key.unwrap_or_default(),
+                key_authorization,
+                signature_hash: alloy_primitives::B256::ZERO,
+                tx_hash: alloy_primitives::B256::ZERO,
+                valid_before: valid_before.map(NonZeroU64::get),
+                valid_after: valid_after.map(NonZeroU64::get),
+                subblock_transaction: false,
+                override_key_id: key_id,
+                expiring_nonce_idx: None,
+            })
+        });
+        Ok(env)
     }
 
     /// Attempts to build a [`TempoTransaction`] with the configured fields.
@@ -728,7 +729,7 @@ mod tests {
 
     #[cfg(feature = "revm")]
     #[test]
-    fn test_into_tempo_tx_env_preserves_request_calls() {
+    fn test_apply_to_tempo_tx_env_preserves_request_calls() {
         let calls = vec![Call {
             to: address!("0x1111111111111111111111111111111111111111").into(),
             value: U256::ONE,
@@ -748,7 +749,7 @@ mod tests {
         };
 
         let env = request
-            .into_tempo_tx_env(revm::context::TxEnv::default(), false, false)
+            .apply_to_tempo_tx_env(TempoTxEnv::default(), false, false)
             .expect("valid Tempo simulation environment");
         let calls = env.tempo_tx_env.expect("AA environment").aa_calls;
 
@@ -765,7 +766,23 @@ mod tests {
 
     #[cfg(feature = "revm")]
     #[test]
-    fn test_into_tempo_tx_env_can_force_aa_semantics() {
+    fn test_apply_to_tempo_tx_env_preserves_base_environment() {
+        let mut base_env = TempoTxEnv::default();
+        base_env.inner.caller = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        base_env.inner.gas_limit = 123_456;
+        base_env.inner.chain_id = Some(4242);
+        let inner = base_env.inner.clone();
+
+        let env = TempoTransactionRequest::default()
+            .apply_to_tempo_tx_env(base_env, false, false)
+            .expect("valid Tempo simulation environment");
+
+        assert_eq!(env.inner, inner);
+    }
+
+    #[cfg(feature = "revm")]
+    #[test]
+    fn test_apply_to_tempo_tx_env_can_force_aa_semantics() {
         let to = address!("0x2222222222222222222222222222222222222222");
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
@@ -776,7 +793,7 @@ mod tests {
         };
 
         let env = request
-            .into_tempo_tx_env(revm::context::TxEnv::default(), false, true)
+            .apply_to_tempo_tx_env(TempoTxEnv::default(), false, true)
             .expect("valid Tempo simulation environment");
         let calls = env.tempo_tx_env.expect("forced AA environment").aa_calls;
 
@@ -786,9 +803,9 @@ mod tests {
 
     #[cfg(feature = "revm")]
     #[test]
-    fn test_into_tempo_tx_env_rejects_forced_aa_without_calls() {
+    fn test_apply_to_tempo_tx_env_rejects_forced_aa_without_calls() {
         let err = TempoTransactionRequest::default()
-            .into_tempo_tx_env(revm::context::TxEnv::default(), false, true)
+            .apply_to_tempo_tx_env(TempoTxEnv::default(), false, true)
             .expect_err("forced AA request without calls should fail");
 
         assert_eq!(err.to_string(), "empty calls list");
@@ -796,7 +813,7 @@ mod tests {
 
     #[cfg(feature = "revm")]
     #[test]
-    fn test_into_tempo_tx_env_uses_execution_caller_for_keychain_signature() {
+    fn test_apply_to_tempo_tx_env_uses_execution_caller_for_keychain_signature() {
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
@@ -807,13 +824,11 @@ mod tests {
             ..Default::default()
         };
         let caller = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        let inner = revm::context::TxEnv {
-            caller,
-            ..Default::default()
-        };
+        let mut env = TempoTxEnv::default();
+        env.inner.caller = caller;
 
         let env = request
-            .into_tempo_tx_env(inner, false, false)
+            .apply_to_tempo_tx_env(env, false, false)
             .expect("valid Tempo simulation environment");
         let aa_env = env.tempo_tx_env.expect("AA environment");
         let TempoSignature::Keychain(signature) = aa_env.signature else {

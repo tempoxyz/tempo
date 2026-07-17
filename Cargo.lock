@@ -12945,7 +12945,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-rpc-convert",
  "reth-rpc-eth-types",
- "revm",
  "serde",
  "serde_json",
  "tempo-chainspec",
