@@ -237,32 +237,30 @@ impl TIP403Registry {
         Ok(call.policyId < counter)
     }
 
-    /// Returns whether TIP-403 stores a transfer-policy binding for `token`.
-    pub fn has_token_transfer_policy(
-        &self,
-        call: ITIP403Registry::hasTokenTransferPolicyCall,
-    ) -> Result<bool> {
-        self.has_token_transfer_policy_for(call.token)
-    }
-
-    /// Returns the TIP-403 policy binding for `token`, falling back to the legacy token-local
-    /// policy ID when no binding has been registered.
+    /// Returns whether TIP-403 stores a transfer-policy binding for `token` and the effective
+    /// policy ID. The policy ID falls back to legacy token-local storage when no binding exists.
     ///
     /// # Errors
     /// - `InvalidToken` — `token` is not a deployed TIP-20 token
     pub fn token_transfer_policy_id(
         &self,
         call: ITIP403Registry::tokenTransferPolicyIdCall,
-    ) -> Result<u64> {
+    ) -> Result<ITIP403Registry::tokenTransferPolicyIdReturn> {
         if !TIP20Factory::new().is_tip20(call.token)? {
             return Err(tempo_contracts::precompiles::TIP20Error::invalid_token().into());
         }
 
-        if let Some(policy_id) = self.registered_token_transfer_policy_id(call.token)? {
-            return Ok(policy_id);
-        }
+        let registered_policy_id = self.registered_token_transfer_policy_id(call.token)?;
+        let is_set = registered_policy_id.is_some();
+        let policy_id = match registered_policy_id {
+            Some(policy_id) => policy_id,
+            None => TIP20Token::from_address(call.token)?.legacy_transfer_policy_id()?,
+        };
 
-        TIP20Token::from_address(call.token)?.legacy_transfer_policy_id()
+        Ok(ITIP403Registry::tokenTransferPolicyIdReturn {
+            isSet: is_set,
+            policyId: policy_id,
+        })
     }
 
     /// Returns whether a registry binding exists without validating the token address.

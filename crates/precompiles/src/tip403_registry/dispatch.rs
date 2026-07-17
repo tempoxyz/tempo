@@ -22,8 +22,6 @@ impl Precompile for TIP403Registry {
                     policyIdCounter(call) => view(call, |_| self.policy_id_counter()),
                     policyExists(call) => view(call, |c| self.policy_exists(c)),
                     #[schedule(since = T9)]
-                    hasTokenTransferPolicy(call) => view(call, |c| self.has_token_transfer_policy(c)),
-                    #[schedule(since = T9)]
                     tokenTransferPolicyId(call) => view(call, |c| self.token_transfer_policy_id(c)),
                     policyData(call) => view(call, |c| self.policy_data(c)),
                     isAuthorized(call) => view(call, |c| {
@@ -80,9 +78,9 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
-        tip403_registry::ITIP403Registry,
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
     };
     use alloy::{
         primitives::U256,
@@ -608,7 +606,6 @@ mod tests {
     fn test_token_transfer_policy_selectors_are_t9_gated() -> eyre::Result<()> {
         let token = Address::random();
         let calls = [
-            ITIP403Registry::hasTokenTransferPolicyCall { token }.abi_encode(),
             ITIP403Registry::tokenTransferPolicyIdCall { token }.abi_encode(),
             ITIP403Registry::migrateTransferPolicyIdsCall {
                 tokens: vec![token],
@@ -630,17 +627,26 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
-            let result = registry.call(&calls[0], Address::ZERO)?;
-            assert!(result.status.is_success());
-            assert!(!bool::abi_decode(&result.bytes)?);
-
             // The lookup selector is active, but an undeployed token is rejected.
-            let result = registry.call(&calls[1], Address::ZERO)?;
+            let result = registry.call(&calls[0], Address::ZERO)?;
             assert!(result.is_revert());
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_err());
 
+            // A registered token returns the binding state and policy ID together.
+            let token = TIP20Setup::create("Token", "TKN", Address::random()).apply()?;
+            let lookup = ITIP403Registry::tokenTransferPolicyIdCall {
+                token: token.address(),
+            }
+            .abi_encode();
+            let result = registry.call(&lookup, Address::ZERO)?;
+            assert!(result.status.is_success());
+            let lookup =
+                ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.bytes)?;
+            assert!(lookup.isSet);
+            assert_eq!(lookup.policyId, ALLOW_ALL_POLICY_ID);
+
             // Batch migration recognizes the selector and skips the invalid token.
-            let result = registry.call(&calls[2], Address::random())?;
+            let result = registry.call(&calls[1], Address::random())?;
             assert!(result.status.is_success());
             assert_eq!(U256::abi_decode(&result.bytes)?, U256::ZERO);
             Ok(())

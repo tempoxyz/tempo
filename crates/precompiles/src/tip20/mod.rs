@@ -3632,7 +3632,10 @@ pub(crate) mod tests {
                 registry.token_transfer_policy_id(ITIP403Registry::tokenTransferPolicyIdCall {
                     token: token.address,
                 },)?,
-                ALLOW_ALL_POLICY_ID
+                ITIP403Registry::tokenTransferPolicyIdReturn {
+                    isSet: false,
+                    policyId: ALLOW_ALL_POLICY_ID,
+                }
             );
 
             // Invalid and duplicate addresses are skipped. Normal TIP-20 operations continue.
@@ -3728,7 +3731,10 @@ pub(crate) mod tests {
                 registry.token_transfer_policy_id(ITIP403Registry::tokenTransferPolicyIdCall {
                     token: token.address,
                 },)?,
-                ALLOW_ALL_POLICY_ID
+                ITIP403Registry::tokenTransferPolicyIdReturn {
+                    isSet: true,
+                    policyId: ALLOW_ALL_POLICY_ID,
+                }
             );
             assert_eq!(token.transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
 
