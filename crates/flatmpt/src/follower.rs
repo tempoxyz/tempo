@@ -12,7 +12,7 @@ use mpt_flat_poc::{Key, StateOp};
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 enum FollowJob {
     Apply {
@@ -249,8 +249,64 @@ pub fn follower(shadow: &'static RwLock<FlatShadow>) -> &'static Follower {
             .name("flatmpt-follower".into())
             .spawn(move || run(shadow, rx, d))
             .expect("spawn flatmpt-follower");
+        spawn_bg_gc(shadow);
         Follower { tx, depth }
     })
+}
+
+/// Background GC: collect victim regions off the write lock (parallel reads
+/// + head rewrites against a pinned snapshot), then briefly take the writer
+/// to re-verify and install the pointer swaps. Replaces the per-apply
+/// `gc_step` (whose region IO throttled the follower to ~4s/block at flood).
+/// `TEMPO_FLATMPT_BG_GC=0` disables; `TEMPO_FLATMPT_GC_CHUNK` sets the
+/// victim-regions-per-cycle budget (default 512 = 64 MiB of region reads,
+/// install typically well under 200ms of write-lock hold).
+fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>) {
+    if std::env::var("TEMPO_FLATMPT_BG_GC").as_deref() == Ok("0") {
+        return;
+    }
+    let chunk: usize = std::env::var("TEMPO_FLATMPT_GC_CHUNK")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(512);
+    std::thread::Builder::new()
+        .name("flatmpt-gc".into())
+        .spawn(move || loop {
+            let snap = shadow.read().db().snapshot();
+            let t_collect = Instant::now();
+            let batch = match snap.gc_collect(chunk) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "bg gc collect failed");
+                    std::thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
+            if batch.is_empty() {
+                // At target utilization (or nothing qualifies): idle.
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            let collect_ms = t_collect.elapsed().as_millis() as u64;
+            let (items, regions) = (batch.len(), batch.regions());
+            let t_install = Instant::now();
+            match shadow.write().gc_install(batch) {
+                Ok((installed, discarded)) => tracing::debug!(
+                    target: "flatmpt",
+                    regions,
+                    items,
+                    installed,
+                    discarded,
+                    collect_ms,
+                    install_ms = t_install.elapsed().as_millis() as u64,
+                    "bg gc cycle"
+                ),
+                Err(e) => {
+                    tracing::warn!(target: "flatmpt", err = %format!("{e:#}"), "bg gc install failed")
+                }
+            }
+        })
+        .expect("spawn flatmpt-gc");
 }
 
 /// Ask the follower to bring the flat store to `parent_root` if an abandoned

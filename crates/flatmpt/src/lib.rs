@@ -554,6 +554,16 @@ impl FlatShadow {
     pub fn gc_step(&mut self) -> anyhow::Result<usize> {
         self.db.gc_step().map_err(|e| anyhow::anyhow!("gc: {e:#}"))
     }
+
+    /// Install phase of the split background GC (see the flatmpt-gc thread in
+    /// `follower`): re-verify + swap the pointers a background collect
+    /// prepared. Brief — pure RAM walks and frees, no region IO.
+    pub fn gc_install(
+        &mut self,
+        batch: mpt_flat_poc::GcBatch,
+    ) -> anyhow::Result<(usize, usize)> {
+        self.db.gc_install(batch).map_err(|e| anyhow::anyhow!("gc install: {e:#}"))
+    }
 }
 
 /// The process-wide shadow. First caller initializes it from the genesis alloc
