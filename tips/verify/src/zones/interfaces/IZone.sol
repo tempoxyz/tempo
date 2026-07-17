@@ -83,7 +83,20 @@ interface IZoneFactory {
 
     function nextZoneId() external view returns (uint32);
 
-    function zones(uint32 zoneId) external view returns (ZoneInfo memory);
+    function zones(uint32 id)
+        external
+        view
+        returns (
+            uint32 zoneId,
+            address portal,
+            address initialToken,
+            address admin,
+            address sequencer,
+            bytes32 genesisBlockHash,
+            bytes32 genesisTempoBlockHash,
+            uint64 genesisTempoBlockNumber,
+            string memory rpcUrl
+        );
 
     function isZonePortal(address portal) external view returns (bool);
 

@@ -45,7 +45,8 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Starts at 1, reserving zone ID 0 for potential future use.
     uint32 public override nextZoneId = 1;
 
-    mapping(uint32 => ZoneInfo) internal _zones;
+    // forgefmt: disable-next-line
+    mapping(uint32 => ZoneInfo) public override zones;
 
     /// @notice Initial value is configured by the T9 activation; exact address TBD.
     address public owner;
@@ -100,7 +101,7 @@ abstract contract ZoneFactory is IZoneFactory {
                 params.rpcUrl
             );
 
-        _zones[zoneId] = ZoneInfo({
+        zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
             initialToken: params.initialToken,
@@ -152,10 +153,6 @@ abstract contract ZoneFactory is IZoneFactory {
     /*//////////////////////////////////////////////////////////////
                                  VIEWS
     //////////////////////////////////////////////////////////////*/
-
-    function zones(uint32 zoneId) external view returns (ZoneInfo memory) {
-        return _zones[zoneId];
-    }
 
     function isZonePortal(address portal) external view returns (bool) {
         uint64 zoneId = uint64(uint160(portal));
