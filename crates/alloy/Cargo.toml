@@ -36,6 +36,7 @@ alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
 alloy-json-rpc.workspace = true
 alloy-transport.workspace = true
+revm = { workspace = true, optional = true }
 
 reth-evm = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
@@ -63,9 +64,10 @@ tokio.workspace = true
 
 [features]
 default = []
+revm = ["dep:revm", "dep:tempo-revm"]
 reth = [
+    "revm",
     "dep:tempo-evm",
-    "dep:tempo-revm",
     "dep:reth-evm",
     "dep:reth-primitives-traits",
     "dep:reth-rpc-convert",

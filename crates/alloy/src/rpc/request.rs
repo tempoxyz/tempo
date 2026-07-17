@@ -13,8 +13,25 @@ use tempo_primitives::{
         key_authorization::serde_nonzero_quantity_opt,
     },
 };
+#[cfg(feature = "revm")]
+use tempo_primitives::{
+    TempoSignature,
+    transaction::{
+        RecoveredTempoAuthorization,
+        tt_signature::{
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
+        },
+    },
+};
+#[cfg(feature = "revm")]
+use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
 use crate::TempoNetwork;
+
+/// Non-zero transaction identifier used only for RPC simulations.
+#[cfg(feature = "revm")]
+pub(super) const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: alloy_primitives::B256 =
+    alloy_primitives::B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
 #[derive(
@@ -243,6 +260,87 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Converts this request into a Tempo transaction environment for RPC simulation.
+    ///
+    /// Set `force_aa` when the original RPC request explicitly selected Tempo AA semantics in a
+    /// way that is not retained after deserialization, such as an explicitly empty `calls` list.
+    #[cfg(feature = "revm")]
+    pub fn into_tempo_tx_env(
+        self,
+        inner: revm::context::TxEnv,
+        is_t1c: bool,
+        force_aa: bool,
+    ) -> Result<TempoTxEnv, ValueError<Self>> {
+        let caller = self.inner.from.unwrap_or_default();
+        let is_aa = force_aa || self.has_aa_fields();
+        if is_aa && self.calls.is_empty() && self.inner.to.is_none() {
+            return Err(ValueError::new_static(self, "empty calls list"));
+        }
+
+        let fee_payer = self.fee_payer_signature.is_some().then(|| {
+            self.clone()
+                .build_aa()
+                .ok()
+                .and_then(|tx| tx.recover_fee_payer(caller).ok())
+        });
+
+        let Self {
+            inner: request,
+            fee_token,
+            nonce_key,
+            mut calls,
+            key_type,
+            key_data,
+            key_id,
+            tempo_authorization_list,
+            key_authorization,
+            valid_before,
+            valid_after,
+            fee_payer_signature: _,
+        } = self;
+
+        if let Some(to) = request.to {
+            calls.push(Call {
+                to,
+                value: request.value.unwrap_or_default(),
+                input: request.input.into_input().unwrap_or_default(),
+            });
+        }
+
+        Ok(TempoTxEnv {
+            fee_token,
+            is_system_tx: false,
+            unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
+            fee_payer,
+            tempo_tx_env: is_aa.then(|| {
+                Box::new(TempoBatchCallEnv {
+                    aa_calls: calls,
+                    signature: create_mock_tempo_signature(
+                        key_type.unwrap_or(SignatureType::Secp256k1),
+                        key_data,
+                        key_id,
+                        caller,
+                        is_t1c,
+                    ),
+                    tempo_authorization_list: tempo_authorization_list
+                        .into_iter()
+                        .map(RecoveredTempoAuthorization::new)
+                        .collect(),
+                    nonce_key: nonce_key.unwrap_or_default(),
+                    key_authorization,
+                    signature_hash: alloy_primitives::B256::ZERO,
+                    tx_hash: alloy_primitives::B256::ZERO,
+                    valid_before: valid_before.map(NonZeroU64::get),
+                    valid_after: valid_after.map(NonZeroU64::get),
+                    subblock_transaction: false,
+                    override_key_id: key_id,
+                    expiring_nonce_idx: None,
+                })
+            }),
+            inner,
+        })
+    }
+
     /// Attempts to build a [`TempoTransaction`] with the configured fields.
     pub fn build_aa(self) -> Result<TempoTransaction, ValueError<Self>> {
         if self.calls.is_empty() && self.inner.to.is_none() {
@@ -302,6 +400,79 @@ impl TempoTransactionRequest {
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: self.key_authorization,
         })
+    }
+}
+
+#[cfg(feature = "revm")]
+fn create_mock_tempo_signature(
+    key_type: SignatureType,
+    key_data: Option<Bytes>,
+    key_id: Option<Address>,
+    caller: Address,
+    is_t1c: bool,
+) -> TempoSignature {
+    let signature = create_mock_primitive_signature(&key_type, key_data);
+    if key_id.is_some() {
+        let signature = if is_t1c {
+            KeychainSignature::new(caller, signature)
+        } else {
+            KeychainSignature::new_v1(caller, signature)
+        };
+        TempoSignature::Keychain(signature)
+    } else {
+        TempoSignature::Primitive(signature)
+    }
+}
+
+#[cfg(feature = "revm")]
+pub(super) fn create_mock_primitive_signature(
+    key_type: &SignatureType,
+    key_data: Option<Bytes>,
+) -> PrimitiveSignature {
+    match key_type {
+        SignatureType::Secp256k1 => PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::new(U256::ZERO, U256::ZERO, false),
+        ),
+        SignatureType::P256 => PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: alloy_primitives::B256::ZERO,
+            s: alloy_primitives::B256::ZERO,
+            pub_key_x: alloy_primitives::B256::ZERO,
+            pub_key_y: alloy_primitives::B256::ZERO,
+            pre_hash: false,
+        }),
+        SignatureType::WebAuthn => {
+            const CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
+            const AUTH_DATA_SIZE: usize = 37;
+            const MIN_SIZE: usize = AUTH_DATA_SIZE + CLIENT_JSON.len();
+            const DEFAULT_SIZE: usize = 800;
+            const MAX_SIZE: usize = 8192;
+
+            let size = key_data
+                .as_deref()
+                .and_then(|data| match data.len() {
+                    1 => Some(data[0] as usize),
+                    2 => Some(u16::from_be_bytes([data[0], data[1]]) as usize),
+                    4 => Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize),
+                    _ => None,
+                })
+                .unwrap_or(DEFAULT_SIZE)
+                .clamp(MIN_SIZE, MAX_SIZE);
+
+            let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
+            webauthn_data[32] = 0x01;
+            let padding = "x".repeat(size - MIN_SIZE);
+            let client_json =
+                format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#);
+            webauthn_data.extend_from_slice(client_json.as_bytes());
+
+            PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                webauthn_data: webauthn_data.into(),
+                r: alloy_primitives::B256::ZERO,
+                s: alloy_primitives::B256::ZERO,
+                pub_key_x: alloy_primitives::B256::ZERO,
+                pub_key_y: alloy_primitives::B256::ZERO,
+            })
+        }
     }
 }
 
@@ -541,6 +712,74 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test timestamp must be non-zero")
+    }
+
+    #[cfg(feature = "revm")]
+    #[test]
+    fn test_into_tempo_tx_env_preserves_request_calls() {
+        let calls = vec![Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::ONE,
+            input: Bytes::from_static(&[0xaa]),
+        }];
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(address!("0x2222222222222222222222222222222222222222").into()),
+                value: Some(U256::from(2)),
+                input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from_static(&[0xbb])),
+                ..Default::default()
+            },
+            calls,
+            nonce_key: Some(U256::ZERO),
+            ..Default::default()
+        };
+
+        let env = request
+            .into_tempo_tx_env(revm::context::TxEnv::default(), false, false)
+            .expect("valid Tempo simulation environment");
+        let calls = env.tempo_tx_env.expect("AA environment").aa_calls;
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0].to,
+            address!("0x1111111111111111111111111111111111111111").into()
+        );
+        assert_eq!(
+            calls[1].to,
+            address!("0x2222222222222222222222222222222222222222").into()
+        );
+    }
+
+    #[cfg(feature = "revm")]
+    #[test]
+    fn test_into_tempo_tx_env_can_force_aa_semantics() {
+        let to = address!("0x2222222222222222222222222222222222222222");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(to.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let env = request
+            .into_tempo_tx_env(revm::context::TxEnv::default(), false, true)
+            .expect("valid Tempo simulation environment");
+        let calls = env.tempo_tx_env.expect("forced AA environment").aa_calls;
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].to, to.into());
+    }
+
+    #[cfg(feature = "revm")]
+    #[test]
+    fn test_into_tempo_tx_env_rejects_forced_aa_without_calls() {
+        let err = TempoTransactionRequest::default()
+            .into_tempo_tx_env(revm::context::TxEnv::default(), false, true)
+            .expect_err("forced AA request without calls should fail");
+
+        assert_eq!(err.to_string(), "empty calls list");
     }
 
     #[test]
