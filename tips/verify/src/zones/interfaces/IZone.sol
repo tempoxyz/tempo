@@ -71,7 +71,6 @@ interface IZoneFactory {
     error InvalidAdmin();
     error InvalidSequencer();
     error InsufficientGas();
-    error ZoneIdOverflow();
 
     function owner() external view returns (address);
 

@@ -69,7 +69,6 @@ abstract contract ZoneFactory is IZoneFactory {
         if (gasleft() < ZONE_CREATION_GAS) revert InsufficientGas();
 
         zoneId = nextZoneId;
-        if (zoneId == type(uint32).max) revert ZoneIdOverflow();
         nextZoneId = zoneId + 1;
 
         portal = portalAddress(zoneId);
