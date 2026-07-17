@@ -1,7 +1,8 @@
 //! Solidity-compatible storage layout for ZonePortal accounts created by the native factory.
 //!
-//! This type is only a storage handle. It is not registered as a precompile; calls to a portal
-//! continue to execute the ERC-1167 proxy and the canonical Solidity implementation.
+//! This type is only a storage handle. It is not registered as a precompile because the current
+//! REVM precompile interface cannot make the external calls required by ZonePortal. Calls to a
+//! portal continue to execute the ERC-1167 proxy and the canonical Solidity implementation.
 
 use crate::{
     error::Result,
@@ -57,6 +58,7 @@ pub(super) struct ZonePortalStorage {
     deposit_count: u64,
     last_processed_deposit_number: u64,
     last_synced_tempo_block_number: u64,
+    bounceback_gas: u64,
     encryption_keys: Vec<PortalEncryptionKeyEntry>,
     token_configs: Mapping<Address, PortalTokenConfig>,
     enabled_tokens: Vec<Address>,
@@ -73,7 +75,7 @@ pub(super) struct ZonePortalStorage {
 }
 
 impl ZonePortalStorage {
-    pub(super) fn at(address: Address) -> Self {
+    pub(super) fn new(address: Address) -> Self {
         Self::__new(address)
     }
 

@@ -225,7 +225,7 @@ impl ZoneFactory {
     ) -> Result<()> {
         // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
         // prefix makes pre-existing state computationally infeasible to target with CREATE2.
-        ZonePortalStorage::at(portal).initialize(zone_id, params)
+        ZonePortalStorage::new(portal).initialize(zone_id, params)
     }
 }
 
@@ -327,7 +327,7 @@ mod tests {
                 ZONE_PORTAL_PROXY_RUNTIME.as_slice()
             );
 
-            let portal = ZonePortalStorage::at(created.portal);
+            let portal = ZonePortalStorage::new(created.portal);
             assert_eq!(portal.sequencer.read()?, SEQUENCER);
             assert_eq!(portal.admin.read()?, ADMIN);
             assert_eq!(

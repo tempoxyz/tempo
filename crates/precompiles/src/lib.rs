@@ -1116,10 +1116,14 @@ mod tests {
 
         let mut t9 = CfgEnv::<TempoHardfork>::default();
         t9.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
+        let precompiles = test_tempo_precompiles(&t9);
         assert!(
-            test_tempo_precompiles(&t9)
-                .get(&ZONE_FACTORY_ADDRESS)
-                .is_some()
+            precompiles.get(&ZONE_FACTORY_ADDRESS).is_some(),
+            "ZoneFactory should be registered at T9"
+        );
+        assert!(
+            precompiles.get(&zone_factory::portal_address(1)).is_none(),
+            "ZonePortal storage handles must not be registered as precompiles"
         );
     }
 
