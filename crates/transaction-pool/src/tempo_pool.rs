@@ -93,6 +93,11 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    /// Returns whether admitted transactions use Tempo's FeeAMM settlement path.
+    pub fn uses_fee_amm(&self) -> bool {
+        self.protocol_pool.validator().validator().uses_fee_amm()
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.
@@ -153,7 +158,8 @@ where
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
-        let mut state_provider = if !updates.validator_token_changes.is_empty()
+        let uses_fee_amm = self.uses_fee_amm();
+        let mut state_provider = if (uses_fee_amm && !updates.validator_token_changes.is_empty())
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
@@ -207,16 +213,17 @@ where
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
         let amm_cache = self.amm_liquidity_cache();
-        let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
-            let active_new_tokens: Vec<_> = updates
-                .validator_token_changes
-                .iter()
-                .filter(|(validator, _)| amm_cache.is_active_validator(validator))
-                .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
-                .map(|(_, &new_token)| new_token)
-                .collect();
-            amm_cache.track_tokens(&active_new_tokens)
-        };
+        let has_active_validator_token_changes =
+            uses_fee_amm && !updates.validator_token_changes.is_empty() && {
+                let active_new_tokens: Vec<_> = updates
+                    .validator_token_changes
+                    .iter()
+                    .filter(|(validator, _)| amm_cache.is_active_validator(validator))
+                    .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
+                    .map(|(_, &new_token)| new_token)
+                    .collect();
+                amm_cache.track_tokens(&active_new_tokens)
+            };
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;

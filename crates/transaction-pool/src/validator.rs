@@ -80,6 +80,38 @@ pub const MAX_TOKEN_LIMITS: usize = 256;
 /// they become executable.
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
 
+/// How a validated fee token settles protocol fees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeTokenSettlement {
+    /// Settle through Tempo's FeeAMM and require an available route.
+    FeeAmm,
+    /// Settle directly in the user's fee token without consulting FeeAMM state.
+    Direct,
+}
+
+/// Error returned by an application-specific fee-token admission check.
+#[derive(Debug)]
+pub enum FeeTokenValidationError {
+    /// The transaction is permanently invalid.
+    Invalid(TempoInvalidTransaction),
+    /// Admission could not be determined because of an internal or provider error.
+    Other(Box<dyn core::error::Error + Send + Sync>),
+}
+
+/// Application-specific fee-token admission layered onto Tempo's core validation.
+pub trait FeeTokenValidator: core::fmt::Debug + Send + Sync {
+    /// Validate a resolved fee token and select its settlement path.
+    fn validate_fee_token(
+        &self,
+        fee_payer: Address,
+        fee_token: Address,
+        spec: TempoHardfork,
+    ) -> Result<FeeTokenSettlement, FeeTokenValidationError>;
+
+    /// Whether validator-token changes can affect transactions accepted by this validator.
+    fn uses_fee_amm(&self) -> bool;
+}
+
 /// Maximum number of call scopes per account key.
 const MAX_KEYCHAIN_CALL_SCOPES: u8 = 64;
 /// Maximum number of selector rules per call scope.
@@ -98,6 +130,8 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) max_tempo_authorizations: usize,
     /// Cache of AMM liquidity for validator tokens.
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
+    /// Optional application-specific fee-token admission and settlement policy.
+    fee_token_validator: Option<Arc<dyn FeeTokenValidator>>,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
@@ -140,10 +174,24 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
+            fee_token_validator: None,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
         }
+    }
+
+    /// Apply an application-specific fee-token admission and settlement policy.
+    pub fn with_fee_token_validator(mut self, validator: impl FeeTokenValidator + 'static) -> Self {
+        self.fee_token_validator = Some(Arc::new(validator));
+        self
+    }
+
+    /// Returns whether admitted transactions use Tempo's FeeAMM settlement path.
+    pub fn uses_fee_amm(&self) -> bool {
+        self.fee_token_validator
+            .as_ref()
+            .is_none_or(|validator| validator.uses_fee_amm())
     }
 
     /// Returns the Tempo hardfork active at the current tip.
@@ -521,30 +569,52 @@ where
             transaction.set_key_expiry(Some(key_expiry));
         }
 
-        // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
-        let fee = transaction.fee_token_cost();
-        match self.amm_liquidity_cache.has_enough_liquidity(
-            validation_ctx.fee_token,
-            fee,
-            evm.db_mut(),
-        ) {
-            Ok(true) => {}
-            Ok(false) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::CollectFeePreTx(
-                            FeePaymentError::InsufficientAmmLiquidity {
-                                user_token: Some(validation_ctx.fee_token),
-                                validator_token: None,
-                                fee,
-                            },
-                        ),
-                    )),
-                );
+        let settlement = if let Some(validator) = self.fee_token_validator.as_ref() {
+            let fee_payer = transaction
+                .fee_payer()
+                .expect("fee payer was resolved during EVM validation");
+            match validator.validate_fee_token(fee_payer, validation_ctx.fee_token, spec) {
+                Ok(settlement) => settlement,
+                Err(FeeTokenValidationError::Invalid(error)) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(error)),
+                    );
+                }
+                Err(FeeTokenValidationError::Other(error)) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), error);
+                }
             }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+        } else {
+            FeeTokenSettlement::FeeAmm
+        };
+
+        if settlement == FeeTokenSettlement::FeeAmm {
+            // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
+            let fee = transaction.fee_token_cost();
+            match self.amm_liquidity_cache.has_enough_liquidity(
+                validation_ctx.fee_token,
+                fee,
+                evm.db_mut(),
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                            TempoInvalidTransaction::CollectFeePreTx(
+                                FeePaymentError::InsufficientAmmLiquidity {
+                                    user_token: Some(validation_ctx.fee_token),
+                                    validator_token: None,
+                                    fee,
+                                },
+                            ),
+                        )),
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
             }
         }
 
@@ -1022,6 +1092,44 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[derive(Debug)]
+    struct DirectFeeTokenValidator;
+
+    impl FeeTokenValidator for DirectFeeTokenValidator {
+        fn validate_fee_token(
+            &self,
+            _fee_payer: Address,
+            _fee_token: Address,
+            _spec: TempoHardfork,
+        ) -> Result<FeeTokenSettlement, FeeTokenValidationError> {
+            Ok(FeeTokenSettlement::Direct)
+        }
+
+        fn uses_fee_amm(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn application_fee_token_validator_can_bypass_fee_amm() {
+        let transaction = TxBuilder::eip1559(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .build_eip1559();
+        let validator = setup_validator(&transaction, 1);
+        validator.amm_liquidity_cache.clear();
+        let validator = validator.with_fee_token_validator(DirectFeeTokenValidator);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        assert!(
+            outcome.is_valid(),
+            "expected direct settlement: {outcome:?}"
+        );
+        assert!(!validator.uses_fee_amm());
     }
 
     #[test]
