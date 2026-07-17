@@ -403,6 +403,10 @@ impl TempoTransactionRequest {
 }
 
 #[cfg(feature = "revm")]
+/// Creates a mock AA signature for RPC simulation based on key type hints.
+///
+/// If `key_id` is set, wraps the primitive signature in a keychain signature using `caller` as
+/// the account owner. `is_t1c` selects the keychain signature version.
 fn create_mock_tempo_signature(
     key_type: SignatureType,
     key_data: Option<Bytes>,
@@ -424,6 +428,7 @@ fn create_mock_tempo_signature(
 }
 
 #[cfg(feature = "revm")]
+/// Creates a mock primitive signature for RPC simulation.
 pub(super) fn create_mock_primitive_signature(
     key_type: &SignatureType,
     key_data: Option<Bytes>,
@@ -440,12 +445,18 @@ pub(super) fn create_mock_primitive_signature(
             pre_hash: false,
         }),
         SignatureType::WebAuthn => {
+            // `key_data` encodes the desired total WebAuthn data size. It excludes the 128 bytes
+            // occupied by the public key coordinates and defaults to 800 bytes when absent.
             const CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
+            // Authenticator data contains a 32-byte rpIdHash, one byte of flags, and a four-byte
+            // signature counter. The client JSON template makes the minimum total 87 bytes.
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_SIZE: usize = AUTH_DATA_SIZE + CLIENT_JSON.len();
             const DEFAULT_SIZE: usize = 800;
             const MAX_SIZE: usize = 8192;
 
+            // Accept one-, two-, or four-byte big-endian size hints and clamp the result to avoid
+            // unbounded allocations from RPC input.
             let size = key_data
                 .as_deref()
                 .and_then(|data| match data.len() {
@@ -457,8 +468,10 @@ pub(super) fn create_mock_primitive_signature(
                 .unwrap_or(DEFAULT_SIZE)
                 .clamp(MIN_SIZE, MAX_SIZE);
 
+            // Set the user-presence flag in otherwise empty authenticator data.
             let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
             webauthn_data[32] = 0x01;
+            // Pad the origin field so the serialized WebAuthn data reaches the requested size.
             let padding = "x".repeat(size - MIN_SIZE);
             let client_json =
                 format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#);
