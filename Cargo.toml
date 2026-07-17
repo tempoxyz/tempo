@@ -212,7 +212,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384", feat
   "optional-checks",
 ] }
 revm = { version = "41.0.0", features = ["optional_fee_charge"], default-features = false }
-revm-inspectors = "=0.41.0"
+revm-inspectors = "=0.41.2"
 
 alloy-json-abi = { version = "1.6.1", default-features = false }
 alloy-primitives = { version = "1.6.1", default-features = false }
