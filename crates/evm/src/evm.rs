@@ -332,8 +332,9 @@ mod tests {
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        native_multisig::NativeMultisig,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
@@ -790,6 +791,10 @@ mod tests {
             let nonce_key = U256::from(42);
             let sender_nonce_key_slot = nonce_key
                 .mapping_slot(sender.mapping_slot(tempo_precompiles::nonce::slots::NONCES));
+            let (sender_multisig_account_slot, _) =
+                NativeMultisig::account_threshold_storage_slot(sender);
+            let (recipient_multisig_account_slot, _) =
+                NativeMultisig::account_threshold_storage_slot(recipient);
 
             #[rustfmt::skip]
             let labels = StorageActionSnapshotLabels {
@@ -800,6 +805,7 @@ mod tests {
                     (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
                     (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
                     (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
+                    (NATIVE_MULTISIG_ADDRESS, "NATIVE_MULTISIG"),
                 ]),
                 slots: BTreeMap::from([
                     ((PATH_USD_ADDRESS, tip20_slots::CURRENCY), "currency"),
@@ -833,6 +839,8 @@ mod tests {
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
                     ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
+                    ((NATIVE_MULTISIG_ADDRESS, sender_multisig_account_slot), "accounts[sender]"),
+                    ((NATIVE_MULTISIG_ADDRESS, recipient_multisig_account_slot), "accounts[recipient]"),
                 ]),
             };
 

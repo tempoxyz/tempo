@@ -318,7 +318,9 @@ mod tests {
     use crate::gas_params::{tempo_gas_params, tempo_gas_params_with_amsterdam};
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use alloy_sol_types::{SolCall, SolError};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -344,8 +346,11 @@ mod tests {
     use tempo_precompiles::{
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         STORAGE_CREDITS_ADDRESS,
+        native_multisig::NativeMultisig,
         nonce::NonceManager,
-        storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage::{
+            FromWord, Handler, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider,
+        },
         storage_credits::{CreditMode, StorageCredits},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
@@ -353,7 +358,8 @@ mod tests {
     use tempo_primitives::{
         TempoTransaction,
         transaction::{
-            KeyAuthorization, KeychainSignature, SignatureType, TempoSignedAuthorization,
+            InitMultisig, KeyAuthorization, KeychainSignature, MultisigOwner, MultisigSignature,
+            SignatureType, TempoSignedAuthorization, multisig_digest,
             tempo_transaction::Call,
             tt_signature::{
                 PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
@@ -476,6 +482,24 @@ mod tests {
         cfg.spec = TempoHardfork::T4;
         cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
         cfg.enable_amsterdam_eip8037 = true;
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T8 hardfork enabled and a funded account.
+    fn create_funded_evm_t8(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T8;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T8);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -837,6 +861,138 @@ mod tests {
     }
 
     // ==================== End Test Utility Functions ====================
+
+    #[test]
+    fn test_t8_bootstrap_multisig_persists_after_transaction_commit() -> eyre::Result<()> {
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x44),
+            threshold: 1,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.account().map_err(eyre::Report::msg)?;
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .gas_limit(2_000_000)
+            .build();
+        let digest = multisig_digest(tx.signature_hash(), account);
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![owner_signature],
+            Some(config.clone()),
+        )));
+
+        let mut evm = create_funded_evm_t8(account);
+        StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+            NativeMultisig::new().initialize()
+        })?;
+
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, account))?;
+        assert!(result.is_success());
+
+        let nonce = evm
+            .ctx
+            .db()
+            .basic_ref(account)?
+            .map(|info| info.nonce)
+            .unwrap_or_default();
+        assert_eq!(nonce, 1);
+
+        StorageCtx::enter_ctx(
+            &mut evm.ctx,
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let multisig = NativeMultisig::new();
+                assert!(multisig.is_multisig_account(account)?);
+                assert_eq!(
+                    multisig.get_multisig_config(account)?.threshold,
+                    config.threshold
+                );
+                Ok(())
+            },
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t8_rpc_simulation_bootstrap_transacts_repeatedly_on_one_evm() -> eyre::Result<()> {
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x55),
+            threshold: 1,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.account().map_err(eyre::Report::msg)?;
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .gas_limit(2_000_000)
+            .build();
+        let digest = multisig_digest(tx.signature_hash(), account);
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![owner_signature],
+            Some(config),
+        )));
+
+        let mut evm = create_funded_evm_t8(account);
+        StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+            NativeMultisig::new().initialize()
+        })?;
+
+        let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, account);
+        tx_env.unique_tx_identifier = Some(crate::RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+
+        // Gas estimation transacts repeatedly on one EVM, discarding each
+        // result. The discarded bootstrap must not poison later iterations.
+        let first = evm.transact(tx_env.clone())?;
+        assert!(first.result.is_success(), "first simulation should succeed");
+
+        let second = evm.transact(tx_env)?;
+        assert!(
+            second.result.is_success(),
+            "repeat simulation should succeed: {:?}",
+            second.result
+        );
+
+        // Discarded simulations leave no registered account behind.
+        StorageCtx::enter_ctx(
+            &mut evm.ctx,
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                assert!(!NativeMultisig::new().is_multisig_account(account)?);
+                Ok(())
+            },
+        )?;
+
+        Ok(())
+    }
 
     #[test_case::test_case(TempoHardfork::T1)]
     #[test_case::test_case(TempoHardfork::T1C)]

@@ -496,7 +496,9 @@ fn create_key_authorization_inner(
     witness: Option<B256>,
 ) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
-    let key_type = access_key_signature.signature_type();
+    let key_type = access_key_signature
+        .signature_type()
+        .ok_or_else(|| eyre::eyre!("native multisig signatures cannot authorize account keys"))?;
 
     let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
     key_auth.expiry = expiry;

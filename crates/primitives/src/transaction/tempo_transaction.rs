@@ -1029,19 +1029,19 @@ mod tests {
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
-        assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
+        assert_eq!(sig1.signature_type(), Some(SignatureType::Secp256k1));
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
-        assert_eq!(sig2.signature_type(), SignatureType::P256);
+        assert_eq!(sig2.signature_type(), Some(SignatureType::P256));
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
         let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
-        assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
+        assert_eq!(sig3.signature_type(), Some(SignatureType::WebAuthn));
     }
 
     #[test]

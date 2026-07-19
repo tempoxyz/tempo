@@ -23,9 +23,12 @@ use std::{
     time::Instant,
 };
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
+use tempo_contracts::precompiles::{
+    IAccountKeychain, IFeeManager, INativeMultisig, ITIP20, ITIP403Registry,
+};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, NATIVE_MULTISIG_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -101,6 +104,13 @@ pub struct TempoPoolUpdates {
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
     pub key_authorization_witness_burns: AddressMap<B256Set>,
+    /// Native multisig accounts whose owner set or threshold changed.
+    ///
+    /// A native-multisig-signed transaction is validated against the account's current stored
+    /// config, so once the config is rotated (or the account is initialized) any pooled multisig
+    /// transaction admitted under the previous owner set may no longer meet quorum and should be
+    /// re-validated. Indexed by account.
+    pub multisig_config_changes: AddressSet,
 }
 
 impl TempoPoolUpdates {
@@ -124,6 +134,7 @@ impl TempoPoolUpdates {
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
+            && self.multisig_config_changes.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -239,6 +250,20 @@ impl TempoPoolUpdates {
                     Some(_) | None => {}
                 }
             }
+            // Native multisig owner-set / threshold rotations and initializations.
+            else if log.address == NATIVE_MULTISIG_ADDRESS {
+                match NativeMultisigPoolEvent::decode(log) {
+                    Some(NativeMultisigPoolEvent::ConfigUpdated(event)) => {
+                        updates.multisig_config_changes.insert(event.account);
+                    }
+                    // A duplicate bootstrap for an account initialized earlier in the same block is
+                    // no longer admissible, so revalidate pending multisig transactions for it too.
+                    Some(NativeMultisigPoolEvent::Initialized(event)) => {
+                        updates.multisig_config_changes.insert(event.account);
+                    }
+                    None => {}
+                }
+            }
         }
 
         updates
@@ -254,6 +279,7 @@ impl TempoPoolUpdates {
             || !self.whitelist_removals.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
+            || !self.multisig_config_changes.is_empty()
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -299,6 +325,29 @@ impl AccountKeychainPoolEvent {
             }
             IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
                 decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `INativeMultisig` events.
+enum NativeMultisigPoolEvent {
+    /// [`INativeMultisig::MultisigConfigUpdated`] log.
+    ConfigUpdated(INativeMultisig::MultisigConfigUpdated),
+    /// [`INativeMultisig::MultisigInitialized`] log.
+    Initialized(INativeMultisig::MultisigInitialized),
+}
+
+impl NativeMultisigPoolEvent {
+    /// Decodes only native-multisig events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            INativeMultisig::MultisigConfigUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::ConfigUpdated)
+            }
+            INativeMultisig::MultisigInitialized::SIGNATURE_HASH => {
+                decode_event(log).map(Self::Initialized)
             }
             _ => None,
         }
@@ -1303,6 +1352,40 @@ mod tests {
                 AccountKeychainPoolEvent,
                 KeyAuthorizationWitnessBurned,
                 IAccountKeychain::KeyAuthorizationWitnessBurned,
+                log
+            );
+        }
+
+        #[test]
+        fn native_multisig_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                NATIVE_MULTISIG_ADDRESS,
+                INativeMultisig::MultisigConfigUpdated {
+                    account: Address::random(),
+                    threshold: 2,
+                    owners: vec![INativeMultisig::MultisigOwner {
+                        owner: Address::random(),
+                        weight: 1,
+                    }],
+                },
+            );
+            assert_decodes_like_generated!(
+                NativeMultisigPoolEvent,
+                ConfigUpdated,
+                INativeMultisig::MultisigConfigUpdated,
+                log
+            );
+
+            let log = event_log(
+                NATIVE_MULTISIG_ADDRESS,
+                INativeMultisig::MultisigInitialized {
+                    account: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                NativeMultisigPoolEvent,
+                Initialized,
+                INativeMultisig::MultisigInitialized,
                 log
             );
         }

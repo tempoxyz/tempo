@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, InitMultisig, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
@@ -79,6 +79,14 @@ pub struct TempoTransactionRequest {
     /// Provide a signed KeyAuthorization when the transaction provisions an access key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
+
+    /// Initial native multisig config for bootstrapping a derived account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_init: Option<InitMultisig>,
+
+    /// Number of native multisig owner signatures to model during RPC simulation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_signature_count: Option<usize>,
 
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
@@ -412,6 +420,8 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            multisig_init: None,
+            multisig_signature_count: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -421,7 +431,15 @@ impl From<TempoTransaction> for TempoTransactionRequest {
 
 impl From<AASigned> for TempoTransactionRequest {
     fn from(value: AASigned) -> Self {
-        value.into_parts().0.into()
+        let (tx, signature, _) = value.into_parts();
+        let multisig = signature.as_multisig();
+        let multisig_init = multisig.and_then(|multisig| multisig.init().cloned());
+        let multisig_signature_count = multisig.map(|multisig| multisig.signature_count());
+        Self {
+            multisig_init,
+            multisig_signature_count,
+            ..tx.into()
+        }
     }
 }
 

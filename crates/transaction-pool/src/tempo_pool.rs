@@ -217,6 +217,7 @@ where
         let mut blacklisted_count = 0;
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
+        let mut multisig_config_count = 0;
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
@@ -468,6 +469,23 @@ where
             {
                 to_remove.push(*tx.hash());
                 user_token_count += 1;
+                continue;
+            }
+
+            // Check 7: Native multisig owner-set / threshold rotations
+            // A native-multisig-signed transaction is verified against the current stored config of
+            // its outer account and of every nested multisig owner, so once any of those configs is
+            // rotated (or initialized) on-chain the pooled transaction may no longer meet quorum and
+            // must be re-validated.
+            if !updates.multisig_config_changes.is_empty()
+                && tx
+                    .transaction
+                    .multisig_accounts()
+                    .iter()
+                    .any(|account| updates.multisig_config_changes.contains(account))
+            {
+                to_remove.push(*tx.hash());
+                multisig_config_count += 1;
             }
         }
 
@@ -488,6 +506,7 @@ where
             blacklisted_count,
             unwhitelisted_count,
             insolvent_fee_payer_count,
+            multisig_config_count,
             "Evicting invalidated transactions"
         );
         self.remove_transactions(to_remove)
@@ -1706,6 +1725,62 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn evicts_multisig_transaction_when_its_config_rotates() {
+        let account = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(account).build_multisig(account);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(account, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(account);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn evicts_multisig_transaction_when_nested_owner_config_rotates() {
+        let parent = Address::random();
+        let child = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(parent).build_multisig_nested(parent, child);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(parent, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        // Rotating the NESTED owner's config must evict the parent transaction, since the parent's
+        // authorization depends on the nested account's current threshold/owner weights.
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(child);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_multisig_transaction_when_other_account_config_rotates() {
+        let account = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(account).build_multisig(account);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(account, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(Address::random());
+
+        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]

@@ -1538,6 +1538,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
+        native_multisig::NativeMultisig,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -1545,6 +1546,7 @@ mod tests {
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1641,6 +1643,23 @@ mod tests {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
     }
 
+    fn native_multisig_config() -> InitMultisig {
+        InitMultisig {
+            salt: B256::ZERO,
+            threshold: 1,
+            owners: vec![
+                MultisigOwner {
+                    owner: Address::from([0x11; 20]),
+                    weight: 1,
+                },
+                MultisigOwner {
+                    owner: Address::from([0x22; 20]),
+                    weight: 1,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -1662,6 +1681,84 @@ mod tests {
             assert!(key.is_admin);
             assert!(keychain.is_admin_key(account, account)?);
             assert!(keychain.is_admin_key(account, admin_key)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_native_multisig_accounts_can_authorize_and_use_access_keys() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let config = native_multisig_config();
+        let account = config.account().unwrap();
+        let key_id = Address::from([0x33; 20]);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, &config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            keychain.authorize_key(
+                account,
+                key_id,
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        amount: U256::from(123u64),
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: Vec::new(),
+                },
+                None,
+            )?;
+
+            assert!(keychain.is_admin_key(account, account)?);
+            assert!(!keychain.is_admin_key(account, key_id)?);
+            assert!(keychain.is_active_key(account, key_id)?);
+
+            let key = keychain.get_key(getKeyCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(key.keyId, key_id);
+            assert_eq!(key.expiry, u64::MAX);
+            assert!(key.enforceLimits);
+
+            let remaining =
+                keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key_id,
+                    token: DEFAULT_FEE_TOKEN,
+                })?;
+            assert_eq!(remaining.remaining, U256::from(123u64));
+            assert_eq!(remaining.periodEnd, 0);
+
+            keychain.set_transaction_key(key_id)?;
+            keychain.authorize_transfer(account, DEFAULT_FEE_TOKEN, U256::from(23u64))?;
+
+            let remaining =
+                keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key_id,
+                    token: DEFAULT_FEE_TOKEN,
+                })?;
+            assert_eq!(remaining.remaining, U256::from(100u64));
+
+            let allowed = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert!(!allowed.isScoped);
+            assert!(allowed.scopes.is_empty());
 
             Ok(())
         })
