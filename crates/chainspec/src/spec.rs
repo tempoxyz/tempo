@@ -754,6 +754,27 @@ mod tests {
         use super::*;
 
         #[test]
+        fn builtin_schedules_match_hardfork_constants() {
+            let mainnet = super::super::TempoChainSpecParser::parse("mainnet")
+                .expect("the mainnet chainspec must always be well formed");
+            let moderato = super::super::TempoChainSpecParser::parse("moderato")
+                .expect("the moderato chainspec must always be well formed");
+
+            for &fork in TempoHardfork::VARIANTS {
+                assert_eq!(
+                    mainnet.info.fork_time(fork),
+                    fork.mainnet_activation_timestamp(),
+                    "mainnet {fork} activation mismatch"
+                );
+                assert_eq!(
+                    moderato.info.fork_time(fork),
+                    fork.moderato_activation_timestamp(),
+                    "moderato {fork} activation mismatch"
+                );
+            }
+        }
+
+        #[test]
         fn mainnet() {
             let cs = super::super::TempoChainSpecParser::parse("mainnet")
                 .expect("the mainnet chainspec must always be well formed");
