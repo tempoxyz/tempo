@@ -303,12 +303,10 @@ fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {
         return Err(ZoneFactoryError::invalid_sequencer_set().into());
     }
 
-    let mut previous = Address::ZERO;
-    for sequencer in sequencers {
-        if sequencer.is_zero() || *sequencer <= previous {
+    for (index, sequencer) in sequencers.iter().enumerate() {
+        if sequencer.is_zero() || sequencers[..index].contains(sequencer) {
             return Err(ZoneFactoryError::invalid_sequencer_set().into());
         }
-        previous = *sequencer;
     }
     Ok(())
 }
@@ -442,7 +440,6 @@ mod tests {
                 (vec![], 1),
                 (vec![Address::ZERO], 1),
                 (vec![SEQUENCER_A, SEQUENCER_A], 1),
-                (vec![SEQUENCER_B, SEQUENCER_A], 1),
                 (vec![SEQUENCER_A], 0),
                 (vec![SEQUENCER_A], 2),
                 ((1u8..=33).map(Address::with_last_byte).collect(), 1),
@@ -459,6 +456,11 @@ mod tests {
                 );
                 assert_eq!(factory.next_zone_id()?, 1);
             }
+
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];
+            factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+            assert_eq!(factory.zone(1)?.sequencers, vec![SEQUENCER_B, SEQUENCER_A]);
             Ok(())
         })
     }
