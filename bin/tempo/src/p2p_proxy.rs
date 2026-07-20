@@ -473,6 +473,11 @@ async fn run_p2p_network(
             IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
+            IncomingEthRequest::GetSnap { response, .. } => {
+                let _ = response.send(Err(
+                    reth_ethereum::network::p2p::error::RequestError::UnsupportedCapability,
+                ));
+            }
         }
     }
 
