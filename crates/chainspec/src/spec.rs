@@ -834,13 +834,13 @@ mod tests {
             assert!(cs.is_t7_active_at_timestamp(1783605600));
             assert_eq!(cs.tempo_hardfork_at(1783605600), TempoHardfork::T7);
 
-            // Before T8 activation (1785247200 = Jul 28th 2026 16:00 CEST)
-            assert!(!cs.is_t8_active_at_timestamp(1785247199));
-            assert_eq!(cs.tempo_hardfork_at(1785247199), TempoHardfork::T7);
+            // Before T8 activation (1785420000 = Jul 30th 2026 16:00 CEST)
+            assert!(!cs.is_t8_active_at_timestamp(1785419999));
+            assert_eq!(cs.tempo_hardfork_at(1785419999), TempoHardfork::T7);
 
             // At and after T8 activation
-            assert!(cs.is_t8_active_at_timestamp(1785247200));
-            assert_eq!(cs.tempo_hardfork_at(1785247200), TempoHardfork::T8);
+            assert!(cs.is_t8_active_at_timestamp(1785420000));
+            assert_eq!(cs.tempo_hardfork_at(1785420000), TempoHardfork::T8);
             assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T8);
         }
@@ -923,13 +923,13 @@ mod tests {
             assert!(cs.is_t7_active_at_timestamp(1783000800));
             assert_eq!(cs.tempo_hardfork_at(1783000800), TempoHardfork::T7);
 
-            // Before T8 activation (1784815200 = Jul 23rd 2026 16:00 CEST)
-            assert!(!cs.is_t8_active_at_timestamp(1784815199));
-            assert_eq!(cs.tempo_hardfork_at(1784815199), TempoHardfork::T7);
+            // Before T8 activation (1785160800 = Jul 27th 2026 16:00 CEST)
+            assert!(!cs.is_t8_active_at_timestamp(1785160799));
+            assert_eq!(cs.tempo_hardfork_at(1785160799), TempoHardfork::T7);
 
             // At and after T8 activation
-            assert!(cs.is_t8_active_at_timestamp(1784815200));
-            assert_eq!(cs.tempo_hardfork_at(1784815200), TempoHardfork::T8);
+            assert!(cs.is_t8_active_at_timestamp(1785160800));
+            assert_eq!(cs.tempo_hardfork_at(1785160800), TempoHardfork::T8);
             assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T8);
         }
