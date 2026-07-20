@@ -72,6 +72,11 @@ pub(super) struct ZonePortalStorage {
     verifier: Address,
     genesis_tempo_block_number: u64,
     initialized: bool,
+    sequencer_set_version: u64,
+    sequencer_threshold: u8,
+    zone_height: U256,
+    sequencers: Vec<Address>,
+    is_sequencer: Mapping<Address, bool>,
 }
 
 impl ZonePortalStorage {
@@ -89,7 +94,9 @@ impl ZonePortalStorage {
             Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
         )?;
 
-        self.sequencer.write(params.sequencer)?;
+        // Preserve the legacy getter expected by the portal storage layout. Authority comes from
+        // `is_sequencer` for versioned sets, so the first member is not a primary sequencer.
+        self.sequencer.write(params.sequencers[0])?;
         self.admin.write(params.admin)?;
         self.block_hash.write(params.zoneParams.genesisBlockHash)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {
@@ -103,6 +110,13 @@ impl ZonePortalStorage {
         self.verifier.write(ZONE_VERIFIER_ADDRESS)?;
         self.genesis_tempo_block_number
             .write(params.zoneParams.genesisTempoBlockNumber)?;
-        self.initialized.write(true)
+        self.initialized.write(true)?;
+        self.sequencer_set_version.write(1)?;
+        self.sequencer_threshold.write(params.threshold)?;
+        self.sequencers.write(params.sequencers.clone())?;
+        for sequencer in &params.sequencers {
+            self.is_sequencer[*sequencer].write(true)?;
+        }
+        Ok(())
     }
 }

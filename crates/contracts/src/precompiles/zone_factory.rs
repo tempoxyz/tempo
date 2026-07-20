@@ -30,7 +30,9 @@ crate::sol! {
         address portal;
         address initialToken;
         address admin;
-        address sequencer;
+        address[] sequencers;
+        uint8 threshold;
+        address verifier;
         bytes32 genesisBlockHash;
         bytes32 genesisTempoBlockHash;
         uint64 genesisTempoBlockNumber;
@@ -52,7 +54,8 @@ crate::sol! {
         struct CreateZoneParams {
             address initialToken;
             address admin;
-            address sequencer;
+            address[] sequencers;
+            uint8 threshold;
             ZoneParams zoneParams;
             string rpcUrl;
         }
@@ -68,7 +71,8 @@ crate::sol! {
             address indexed portal,
             address initialToken,
             address admin,
-            address sequencer,
+            address[] sequencers,
+            uint8 threshold,
             address verifier,
             bytes32 genesisBlockHash,
             bytes32 genesisTempoBlockHash,
@@ -79,7 +83,7 @@ crate::sol! {
         error InvalidOwner();
         error NotOwner();
         error InvalidAdmin();
-        error InvalidSequencer();
+        error InvalidSequencerSet();
         error InvalidPortalImplementation();
         error InvalidZoneMessengerImplementation();
         error InvalidVerifierImplementation();
@@ -101,7 +105,9 @@ crate::sol! {
                 address portal,
                 address initialToken,
                 address admin,
-                address sequencer,
+                address[] memory sequencers,
+                uint8 threshold,
+                address verifier,
                 bytes32 genesisBlockHash,
                 bytes32 genesisTempoBlockHash,
                 uint64 genesisTempoBlockNumber,
@@ -114,6 +120,7 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IZonePortal {
+        event SequencerSetUpdated(uint64 indexed version, uint8 threshold, address[] sequencers);
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
     }
 }
