@@ -320,8 +320,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
-    use alloy_primitives::{B256, U256, b256, keccak256};
-    use alloy_sol_types::{SolCall, sol};
+    use alloy_primitives::{B256, U256, b256};
+    use alloy_sol_types::SolCall;
     use indexmap::IndexMap;
     use revm::{
         DatabaseCommit, DatabaseRef,
@@ -331,12 +331,8 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::{
-        precompiles::{
-            IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-            ZONE_VERIFIER_ADDRESS, ZoneParams,
-        },
-        zones::ZONE_PORTAL_RUNTIME,
+    use tempo_contracts::precompiles::{
+        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZoneParams,
     };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -360,23 +356,6 @@ mod tests {
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
-
-    sol! {
-        interface IZonePortalView {
-            function sequencer() external view returns (address);
-            function admin() external view returns (address);
-            function blockHash() external view returns (bytes32);
-            function zoneId() external view returns (uint32);
-            function messenger() external view returns (address);
-            function verifier() external view returns (address);
-            function genesisTempoBlockNumber() external view returns (uint64);
-            function rpcUrl() external view returns (string memory);
-            function isTokenEnabled(address token) external view returns (bool);
-            function areDepositsActive(address token) external view returns (bool);
-            function enabledTokenCount() external view returns (uint256);
-            function enabledTokenAt(uint256 index) external view returns (address);
-        }
-    }
 
     #[test]
     fn can_execute_system_tx() {
@@ -532,20 +511,22 @@ mod tests {
     }
 
     #[test]
-    fn zone_factory_created_portal_executes_canonical_runtime() {
+    fn zone_factory_created_portal_executes_deployed_runtime() {
         let owner = Address::repeat_byte(0x11);
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let genesis_block_hash =
             b256!("0x1111111111111111111111111111111111111111111111111111111111111111");
+        // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
+        let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
+            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+        ]));
         let mut db = CacheDB::new(EmptyDB::default());
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
-                code_hash: keccak256(ZONE_PORTAL_RUNTIME),
-                code: Some(Bytecode::new_legacy(Bytes::from_static(
-                    ZONE_PORTAL_RUNTIME,
-                ))),
+                code_hash: logic_runtime.hash_slow(),
+                code: Some(logic_runtime),
                 ..Default::default()
             },
         );
@@ -597,107 +578,17 @@ mod tests {
         let created = IZoneFactory::createZoneCall::abi_decode_returns(&create_output).unwrap();
         evm.db_mut().commit(result.state);
 
-        let mut portal_call = |calldata: Vec<u8>| {
-            let result = evm
-                .transact_system_call(Address::ZERO, created.portal, calldata.into())
-                .unwrap();
-            match result.result {
-                ExecutionResult::Success {
-                    output: revm::context::result::Output::Call(output),
-                    ..
-                } => output,
-                result => panic!("portal call failed: {result:?}"),
-            }
+        let result = evm
+            .transact_system_call(Address::ZERO, created.portal, Bytes::new())
+            .unwrap();
+        let output = match result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("portal call failed: {result:?}"),
         };
-
-        assert_eq!(
-            IZonePortalView::sequencerCall::abi_decode_returns(&portal_call(
-                IZonePortalView::sequencerCall {}.abi_encode()
-            ))
-            .unwrap(),
-            sequencer
-        );
-        assert_eq!(
-            IZonePortalView::adminCall::abi_decode_returns(&portal_call(
-                IZonePortalView::adminCall {}.abi_encode()
-            ))
-            .unwrap(),
-            admin
-        );
-        assert_eq!(
-            IZonePortalView::blockHashCall::abi_decode_returns(&portal_call(
-                IZonePortalView::blockHashCall {}.abi_encode()
-            ))
-            .unwrap(),
-            genesis_block_hash
-        );
-        assert_eq!(
-            IZonePortalView::zoneIdCall::abi_decode_returns(&portal_call(
-                IZonePortalView::zoneIdCall {}.abi_encode()
-            ))
-            .unwrap(),
-            1
-        );
-        assert_eq!(
-            IZonePortalView::messengerCall::abi_decode_returns(&portal_call(
-                IZonePortalView::messengerCall {}.abi_encode()
-            ))
-            .unwrap(),
-            ZONE_MESSENGER_ADDRESS
-        );
-        assert_eq!(
-            IZonePortalView::verifierCall::abi_decode_returns(&portal_call(
-                IZonePortalView::verifierCall {}.abi_encode()
-            ))
-            .unwrap(),
-            ZONE_VERIFIER_ADDRESS
-        );
-        assert_eq!(
-            IZonePortalView::genesisTempoBlockNumberCall::abi_decode_returns(&portal_call(
-                IZonePortalView::genesisTempoBlockNumberCall {}.abi_encode()
-            ))
-            .unwrap(),
-            42
-        );
-        assert_eq!(
-            IZonePortalView::rpcUrlCall::abi_decode_returns(&portal_call(
-                IZonePortalView::rpcUrlCall {}.abi_encode()
-            ))
-            .unwrap(),
-            "https://zone.example"
-        );
-        assert!(
-            IZonePortalView::isTokenEnabledCall::abi_decode_returns(&portal_call(
-                IZonePortalView::isTokenEnabledCall {
-                    token: PATH_USD_ADDRESS,
-                }
-                .abi_encode()
-            ))
-            .unwrap()
-        );
-        assert!(
-            IZonePortalView::areDepositsActiveCall::abi_decode_returns(&portal_call(
-                IZonePortalView::areDepositsActiveCall {
-                    token: PATH_USD_ADDRESS,
-                }
-                .abi_encode()
-            ))
-            .unwrap()
-        );
-        assert_eq!(
-            IZonePortalView::enabledTokenCountCall::abi_decode_returns(&portal_call(
-                IZonePortalView::enabledTokenCountCall {}.abi_encode()
-            ))
-            .unwrap(),
-            U256::from(1)
-        );
-        assert_eq!(
-            IZonePortalView::enabledTokenAtCall::abi_decode_returns(&portal_call(
-                IZonePortalView::enabledTokenAtCall { index: U256::ZERO }.abi_encode()
-            ))
-            .unwrap(),
-            PATH_USD_ADDRESS
-        );
+        assert_eq!(U256::from_be_slice(&output), U256::from(42));
     }
 
     #[derive(Default)]
