@@ -141,10 +141,30 @@ abstract contract ZoneFactory is IZoneFactory {
     function setPortalImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
 
-        bytes32 codeHash = _nativeCopyPortalImplementation(source);
+        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
         if (codeHash == bytes32(0)) revert InvalidPortalImplementation();
 
         emit PortalImplementationUpdated(source, codeHash);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function setZoneMessengerImplementation(address source) external {
+        if (msg.sender != owner) revert NotOwner();
+
+        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
+        if (codeHash == bytes32(0)) revert InvalidZoneMessengerImplementation();
+
+        emit ZoneMessengerImplementationUpdated(source, codeHash);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function setVerifierImplementation(address source) external {
+        if (msg.sender != owner) revert NotOwner();
+
+        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
+        if (codeHash == bytes32(0)) revert InvalidVerifierImplementation();
+
+        emit VerifierImplementationUpdated(source, codeHash);
     }
 
     /// @notice Returns the deterministic portal vanity address for a zone ID.
@@ -161,9 +181,12 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
-    /// @dev Native host hook: copy `source` runtime bytecode to `ZONE_PORTAL_IMPL_ADDRESS`.
+    /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
     /// Returns zero when `source` has no runtime bytecode.
-    function _nativeCopyPortalImplementation(address source)
+    function _nativeCopyRuntime(
+        address source,
+        address destination
+    )
         internal
         virtual
         returns (bytes32 codeHash);
