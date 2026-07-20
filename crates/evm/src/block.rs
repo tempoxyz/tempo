@@ -35,7 +35,7 @@ use tempo_contracts::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS,
     },
-    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+    zones::{ZONE_MESSENGER_RUNTIME_HASH, ZONE_PORTAL_RUNTIME_HASH, ZONE_VERIFIER_RUNTIME_HASH},
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -295,11 +295,23 @@ where
         factory_account.mark_touch();
 
         let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory_account)]);
-        for (address, runtime) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        for (address, runtime_hash) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME_HASH),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME_HASH),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME_HASH),
         ] {
+            let code = self
+                .inner
+                .evm
+                .db_mut()
+                .code_by_hash(runtime_hash)
+                .map_err(BlockExecutionError::other)?;
+            if code.is_empty() {
+                return Err(BlockExecutionError::msg(format!(
+                    "missing deployed Zones runtime {runtime_hash}"
+                )));
+            }
+
             let info = self
                 .inner
                 .evm
@@ -308,8 +320,7 @@ where
                 .map_err(BlockExecutionError::other)?
                 .unwrap_or_default();
             let mut account = Account::from(info);
-            let code = Bytecode::new_legacy(Bytes::from_static(runtime));
-            account.info.code_hash = code.hash_slow();
+            account.info.code_hash = runtime_hash;
             account.info.code = Some(code);
             account.mark_touch();
             state.insert(address, account);
@@ -864,7 +875,7 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut, keccak256};
+    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
@@ -2094,6 +2105,16 @@ mod tests {
     fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        for (runtime_hash, marker) in [
+            (ZONE_PORTAL_RUNTIME_HASH, 0x01),
+            (ZONE_VERIFIER_RUNTIME_HASH, 0x02),
+            (ZONE_MESSENGER_RUNTIME_HASH, 0x03),
+        ] {
+            db.cache.contracts.insert(
+                runtime_hash,
+                Bytecode::new_legacy(Bytes::copy_from_slice(&[marker])),
+            );
+        }
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2137,10 +2158,8 @@ mod tests {
                 .unwrap()
                 .account_info()
                 .unwrap();
-            assert_eq!(
-                keccak256(info.code.unwrap().original_bytes()),
-                expected_hash
-            );
+            assert_eq!(info.code_hash, expected_hash);
+            assert!(!info.code.unwrap().is_empty());
         }
 
         let calls = hook_calls.lock().unwrap();
@@ -2153,6 +2172,18 @@ mod tests {
         ] {
             assert!(calls[0].contains_key(&address));
         }
+    }
+
+    #[test]
+    fn test_deploy_zone_factory_at_boundary_requires_deployed_runtimes() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let err = executor.deploy_zone_factory_at_boundary().unwrap_err();
+        assert!(err.to_string().contains("missing deployed Zones runtime"));
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
