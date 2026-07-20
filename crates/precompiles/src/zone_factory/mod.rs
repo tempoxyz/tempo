@@ -146,7 +146,9 @@ impl ZoneFactory {
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
-        self.initialize_portal(portal, zone_id, &call.params)?;
+        // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
+        // prefix makes pre-existing state computationally infeasible to target with CREATE2.
+        ZonePortalStorage::new(portal).initialize(zone_id, &call.params)?;
 
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
@@ -214,17 +216,6 @@ impl ZoneFactory {
         suffix.copy_from_slice(&bytes[12..]);
         let zone_id = u64::from_be_bytes(suffix);
         Ok(zone_id != 0 && zone_id < u64::from(self.next_zone_id()?))
-    }
-
-    fn initialize_portal(
-        &mut self,
-        portal: Address,
-        zone_id: u32,
-        params: &IZoneFactory::CreateZoneParams,
-    ) -> Result<()> {
-        // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
-        // prefix makes pre-existing state computationally infeasible to target with CREATE2.
-        ZonePortalStorage::new(portal).initialize(zone_id, params)
     }
 }
 
