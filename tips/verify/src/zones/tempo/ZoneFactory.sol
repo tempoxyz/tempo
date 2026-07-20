@@ -45,11 +45,11 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Starts at 1, reserving zone ID 0 for potential future use.
     uint32 public override nextZoneId = 1;
 
-    // forgefmt: disable-next-line
-    mapping(uint32 => ZoneInfo) public override zones;
-
     /// @notice Initial value is configured by the T9 activation; exact address TBD.
     address public owner;
+
+    // forgefmt: disable-next-line
+    mapping(uint32 => ZoneInfo) public override zones;
 
     /*//////////////////////////////////////////////////////////////
                             ZONE CREATION
