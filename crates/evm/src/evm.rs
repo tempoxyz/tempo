@@ -354,7 +354,7 @@ mod tests {
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
-        zone_factory::ZoneFactory,
+        zone_factory::{ZONE_CREATION_GAS, ZoneFactory},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
@@ -585,6 +585,8 @@ mod tests {
             "createZone failed: {:?}",
             result.result
         );
+        assert!(result.result.tx_gas_used() >= ZONE_CREATION_GAS);
+        assert!(result.result.gas().block_regular_gas_used() >= ZONE_CREATION_GAS);
         let create_output = match &result.result {
             ExecutionResult::Success {
                 output: revm::context::result::Output::Call(output),

@@ -23,7 +23,7 @@ use portal::ZonePortalStorage;
 #[cfg(test)]
 use tempo_contracts::precompiles::ZONE_MESSENGER_ADDRESS;
 
-/// Minimum gas that must remain when zone creation starts.
+/// Minimum gas consumed by a successful zone creation.
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
 /// 12-byte prefix reserved for deterministic ZonePortal addresses.
@@ -115,6 +115,8 @@ impl ZoneFactory {
         msg_sender: Address,
         call: IZoneFactory::createZoneCall,
     ) -> Result<IZoneFactory::createZoneReturn> {
+        let gas_before = self.storage.gas_used();
+
         if msg_sender != self.owner()? {
             return Err(ZoneFactoryError::not_owner().into());
         }
@@ -126,13 +128,6 @@ impl ZoneFactory {
         }
         if call.params.sequencer.is_zero() {
             return Err(ZoneFactoryError::invalid_sequencer().into());
-        }
-
-        // HashMapStorageProvider uses zero as its unit-test sentinel for unlimited gas.
-        let gas_limit = self.storage.gas_limit();
-        let gas_remaining = gas_limit.saturating_sub(self.storage.gas_used());
-        if gas_limit != 0 && gas_remaining < ZONE_CREATION_GAS {
-            return Err(ZoneFactoryError::insufficient_gas().into());
         }
 
         let zone_id = self.next_zone_id()?;
@@ -187,6 +182,10 @@ impl ZoneFactory {
             call.params.zoneParams.genesisTempoBlockHash,
             call.params.zoneParams.genesisTempoBlockNumber,
         ))?;
+
+        let creation_gas_used = self.storage.gas_used().saturating_sub(gas_before);
+        self.storage
+            .deduct_gas(ZONE_CREATION_GAS.saturating_sub(creation_gas_used))?;
 
         Ok(IZoneFactory::createZoneReturn {
             zoneId: zone_id,
