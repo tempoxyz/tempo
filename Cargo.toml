@@ -160,6 +160,7 @@ reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }
 reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "1bf2384" }

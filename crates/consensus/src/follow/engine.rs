@@ -23,8 +23,11 @@ use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
+use reth_engine_primitives::ConsensusEngineHandle;
+use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_provider::providers::BlockchainProvider;
 use tempo_chainspec::NetworkIdentity;
-use tempo_node::TempoFullNode;
+use tempo_node::{TempoFullNode, TempoPayloadTypes, node::TempoNode};
 use tracing::{info, info_span};
 
 use super::{driver, executor, resolver, resolver::Resolver, stubs};
@@ -153,7 +156,12 @@ impl<TUpstream> Config<TUpstream> {
         let (executor_actor, executor_mailbox) = executor::init(
             context.with_label("executor"),
             executor::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
+                execution_engine: self
+                    .execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 floor: last_finalized_height,
@@ -207,7 +215,13 @@ where
     resolver_mailbox: resolver::Mailbox,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
     marshal: crate::alias::marshal::Actor<TContext>,
-    executor: executor::Actor<TContext>,
+    executor: executor::Actor<
+        TContext,
+        BlockchainProvider<
+            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
+        >,
+        ConsensusEngineHandle<TempoPayloadTypes>,
+    >,
     executor_mailbox: executor::Mailbox,
     feed: feed::Actor<TContext>,
     broadcast: buffered::Mailbox<PublicKey, Block>,
