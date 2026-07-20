@@ -98,7 +98,6 @@ impl ZonePortalStorage {
         // `is_sequencer` for versioned sets, so the first member is not a primary sequencer.
         self.sequencer.write(params.sequencers[0])?;
         self.admin.write(params.admin)?;
-        self.block_hash.write(params.zoneParams.genesisBlockHash)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {
             enabled: true,
             deposits_active: true,
@@ -108,8 +107,6 @@ impl ZonePortalStorage {
         self.zone_id.write(zone_id)?;
         self.messenger.write(ZONE_MESSENGER_ADDRESS)?;
         self.verifier.write(ZONE_VERIFIER_ADDRESS)?;
-        self.genesis_tempo_block_number
-            .write(params.zoneParams.genesisTempoBlockNumber)?;
         self.initialized.write(true)?;
         self.sequencer_set_version.write(1)?;
         self.sequencer_threshold.write(params.threshold)?;

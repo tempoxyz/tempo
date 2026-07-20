@@ -320,7 +320,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
-    use alloy_primitives::{B256, U256, b256};
+    use alloy_primitives::{B256, U256};
     use alloy_sol_types::SolCall;
     use indexmap::IndexMap;
     use revm::{
@@ -331,7 +331,7 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneParams};
+    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS};
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -515,8 +515,6 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let implementation_source = Address::repeat_byte(0x44);
-        let genesis_block_hash =
-            b256!("0x1111111111111111111111111111111111111111111111111111111111111111");
         // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
         let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
             0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
@@ -568,11 +566,6 @@ mod tests {
                         admin,
                         sequencers: vec![sequencer],
                         threshold: 1,
-                        zoneParams: ZoneParams {
-                            genesisBlockHash: genesis_block_hash,
-                            genesisTempoBlockHash: B256::repeat_byte(0x44),
-                            genesisTempoBlockNumber: 42,
-                        },
                         rpcUrl: "https://zone.example".to_string(),
                     },
                 }
@@ -633,11 +626,6 @@ mod tests {
                 admin,
                 sequencers: vec![sequencer],
                 threshold: 1,
-                zoneParams: ZoneParams {
-                    genesisBlockHash: B256::repeat_byte(0x44),
-                    genesisTempoBlockHash: B256::repeat_byte(0x55),
-                    genesisTempoBlockNumber: 42,
-                },
                 rpcUrl: "https://zone.example".to_string(),
             },
         }

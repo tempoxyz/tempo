@@ -51,9 +51,6 @@ struct ZoneInfoStorage {
     sequencers: Vec<Address>,
     threshold: u8,
     verifier: Address,
-    genesis_block_hash: B256,
-    genesis_tempo_block_hash: B256,
-    genesis_tempo_block_number: u64,
     rpc_url: String,
 }
 
@@ -67,9 +64,6 @@ impl From<ZoneInfoStorage> for IZoneFactory::zonesReturn {
             sequencers: value.sequencers,
             threshold: value.threshold,
             verifier: value.verifier,
-            genesisBlockHash: value.genesis_block_hash,
-            genesisTempoBlockHash: value.genesis_tempo_block_hash,
-            genesisTempoBlockNumber: value.genesis_tempo_block_number,
             rpcUrl: value.rpc_url,
         }
     }
@@ -241,9 +235,6 @@ impl ZoneFactory {
             sequencers: call.params.sequencers.clone(),
             threshold: call.params.threshold,
             verifier: ZONE_VERIFIER_ADDRESS,
-            genesis_block_hash: call.params.zoneParams.genesisBlockHash,
-            genesis_tempo_block_hash: call.params.zoneParams.genesisTempoBlockHash,
-            genesis_tempo_block_number: call.params.zoneParams.genesisTempoBlockNumber,
             rpc_url: call.params.rpcUrl.clone(),
         })?;
 
@@ -276,9 +267,6 @@ impl ZoneFactory {
             call.params.sequencers.clone(),
             call.params.threshold,
             ZONE_VERIFIER_ADDRESS,
-            call.params.zoneParams.genesisBlockHash,
-            call.params.zoneParams.genesisTempoBlockHash,
-            call.params.zoneParams.genesisTempoBlockNumber,
         ))?;
 
         Ok(IZoneFactory::createZoneReturn {
@@ -347,7 +335,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Bytes, address, b256};
+    use alloy::primitives::{Bytes, address};
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -362,15 +350,6 @@ mod tests {
             admin: ADMIN,
             sequencers: vec![SEQUENCER_A, SEQUENCER_B],
             threshold: 2,
-            zoneParams: tempo_contracts::precompiles::ZoneParams {
-                genesisBlockHash: b256!(
-                    "0x1111111111111111111111111111111111111111111111111111111111111111"
-                ),
-                genesisTempoBlockHash: b256!(
-                    "0x2222222222222222222222222222222222222222222222222222222222222222"
-                ),
-                genesisTempoBlockNumber: 42,
-            },
             rpcUrl: "https://zone.example".to_string(),
         }
     }
@@ -418,9 +397,6 @@ mod tests {
                     sequencers: vec![SEQUENCER_A, SEQUENCER_B],
                     threshold: 2,
                     verifier: ZONE_VERIFIER_ADDRESS,
-                    genesisBlockHash: params.zoneParams.genesisBlockHash,
-                    genesisTempoBlockHash: params.zoneParams.genesisTempoBlockHash,
-                    genesisTempoBlockNumber: 42,
                     rpcUrl: params.rpcUrl,
                 }
             );
@@ -436,10 +412,7 @@ mod tests {
             let portal = ZonePortalStorage::new(created.portal);
             assert_eq!(portal.sequencer.read()?, SEQUENCER_A);
             assert_eq!(portal.admin.read()?, ADMIN);
-            assert_eq!(
-                portal.block_hash.read()?,
-                params.zoneParams.genesisBlockHash
-            );
+            assert_eq!(portal.block_hash.read()?, B256::ZERO);
             assert_eq!(
                 portal.token_configs[PATH_USD_ADDRESS].read()?,
                 PortalTokenConfig {
@@ -452,7 +425,7 @@ mod tests {
             assert_eq!(portal.zone_id.read()?, 1);
             assert_eq!(portal.messenger.read()?, ZONE_MESSENGER_ADDRESS);
             assert_eq!(portal.verifier.read()?, ZONE_VERIFIER_ADDRESS);
-            assert_eq!(portal.genesis_tempo_block_number.read()?, 42);
+            assert_eq!(portal.genesis_tempo_block_number.read()?, 0);
             assert!(portal.initialized.read()?);
             assert_eq!(portal.sequencer_set_version.read()?, 1);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
