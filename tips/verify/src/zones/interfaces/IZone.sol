@@ -45,6 +45,8 @@ interface IZoneFactory {
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
+    event PortalImplementationUpdated(address indexed source, bytes32 indexed codeHash);
+
     event ZoneCreated(
         uint32 indexed zoneId,
         address indexed portal,
@@ -62,10 +64,13 @@ interface IZoneFactory {
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencer();
+    error InvalidPortalImplementation();
 
     function owner() external view returns (address);
 
     function transferOwnership(address newOwner) external;
+
+    function setPortalImplementation(address source) external;
 
     function createZone(CreateZoneParams calldata params)
         external

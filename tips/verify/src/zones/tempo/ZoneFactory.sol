@@ -131,11 +131,20 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @inheritdoc IZoneFactory
     function transferOwnership(address newOwner) external {
         if (msg.sender != owner) revert NotOwner();
-        if (newOwner == address(0)) revert InvalidOwner();
 
         address previousOwner = owner;
         owner = newOwner;
         emit OwnershipTransferred(previousOwner, newOwner);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function setPortalImplementation(address source) external {
+        if (msg.sender != owner) revert NotOwner();
+
+        bytes32 codeHash = _nativeCopyPortalImplementation(source);
+        if (codeHash == bytes32(0)) revert InvalidPortalImplementation();
+
+        emit PortalImplementationUpdated(source, codeHash);
     }
 
     /// @notice Returns the deterministic portal vanity address for a zone ID.
@@ -151,6 +160,13 @@ abstract contract ZoneFactory is IZoneFactory {
 
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
+
+    /// @dev Native host hook: copy `source` runtime bytecode to `ZONE_PORTAL_IMPL_ADDRESS`.
+    /// Returns zero when `source` has no runtime bytecode.
+    function _nativeCopyPortalImplementation(address source)
+        internal
+        virtual
+        returns (bytes32 codeHash);
 
     /// @dev Native host hook that builds the canonical zone genesis using the parent Tempo block.
     function _nativeBuildZoneGenesis(
