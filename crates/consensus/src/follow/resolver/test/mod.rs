@@ -160,6 +160,7 @@ fn duplicate_block_fetch_is_coalesced() {
             let provider = StubBlockProvider::default();
             let upstream = StubUpstream::default();
             upstream.add_block(block.clone());
+
             let release = upstream.pause_next_block_read();
             let (actor, mut mailbox, mut receiver) = try_init(
                 context.with_label("resolver"),
@@ -174,8 +175,10 @@ fn duplicate_block_fetch_is_coalesced() {
 
             mailbox.fetch(key.clone()).await;
             wait_until(&context, || upstream.block_reads() == 1).await;
+
             mailbox.fetch(key.clone()).await;
             context.sleep(Duration::from_millis(1)).await;
+
             assert_eq!(provider.reads(), 1);
             assert_eq!(upstream.block_reads(), 1);
 
@@ -186,6 +189,7 @@ fn duplicate_block_fetch_is_coalesced() {
             let (delivered_key, value) = receive_delivery(&mut receiver).await?;
             assert_eq!(delivered_key, key);
             assert_eq!(value, block.encode());
+
             Ok::<(), eyre::Report>(())
         })
         .expect("resolver test should succeed");
@@ -261,6 +265,7 @@ fn finalized_request_delivers_certificate_and_block() {
             let provider = StubBlockProvider::default();
             let upstream = StubUpstream::default();
             upstream.add_finalization(height, certified);
+
             let (actor, mut mailbox, mut receiver) = try_init(
                 context.with_label("resolver"),
                 Config {
