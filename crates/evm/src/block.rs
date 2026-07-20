@@ -28,10 +28,9 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    T9_ZONE_FACTORY_OWNER, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    ZONE_FACTORY_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -265,7 +264,7 @@ where
             .storage(ZONE_FACTORY_ADDRESS, factory_config_slot)
             .map_err(BlockExecutionError::other)?;
         let factory_config =
-            U256::from(1) | (U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()) << u32::BITS);
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
 
         let mut factory_account = Account::from(info);
         let code = Bytecode::new_legacy([0xef].into());
@@ -2087,7 +2086,7 @@ mod tests {
             Bytes::from_static(&[0xef])
         );
         let expected_factory_config =
-            U256::from(1) | (U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()) << u32::BITS);
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
             factory.storage_slot(U256::ZERO),
             Some(expected_factory_config)
