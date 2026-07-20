@@ -15,10 +15,6 @@ abstract contract ZoneFactory is IZoneFactory {
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Minimum gas required for zone creation.
-    /// @dev Prevents low-cost zone spam. The caller must supply at least this much gas.
-    uint256 public constant ZONE_CREATION_GAS = 15_000_000;
-
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
 
@@ -66,7 +62,6 @@ abstract contract ZoneFactory is IZoneFactory {
         }
         if (params.admin == address(0)) revert InvalidAdmin();
         if (params.sequencer == address(0)) revert InvalidSequencer();
-        if (gasleft() < ZONE_CREATION_GAS) revert InsufficientGas();
 
         zoneId = nextZoneId;
         nextZoneId = zoneId + 1;
