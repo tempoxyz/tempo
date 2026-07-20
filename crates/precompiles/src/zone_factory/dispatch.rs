@@ -4,8 +4,6 @@ use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IZoneFactory;
-#[cfg(test)]
-use tempo_contracts::precompiles::IZoneFactory::IZoneFactoryCalls;
 
 use super::ZoneFactory;
 
@@ -60,6 +58,7 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::sol_types::SolCall;
+    use tempo_contracts::precompiles::IZoneFactory::IZoneFactoryCalls;
 
     #[test]
     fn create_zone_selector_matches_tip_1091() {

@@ -10,12 +10,13 @@ use crate::{
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, IntoLogData, hex};
+use alloy::primitives::{Address, B256, IntoLogData};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
     ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
+use tempo_primitives::TempoAddressExt;
 
 #[cfg(test)]
 use portal::PortalTokenConfig;
@@ -26,9 +27,6 @@ pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
 /// Maximum number of equal sequencers in a zone settlement set.
 pub const MAX_SEQUENCERS: usize = 32;
-
-/// 12-byte prefix reserved for deterministic ZonePortal addresses.
-pub const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
 
 /// Native ZoneFactory storage.
 ///
@@ -282,15 +280,11 @@ impl ZoneFactory {
 
     /// Returns whether `portal` is in the created ZonePortal address range.
     pub fn is_zone_portal(&self, portal: Address) -> Result<bool> {
-        let bytes = portal.as_slice();
-        if bytes[..12] != ZONE_PORTAL_PREFIX {
+        let Some(zone_id) = portal.zone_portal_id() else {
             return Ok(false);
-        }
+        };
 
-        let mut suffix = [0u8; 8];
-        suffix.copy_from_slice(&bytes[12..]);
-        let zone_id = u64::from_be_bytes(suffix);
-        Ok(zone_id != 0 && zone_id < u64::from(self.next_zone_id()?))
+        Ok(zone_id < u64::from(self.next_zone_id()?))
     }
 }
 
@@ -314,7 +308,7 @@ fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {
 /// Returns the deterministic TIP-1091 portal address for `zone_id`.
 pub fn portal_address(zone_id: u32) -> Address {
     let mut bytes = [0u8; 20];
-    bytes[..12].copy_from_slice(&ZONE_PORTAL_PREFIX);
+    bytes[..12].copy_from_slice(&Address::ZONE_PORTAL_PREFIX);
     bytes[12..].copy_from_slice(&u64::from(zone_id).to_be_bytes());
     Address::from(bytes)
 }
