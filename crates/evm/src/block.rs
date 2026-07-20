@@ -264,34 +264,25 @@ where
             return Ok(());
         }
 
-        let next_zone_id_slot = U256::ZERO;
-        let owner_slot = U256::from(2);
-        let original_next_zone_id = self
+        let factory_config_slot = U256::ZERO;
+        let original_factory_config = self
             .inner
             .evm
             .db_mut()
-            .storage(ZONE_FACTORY_ADDRESS, next_zone_id_slot)
+            .storage(ZONE_FACTORY_ADDRESS, factory_config_slot)
             .map_err(BlockExecutionError::other)?;
-        let original_owner = self
-            .inner
-            .evm
-            .db_mut()
-            .storage(ZONE_FACTORY_ADDRESS, owner_slot)
-            .map_err(BlockExecutionError::other)?;
+        let factory_config =
+            U256::from(1) | (U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()) << u32::BITS);
 
         let mut factory_account = Account::from(info);
         let code = Bytecode::new_legacy([0xef].into());
         factory_account.info.code_hash = code.hash_slow();
         factory_account.info.code = Some(code);
         factory_account.storage.insert(
-            next_zone_id_slot,
-            EvmStorageSlot::new_changed(original_next_zone_id, U256::from(1), TransactionId::ZERO),
-        );
-        factory_account.storage.insert(
-            owner_slot,
+            factory_config_slot,
             EvmStorageSlot::new_changed(
-                original_owner,
-                U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()),
+                original_factory_config,
+                factory_config,
                 TransactionId::ZERO,
             ),
         );
@@ -2170,10 +2161,11 @@ mod tests {
                 .original_bytes(),
             Bytes::from_static(&[0xef])
         );
-        assert_eq!(factory.storage_slot(U256::ZERO), Some(U256::from(1)));
+        let expected_factory_config =
+            U256::from(1) | (U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
-            factory.storage_slot(U256::from(2)),
-            Some(U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()))
+            factory.storage_slot(U256::ZERO),
+            Some(expected_factory_config)
         );
 
         for address in [
