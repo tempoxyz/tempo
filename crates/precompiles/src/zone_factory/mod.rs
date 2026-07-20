@@ -185,7 +185,11 @@ impl ZoneFactory {
             call.params.zoneParams.genesisTempoBlockNumber,
         ))?;
 
-        let creation_gas_used = self.storage.gas_used().saturating_sub(gas_before);
+        let creation_gas_used = self
+            .storage
+            .gas_used()
+            .checked_sub(gas_before)
+            .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage
             .deduct_gas(ZONE_CREATION_GAS.saturating_sub(creation_gas_used))?;
 
