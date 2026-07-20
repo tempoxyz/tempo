@@ -113,6 +113,7 @@ abstract contract ZoneFactory is IZoneFactory {
             admin: params.admin,
             sequencers: params.sequencers,
             threshold: params.threshold,
+            verifier: ZONE_VERIFIER_ADDRESS,
             genesisBlockHash: genesisBlockHash,
             genesisTempoBlockHash: genesisTempoBlockHash,
             genesisTempoBlockNumber: genesisTempoBlockNumber,

@@ -9,6 +9,7 @@ struct ZoneInfo {
     address admin;
     address[] sequencers;
     uint8 threshold;
+    address verifier;
     bytes32 genesisBlockHash;
     bytes32 genesisTempoBlockHash;
     uint64 genesisTempoBlockNumber;
