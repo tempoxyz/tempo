@@ -88,20 +88,20 @@ cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.moderato.tempo.xyz
 
 We provide three different installation paths: installing a pre-built binary, building from source or using our provided Docker image.
 
-- [Pre-built Binary](https://docs.tempo.xyz/guide/node/installation#pre-built-binary)
-- [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
-- [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
+- [Pre-built Binary](https://tempo.xyz/developers/docs/guide/node/installation#pre-built-binary)
+- [Build from Source](https://tempo.xyz/developers/docs/guide/node/installation#build-from-source)
+- [Docker](https://tempo.xyz/developers/docs/guide/node/installation#docker)
 
-See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
+See the [Tempo documentation](https://tempo.xyz/developers/docs/guide/node) for instructions on how to install and run Tempo.
 
 ### As a developer
 
 Tempo has several SDKs to help you get started building on Tempo:
 
-- [TypeScript](https://docs.tempo.xyz/sdk/typescript)
-- [Rust](https://docs.tempo.xyz/sdk/rust)
-- [Go](https://docs.tempo.xyz/sdk/go)
-- [Foundry](https://docs.tempo.xyz/sdk/foundry)
+- [TypeScript](https://tempo.xyz/developers/docs/sdk/typescript)
+- [Rust](https://tempo.xyz/developers/docs/sdk/rust)
+- [Go](https://tempo.xyz/developers/docs/sdk/go)
+- [Foundry](https://tempo.xyz/developers/docs/sdk/foundry)
 
 Want to contribute?
 
