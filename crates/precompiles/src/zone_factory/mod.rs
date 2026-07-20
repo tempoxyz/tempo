@@ -119,7 +119,7 @@ impl ZoneFactory {
         msg_sender: Address,
         call: IZoneFactory::createZoneCall,
     ) -> Result<IZoneFactory::createZoneReturn> {
-        let gas_before = self.storage.gas_used();
+        self.storage.deduct_gas(ZONE_CREATION_GAS)?;
 
         if msg_sender != self.owner()? {
             return Err(ZoneFactoryError::not_owner().into());
@@ -188,14 +188,6 @@ impl ZoneFactory {
             call.params.zoneParams.genesisTempoBlockHash,
             call.params.zoneParams.genesisTempoBlockNumber,
         ))?;
-
-        let creation_gas_used = self
-            .storage
-            .gas_used()
-            .checked_sub(gas_before)
-            .ok_or(TempoPrecompileError::OutOfGas)?;
-        self.storage
-            .deduct_gas(ZONE_CREATION_GAS.saturating_sub(creation_gas_used))?;
 
         Ok(IZoneFactory::createZoneReturn {
             zoneId: zone_id,
