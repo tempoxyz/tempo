@@ -31,13 +31,16 @@ pub const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
 
 /// Native ZoneFactory storage.
 ///
-/// The field order mirrors the TIP-1091 Solidity reference artifact:
+/// The explicit slots mirror the TIP-1091 Solidity reference artifact:
 /// `nextZoneId` at slot 0, `_zones` at slot 1, and `owner` at slot 2.
 #[contract(addr = ZONE_FACTORY_ADDRESS)]
 pub struct ZoneFactory {
+    #[slot(0)]
     next_zone_id: u32,
-    zones: Mapping<u32, ZoneInfoStorage>,
+    #[slot(2)]
     owner: Address,
+    #[slot(1)]
+    zones: Mapping<u32, ZoneInfoStorage>,
 }
 
 /// Solidity-compatible storage representation of `ZoneInfo`.
