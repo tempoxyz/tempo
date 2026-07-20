@@ -73,6 +73,10 @@ abstract contract ZoneFactory is IZoneFactory {
 
         portal = portalAddress(zoneId);
 
+        (bytes32 genesisBlockHash, bytes32 genesisTempoBlockHash, uint64 genesisTempoBlockNumber) = _nativeBuildZoneGenesis(
+            zoneId, portal, params.initialToken, params.admin, params.sequencer
+        );
+
         // Native precompile operation, not EVM CREATE or CREATE2:
         //
         // 1. The protocol etches minimal portal proxy/caller bytecode directly into
@@ -95,8 +99,8 @@ abstract contract ZoneFactory is IZoneFactory {
                 params.admin,
                 params.sequencer,
                 ZONE_VERIFIER_ADDRESS,
-                params.zoneParams.genesisBlockHash,
-                params.zoneParams.genesisTempoBlockNumber,
+                genesisBlockHash,
+                genesisTempoBlockNumber,
                 params.rpcUrl
             );
 
@@ -106,9 +110,9 @@ abstract contract ZoneFactory is IZoneFactory {
             initialToken: params.initialToken,
             admin: params.admin,
             sequencer: params.sequencer,
-            genesisBlockHash: params.zoneParams.genesisBlockHash,
-            genesisTempoBlockHash: params.zoneParams.genesisTempoBlockHash,
-            genesisTempoBlockNumber: params.zoneParams.genesisTempoBlockNumber,
+            genesisBlockHash: genesisBlockHash,
+            genesisTempoBlockHash: genesisTempoBlockHash,
+            genesisTempoBlockNumber: genesisTempoBlockNumber,
             rpcUrl: params.rpcUrl
         });
 
@@ -119,9 +123,9 @@ abstract contract ZoneFactory is IZoneFactory {
             params.admin,
             params.sequencer,
             ZONE_VERIFIER_ADDRESS,
-            params.zoneParams.genesisBlockHash,
-            params.zoneParams.genesisTempoBlockHash,
-            params.zoneParams.genesisTempoBlockNumber
+            genesisBlockHash,
+            genesisTempoBlockHash,
+            genesisTempoBlockNumber
         );
     }
 
@@ -148,6 +152,23 @@ abstract contract ZoneFactory is IZoneFactory {
 
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
+
+    /// @dev Native host hook that builds the canonical zone genesis using the parent Tempo block.
+    function _nativeBuildZoneGenesis(
+        uint32 zoneId,
+        address portal,
+        address initialToken,
+        address admin,
+        address sequencer
+    )
+        internal
+        view
+        virtual
+        returns (
+            bytes32 genesisBlockHash,
+            bytes32 genesisTempoBlockHash,
+            uint64 genesisTempoBlockNumber
+        );
 
     /*//////////////////////////////////////////////////////////////
                                  VIEWS

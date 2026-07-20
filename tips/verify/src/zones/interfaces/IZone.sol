@@ -14,13 +14,6 @@ struct ZoneInfo {
     string rpcUrl;
 }
 
-/// @notice Zone genesis parameters supplied during creation.
-struct ZoneParams {
-    bytes32 genesisBlockHash;
-    bytes32 genesisTempoBlockHash;
-    uint64 genesisTempoBlockNumber;
-}
-
 /// @notice Minimal initializer interface required by the native factory.
 interface IZonePortalInitializer {
 
@@ -47,7 +40,6 @@ interface IZoneFactory {
         address initialToken;
         address admin;
         address sequencer;
-        ZoneParams zoneParams;
         string rpcUrl;
     }
 
