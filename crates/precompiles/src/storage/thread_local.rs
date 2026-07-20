@@ -116,6 +116,11 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
+    pub fn account_code(&self, address: Address) -> Result<(B256, Bytecode)> {
+        Self::try_with_storage(|s| s.account_code(address))
+    }
+
     /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())

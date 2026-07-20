@@ -60,6 +60,9 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
+    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode)>;
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
