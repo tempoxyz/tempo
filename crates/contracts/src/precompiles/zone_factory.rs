@@ -76,7 +76,6 @@ crate::sol! {
         error NotOwner();
         error InvalidAdmin();
         error InvalidSequencer();
-        error InsufficientGas();
 
         function owner() external view returns (address);
         function transferOwnership(address newOwner) external;
