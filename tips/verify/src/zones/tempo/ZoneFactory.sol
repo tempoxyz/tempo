@@ -186,7 +186,7 @@ abstract contract ZoneFactory is IZoneFactory {
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
     /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
-    /// Returns zero when `source` has no runtime bytecode.
+    /// Returns `EXTCODEHASH(source)`, including zero when the source hash is zero.
     function _nativeCopyRuntime(address source, address destination) internal virtual returns (bytes32 codeHash);
 
     /*//////////////////////////////////////////////////////////////
