@@ -15,6 +15,7 @@ struct ZoneInfo {
 
 /// @notice Minimal initializer interface required by the native factory.
 interface IZonePortalInitializer {
+
     function initialize(
         uint32 zoneId,
         address initialToken,
@@ -24,12 +25,15 @@ interface IZonePortalInitializer {
         uint8 threshold,
         address verifier,
         string calldata rpcUrl
-    ) external;
+    )
+        external;
+
 }
 
 /// @title IZoneFactory
 /// @notice Interface exposed by the native ZoneFactory.
 interface IZoneFactory {
+
     struct CreateZoneParams {
         address initialToken;
         address admin;
@@ -75,11 +79,14 @@ interface IZoneFactory {
 
     function setVerifierImplementation(address source) external;
 
-    function createZone(CreateZoneParams calldata params) external returns (uint32 zoneId, address portal);
+    function createZone(CreateZoneParams calldata params)
+        external
+        returns (uint32 zoneId, address portal);
 
     function nextZoneId() external view returns (uint32);
 
     function zones(uint32 id) external view returns (ZoneInfo memory info);
 
     function isZonePortal(address portal) external view returns (bool);
+
 }
