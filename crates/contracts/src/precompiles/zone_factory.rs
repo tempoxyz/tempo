@@ -33,18 +33,7 @@ crate::sol! {
         address[] sequencers;
         uint8 threshold;
         address verifier;
-        bytes32 genesisBlockHash;
-        bytes32 genesisTempoBlockHash;
-        uint64 genesisTempoBlockNumber;
         string rpcUrl;
-    }
-
-    /// Zone genesis parameters supplied during creation.
-    #[derive(Debug, PartialEq, Eq)]
-    struct ZoneParams {
-        bytes32 genesisBlockHash;
-        bytes32 genesisTempoBlockHash;
-        uint64 genesisTempoBlockNumber;
     }
 
     /// Native ZoneFactory ABI from TIP-1091.
@@ -56,7 +45,6 @@ crate::sol! {
             address admin;
             address[] sequencers;
             uint8 threshold;
-            ZoneParams zoneParams;
             string rpcUrl;
         }
 
@@ -73,10 +61,7 @@ crate::sol! {
             address admin,
             address[] sequencers,
             uint8 threshold,
-            address verifier,
-            bytes32 genesisBlockHash,
-            bytes32 genesisTempoBlockHash,
-            uint64 genesisTempoBlockNumber
+            address verifier
         );
 
         error InvalidToken();
@@ -108,9 +93,6 @@ crate::sol! {
                 address[] memory sequencers,
                 uint8 threshold,
                 address verifier,
-                bytes32 genesisBlockHash,
-                bytes32 genesisTempoBlockHash,
-                uint64 genesisTempoBlockNumber,
                 string memory rpcUrl
             );
         function isZonePortal(address portal) external view returns (bool);
