@@ -13,7 +13,7 @@ use crate::{
 use alloy::primitives::{Address, B256, IntoLogData, hex};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    ZoneFactoryError, ZoneFactoryEvent, ZonePortalEvent,
+    ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -54,7 +54,7 @@ struct ZoneInfoStorage {
     rpc_url: String,
 }
 
-impl From<ZoneInfoStorage> for IZoneFactory::zonesReturn {
+impl From<ZoneInfoStorage> for ZoneInfo {
     fn from(value: ZoneInfoStorage) -> Self {
         Self {
             zoneId: value.zone_id,
@@ -276,7 +276,7 @@ impl ZoneFactory {
     }
 
     /// Returns stored metadata for `zone_id`, or the zero/default record if it does not exist.
-    pub fn zone(&self, zone_id: u32) -> Result<IZoneFactory::zonesReturn> {
+    pub fn zone(&self, zone_id: u32) -> Result<ZoneInfo> {
         Ok(self.zones[zone_id].read()?.into())
     }
 
@@ -384,7 +384,7 @@ mod tests {
             assert!(!factory.is_zone_portal(portal_address(2))?);
             assert_eq!(
                 factory.zone(1)?,
-                IZoneFactory::zonesReturn {
+                ZoneInfo {
                     zoneId: 1,
                     portal: created.portal,
                     initialToken: PATH_USD_ADDRESS,

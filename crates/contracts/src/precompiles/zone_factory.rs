@@ -82,19 +82,7 @@ crate::sol! {
             external
             returns (uint32 zoneId, address portal);
         function nextZoneId() external view returns (uint32);
-        function zones(uint32 id)
-            external
-            view
-            returns (
-                uint32 zoneId,
-                address portal,
-                address initialToken,
-                address admin,
-                address[] memory sequencers,
-                uint8 threshold,
-                address verifier,
-                string memory rpcUrl
-            );
+        function zones(uint32 id) external view returns (ZoneInfo memory info);
         function isZonePortal(address portal) external view returns (bool);
     }
 
