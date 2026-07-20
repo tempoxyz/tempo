@@ -40,6 +40,9 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Runtime suffix for an EIP-1167-style delegatecall proxy.
     bytes15 internal constant PORTAL_PROXY_SUFFIX = 0x5af43d82803e903d91602b57fd5bf3;
 
+    /// @notice Code hash returned by EXTCODEHASH for an existing account with no runtime bytecode.
+    bytes32 internal constant EMPTY_CODE_HASH = keccak256("");
+
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -136,7 +139,9 @@ abstract contract ZoneFactory is IZoneFactory {
         if (msg.sender != owner) revert NotOwner();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
-        if (codeHash == bytes32(0)) revert InvalidPortalImplementation();
+        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
+            revert InvalidPortalImplementation();
+        }
 
         emit PortalImplementationUpdated(source, codeHash);
     }
@@ -146,7 +151,9 @@ abstract contract ZoneFactory is IZoneFactory {
         if (msg.sender != owner) revert NotOwner();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
-        if (codeHash == bytes32(0)) revert InvalidZoneMessengerImplementation();
+        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
+            revert InvalidZoneMessengerImplementation();
+        }
 
         emit ZoneMessengerImplementationUpdated(source, codeHash);
     }
@@ -156,7 +163,9 @@ abstract contract ZoneFactory is IZoneFactory {
         if (msg.sender != owner) revert NotOwner();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
-        if (codeHash == bytes32(0)) revert InvalidVerifierImplementation();
+        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
+            revert InvalidVerifierImplementation();
+        }
 
         emit VerifierImplementationUpdated(source, codeHash);
     }
@@ -190,7 +199,8 @@ abstract contract ZoneFactory is IZoneFactory {
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
     /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
-    /// Returns `EXTCODEHASH(source)`, including zero when the source hash is zero.
+    /// Returns `EXTCODEHASH(source)`: zero for a nonexistent account and
+    /// EMPTY_CODE_HASH for an existing account with no runtime bytecode.
     function _nativeCopyRuntime(
         address source,
         address destination
