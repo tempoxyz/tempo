@@ -24,6 +24,9 @@ use portal::ZonePortalStorage;
 /// Minimum gas consumed by a successful zone creation.
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
+/// Maximum number of equal sequencers in a zone settlement set.
+pub const MAX_SEQUENCERS: usize = 32;
+
 /// 12-byte prefix reserved for deterministic ZonePortal addresses.
 pub const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
 
@@ -45,7 +48,9 @@ struct ZoneInfoStorage {
     portal: Address,
     initial_token: Address,
     admin: Address,
-    sequencer: Address,
+    sequencers: Vec<Address>,
+    threshold: u8,
+    verifier: Address,
     genesis_block_hash: B256,
     genesis_tempo_block_hash: B256,
     genesis_tempo_block_number: u64,
@@ -59,7 +64,9 @@ impl From<ZoneInfoStorage> for IZoneFactory::zonesReturn {
             portal: value.portal,
             initialToken: value.initial_token,
             admin: value.admin,
-            sequencer: value.sequencer,
+            sequencers: value.sequencers,
+            threshold: value.threshold,
+            verifier: value.verifier,
             genesisBlockHash: value.genesis_block_hash,
             genesisTempoBlockHash: value.genesis_tempo_block_hash,
             genesisTempoBlockNumber: value.genesis_tempo_block_number,
@@ -204,9 +211,7 @@ impl ZoneFactory {
         if call.params.admin.is_zero() {
             return Err(ZoneFactoryError::invalid_admin().into());
         }
-        if call.params.sequencer.is_zero() {
-            return Err(ZoneFactoryError::invalid_sequencer().into());
-        }
+        validate_sequencer_set(&call.params.sequencers, call.params.threshold)?;
 
         let zone_id = self.next_zone_id()?;
         let portal = portal_address(zone_id);
@@ -233,12 +238,24 @@ impl ZoneFactory {
             portal,
             initial_token: call.params.initialToken,
             admin: call.params.admin,
-            sequencer: call.params.sequencer,
+            sequencers: call.params.sequencers.clone(),
+            threshold: call.params.threshold,
+            verifier: ZONE_VERIFIER_ADDRESS,
             genesis_block_hash: call.params.zoneParams.genesisBlockHash,
             genesis_tempo_block_hash: call.params.zoneParams.genesisTempoBlockHash,
             genesis_tempo_block_number: call.params.zoneParams.genesisTempoBlockNumber,
             rpc_url: call.params.rpcUrl.clone(),
         })?;
+
+        self.storage.emit_event(
+            portal,
+            ZonePortalEvent::sequencer_set_updated(
+                1,
+                call.params.threshold,
+                call.params.sequencers.clone(),
+            )
+            .into_log_data(),
+        )?;
 
         self.storage.emit_event(
             portal,
@@ -256,7 +273,8 @@ impl ZoneFactory {
             portal,
             call.params.initialToken,
             call.params.admin,
-            call.params.sequencer,
+            call.params.sequencers.clone(),
+            call.params.threshold,
             ZONE_VERIFIER_ADDRESS,
             call.params.zoneParams.genesisBlockHash,
             call.params.zoneParams.genesisTempoBlockHash,
@@ -293,6 +311,25 @@ impl ZoneFactory {
     }
 }
 
+fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {
+    if sequencers.is_empty()
+        || sequencers.len() > MAX_SEQUENCERS
+        || threshold == 0
+        || usize::from(threshold) > sequencers.len()
+    {
+        return Err(ZoneFactoryError::invalid_sequencer_set().into());
+    }
+
+    let mut previous = Address::ZERO;
+    for sequencer in sequencers {
+        if sequencer.is_zero() || *sequencer <= previous {
+            return Err(ZoneFactoryError::invalid_sequencer_set().into());
+        }
+        previous = *sequencer;
+    }
+    Ok(())
+}
+
 /// Returns the deterministic TIP-1091 portal address for `zone_id`.
 pub fn portal_address(zone_id: u32) -> Address {
     let mut bytes = [0u8; 20];
@@ -316,13 +353,15 @@ mod tests {
 
     const OWNER: Address = address!("0x0000000000000000000000000000000000000011");
     const ADMIN: Address = address!("0x0000000000000000000000000000000000000022");
-    const SEQUENCER: Address = address!("0x0000000000000000000000000000000000000033");
+    const SEQUENCER_A: Address = address!("0x0000000000000000000000000000000000000033");
+    const SEQUENCER_B: Address = address!("0x0000000000000000000000000000000000000044");
 
     fn create_params(initial_token: Address) -> IZoneFactory::CreateZoneParams {
         IZoneFactory::CreateZoneParams {
             initialToken: initial_token,
             admin: ADMIN,
-            sequencer: SEQUENCER,
+            sequencers: vec![SEQUENCER_A, SEQUENCER_B],
+            threshold: 2,
             zoneParams: tempo_contracts::precompiles::ZoneParams {
                 genesisBlockHash: b256!(
                     "0x1111111111111111111111111111111111111111111111111111111111111111"
@@ -376,7 +415,9 @@ mod tests {
                     portal: created.portal,
                     initialToken: PATH_USD_ADDRESS,
                     admin: ADMIN,
-                    sequencer: SEQUENCER,
+                    sequencers: vec![SEQUENCER_A, SEQUENCER_B],
+                    threshold: 2,
+                    verifier: ZONE_VERIFIER_ADDRESS,
                     genesisBlockHash: params.zoneParams.genesisBlockHash,
                     genesisTempoBlockHash: params.zoneParams.genesisTempoBlockHash,
                     genesisTempoBlockNumber: 42,
@@ -393,7 +434,7 @@ mod tests {
             );
 
             let portal = ZonePortalStorage::new(created.portal);
-            assert_eq!(portal.sequencer.read()?, SEQUENCER);
+            assert_eq!(portal.sequencer.read()?, SEQUENCER_A);
             assert_eq!(portal.admin.read()?, ADMIN);
             assert_eq!(
                 portal.block_hash.read()?,
@@ -413,6 +454,44 @@ mod tests {
             assert_eq!(portal.verifier.read()?, ZONE_VERIFIER_ADDRESS);
             assert_eq!(portal.genesis_tempo_block_number.read()?, 42);
             assert!(portal.initialized.read()?);
+            assert_eq!(portal.sequencer_set_version.read()?, 1);
+            assert_eq!(portal.sequencer_threshold.read()?, 2);
+            assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
+            assert!(portal.is_sequencer[SEQUENCER_A].read()?);
+            assert!(portal.is_sequencer[SEQUENCER_B].read()?);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_rejects_invalid_sequencer_sets() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = ZoneFactory::new();
+            factory.initialize(OWNER)?;
+
+            for (sequencers, threshold) in [
+                (vec![], 1),
+                (vec![Address::ZERO], 1),
+                (vec![SEQUENCER_A, SEQUENCER_A], 1),
+                (vec![SEQUENCER_B, SEQUENCER_A], 1),
+                (vec![SEQUENCER_A], 0),
+                (vec![SEQUENCER_A], 2),
+                ((1u8..=33).map(Address::with_last_byte).collect(), 1),
+            ] {
+                let mut params = create_params(PATH_USD_ADDRESS);
+                params.sequencers = sequencers;
+                params.threshold = threshold;
+                let err = factory
+                    .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                    .unwrap_err();
+                assert_eq!(
+                    err,
+                    TempoPrecompileError::from(ZoneFactoryError::invalid_sequencer_set())
+                );
+                assert_eq!(factory.next_zone_id()?, 1);
+            }
             Ok(())
         })
     }

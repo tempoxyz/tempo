@@ -566,7 +566,8 @@ mod tests {
                     params: IZoneFactory::CreateZoneParams {
                         initialToken: PATH_USD_ADDRESS,
                         admin,
-                        sequencer,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
                         zoneParams: ZoneParams {
                             genesisBlockHash: genesis_block_hash,
                             genesisTempoBlockHash: B256::repeat_byte(0x44),
@@ -630,7 +631,8 @@ mod tests {
             params: IZoneFactory::CreateZoneParams {
                 initialToken: PATH_USD_ADDRESS,
                 admin,
-                sequencer,
+                sequencers: vec![sequencer],
+                threshold: 1,
                 zoneParams: ZoneParams {
                     genesisBlockHash: B256::repeat_byte(0x44),
                     genesisTempoBlockHash: B256::repeat_byte(0x55),

@@ -4,4 +4,4 @@
 //! their bytecode in the node binary.
 
 /// Canonical tempoxyz/zones revision selected for T9 activation.
-pub const T9_ZONES_REVISION: &str = "9a0faf29e5a06b3087afcd8cae0169a3e88785c3";
+pub const T9_ZONES_REVISION: &str = "0e75a3f4a727269a309b92b309c749c9fe816c49";
