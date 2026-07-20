@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import { IZoneFactory, IZonePortalInitializer, ZoneInfo } from "../interfaces/IZone.sol";
-import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
-import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
+import {IZoneFactory, IZonePortalInitializer, ZoneInfo} from "../interfaces/IZone.sol";
+import {StdPrecompiles} from "tempo-std/StdPrecompiles.sol";
+import {ITIP20Factory} from "tempo-std/interfaces/ITIP20Factory.sol";
 
 /// @title ZoneFactory
 /// @notice Reference registry logic for the enshrined ZoneFactory precompile.
 /// @dev This is not deployable EVM bytecode. Native host hooks below model the
 ///      protocol operations that install portal proxy bytecode at vanity addresses.
 abstract contract ZoneFactory is IZoneFactory {
-
     /*//////////////////////////////////////////////////////////////
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
@@ -18,6 +17,9 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Minimum gas consumed by a successful native zone creation.
     /// @dev Enforced by the native implementation's host gas accounting.
     uint256 public constant ZONE_CREATION_GAS = 15_000_000;
+
+    /// @notice Maximum number of equal sequencers in a zone's settlement set.
+    uint256 public constant MAX_SEQUENCERS = 32;
 
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
@@ -48,24 +50,20 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Initial value is configured by the T9 activation; exact address TBD.
     address public owner;
 
-    // forgefmt: disable-next-line
-    mapping(uint32 => ZoneInfo) public override zones;
+    mapping(uint32 => ZoneInfo) internal _zones;
 
     /*//////////////////////////////////////////////////////////////
                             ZONE CREATION
     //////////////////////////////////////////////////////////////*/
 
-    function createZone(CreateZoneParams calldata params)
-        external
-        returns (uint32 zoneId, address portal)
-    {
+    function createZone(CreateZoneParams calldata params) external returns (uint32 zoneId, address portal) {
         if (msg.sender != owner) revert NotOwner();
 
         if (!ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS).isTIP20(params.initialToken)) {
             revert InvalidToken();
         }
         if (params.admin == address(0)) revert InvalidAdmin();
-        if (params.sequencer == address(0)) revert InvalidSequencer();
+        _validateSequencerSet(params.sequencers, params.threshold);
 
         zoneId = nextZoneId;
         nextZoneId = zoneId + 1;
@@ -73,7 +71,7 @@ abstract contract ZoneFactory is IZoneFactory {
         portal = portalAddress(zoneId);
 
         (bytes32 genesisBlockHash, bytes32 genesisTempoBlockHash, uint64 genesisTempoBlockNumber) = _nativeBuildZoneGenesis(
-            zoneId, portal, params.initialToken, params.admin, params.sequencer
+            zoneId, portal, params.initialToken, params.admin, params.sequencers, params.threshold
         );
 
         // Native precompile operation, not EVM CREATE or CREATE2:
@@ -83,8 +81,8 @@ abstract contract ZoneFactory is IZoneFactory {
         //    ZONE_PORTAL_IMPL_ADDRESS, the single protocol-managed ZonePortal logic
         //    implementation.
         // 2. This factory calls the portal's one-time initializer with the zone ID,
-        //    initial token, shared messenger, admin, sequencer, verifier, genesis block
-        //    hash, genesis Tempo block number, and RPC URL.
+        //    initial token, shared messenger, admin, equal sequencer set, settlement
+        //    threshold, verifier, genesis block hash, genesis Tempo block number, and RPC URL.
         //
         // The exact host operations are implementation details of the Tempo
         // precompile, represented by abstract hooks here so this artifact documents
@@ -96,19 +94,21 @@ abstract contract ZoneFactory is IZoneFactory {
                 params.initialToken,
                 ZONE_MESSENGER_ADDRESS,
                 params.admin,
-                params.sequencer,
+                params.sequencers,
+                params.threshold,
                 ZONE_VERIFIER_ADDRESS,
                 genesisBlockHash,
                 genesisTempoBlockNumber,
                 params.rpcUrl
             );
 
-        zones[zoneId] = ZoneInfo({
+        _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
             initialToken: params.initialToken,
             admin: params.admin,
-            sequencer: params.sequencer,
+            sequencers: params.sequencers,
+            threshold: params.threshold,
             genesisBlockHash: genesisBlockHash,
             genesisTempoBlockHash: genesisTempoBlockHash,
             genesisTempoBlockNumber: genesisTempoBlockNumber,
@@ -120,7 +120,8 @@ abstract contract ZoneFactory is IZoneFactory {
             portal,
             params.initialToken,
             params.admin,
-            params.sequencer,
+            params.sequencers,
+            params.threshold,
             ZONE_VERIFIER_ADDRESS,
             genesisBlockHash,
             genesisTempoBlockHash,
@@ -178,18 +179,26 @@ abstract contract ZoneFactory is IZoneFactory {
         return abi.encodePacked(PORTAL_PROXY_PREFIX, ZONE_PORTAL_IMPL_ADDRESS, PORTAL_PROXY_SUFFIX);
     }
 
+    function _validateSequencerSet(address[] calldata sequencers, uint8 threshold) internal pure {
+        uint256 length = sequencers.length;
+        if (length == 0 || length > MAX_SEQUENCERS || threshold == 0 || threshold > length) {
+            revert InvalidSequencerSet();
+        }
+
+        address previous;
+        for (uint256 i = 0; i < length; ++i) {
+            address current = sequencers[i];
+            if (current == address(0) || current <= previous) revert InvalidSequencerSet();
+            previous = current;
+        }
+    }
+
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
     /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
     /// Returns zero when `source` has no runtime bytecode.
-    function _nativeCopyRuntime(
-        address source,
-        address destination
-    )
-        internal
-        virtual
-        returns (bytes32 codeHash);
+    function _nativeCopyRuntime(address source, address destination) internal virtual returns (bytes32 codeHash);
 
     /// @dev Native host hook that builds the canonical zone genesis using the parent Tempo block.
     function _nativeBuildZoneGenesis(
@@ -197,24 +206,24 @@ abstract contract ZoneFactory is IZoneFactory {
         address portal,
         address initialToken,
         address admin,
-        address sequencer
+        address[] calldata sequencers,
+        uint8 threshold
     )
         internal
         view
         virtual
-        returns (
-            bytes32 genesisBlockHash,
-            bytes32 genesisTempoBlockHash,
-            uint64 genesisTempoBlockNumber
-        );
+        returns (bytes32 genesisBlockHash, bytes32 genesisTempoBlockHash, uint64 genesisTempoBlockNumber);
 
     /*//////////////////////////////////////////////////////////////
                                  VIEWS
     //////////////////////////////////////////////////////////////*/
 
+    function zones(uint32 zoneId) external view returns (ZoneInfo memory info) {
+        return _zones[zoneId];
+    }
+
     function isZonePortal(address portal) external view returns (bool) {
         uint64 zoneId = uint64(uint160(portal));
         return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
     }
-
 }
