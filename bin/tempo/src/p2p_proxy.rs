@@ -473,6 +473,8 @@ async fn run_p2p_network(
             IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
+            // The proxy does not serve snap protocol data.
+            IncomingEthRequest::GetSnap { .. } => {}
         }
     }
 
