@@ -21,22 +21,22 @@ The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
-You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://tempo.xyz/developers/docs/build), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
+You can get started today by integrating with the [Tempo testnet](https://tempo.xyz/developers/docs/quickstart/integrate-tempo), [building on Tempo](https://tempo.xyz/developers/docs/build), [running a Tempo node](https://tempo.xyz/developers/docs/guide/node), reading the [Tempo protocol specs](https://tempo.xyz/developers/docs/protocol) or by [building with Tempo SDKs](https://tempo.xyz/developers/docs/sdk).
 
 ## What makes Tempo different
 
-- [TIP‑20 token standard](https://docs.tempo.xyz/protocol/tip20/overview) (enshrined ERC‑20 extensions)
+- [TIP‑20 token standard](https://tempo.xyz/developers/docs/protocol/tip20/overview) (enshrined ERC‑20 extensions)
 
   - Predictable payment throughput via dedicated payment lanes reserved for TIP‑20 transfers (eliminates noisy‑neighbor contention).
   - Native reconciliation with on‑transfer memos and commitment patterns (hash/locator) for off‑chain PII and large data.
-  - Built‑in compliance through [TIP‑403 Policy Registry](https://docs.tempo.xyz/protocol/tip403/overview): single policy shared across multiple tokens, updated once and enforced everywhere.
+  - Built‑in compliance through [TIP‑403 Policy Registry](https://tempo.xyz/developers/docs/protocol/tip403/overview): single policy shared across multiple tokens, updated once and enforced everywhere.
 
-- Low, predictable fees in [stablecoins](https://docs.tempo.xyz/learn/stablecoins)
+- Low, predictable fees in [stablecoins](https://tempo.xyz/learn/what-are-stablecoins/)
 
-  - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://docs.tempo.xyz/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
+  - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://tempo.xyz/developers/docs/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
   - TIP‑20 transfers target sub‑millidollar costs (<$0.001).
 
-- [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) (native “smart accounts”)
+- [Tempo Transactions](https://tempo.xyz/developers/docs/guide/tempo-transaction) (native “smart accounts”)
 
   - Batched payments: atomic multi‑operation payouts (payroll, settlements, refunds).
   - Fee sponsorship: apps can pay users' gas to streamline onboarding and flows.
@@ -59,7 +59,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 - Deploy and interact with smart contracts using the same tools, languages, and frameworks used on Ethereum, such as Solidity, Foundry, and Hardhat.
 - All Ethereum JSON-RPC methods work out of the box.
 
-While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://docs.tempo.xyz/quickstart/evm-compatibility).
+While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://tempo.xyz/developers/docs/quickstart/evm-compatibility).
 
 ## Getting Started
 
@@ -76,7 +76,7 @@ You can connect to Tempo's public testnet using the following details:
 | **WebSocket URL**  | `wss://rpc.moderato.tempo.xyz`     |
 | **Block Explorer** | `https://explore.tempo.xyz`        |
 
-Next, grab some stablecoins to test with from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
+Next, grab some stablecoins to test with from Tempo's [Faucet](https://tempo.xyz/developers/docs/quickstart/faucet#faucet).
 
 Alternatively, use [`cast`](https://github.com/foundry-rs/foundry):
 
