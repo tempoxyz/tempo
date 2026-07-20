@@ -232,6 +232,44 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
         Ok(())
     }
+
+    #[inline]
+    fn with_loaded_account<R>(
+        &mut self,
+        address: Address,
+        f: impl FnOnce(bool, &AccountInfo) -> R,
+    ) -> Result<R, TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_account_additional_cost();
+
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
+
+        if !self.spec.is_t4() {
+            deduct_gas(
+                &mut self.gas_tracker,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
+        }
+
+        // Dynamic gas.
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
+        }
+
+        let exists = !account.data.account().is_loaded_as_not_existing();
+        account.load_code()?;
+
+        Ok(f(exists, &account.data.account().info))
+    }
 }
 
 impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
@@ -343,70 +381,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_account_additional_cost();
-
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
-        };
-
-        let mut account = self
-            .internals
-            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
-
-        if !self.spec.is_t4() {
-            deduct_gas(
-                &mut self.gas_tracker,
-                self.gas_params.warm_storage_read_cost(),
-            )?;
-        }
-
-        // dynamic gas
-        if account.is_cold {
-            deduct_gas(&mut self.gas_tracker, additional_cost)?;
-        }
-
-        account.load_code()?;
-
-        f(&account.data.account().info);
-        Ok(())
+        self.with_loaded_account(address, |_, info| f(info))
     }
 
     #[inline]
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_account_additional_cost();
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
-        };
-
-        let mut account = self
-            .internals
-            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
-
-        if !self.spec.is_t4() {
-            deduct_gas(
-                &mut self.gas_tracker,
-                self.gas_params.warm_storage_read_cost(),
-            )?;
-        }
-        if account.is_cold {
-            deduct_gas(&mut self.gas_tracker, additional_cost)?;
-        }
-
-        let code_hash = if account.data.account().is_loaded_as_not_existing() {
-            B256::ZERO
-        } else {
-            account.data.account().info.code_hash
-        };
-        account.load_code()?;
-        let code = account.data.account().info.code.clone().unwrap_or_default();
-        Ok((code_hash, code))
+        self.with_loaded_account(address, |exists, info| {
+            let code_hash = if exists { info.code_hash } else { B256::ZERO };
+            let code = info.code.clone().unwrap_or_default();
+            (code_hash, code)
+        })
     }
 
     #[inline]
