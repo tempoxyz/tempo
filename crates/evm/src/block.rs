@@ -213,18 +213,17 @@ where
         }
     }
 
-    /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
     /// sparse trie task is aware of the change.
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
+        storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let info = self
-            .inner
-            .evm
-            .db_mut()
+        let db = self.inner.evm.db_mut();
+        let info = db
             .basic(address)
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
@@ -233,9 +232,18 @@ where
             let code = Bytecode::new_legacy([0xef].into());
             account.info.code_hash = code.hash_slow();
             account.info.code = Some(code);
+            for &(slot, value) in storage {
+                let original_value = db
+                    .storage(address, slot)
+                    .map_err(BlockExecutionError::other)?;
+                account.storage.insert(
+                    slot,
+                    EvmStorageSlot::new_changed(original_value, value, TransactionId::ZERO),
+                );
+            }
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
-            self.inner.evm.db_mut().commit(state);
+            db.commit(state);
         }
         Ok(())
     }
@@ -245,44 +253,9 @@ where
     /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
     /// fixed T9 protocol constants.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let info = self
-            .inner
-            .evm
-            .db_mut()
-            .basic(ZONE_FACTORY_ADDRESS)
-            .map_err(BlockExecutionError::other)?
-            .unwrap_or_default();
-        if !info.is_empty_code_hash() {
-            return Ok(());
-        }
-
-        let factory_config_slot = U256::ZERO;
-        let original_factory_config = self
-            .inner
-            .evm
-            .db_mut()
-            .storage(ZONE_FACTORY_ADDRESS, factory_config_slot)
-            .map_err(BlockExecutionError::other)?;
         let factory_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-
-        let mut factory_account = Account::from(info);
-        let code = Bytecode::new_legacy([0xef].into());
-        factory_account.info.code_hash = code.hash_slow();
-        factory_account.info.code = Some(code);
-        factory_account.storage.insert(
-            factory_config_slot,
-            EvmStorageSlot::new_changed(
-                original_factory_config,
-                factory_config,
-                TransactionId::ZERO,
-            ),
-        );
-        factory_account.mark_touch();
-
-        let state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory_account)]);
-        self.inner.evm.db_mut().commit(state);
-        Ok(())
+        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
@@ -608,23 +581,23 @@ where
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS, &[])?;
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
+            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
+            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
@@ -1549,7 +1522,7 @@ mod tests {
             .with_spec(TempoHardfork::T8)
             .build(&mut db, &chainspec);
         executor
-            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
             .unwrap();
 
         executor.apply_current_committee_system_call().unwrap();
@@ -1570,7 +1543,7 @@ mod tests {
             .with_spec(TempoHardfork::T8)
             .build(&mut db, &chainspec);
         executor
-            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
             .unwrap();
 
         executor.apply_current_committee_system_call().unwrap();
@@ -1994,7 +1967,7 @@ mod tests {
             })));
 
         let addr = Address::with_last_byte(0xff);
-        executor.deploy_precompile_at_boundary(addr).unwrap();
+        executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
         drop(executor);
 
         // Verify code was deployed.
@@ -2043,7 +2016,7 @@ mod tests {
                 hook_calls_clone.lock().unwrap().push(state);
             })));
 
-        executor.deploy_precompile_at_boundary(addr).unwrap();
+        executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
