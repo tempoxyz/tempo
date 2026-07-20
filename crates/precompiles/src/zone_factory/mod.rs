@@ -80,7 +80,11 @@ impl ZoneFactory {
         }
         self.__initialize()?;
         self.next_zone_id.write(1)?;
-        self.owner.write(owner)
+        self.owner.write(owner)?;
+        self.emit_event(ZoneFactoryEvent::ownership_transferred(
+            Address::ZERO,
+            owner,
+        ))
     }
 
     /// Returns the configured factory owner.
