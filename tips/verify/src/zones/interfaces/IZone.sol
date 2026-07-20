@@ -62,7 +62,6 @@ interface IZoneFactory {
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencer();
-    error InsufficientGas();
 
     function owner() external view returns (address);
 
