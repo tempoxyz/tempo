@@ -25,6 +25,21 @@ impl Precompile for ZoneFactory {
                             self.transfer_ownership(sender, call)
                         })
                     },
+                    setPortalImplementation(call) => {
+                        mutate_void(call, msg_sender, |sender, call| {
+                            self.set_portal_implementation(sender, call)
+                        })
+                    },
+                    setZoneMessengerImplementation(call) => {
+                        mutate_void(call, msg_sender, |sender, call| {
+                            self.set_zone_messenger_implementation(sender, call)
+                        })
+                    },
+                    setVerifierImplementation(call) => {
+                        mutate_void(call, msg_sender, |sender, call| {
+                            self.set_verifier_implementation(sender, call)
+                        })
+                    },
                     createZone(call) => {
                         mutate(call, msg_sender, |sender, call| self.create_zone(sender, call))
                     },

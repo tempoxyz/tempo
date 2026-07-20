@@ -331,9 +331,7 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZoneParams,
-    };
+    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneParams};
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -516,6 +514,7 @@ mod tests {
         let owner = Address::repeat_byte(0x11);
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
+        let implementation_source = Address::repeat_byte(0x44);
         let genesis_block_hash =
             b256!("0x1111111111111111111111111111111111111111111111111111111111111111");
         // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
@@ -524,7 +523,7 @@ mod tests {
         ]));
         let mut db = CacheDB::new(EmptyDB::default());
         db.insert_account_info(
-            ZONE_PORTAL_IMPL_ADDRESS,
+            implementation_source,
             AccountInfo {
                 code_hash: logic_runtime.hash_slow(),
                 code: Some(logic_runtime),
@@ -540,6 +539,24 @@ mod tests {
         .unwrap();
         let setup_state = evm.ctx_mut().journaled_state.finalize();
         evm.db_mut().commit(setup_state);
+
+        let result = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::setPortalImplementationCall {
+                    source: implementation_source,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            result.result.is_success(),
+            "setPortalImplementation failed: {:?}",
+            result.result
+        );
+        evm.db_mut().commit(result.state);
 
         let result = evm
             .transact_system_call(

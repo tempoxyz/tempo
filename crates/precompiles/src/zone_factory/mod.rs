@@ -12,7 +12,8 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, IntoLogData, hex};
 use tempo_contracts::precompiles::{
-    IZoneFactory, ZONE_VERIFIER_ADDRESS, ZoneFactoryError, ZoneFactoryEvent, ZonePortalEvent,
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    ZoneFactoryError, ZoneFactoryEvent, ZonePortalEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -20,9 +21,6 @@ use tempo_precompiles_macros::{Storable, contract};
 use portal::PortalTokenConfig;
 pub use portal::ZONE_PORTAL_PROXY_RUNTIME;
 use portal::ZonePortalStorage;
-#[cfg(test)]
-use tempo_contracts::precompiles::ZONE_MESSENGER_ADDRESS;
-
 /// Minimum gas consumed by a successful zone creation.
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
@@ -102,15 +100,91 @@ impl ZoneFactory {
         if msg_sender != previous_owner {
             return Err(ZoneFactoryError::not_owner().into());
         }
-        if call.newOwner.is_zero() {
-            return Err(ZoneFactoryError::invalid_owner().into());
-        }
-
         self.owner.write(call.newOwner)?;
         self.emit_event(ZoneFactoryEvent::ownership_transferred(
             previous_owner,
             call.newOwner,
         ))
+    }
+
+    /// Copies a deployed runtime into the shared ZonePortal implementation account.
+    pub fn set_portal_implementation(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::setPortalImplementationCall,
+    ) -> Result<()> {
+        if msg_sender != self.owner()? {
+            return Err(ZoneFactoryError::not_owner().into());
+        }
+
+        let code_hash = self.copy_runtime(
+            call.source,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZoneFactoryError::invalid_portal_implementation().into(),
+        )?;
+        self.emit_event(ZoneFactoryEvent::portal_implementation_updated(
+            call.source,
+            code_hash,
+        ))
+    }
+
+    /// Copies a deployed runtime into the shared ZoneMessenger account.
+    pub fn set_zone_messenger_implementation(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::setZoneMessengerImplementationCall,
+    ) -> Result<()> {
+        if msg_sender != self.owner()? {
+            return Err(ZoneFactoryError::not_owner().into());
+        }
+
+        let code_hash = self.copy_runtime(
+            call.source,
+            ZONE_MESSENGER_ADDRESS,
+            ZoneFactoryError::invalid_zone_messenger_implementation().into(),
+        )?;
+        self.emit_event(ZoneFactoryEvent::zone_messenger_implementation_updated(
+            call.source,
+            code_hash,
+        ))
+    }
+
+    /// Copies a deployed runtime into the shared Verifier account.
+    pub fn set_verifier_implementation(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::setVerifierImplementationCall,
+    ) -> Result<()> {
+        if msg_sender != self.owner()? {
+            return Err(ZoneFactoryError::not_owner().into());
+        }
+
+        let code_hash = self.copy_runtime(
+            call.source,
+            ZONE_VERIFIER_ADDRESS,
+            ZoneFactoryError::invalid_verifier_implementation().into(),
+        )?;
+        self.emit_event(ZoneFactoryEvent::verifier_implementation_updated(
+            call.source,
+            code_hash,
+        ))
+    }
+
+    fn copy_runtime(
+        &mut self,
+        source: Address,
+        destination: Address,
+        missing_code_error: TempoPrecompileError,
+    ) -> Result<B256> {
+        let code = self.storage.with_account_info(source, |info| {
+            info.code
+                .clone()
+                .filter(|code| !code.is_empty())
+                .ok_or_else(|| missing_code_error.clone())
+        })?;
+        let code_hash = code.hash_slow();
+        self.storage.set_code(destination, code)?;
+        Ok(code_hash)
     }
 
     /// Creates and initializes a deterministic ZonePortal account.
@@ -236,7 +310,8 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::{Bytes, address, b256};
+    use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
     const OWNER: Address = address!("0x0000000000000000000000000000000000000011");
@@ -364,19 +439,78 @@ mod tests {
             );
             assert_eq!(factory.next_zone_id()?, 1);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn owner_can_install_and_upgrade_shared_runtimes() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut factory = ZoneFactory::new();
+            factory.initialize(OWNER)?;
+            let source = address!("0x0000000000000000000000000000000000000044");
+            let runtime = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x2a]));
+            factory.storage.set_code(source, runtime.clone())?;
+
             let err = factory
-                .transfer_ownership(
+                .set_portal_implementation(
+                    ADMIN,
+                    IZoneFactory::setPortalImplementationCall { source },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::not_owner())
+            );
+
+            factory.set_portal_implementation(
+                OWNER,
+                IZoneFactory::setPortalImplementationCall { source },
+            )?;
+            factory.set_zone_messenger_implementation(
+                OWNER,
+                IZoneFactory::setZoneMessengerImplementationCall { source },
+            )?;
+            factory.set_verifier_implementation(
+                OWNER,
+                IZoneFactory::setVerifierImplementationCall { source },
+            )?;
+            for destination in [
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+            ] {
+                let installed = factory.storage.with_account_info(destination, |info| {
+                    Ok(info.code.clone().expect("shared runtime installed"))
+                })?;
+                assert_eq!(installed, runtime);
+            }
+
+            let err = factory
+                .set_portal_implementation(
                     OWNER,
-                    IZoneFactory::transferOwnershipCall {
-                        newOwner: Address::ZERO,
+                    IZoneFactory::setPortalImplementationCall {
+                        source: Address::ZERO,
                     },
                 )
                 .unwrap_err();
             assert_eq!(
                 err,
-                TempoPrecompileError::from(ZoneFactoryError::invalid_owner())
+                TempoPrecompileError::from(ZoneFactoryError::invalid_portal_implementation())
             );
-            assert_eq!(factory.owner()?, OWNER);
+
+            factory.transfer_ownership(
+                OWNER,
+                IZoneFactory::transferOwnershipCall {
+                    newOwner: Address::ZERO,
+                },
+            )?;
+            assert_eq!(factory.owner()?, Address::ZERO);
+            factory.set_portal_implementation(
+                Address::ZERO,
+                IZoneFactory::setPortalImplementationCall { source },
+            )?;
             Ok(())
         })
     }

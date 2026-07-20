@@ -27,18 +27,11 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::{
-    precompiles::{
-        ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
-        RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        T9_ZONE_FACTORY_OWNER, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-        ZONE_VERIFIER_ADDRESS,
-    },
-    zones::{
-        ZONE_MESSENGER_SOURCE_ADDRESS, ZONE_PORTAL_IMPL_SOURCE_ADDRESS,
-        ZONE_VERIFIER_SOURCE_ADDRESS,
-    },
+use tempo_contracts::precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    T9_ZONE_FACTORY_OWNER, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ZONE_FACTORY_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -288,53 +281,7 @@ where
         );
         factory_account.mark_touch();
 
-        let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory_account)]);
-        for (address, source_address) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_IMPL_SOURCE_ADDRESS),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_SOURCE_ADDRESS),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_SOURCE_ADDRESS),
-        ] {
-            let source_info = self
-                .inner
-                .evm
-                .db_mut()
-                .basic(source_address)
-                .map_err(BlockExecutionError::other)?
-                .ok_or_else(|| {
-                    BlockExecutionError::msg(format!(
-                        "missing deployed Zones runtime at source address {source_address}"
-                    ))
-                })?;
-            if source_info.is_empty_code_hash() {
-                return Err(BlockExecutionError::msg(format!(
-                    "missing deployed Zones runtime at source address {source_address}"
-                )));
-            }
-            let code = self
-                .inner
-                .evm
-                .db_mut()
-                .code_by_hash(source_info.code_hash)
-                .map_err(BlockExecutionError::other)?;
-            if code.is_empty() {
-                return Err(BlockExecutionError::msg(format!(
-                    "missing deployed Zones runtime at source address {source_address}"
-                )));
-            }
-            let info = self
-                .inner
-                .evm
-                .db_mut()
-                .basic(address)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            let mut account = Account::from(info);
-            account.info.code_hash = source_info.code_hash;
-            account.info.code = Some(code);
-            account.mark_touch();
-            state.insert(address, account);
-        }
-
+        let state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory_account)]);
         self.inner.evm.db_mut().commit(state);
         Ok(())
     }
@@ -903,12 +850,9 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::{
-        precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS},
-        zones::{
-            ZONE_MESSENGER_SOURCE_ADDRESS, ZONE_PORTAL_IMPL_SOURCE_ADDRESS,
-            ZONE_VERIFIER_SOURCE_ADDRESS,
-        },
+    use tempo_contracts::precompiles::{
+        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_MESSENGER_ADDRESS,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -2115,25 +2059,6 @@ mod tests {
     fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
-        let source_runtime = Bytecode::new_legacy(Bytes::from_static(&[0x01]));
-        let source_runtime_hash = source_runtime.hash_slow();
-        db.cache
-            .contracts
-            .insert(source_runtime_hash, source_runtime.clone());
-        for source_address in [
-            ZONE_PORTAL_IMPL_SOURCE_ADDRESS,
-            ZONE_VERIFIER_SOURCE_ADDRESS,
-            ZONE_MESSENGER_SOURCE_ADDRESS,
-        ] {
-            db.insert_account(
-                source_address,
-                AccountInfo {
-                    code_hash: source_runtime_hash,
-                    code: Some(source_runtime.clone()),
-                    ..Default::default()
-                },
-            );
-        }
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2168,42 +2093,19 @@ mod tests {
             Some(expected_factory_config)
         );
 
-        for address in [
-            ZONE_PORTAL_IMPL_ADDRESS,
-            ZONE_VERIFIER_ADDRESS,
-            ZONE_MESSENGER_ADDRESS,
-        ] {
-            let info = db
-                .load_cache_account(address)
-                .unwrap()
-                .account_info()
-                .unwrap();
-            assert_eq!(info.code_hash, source_runtime_hash);
-            assert_eq!(info.code.unwrap(), source_runtime);
-        }
-
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
+        assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
-            ZONE_FACTORY_ADDRESS,
             ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
             ZONE_MESSENGER_ADDRESS,
         ] {
-            assert!(calls[0].contains_key(&address));
+            assert!(
+                !calls[0].contains_key(&address),
+                "shared runtimes are installed through the factory, not the T9 state hook"
+            );
         }
-    }
-
-    #[test]
-    fn test_deploy_zone_factory_at_boundary_requires_deployed_runtimes() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .build(&mut db, &chainspec);
-
-        let err = executor.deploy_zone_factory_at_boundary().unwrap_err();
-        assert!(err.to_string().contains("missing deployed Zones runtime"));
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
