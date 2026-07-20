@@ -3,7 +3,7 @@ use crate::{
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use bitflags::bitflags;
 use revm::{
@@ -373,6 +373,40 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         f(&account.data.account().info);
         Ok(())
+    }
+
+    #[inline]
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_account_additional_cost();
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
+
+        if !self.spec.is_t4() {
+            deduct_gas(
+                &mut self.gas_tracker,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
+        }
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
+        }
+
+        let code_hash = if account.data.account().is_loaded_as_not_existing() {
+            B256::ZERO
+        } else {
+            account.data.account().info.code_hash
+        };
+        account.load_code()?;
+        let code = account.data.account().info.code.clone().unwrap_or_default();
+        Ok((code_hash, code))
     }
 
     #[inline]

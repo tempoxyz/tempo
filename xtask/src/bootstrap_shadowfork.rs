@@ -504,6 +504,13 @@ where
         Ok(())
     }
 
+    fn account_code(
+        &mut self,
+        _address: Address,
+    ) -> Result<(B256, Bytecode), TempoPrecompileError> {
+        unreachable!("account_code is not used during shadow-fork bootstrap")
+    }
+
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         if let Some(value) = self.overlay.get(&(address, key)) {
             return Ok(*value);

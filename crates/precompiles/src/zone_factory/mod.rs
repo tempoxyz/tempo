@@ -177,13 +177,10 @@ impl ZoneFactory {
         destination: Address,
         missing_code_error: TempoPrecompileError,
     ) -> Result<B256> {
-        let code = self.storage.with_account_info(source, |info| {
-            info.code
-                .clone()
-                .filter(|code| !code.is_empty())
-                .ok_or_else(|| missing_code_error.clone())
-        })?;
-        let code_hash = code.hash_slow();
+        let (code_hash, code) = self.storage.account_code(source)?;
+        if code_hash.is_zero() {
+            return Err(missing_code_error);
+        }
         self.storage.set_code(destination, code)?;
         Ok(code_hash)
     }
@@ -425,7 +422,6 @@ mod tests {
             assert_eq!(portal.zone_id.read()?, 1);
             assert_eq!(portal.messenger.read()?, ZONE_MESSENGER_ADDRESS);
             assert_eq!(portal.verifier.read()?, ZONE_VERIFIER_ADDRESS);
-            assert_eq!(portal.genesis_tempo_block_number.read()?, 0);
             assert!(portal.initialized.read()?);
             assert_eq!(portal.sequencer_set_version.read()?, 1);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
@@ -538,6 +534,25 @@ mod tests {
                 })?;
                 assert_eq!(installed, runtime);
             }
+
+            // The code hash is the only source validation. Empty runtime bytecode has a nonzero
+            // hash and is therefore accepted.
+            let empty_source = address!("0x0000000000000000000000000000000000000055");
+            factory
+                .storage
+                .set_code(empty_source, Bytecode::default())?;
+            factory.set_verifier_implementation(
+                OWNER,
+                IZoneFactory::setVerifierImplementationCall {
+                    source: empty_source,
+                },
+            )?;
+            let installed = factory
+                .storage
+                .with_account_info(ZONE_VERIFIER_ADDRESS, |info| {
+                    Ok(info.code.clone().expect("empty runtime installed"))
+                })?;
+            assert!(installed.is_empty());
 
             let err = factory
                 .set_portal_implementation(

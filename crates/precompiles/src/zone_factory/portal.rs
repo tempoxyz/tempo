@@ -70,7 +70,6 @@ pub(super) struct ZonePortalStorage {
     zone_id: u32,
     messenger: Address,
     verifier: Address,
-    genesis_tempo_block_number: u64,
     initialized: bool,
     sequencer_set_version: u64,
     sequencer_threshold: u8,
