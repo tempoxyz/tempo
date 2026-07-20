@@ -35,7 +35,10 @@ use tempo_contracts::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS,
     },
-    zones::{ZONE_MESSENGER_RUNTIME_HASH, ZONE_PORTAL_RUNTIME_HASH, ZONE_VERIFIER_RUNTIME_HASH},
+    zones::{
+        ZONE_MESSENGER_SOURCE_ADDRESS, ZONE_PORTAL_IMPL_SOURCE_ADDRESS,
+        ZONE_VERIFIER_SOURCE_ADDRESS,
+    },
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -295,23 +298,38 @@ where
         factory_account.mark_touch();
 
         let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory_account)]);
-        for (address, runtime_hash) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME_HASH),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME_HASH),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME_HASH),
+        for (address, source_address) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_IMPL_SOURCE_ADDRESS),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_SOURCE_ADDRESS),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_SOURCE_ADDRESS),
         ] {
+            let source_info = self
+                .inner
+                .evm
+                .db_mut()
+                .basic(source_address)
+                .map_err(BlockExecutionError::other)?
+                .ok_or_else(|| {
+                    BlockExecutionError::msg(format!(
+                        "missing deployed Zones runtime at source address {source_address}"
+                    ))
+                })?;
+            if source_info.is_empty_code_hash() {
+                return Err(BlockExecutionError::msg(format!(
+                    "missing deployed Zones runtime at source address {source_address}"
+                )));
+            }
             let code = self
                 .inner
                 .evm
                 .db_mut()
-                .code_by_hash(runtime_hash)
+                .code_by_hash(source_info.code_hash)
                 .map_err(BlockExecutionError::other)?;
             if code.is_empty() {
                 return Err(BlockExecutionError::msg(format!(
-                    "missing deployed Zones runtime {runtime_hash}"
+                    "missing deployed Zones runtime at source address {source_address}"
                 )));
             }
-
             let info = self
                 .inner
                 .evm
@@ -320,7 +338,7 @@ where
                 .map_err(BlockExecutionError::other)?
                 .unwrap_or_default();
             let mut account = Account::from(info);
-            account.info.code_hash = runtime_hash;
+            account.info.code_hash = source_info.code_hash;
             account.info.code = Some(code);
             account.mark_touch();
             state.insert(address, account);
@@ -897,7 +915,8 @@ mod tests {
     use tempo_contracts::{
         precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS},
         zones::{
-            ZONE_MESSENGER_RUNTIME_HASH, ZONE_PORTAL_RUNTIME_HASH, ZONE_VERIFIER_RUNTIME_HASH,
+            ZONE_MESSENGER_SOURCE_ADDRESS, ZONE_PORTAL_IMPL_SOURCE_ADDRESS,
+            ZONE_VERIFIER_SOURCE_ADDRESS,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2105,14 +2124,23 @@ mod tests {
     fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
-        for (runtime_hash, marker) in [
-            (ZONE_PORTAL_RUNTIME_HASH, 0x01),
-            (ZONE_VERIFIER_RUNTIME_HASH, 0x02),
-            (ZONE_MESSENGER_RUNTIME_HASH, 0x03),
+        let source_runtime = Bytecode::new_legacy(Bytes::from_static(&[0x01]));
+        let source_runtime_hash = source_runtime.hash_slow();
+        db.cache
+            .contracts
+            .insert(source_runtime_hash, source_runtime.clone());
+        for source_address in [
+            ZONE_PORTAL_IMPL_SOURCE_ADDRESS,
+            ZONE_VERIFIER_SOURCE_ADDRESS,
+            ZONE_MESSENGER_SOURCE_ADDRESS,
         ] {
-            db.cache.contracts.insert(
-                runtime_hash,
-                Bytecode::new_legacy(Bytes::copy_from_slice(&[marker])),
+            db.insert_account(
+                source_address,
+                AccountInfo {
+                    code_hash: source_runtime_hash,
+                    code: Some(source_runtime.clone()),
+                    ..Default::default()
+                },
             );
         }
         let mut executor = TestExecutorBuilder::default()
@@ -2148,18 +2176,18 @@ mod tests {
             Some(U256::from_be_slice(T9_ZONE_FACTORY_OWNER.as_slice()))
         );
 
-        for (address, expected_hash) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME_HASH),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME_HASH),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME_HASH),
+        for address in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
         ] {
             let info = db
                 .load_cache_account(address)
                 .unwrap()
                 .account_info()
                 .unwrap();
-            assert_eq!(info.code_hash, expected_hash);
-            assert!(!info.code.unwrap().is_empty());
+            assert_eq!(info.code_hash, source_runtime_hash);
+            assert_eq!(info.code.unwrap(), source_runtime);
         }
 
         let calls = hook_calls.lock().unwrap();
