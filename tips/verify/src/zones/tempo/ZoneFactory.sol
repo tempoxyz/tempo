@@ -15,6 +15,10 @@ abstract contract ZoneFactory is IZoneFactory {
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Minimum gas consumed by a successful native zone creation.
+    /// @dev Enforced by the native implementation's host gas accounting.
+    uint256 public constant ZONE_CREATION_GAS = 15_000_000;
+
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
 
