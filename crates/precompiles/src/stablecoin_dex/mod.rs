@@ -1197,8 +1197,8 @@ impl StablecoinDEX {
         amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read_in_book(book_key)?;
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
+        let order = self.orders[level.head].read_in_book(book_key)?;
 
         // Returns the total input spent to receive `amount_out`.
         walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
@@ -1216,7 +1216,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, is_bid)?;
-        let mut order = self.orders[level.head].read_in_book(book_key)?;
+        let order = self.orders[level.head].read_in_book(book_key)?;
 
         // Returns the total output received for spending `amount_in`.
         walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
