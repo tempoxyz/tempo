@@ -31,7 +31,7 @@ use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
@@ -836,9 +836,9 @@ impl SetValidatorFeeRecipient {
 
 #[derive(Debug, clap::Args)]
 pub struct SetValidatorToken {
-    /// Token to use for validator fees.
-    #[arg(value_name = "TOKEN_ADDRESS")]
-    token: Address,
+    /// Token address, symbol, or name to use for validator fees.
+    #[arg(value_name = "TOKEN")]
+    token: String,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -846,8 +846,93 @@ pub struct SetValidatorToken {
 
 impl SetValidatorToken {
     async fn run(self) -> eyre::Result<()> {
-        let call = IFeeManager::setValidatorTokenCall { token: self.token };
+        let provider = self.submit.provider().await?;
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        let tokens = fetch_verified_tokens(chain_id).await;
+        let token = match self.token.parse::<Address>() {
+            Ok(address) => {
+                match tokens {
+                    Ok(tokens) => match tokens.iter().find(|token| token.address == address) {
+                        Some(token) => eprintln!(
+                            "resolved token: {} ({}) at {}",
+                            token.name, token.symbol, token.address
+                        ),
+                        None => eprintln!(
+                            "warning: token address {address} is not in the verified token list"
+                        ),
+                    },
+                    Err(error) => {
+                        eprintln!("warning: failed to look up token metadata: {error:#}")
+                    }
+                }
+                address
+            }
+            Err(_) => {
+                let tokens = tokens.wrap_err("failed to fetch the verified token list")?;
+                resolve_token_name(&self.token, &tokens)?
+            }
+        };
+
+        let call = IFeeManager::setValidatorTokenCall { token };
         self.submit.call_to(TIP_FEE_MANAGER_ADDRESS, &call).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifiedToken {
+    address: Address,
+    name: String,
+    symbol: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifiedTokenList {
+    tokens: Vec<VerifiedToken>,
+}
+
+async fn fetch_verified_tokens(chain_id: u64) -> eyre::Result<Vec<VerifiedToken>> {
+    let url = format!("https://tokenlist.tempo.xyz/list/{chain_id}");
+    let response = reqwest::get(&url)
+        .await
+        .wrap_err_with(|| format!("failed to request `{url}`"))?
+        .error_for_status()
+        .wrap_err_with(|| format!("token list request failed for chain {chain_id}"))?
+        .json::<VerifiedTokenList>()
+        .await
+        .wrap_err("failed to decode token list response")?;
+    Ok(response.tokens)
+}
+
+fn resolve_token_name(input: &str, tokens: &[VerifiedToken]) -> eyre::Result<Address> {
+    let matches = tokens
+        .iter()
+        .filter(|token| {
+            token.symbol.eq_ignore_ascii_case(input) || token.name.eq_ignore_ascii_case(input)
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [] => bail!("no verified token found with symbol or name `{input}`"),
+        [token] => {
+            eprintln!(
+                "resolved token: {} ({}) at {}",
+                token.name, token.symbol, token.address
+            );
+            Ok(token.address)
+        }
+        _ => {
+            let addresses = matches
+                .iter()
+                .map(|token| token.address.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("token `{input}` is ambiguous; matching addresses: {addresses}")
+        }
     }
 }
 
@@ -1479,8 +1564,25 @@ mod tests {
             )) => cmd,
             other => panic!("expected SetValidatorToken, got `{other:?}`"),
         };
-        assert_eq!(token, TEST_VALIDATOR_TOKEN.parse().unwrap());
+        assert_eq!(token, TEST_VALIDATOR_TOKEN);
         assert!(submit.dry_run);
+    }
+
+    #[test]
+    fn resolve_validator_token_by_symbol_or_name() {
+        let address = TEST_VALIDATOR_TOKEN.parse().unwrap();
+        let tokens = [VerifiedToken {
+            address,
+            name: "Example Dollar".to_owned(),
+            symbol: "xUSD".to_owned(),
+        }];
+
+        assert_eq!(resolve_token_name("xusd", &tokens).unwrap(), address);
+        assert_eq!(
+            resolve_token_name("example dollar", &tokens).unwrap(),
+            address
+        );
+        assert!(resolve_token_name("missing", &tokens).is_err());
     }
 
     #[test]
