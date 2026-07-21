@@ -3,7 +3,7 @@ use reth_chainspec::{EthereumHardfork, ForkCondition, Hardforks, Head};
 use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{BlockNumReader, ChainSpecProvider, HeaderProvider};
 use serde::{Deserialize, Serialize};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::hardfork::TempoHardforks;
 
 /// Response for `tempo_forkSchedule`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +58,7 @@ fn internal_err(msg: impl ToString) -> jsonrpsee::types::ErrorObject<'static> {
 #[async_trait::async_trait]
 impl<P> TempoForkScheduleApiServer for TempoForkScheduleRpc<P>
 where
-    P: ChainSpecProvider<ChainSpec = TempoChainSpec>
+    P: ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
         + BlockNumReader
         + HeaderProvider
         + Send

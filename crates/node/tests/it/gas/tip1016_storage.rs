@@ -51,7 +51,7 @@ async fn get_createx_deployed_address<P: Provider>(
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    eyre::bail!("timed out waiting for deploy receipts at block {block_number}")
+    eyre::bail!("timed out waiting for deploy receipts at block {block_number}");
 }
 
 /// Returns the total gas_used from all receipts in a block, polling until the RPC catches up.
@@ -66,7 +66,7 @@ async fn total_receipt_gas_for_block<P: Provider>(
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    eyre::bail!("timed out waiting for receipts at block {block_number}")
+    eyre::bail!("timed out waiting for receipts at block {block_number}");
 }
 
 /// Happy path: deploying a contract via CreateX creates new storage (account creation +
