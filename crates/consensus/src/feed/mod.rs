@@ -11,12 +11,8 @@ mod actor;
 mod ingress;
 mod state;
 
-use std::sync::Arc;
-
-use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::Spawner;
 use futures::channel::mpsc;
-use tempo_node::TempoFullNode;
 
 use crate::alias::marshal;
 pub(crate) use actor::Actor;
@@ -27,12 +23,10 @@ pub use state::FeedStateHandle;
 pub(crate) fn init<TContext: Spawner>(
     context: TContext,
     marshal: marshal::Mailbox,
-    epocher: FixedEpocher,
-    execution_node: Arc<TempoFullNode>,
     state: FeedStateHandle,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox::new(tx);
-    let actor = Actor::new(context, marshal, epocher, execution_node, rx, state);
+    let actor = Actor::new(context, marshal, rx, state);
     (actor, mailbox)
 }

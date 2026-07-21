@@ -11,6 +11,8 @@ pub mod order;
 pub mod orderbook;
 
 pub use order::Order;
+use order::OrderMapping;
+use orderbook::BookId;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, OrderStep, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel,
     base_to_quote, quote_to_base, step_exact_in, step_exact_out, taker_output, tick_to_price,
@@ -51,7 +53,7 @@ pub const TICK_SPACING: i16 = 10;
 #[contract(addr = STABLECOIN_DEX_ADDRESS)]
 pub struct StablecoinDEX {
     books: Mapping<B256, Orderbook>,
-    orders: Mapping<u128, Order>,
+    orders: OrderMapping,
     balances: Mapping<Address, Mapping<Address, u128>>,
     next_order_id: u128,
     book_keys: Vec<B256>,
@@ -128,6 +130,15 @@ impl StablecoinDEX {
             .map(|(_, credits)| credits)
     }
 
+    /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
+    fn rewrite_order(&mut self, order: Order, id: BookId) -> Result<u64> {
+        StorageCredits::new()
+            .track_minted_credits(self.address, || {
+                self.orders[order.order_id()].write_in_book(order, id)
+            })
+            .map(|(_, credits)| credits)
+    }
+
     /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
     fn unlink_neighbor_and_credit_maker(
         &mut self,
@@ -140,7 +151,7 @@ impl StablecoinDEX {
             return Ok(());
         }
 
-        let maker = self.orders[order_id].maker.read()?;
+        let maker = self.orders[order_id].maker()?;
         self.credit_dex_storage_slots(maker, credits)
     }
 
@@ -159,11 +170,11 @@ impl StablecoinDEX {
     ///
     /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
     /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
-    fn write_order_spending_dex_storage_credits(&mut self, order: Order) -> Result<()> {
+    fn write_order_spending_dex_storage_credits(&mut self, order: Order, id: BookId) -> Result<()> {
         let user = order.maker();
         let user_credits = self.dex_storage_credits[user].read()?;
         if user_credits == 0 {
-            return self.orders[order.order_id()].write(order);
+            return self.orders[order.order_id()].write_in_book(order, id);
         }
 
         // Clear the user's bookkeeping slot before writing the order record. This makes the
@@ -172,7 +183,7 @@ impl StablecoinDEX {
 
         let mut storage_credits = StorageCredits::new();
         let (_, delta) = storage_credits.with_budget(self.address, user_credits, || {
-            self.orders[order.order_id()].write(order)
+            self.orders[order.order_id()].write_in_book(order, id)
         })?;
         let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
@@ -506,6 +517,38 @@ impl StablecoinDEX {
         self.book_keys.read()
     }
 
+    /// Returns the zero-based `book_keys` index persisted for `book_key`, if one is set.
+    pub(crate) fn book_key_index(&self, book_key: B256) -> Result<Option<u32>> {
+        let book = self.books[book_key].read()?;
+        if !book.is_initialized() {
+            return Err(StablecoinDEXError::pair_does_not_exist().into());
+        }
+        Ok(book.id().index())
+    }
+
+    /// Resolves a book key by index from the append-only `book_keys` vector.
+    pub fn book_key_for_index(&self, index: u32) -> Result<B256> {
+        self.book_keys
+            .at(index as usize)?
+            .ok_or_else(StablecoinDEXError::pair_does_not_exist)?
+            .read()
+    }
+
+    /// Persists the `book_keys` vector index for an existing orderbook.
+    pub fn set_book_index(&mut self, index: u32) -> Result<()> {
+        let book_key = self.book_key_for_index(index)?;
+        if let Some(current_index) = self.book_key_index(book_key)? {
+            if index == current_index {
+                return Ok(());
+            }
+            return Err(StablecoinDEXError::index_already_set().into());
+        }
+
+        self.books[book_key]
+            .book_id
+            .write(*BookId::from_index(index))
+    }
+
     /// Converts a relative tick to a scaled price. On T2+ validates [`TICK_SPACING`] alignment.
     ///
     /// # Errors
@@ -557,7 +600,11 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::pair_already_exists().into());
         }
 
-        let book = Orderbook::new(base, quote);
+        let book = if self.storage.spec().is_t8() {
+            Orderbook::new_with_index(base, quote, self.book_keys.len()? as u32)
+        } else {
+            Orderbook::new(base, quote)
+        };
         self.books[book_key].write(book)?;
         self.book_keys.push(book_key)?;
 
@@ -662,6 +709,7 @@ impl StablecoinDEX {
     /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
+        let book_id = orderbook.id();
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
@@ -685,10 +733,14 @@ impl StablecoinDEX {
                     .write(order.tick())?;
             }
         } else {
-            // Update previous tail's next pointer
-            let mut prev_order = self.orders[prev_tail].read()?;
-            prev_order.next = order.order_id();
-            self.orders[prev_tail].write(prev_order)?;
+            // Update previous tail's next pointer.
+            if self.storage.spec().is_t8() {
+                self.orders[prev_tail].next()?.write(order.order_id())?;
+            } else {
+                let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
+                prev_order.next = order.order_id();
+                self.orders[prev_tail].write_in_book(prev_order, book_id)?;
+            }
 
             // Set current order's prev pointer
             order.prev = prev_tail;
@@ -705,10 +757,18 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        if charge_credits && self.storage.spec().is_t7() {
-            self.write_order_spending_dex_storage_credits(order)
-        } else {
-            self.orders[order.order_id()].write(order)
+        match (charge_credits, self.storage.spec()) {
+            // User placements: T7+ can spend maker credits for new reusable order storage.
+            (true, spec) if spec.is_t7() => {
+                self.write_order_spending_dex_storage_credits(order, book_id)
+            }
+            // T8+ flip rewrites credit deleted order slots without spending maker credits.
+            (false, spec) if spec.is_t8() => {
+                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
+                self.credit_dex_storage_slots(maker, credits)
+            }
+            // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
+            _ => self.orders[order.order_id()].write_in_book(order, book_id),
         }
     }
 
@@ -905,6 +965,8 @@ impl StablecoinDEX {
 
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
+        debug_assert_eq!(order.order_id(), flipped.order_id());
+        debug_assert_eq!(order.book_key(), flipped.book_key());
         // In-place flips are taker-triggered, so don't spend maker credits.
         self.commit_order_to_book(flipped, false)?;
 
@@ -940,8 +1002,9 @@ impl StablecoinDEX {
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
         self.orders[order.order_id()]
-            .remaining
+            .remaining()?
             .write(new_remaining)?;
+        order.remaining = new_remaining;
 
         // Calculate quote amount for this fill (used by both maker settlement and taker output)
         let quote_amount = base_to_quote(
@@ -1095,15 +1158,16 @@ impl StablecoinDEX {
                 let new_level = self.books[book_key]
                     .tick_level_handler(tick, order.is_bid())
                     .read()?;
-                let new_order = self.orders[new_level.head].read()?;
+                let new_order = self.orders[new_level.head].read_in_book(book_key)?;
 
                 Some((new_level, new_order))
             }
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            let (_, credits) = StorageCredits::new()
-                .track_minted_credits(self.address, || self.orders[order.next()].prev.delete())?;
+            let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
+                self.orders[order.next()].prev()?.delete()
+            })?;
 
             let new_liquidity = level
                 .total_liquidity
@@ -1115,7 +1179,7 @@ impl StablecoinDEX {
                 .tick_level_handler_mut(order.tick(), order.is_bid())
                 .write(level)?;
 
-            let new_order = self.orders[order.next()].read()?;
+            let new_order = self.orders[order.next()].read_in_book(book_key)?;
             storage_credits.credit_slots(new_order.maker(), credits);
 
             Some((level, new_order))
@@ -1133,8 +1197,8 @@ impl StablecoinDEX {
         amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, is_bid)?;
-        let order = self.orders[level.head].read()?;
+        let mut level = self.get_best_price_level(book_key, bid)?;
+        let mut order = self.orders[level.head].read_in_book(book_key)?;
 
         // Returns the total input spent to receive `amount_out`.
         walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
@@ -1152,7 +1216,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, is_bid)?;
-        let order = self.orders[level.head].read()?;
+        let mut order = self.orders[level.head].read_in_book(book_key)?;
 
         // Returns the total output received for spending `amount_in`.
         walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
@@ -1274,7 +1338,7 @@ impl StablecoinDEX {
         // Update linked list
         if order.prev() != 0 {
             self.unlink_neighbor_and_credit_maker(order.prev(), |s| {
-                s.orders[order.prev()].next.write(order.next())
+                s.orders[order.prev()].next()?.write(order.next())
             })?;
         } else {
             level.head = order.next();
@@ -1282,7 +1346,7 @@ impl StablecoinDEX {
 
         if order.next() != 0 {
             self.unlink_neighbor_and_credit_maker(order.next(), |s| {
-                s.orders[order.next()].prev.write(order.prev())
+                s.orders[order.next()].prev()?.write(order.prev())
             })?;
         } else {
             level.tail = order.prev();
@@ -1833,6 +1897,57 @@ mod tests {
     }
 
     #[test]
+    fn test_t8_book_index_state_is_one_based() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let user = Address::random();
+            let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
+            let book_key = compute_book_key(base, quote);
+
+            exchange.create_pair(base)?;
+
+            assert_eq!(exchange.book_key_index(book_key)?, Some(0));
+            assert_eq!(exchange.book_key_for_index(0)?, book_key);
+
+            exchange.set_book_index(0)?;
+            assert_eq!(exchange.book_key_index(book_key)?, Some(0));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t8_book_index_rejects_uninitialized_book_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let book_key = B256::random();
+            exchange.book_keys.push(book_key)?;
+
+            assert!(matches!(
+                exchange.book_key_index(book_key),
+                Err(TempoPrecompileError::StablecoinDEX(
+                    StablecoinDEXError::PairDoesNotExist(_)
+                ))
+            ));
+            assert!(matches!(
+                exchange.set_book_index(0),
+                Err(TempoPrecompileError::StablecoinDEX(
+                    StablecoinDEXError::PairDoesNotExist(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_tick_to_price() {
         let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
         for tick in test_ticks {
@@ -2196,12 +2311,15 @@ mod tests {
             let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
             let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
 
-            assert_eq!(exchange.orders[alice_order_id].next.read()?, bob_order_id);
+            assert_eq!(
+                exchange.orders[alice_order_id].next()?.read()?,
+                bob_order_id
+            );
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
             exchange.cancel(bob, bob_order_id)?;
 
-            assert_eq!(exchange.orders[alice_order_id].next.read()?, 0);
+            assert_eq!(exchange.orders[alice_order_id].next()?.read()?, 0);
             assert_eq!(exchange.storage_credits(alice)?, 1);
 
             Ok(())
@@ -2776,10 +2894,7 @@ mod tests {
             let book = exchange.books[book_key].read()?;
             // TIP-1030 "locked book": best bid and best ask both at `tick`.
             assert_eq!(book.best_bid_tick, tick, "best bid should remain at tick");
-            assert_eq!(
-                book.best_ask_tick, tick,
-                "best ask should now equal best bid (locked)"
-            );
+            assert_eq!(book.best_ask_tick, tick, "best ask can't equal best bid");
 
             // Follow-up swap-buy at the locked tick consumes only the new ask
             // (not the resting bid on the other side) and the ask flips back

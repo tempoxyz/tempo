@@ -2,7 +2,7 @@
 name = "tempo-alloy"
 description = "Tempo extensions of Alloy"
 
-version = "1.10.0"
+version = "1.10.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

@@ -62,27 +62,31 @@ const BUILDER_DETAIL_ROWS = [
   ['Pool Fetch P50 [ms]', 'builder_pool_fetch_p50', v => fmtVal(v, 1)],
   ['Pool Fetch P90 [ms]', 'builder_pool_fetch_p90', v => fmtVal(v, 1)],
   ['Pool Fetch P99 [ms]', 'builder_pool_fetch_p99', v => fmtVal(v, 1)],
-  ['Included Tx Exec P50 [ms]', 'builder_included_tx_execution_p50', v => fmtVal(v, 1)],
-  ['Included Tx Exec P90 [ms]', 'builder_included_tx_execution_p90', v => fmtVal(v, 1)],
-  ['Included Tx Exec P99 [ms]', 'builder_included_tx_execution_p99', v => fmtVal(v, 1)],
-  ['Invalid Tx Exec P50 [ms]', 'builder_invalid_tx_execution_p50', v => fmtVal(v, 1)],
-  ['Invalid Tx Exec P90 [ms]', 'builder_invalid_tx_execution_p90', v => fmtVal(v, 1)],
-  ['Invalid Tx Exec P99 [ms]', 'builder_invalid_tx_execution_p99', v => fmtVal(v, 1)],
-  ['Invalid Tx Attempts P50', 'builder_invalid_tx_execution_attempts_p50', v => fmtVal(v, 1)],
-  ['Invalid Tx Attempts P90', 'builder_invalid_tx_execution_attempts_p90', v => fmtVal(v, 1)],
-  ['Invalid Tx Attempts P99', 'builder_invalid_tx_execution_attempts_p99', v => fmtVal(v, 1)],
-  ['Reverted Txs', 'builder_reverted_txs', v => fmtVal(v, 0)],
-  ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0)],
-  ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0)],
+  ['Included Tx Exec P50 [ms]', 'builder_included_tx_execution_p50', v => fmtVal(v, 1), true],
+  ['Included Tx Exec P90 [ms]', 'builder_included_tx_execution_p90', v => fmtVal(v, 1), true],
+  ['Included Tx Exec P99 [ms]', 'builder_included_tx_execution_p99', v => fmtVal(v, 1), true],
+  ['Invalid Tx Exec P50 [ms]', 'builder_invalid_tx_execution_p50', v => fmtVal(v, 1), true],
+  ['Invalid Tx Exec P90 [ms]', 'builder_invalid_tx_execution_p90', v => fmtVal(v, 1), true],
+  ['Invalid Tx Exec P99 [ms]', 'builder_invalid_tx_execution_p99', v => fmtVal(v, 1), true],
+  ['Invalid Tx Attempts P50', 'builder_invalid_tx_execution_attempts_p50', v => fmtVal(v, 1), true],
+  ['Invalid Tx Attempts P90', 'builder_invalid_tx_execution_attempts_p90', v => fmtVal(v, 1), true],
+  ['Invalid Tx Attempts P99', 'builder_invalid_tx_execution_attempts_p99', v => fmtVal(v, 1), true],
+  ['Reverted Txs', 'builder_reverted_txs', v => fmtVal(v, 0), true],
+  ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0), true],
+  ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0), true],
+  ['Stop Reason — Gas Limit', 'builder_stop_gas_limit', v => fmtVal(v, 0), true],
+  ['Stop Reason — RLP Size', 'builder_stop_rlp_size', v => fmtVal(v, 0), true],
+  ['Stop Reason — Pool Empty', 'builder_stop_pool_empty', v => fmtVal(v, 0), true],
+  ['Stop Reason — Build Budget', 'builder_stop_build_budget', v => fmtVal(v, 0), true],
   ['Serialized Block Size P50 [KiB]', 'serialized_block_size_p50', fmtKiB],
   ['Serialized Block Size P90 [KiB]', 'serialized_block_size_p90', fmtKiB],
   ['Serialized Block Size P99 [KiB]', 'serialized_block_size_p99', fmtKiB],
   ['Serialized Block Size / Tx P50 [B/tx]', 'serialized_block_size_per_tx_p50', v => fmtVal(v, 1)],
   ['Serialized Block Size / Tx P90 [B/tx]', 'serialized_block_size_per_tx_p90', v => fmtVal(v, 1)],
   ['Serialized Block Size / Tx P99 [B/tx]', 'serialized_block_size_per_tx_p99', v => fmtVal(v, 1)],
-  ['Fill Overhead P50 [ms]', 'builder_fill_overhead_p50', v => fmtVal(v, 1)],
-  ['Fill Overhead P90 [ms]', 'builder_fill_overhead_p90', v => fmtVal(v, 1)],
-  ['Fill Overhead P99 [ms]', 'builder_fill_overhead_p99', v => fmtVal(v, 1)],
+  ['Fill Overhead P50 [ms]', 'builder_fill_overhead_p50', v => fmtVal(v, 1), true],
+  ['Fill Overhead P90 [ms]', 'builder_fill_overhead_p90', v => fmtVal(v, 1), true],
+  ['Fill Overhead P99 [ms]', 'builder_fill_overhead_p99', v => fmtVal(v, 1), true],
   ['Fill Idle P50 [ms]', 'builder_fill_idle_p50', v => fmtVal(v, 1)],
   ['Fill Idle P90 [ms]', 'builder_fill_idle_p90', v => fmtVal(v, 1)],
   ['Fill Idle P99 [ms]', 'builder_fill_idle_p99', v => fmtVal(v, 1)],
@@ -134,6 +138,7 @@ function bootstrapCiPct(baseline, feature, base, rand) {
 
 function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
   const meta = AXES[axis];
+  const runSide = summary.config?.run_side || 'comparison';
   const base = summary.results.baseline[axis];
   const feature = summary.results.feature[axis];
   const changePct = pct(base, feature);
@@ -146,6 +151,12 @@ function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
     floor_pct: meta.floor,
     sig: 'neutral',
   };
+
+  if (runSide !== 'comparison') {
+    change.informational = true;
+    change.informational_reason = `${runSide}-only run`;
+    return change;
+  }
 
   if (base <= 0 || ciPct == null) {
     change.informational = true;
@@ -201,9 +212,11 @@ function appendBuilderDetails(lines, summary) {
   lines.push('');
   lines.push('| Metric | Baseline | Feature | Delta |');
   lines.push('|--------|----------|---------|-------|');
-  for (const [label, axis, formatter] of BUILDER_DETAIL_ROWS) {
+  const isEmpty = value => !Number.isFinite(value) || value === 0;
+  for (const [label, axis, formatter, omitIfBothEmpty = false] of BUILDER_DETAIL_ROWS) {
     const base = summary.results.baseline[axis];
     const feature = summary.results.feature[axis];
+    if (omitIfBothEmpty && isEmpty(base) && isEmpty(feature)) continue;
     lines.push(`| ${label} | ${formatter(base)} | ${formatter(feature)} | ${fmtInfoChange(base, feature)} |`);
   }
   lines.push('');
@@ -215,12 +228,14 @@ function buildMarkdown(summary) {
   const derekCommand = summary.config?.derek_command || '';
   const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
   const featureRemovedArgs = summary.config?.feature_removed_args || '';
-  const featureOnly = summary.config?.run_side === 'feature';
+  const runSide = summary.config?.run_side || 'comparison';
+  const featureOnly = runSide === 'feature';
+  const baselineOnly = runSide === 'baseline';
   const lines = [
-    featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
+    featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : baselineOnly ? `# ${c.emoji} Baseline Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
     `**Refs:** ${summary.baseline_ref} vs ${summary.feature_ref}`,
-    featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
+    featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : baselineOnly ? `**Criteria:** Baseline-only run; feature columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
     '',
     '## Configuration',
     ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
@@ -230,7 +245,7 @@ function buildMarkdown(summary) {
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
-    ...(featureOnly ? [`- Run side: feature`] : []),
+    ...(runSide !== 'comparison' ? [`- Run side: ${runSide}`] : []),
     ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
     ...(featureRemovedArgs ? [`- Feature removed args: \`${featureRemovedArgs}\``] : []),
     `- Baseline blocks: ${summary.results.baseline.blocks}`,

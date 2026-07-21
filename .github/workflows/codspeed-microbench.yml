@@ -69,8 +69,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - name: Install cargo-codspeed
         run: |
@@ -143,9 +143,13 @@ jobs:
           printf '%q ' "${run_args[@]}"
           printf '\n'
       - name: Build benchmark target(s)
-        run: cargo codspeed build ${{ steps.args.outputs.build_args }}
+        env:
+          BUILD_ARGS: ${{ steps.args.outputs.build_args }}
+        run: |
+          # shellcheck disable=SC2086  # BUILD_ARGS must word-split into multiple cargo args
+          cargo codspeed build $BUILD_ARGS
       - name: Run benchmark target(s)
-        uses: CodSpeedHQ/action@c5e3fca5233fb854c7193713adfbe99d3910f8d2 # v4.15.1
+        uses: CodSpeedHQ/action@3194d9a39c4d46684cb44bf7207fc56626aad8fd # v4.15.1
         with:
           mode: ${{ steps.args.outputs.measurement_modes }}
           run: cargo codspeed run ${{ steps.args.outputs.run_args }}

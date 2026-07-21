@@ -256,8 +256,10 @@ jobs:
 
       - name: Resolve checkout ref
         id: checkout-ref
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
           INPUT_ACTOR: ${{ github.actor }}
           INPUT_BASELINE_FEATURES: ${{ inputs.baseline-features }}
           INPUT_BRANCH: ${{ github.ref_name }}
@@ -319,7 +321,7 @@ jobs:
       - name: Clean up root-owned files from previous runs
         run: sudo rm -rf "$BENCH_WORK_DIR"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -327,7 +329,7 @@ jobs:
 
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
@@ -343,8 +345,8 @@ jobs:
             const blocks = process.env.BENCH_BLOCKS;
             const warmup = process.env.BENCH_WARMUP_BLOCKS;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
-            const baseline = '${{ inputs.baseline-name }}';
-            const feature = '${{ inputs.feature-name }}';
+            const baseline = process.env.INPUT_BASELINE_NAME;
+            const feature = process.env.INPUT_FEATURE_NAME;
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
@@ -363,7 +365,7 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         continue-on-error: true
 
@@ -372,7 +374,10 @@ jobs:
 
       - name: Resolve PR head branch
         id: pr-info
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          INPUT_REF_NAME: ${{ github.ref_name }}
+          INPUT_SHA: ${{ github.sha }}
         with:
           script: |
             if (process.env.BENCH_PR) {
@@ -381,20 +386,20 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: parseInt(process.env.BENCH_PR, 10),
               });
-              const ref = process.env.BENCH_PR_HEAD_REF || '${{ github.ref_name }}';
-              const sha = process.env.BENCH_PR_HEAD_SHA || '${{ github.sha }}';
+              const ref = process.env.BENCH_PR_HEAD_REF || process.env.INPUT_REF_NAME;
+              const sha = process.env.BENCH_PR_HEAD_SHA || process.env.INPUT_SHA;
               core.setOutput('head-ref', ref);
               core.setOutput('head-sha', sha);
               core.setOutput('base-ref', pr.base.ref);
             } else {
-              core.setOutput('head-ref', '${{ github.ref_name }}');
-              core.setOutput('head-sha', '${{ github.sha }}');
+              core.setOutput('head-ref', process.env.INPUT_REF_NAME);
+              core.setOutput('head-sha', process.env.INPUT_SHA);
               core.setOutput('base-ref', 'main');
             }
 
       - name: Resolve baseline and feature refs
         id: refs
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           INPUT_BASELINE: ${{ inputs.baseline }}
           INPUT_FEATURE: ${{ inputs.feature }}
@@ -455,7 +460,7 @@ jobs:
 
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
@@ -536,7 +541,7 @@ jobs:
       - name: Upload results
         id: upload-results
         if: "!cancelled()"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tempo-bench-replay-${{ inputs.chain || 'mainnet' }}-results
           path: ${{ env.BENCH_WORK_DIR }}/
@@ -592,7 +597,10 @@ jobs:
 
       - name: Compare & comment
         if: success() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
+          PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
@@ -605,8 +613,8 @@ jobs:
               comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
             }
 
-            const sha = '${{ steps.push-charts.outputs.sha }}';
-            const chartPath = '${{ steps.push-charts.outputs.path }}';
+            const sha = process.env.PUSH_CHARTS_SHA;
+            const chartPath = process.env.PUSH_CHARTS_PATH;
 
             if (sha && chartPath) {
               const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/${chartPath}`;
@@ -640,6 +648,9 @@ jobs:
 
       - name: Write job summary
         if: success()
+        env:
+          PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
+          PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         run: |
           {
             echo "Chain: \`${BENCH_CHAIN:-mainnet}\`"
@@ -651,8 +662,8 @@ jobs:
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
-          CHART_SHA="${{ steps.push-charts.outputs.sha }}"
-          CHART_PATH="${{ steps.push-charts.outputs.path }}"
+          CHART_SHA="${PUSH_CHARTS_SHA}"
+          CHART_PATH="${PUSH_CHARTS_PATH}"
           if [ -n "$CHART_SHA" ] && [ -n "$CHART_PATH" ]; then
             BASE_URL="https://raw.githubusercontent.com/decofe/tempo-bench-charts/${CHART_SHA}/${CHART_PATH}"
             {
@@ -681,7 +692,7 @@ jobs:
 
       - name: Send Slack notification (success)
         if: success() && (env.BENCH_SLACK == 'always' || env.BENCH_SLACK == 'on-win')
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
           SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
@@ -692,7 +703,7 @@ jobs:
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
@@ -706,21 +717,29 @@ jobs:
 
       - name: Send Slack notification (failure)
         if: failure() && env.BENCH_SLACK != 'never' && env.BENCH_SLACK != 'on-win'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
           SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+          STEP_CHECKOUT_REF_OUTCOME: ${{ steps.checkout-ref.outcome }}
+          STEP_PR_INFO_OUTCOME: ${{ steps.pr-info.outcome }}
+          STEP_REFS_OUTCOME: ${{ steps.refs.outcome }}
+          STEP_BENCH_OUTCOME: ${{ steps.bench.outcome }}
+          STEP_RESULTS_OUTCOME: ${{ steps.results.outcome }}
+          STEP_CHARTS_OUTCOME: ${{ steps.charts.outcome }}
+          STEP_UPLOAD_RESULTS_OUTCOME: ${{ steps.upload-results.outcome }}
+          STEP_PUSH_CHARTS_OUTCOME: ${{ steps.push-charts.outcome }}
         with:
           script: |
             const stepsStatus = [
-              ['resolving checkout ref', '${{ steps.checkout-ref.outcome }}'],
-              ['resolving PR info', '${{ steps.pr-info.outcome }}'],
-              ['resolving refs', '${{ steps.refs.outcome }}'],
-              ['running replay benchmark', '${{ steps.bench.outcome }}'],
-              ['parsing results', '${{ steps.results.outcome }}'],
-              ['generating charts', '${{ steps.charts.outcome }}'],
-              ['uploading results', '${{ steps.upload-results.outcome }}'],
-              ['pushing charts', '${{ steps.push-charts.outcome }}'],
+              ['resolving checkout ref', process.env.STEP_CHECKOUT_REF_OUTCOME],
+              ['resolving PR info', process.env.STEP_PR_INFO_OUTCOME],
+              ['resolving refs', process.env.STEP_REFS_OUTCOME],
+              ['running replay benchmark', process.env.STEP_BENCH_OUTCOME],
+              ['parsing results', process.env.STEP_RESULTS_OUTCOME],
+              ['generating charts', process.env.STEP_CHARTS_OUTCOME],
+              ['uploading results', process.env.STEP_UPLOAD_RESULTS_OUTCOME],
+              ['pushing charts', process.env.STEP_PUSH_CHARTS_OUTCOME],
             ];
             const failed = stepsStatus.find(([, outcome]) => outcome === 'failure');
             const failedStep = failed ? failed[0] : 'unknown step';
@@ -729,7 +748,7 @@ jobs:
 
       - name: Update status (cancelled)
         if: cancelled() && env.BENCH_COMMENT_ID
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |

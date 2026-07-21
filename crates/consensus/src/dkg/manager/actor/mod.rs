@@ -635,7 +635,7 @@ where
         .and_then(|log| {
             log.check(round.info())
                 .map(|(dealer, _)| dealer)
-                .ok_or_eyre("not a dealer in the current round")
+                .ok_or_eyre("dealer log signature is invalid")
         })
         .inspect(|_| {
             self.metrics.dealings_read.inc();
@@ -1052,13 +1052,13 @@ where
         {
             output
         } else {
-            let mut raw_logs = storage
+            let mut finalized_logs = storage
                 .logs_for_epoch(round.epoch())
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<BTreeMap<_, _>>();
 
             'ensure_enough_logs: {
-                if raw_logs.len() == round.dealers().len() {
+                if finalized_logs.len() == round.dealers().len() {
                     info!("collected as many logs as there are dealers; concluding DKG");
                     break 'ensure_enough_logs;
                 }
@@ -1067,6 +1067,7 @@ where
                     "did not have all dealer logs yet; will try to extend with \
                     logs read from notarized blocks and concluding DKG that way",
                 );
+                let mut notarized_logs = BTreeMap::new();
                 let (mut height, mut digest) = (request.height, request.digest);
                 while height >= epoch_info.first()
                     && Some(height)
@@ -1077,21 +1078,30 @@ where
                     if let Some(block) =
                         storage.get_notarized_reduced_block(&round.epoch(), &digest)
                     {
-                        raw_logs.extend(block.log.clone());
+                        if let Some((dealer, log)) = block.log.clone()
+                            && !finalized_logs.contains_key(&dealer)
+                        {
+                            // The ancestry walk is newest-to-oldest, so older logs replace
+                            // newer ancestry duplicates while finalized logs stay authoritative.
+                            notarized_logs.insert(dealer, log);
+                        }
                         height = if let Some(height) = block.height.previous() {
                             height
                         } else {
-                            break 'ensure_enough_logs;
+                            break;
                         };
                         digest = block.parent;
                     } else {
                         return Ok(Some((digest, request)));
                     }
                 }
+                for (dealer, log) in notarized_logs {
+                    finalized_logs.entry(dealer).or_insert(log);
+                }
             }
 
             let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-            for (k, v) in raw_logs {
+            for (k, v) in finalized_logs {
                 logs.record(k, v);
             }
 

@@ -1,0 +1,4 @@
+merge:
+  templates:
+    tip20_transfer:
+      fee_token: "0x20c0000000000000000000000000000000000000"

@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
-use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use revm::{
@@ -442,6 +442,10 @@ where
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
         f(&info);
         Ok(())
+    }
+
+    fn account_code(&mut self, _: Address) -> TempoResult<(B256, Bytecode)> {
+        unreachable!("'account_code' not supported in read-only context")
     }
 
     // No-op methods are unimplemented in read-only context.

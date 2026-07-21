@@ -38,7 +38,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9

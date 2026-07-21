@@ -22,6 +22,25 @@ contract TIP403Registry {
         CompoundPolicyData compound;
     }
 
+    struct ReceivePolicyConfig {
+        bool hasReceivePolicy;
+        uint64 senderPolicyId;
+        uint8 senderPolicyType;
+        uint64 tokenFilterId;
+        uint8 tokenFilterType;
+        uint8 recoveryMode;
+    }
+
+    struct ReceivePolicy {
+        ReceivePolicyConfig config;
+        address recoveryAddress;
+    }
+
+    struct TokenTransferPolicy {
+        uint64 policyId;
+        bool isSet;
+    }
+
     // ========== Storage ==========
 
     /// Counter for policy IDs
@@ -33,4 +52,10 @@ contract TIP403Registry {
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries
     mapping(uint64 => mapping(address => bool)) public policySet;
+
+    /// Account receive policy configuration
+    mapping(address => ReceivePolicy) internal receivePolicies;
+
+    /// TIP-1092 token-to-policy bindings
+    mapping(address => TokenTransferPolicy) internal tokenTransferPolicies;
 }

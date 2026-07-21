@@ -20,7 +20,7 @@ use test_case::test_case;
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
 
-const USER_COUNT: usize = 14;
+const USER_COUNT: usize = 16;
 
 #[derive(Debug, serde::Serialize)]
 struct DexGasRow {
@@ -96,6 +96,7 @@ where
 
 #[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
 #[test_case(TempoHardfork::T7 ; "t7_with_tip1060")]
+#[test_case(TempoHardfork::T8 ; "t8_with_packed_order_layout")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -275,6 +276,18 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         1,
         exchange(1).place(base_addr, fill, true, -60),
         "place bid reusing cancel credits failed"
+    );
+
+    send_tx!(
+        exchange(15).place(base_addr, fill, true, -120),
+        "setup predecessor bid for append failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "place_bid_append_same_level",
+        16,
+        15,
+        exchange(16).place(base_addr, fill, true, -120),
+        "append bid at same level failed"
     );
 
     let cross_user_cancel_order = exchange(6).nextOrderId().call().await?;

@@ -1,9 +1,4 @@
-//! Resolver for follow mode.
-//!
-//! Implements [`Resolver`] for marshal's gap-repair machinery. Checks the
-//! local execution node first and falls back to the upstream abstraction.
-
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, time::Duration};
 
 use bytes::Bytes;
 use commonware_codec::{DecodeExt as _, Encode as _};
@@ -13,33 +8,51 @@ use commonware_consensus::{
     types::Height,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::{ContextCell, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{
-    channel::{fallible::FallibleExt as _, mpsc},
+    channel::mpsc,
     futures::{AbortablePool, Aborter},
-    vec::NonEmptyVec,
 };
 use eyre::Report;
-use reth_provider::{BlockReader as _, BlockSource};
-use tempo_node::TempoFullNode;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use super::{BlockProvider, Config, Mailbox, Upstream, ingress::Message};
+use crate::consensus::{Block, Digest};
 
-pub(crate) fn try_init<TContext>(
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
+pub(super) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+pub(super) fn retry_delay(attempt: u32) -> Duration {
+    if attempt == 0 {
+        return Duration::ZERO;
+    }
+
+    let multiplier = 2u32.saturating_pow(attempt.saturating_sub(1));
+    INITIAL_RETRY_DELAY
+        .saturating_mul(multiplier)
+        .min(MAX_RETRY_DELAY)
+}
+
+pub(super) fn try_init<TContext, P, U>(
     context: TContext,
-    config: Config,
+    config: Config<P, U>,
 ) -> (
-    Resolver<TContext>,
+    Resolver<TContext, P, U>,
     Mailbox,
     mpsc::Receiver<handler::Message<Digest>>,
-) {
+)
+where
+    TContext: Clock + Spawner,
+    P: BlockProvider + Clone + 'static,
+    U: Upstream + Clone + 'static,
+{
     let (handler_tx, handler_rx) = mpsc::channel(config.mailbox_size);
     let (mailbox_tx, mailbox_rx) = mpsc::unbounded_channel();
     let actor = Resolver {
         context: ContextCell::new(context),
-        config,
+        execution_provider: config.execution_provider,
+        upstream: config.upstream,
         mailbox: mailbox_rx,
         handler_tx,
         requests: BTreeMap::new(),
@@ -49,44 +62,21 @@ pub(crate) fn try_init<TContext>(
     (actor, mailbox, handler_rx)
 }
 
-#[derive(Clone)]
-pub(crate) struct Mailbox {
-    // FIXME: This should probably not be an unbounded channel - but how do
-    // we exert backpressure?
-    inner: mpsc::UnboundedSender<Message>,
-}
+type FetchPool = AbortablePool<(handler::Request<Digest>, u32, Result<Bytes, bool>)>;
 
-type Predicate<K> = Box<dyn Fn(&K) -> bool + Send>;
-
-/// Messages sent to the resolver.
-enum Message {
-    /// Initiate fetch requests.
-    Fetch { keys: Vec<handler::Request<Digest>> },
-
-    /// Cancel a fetch request by key.
-    Cancel { key: handler::Request<Digest> },
-
-    /// Cancel all fetch requests.
-    Clear,
-
-    /// Cancel all fetch requests that do not satisfy the predicate.
-    Retain {
-        predicate: Predicate<handler::Request<Digest>>,
-    },
-}
-
-pub(crate) struct Config {
-    /// For reading blocks locally from the execution layer.
-    pub(super) execution_node: Arc<TempoFullNode>,
-    /// For reading blocks and certificates from the connected node.
-    pub(super) upstream: super::upstream::Mailbox,
-    pub(super) mailbox_size: usize,
-}
-
-type FetchPool = AbortablePool<(handler::Request<Digest>, Result<Bytes, bool>)>;
-pub(crate) struct Resolver<TContext> {
+pub(crate) struct Resolver<
+    TContext,
+    P = reth_provider::providers::BlockchainProvider<
+        reth_node_builder::NodeTypesWithDBAdapter<
+            tempo_node::node::TempoNode,
+            reth_ethereum::provider::db::DatabaseEnv,
+        >,
+    >,
+    U = super::super::upstream::Mailbox,
+> {
     context: ContextCell<TContext>,
-    config: Config,
+    execution_provider: P,
+    upstream: U,
     /// To send messages to the application/actor relying on the resolver.
     handler_tx: mpsc::Sender<handler::Message<Digest>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -94,9 +84,11 @@ pub(crate) struct Resolver<TContext> {
     fetches: FetchPool,
 }
 
-impl<TContext> Resolver<TContext>
+impl<TContext, P, U> Resolver<TContext, P, U>
 where
-    TContext: Spawner,
+    TContext: Clock + Spawner,
+    P: BlockProvider + Clone + 'static,
+    U: Upstream + Clone + 'static,
 {
     async fn run(mut self) {
         loop {
@@ -112,7 +104,7 @@ where
 
                 Some(msg) = self.mailbox.recv() => {
                     match msg {
-                        Message::Fetch { keys, } => {
+                        Message::Fetch { keys } => {
                             self.handle_fetch_request(keys);
                         }
                         Message::Cancel { key } => {
@@ -137,14 +129,14 @@ where
     #[instrument(skip_all)]
     fn handle_fetch_request(&mut self, keys: Vec<handler::Request<Digest>>) {
         for key in keys {
-            self.schedule_request(key);
+            self.schedule_request(key, 0);
         }
     }
 
     #[instrument(skip_all)]
     fn handle_fetch_resolution(
         &mut self,
-        (key, resolution): (handler::Request<Digest>, Result<Bytes, bool>),
+        (key, attempt, resolution): (handler::Request<Digest>, u32, Result<Bytes, bool>),
     ) {
         match resolution {
             Ok(value) => {
@@ -160,36 +152,47 @@ where
                 });
             }
             Err(true) => {
-                debug!(%key, "fetch failed, rescheduling");
+                debug!(%key, attempt, "fetch failed, rescheduling");
                 self.requests.remove(&key);
-                self.schedule_request(key);
+                self.schedule_request(key, attempt.saturating_add(1));
             }
             Err(false) => {
-                debug!(%key, "fetch failed, dropping");
+                debug!(%key, "fetch failed permanently, dropping");
                 self.requests.remove(&key);
             }
         }
     }
 
-    fn schedule_request(&mut self, key: handler::Request<Digest>) {
+    fn schedule_request(&mut self, key: handler::Request<Digest>, attempt: u32) {
         if !self.requests.contains_key(&key) {
+            let delay = retry_delay(attempt);
             let aborter = match &key {
                 handler::Request::Block(digest) => {
-                    let execution_node = self.config.execution_node.clone();
+                    let context = self.context.clone();
+                    let execution_provider = self.execution_provider.clone();
+                    let upstream = self.upstream.clone();
                     let digest = *digest;
                     let key = key.clone();
                     self.fetches.push(async move {
-                        let response = resolve_block(&execution_node, digest);
-                        (key, response)
+                        if !delay.is_zero() {
+                            context.sleep(delay).await;
+                        }
+
+                        let response = resolve_block(&execution_provider, &upstream, digest).await;
+                        (key, attempt, response)
                     })
                 }
                 handler::Request::Finalized { height } => {
-                    let upstream = self.config.upstream.clone();
+                    let context = self.context.clone();
+                    let upstream = self.upstream.clone();
                     let height = *height;
                     let key = key.clone();
                     self.fetches.push(async move {
-                        let response = resolve_finalized_new(upstream, height).await;
-                        (key, response)
+                        if !delay.is_zero() {
+                            context.sleep(delay).await;
+                        }
+                        let response = resolve_finalized(&upstream, height).await;
+                        (key, attempt, response)
                     })
                 }
                 handler::Request::Notarized { .. } => {
@@ -197,7 +200,7 @@ where
                     return;
                 }
             };
-            debug!(%key, "scheduled new request");
+            debug!(%key, attempt, ?delay, "scheduled new request");
             self.requests.insert(key, aborter);
         } else {
             debug!(%key, "request already scheduled");
@@ -205,34 +208,35 @@ where
     }
 }
 
-/// Resolves an encoded block from the local execution layer.
-#[instrument(skip(execution_node))]
-fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result<Bytes, bool> {
-    let Ok(Some(block)) = execution_node
-        .provider
-        .find_sealed_or_recovered_block(block_digest.0, BlockSource::Any)
-        .map_err(Report::new)
-        .inspect_err(
-            |error| error!(%error, "unable to communicate with execution layer to lookup block"),
-        )
-    else {
-        return Err(false);
-    };
-    // Follow-mode recovery reads from the EL database, which persists only the block.
-    // BAL is p2p side data, so it is unavailable here.
-    let consensus_block = Block::from_execution_block_unchecked(block, None);
-    Ok(consensus_block.encode())
+/// Resolves an encoded block from the execution layer, falling back to the upstream node.
+#[instrument(skip(execution_provider, upstream))]
+async fn resolve_block<P: BlockProvider, U: Upstream>(
+    execution_provider: &P,
+    upstream: &U,
+    block_digest: Digest,
+) -> Result<Bytes, bool> {
+    match execution_provider
+        .block_by_hash(block_digest)
+        .inspect_err(|error| error!(%error, "execution layer error looking up block"))
+    {
+        Err(_) => Err(true),
+        Ok(Some(block)) => Ok(block.encode()),
+        Ok(None) => {
+            let Some(block) = upstream.get_block(block_digest).await else {
+                return Err(true);
+            };
+
+            Ok(block.encode())
+        }
+    }
 }
 
-/// Resolves a request for a finalized.
+/// Resolves a finalization (cert + block) by height from the upstream node.
 #[instrument(skip_all, fields(%height))]
-async fn resolve_finalized_new(
-    upstream: super::upstream::Mailbox,
-    height: Height,
-) -> Result<Bytes, bool> {
+async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Result<Bytes, bool> {
     let certified_block = match upstream.get_finalization(height).await {
         Some(certified_block) => certified_block,
-        None => return Err(false),
+        None => return Err(true),
     };
 
     let Ok(finalization) = alloy_primitives::hex::decode(&certified_block.certificate)
@@ -249,43 +253,4 @@ async fn resolve_finalized_new(
     // is available when reconstructing this consensus block.
     let consensus_block = Block::from_execution_block_unchecked(certified_block.block, None);
     Ok((finalization, consensus_block).encode())
-}
-
-impl commonware_resolver::Resolver for Mailbox {
-    type Key = handler::Request<Digest>;
-    type PublicKey = PublicKey;
-
-    async fn fetch(&mut self, key: Self::Key) {
-        self.fetch_all(vec![key]).await;
-    }
-
-    async fn fetch_all(&mut self, keys: Vec<Self::Key>) {
-        self.inner.send_lossy(Message::Fetch { keys });
-    }
-
-    async fn fetch_targeted(&mut self, key: Self::Key, _targets: NonEmptyVec<Self::PublicKey>) {
-        self.fetch(key).await;
-    }
-
-    async fn fetch_all_targeted(
-        &mut self,
-        requests: Vec<(Self::Key, NonEmptyVec<Self::PublicKey>)>,
-    ) {
-        self.fetch_all(requests.into_iter().map(|(k, _)| k).collect())
-            .await;
-    }
-
-    async fn cancel(&mut self, key: Self::Key) {
-        self.inner.send_lossy(Message::Cancel { key });
-    }
-
-    async fn clear(&mut self) {
-        self.inner.send_lossy(Message::Clear);
-    }
-
-    async fn retain(&mut self, predicate: impl Fn(&Self::Key) -> bool + Send + 'static) {
-        self.inner.send_lossy(Message::Retain {
-            predicate: Box::new(predicate),
-        });
-    }
 }
