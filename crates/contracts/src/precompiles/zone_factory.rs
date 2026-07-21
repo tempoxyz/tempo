@@ -49,9 +49,9 @@ crate::sol! {
 
         event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
-        event PortalImplementationUpdated(address indexed source, bytes32 indexed codeHash);
-        event ZoneMessengerImplementationUpdated(address indexed source, bytes32 indexed codeHash);
-        event VerifierImplementationUpdated(address indexed source, bytes32 indexed codeHash);
+        event PortalUpdated(address indexed source, bytes32 indexed codeHash);
+        event MessengerUpdated(address indexed source, bytes32 indexed codeHash);
+        event VerifierUpdated(address indexed source, bytes32 indexed codeHash);
 
         event ZoneCreated(
             uint32 indexed zoneId,

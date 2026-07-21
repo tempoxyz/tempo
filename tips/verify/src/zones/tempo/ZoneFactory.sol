@@ -142,7 +142,7 @@ abstract contract ZoneFactory is IZoneFactory {
             revert InvalidPortalImplementation();
         }
 
-        emit PortalImplementationUpdated(source, codeHash);
+        emit PortalUpdated(source, codeHash);
     }
 
     /// @inheritdoc IZoneFactory
@@ -154,7 +154,7 @@ abstract contract ZoneFactory is IZoneFactory {
             revert InvalidZoneMessengerImplementation();
         }
 
-        emit ZoneMessengerImplementationUpdated(source, codeHash);
+        emit MessengerUpdated(source, codeHash);
     }
 
     /// @inheritdoc IZoneFactory
@@ -166,7 +166,7 @@ abstract contract ZoneFactory is IZoneFactory {
             revert InvalidVerifierImplementation();
         }
 
-        emit VerifierImplementationUpdated(source, codeHash);
+        emit VerifierUpdated(source, codeHash);
     }
 
     /// @notice Returns the deterministic portal vanity address for a zone ID.

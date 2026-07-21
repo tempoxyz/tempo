@@ -103,10 +103,7 @@ impl ZoneFactory {
             .ok_or_else(|| {
                 TempoPrecompileError::from(ZoneFactoryError::invalid_portal_implementation())
             })?;
-        self.emit_event(ZoneFactoryEvent::portal_implementation_updated(
-            call.source,
-            code_hash,
-        ))
+        self.emit_event(ZoneFactoryEvent::portal_updated(call.source, code_hash))
     }
 
     /// Copies a deployed runtime into the shared ZoneMessenger account.
@@ -126,10 +123,7 @@ impl ZoneFactory {
                         ZoneFactoryError::invalid_zone_messenger_implementation(),
                     )
                 })?;
-        self.emit_event(ZoneFactoryEvent::zone_messenger_implementation_updated(
-            call.source,
-            code_hash,
-        ))
+        self.emit_event(ZoneFactoryEvent::messenger_updated(call.source, code_hash))
     }
 
     /// Copies a deployed runtime into the shared Verifier account.
@@ -147,10 +141,7 @@ impl ZoneFactory {
             .ok_or_else(|| {
                 TempoPrecompileError::from(ZoneFactoryError::invalid_verifier_implementation())
             })?;
-        self.emit_event(ZoneFactoryEvent::verifier_implementation_updated(
-            call.source,
-            code_hash,
-        ))
+        self.emit_event(ZoneFactoryEvent::verifier_updated(call.source, code_hash))
     }
 
     /// Returns `None` when the source account has no deployed code.
