@@ -835,10 +835,15 @@ impl SetValidatorFeeRecipient {
 }
 
 #[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false, args = ["token", "list"])]
 pub struct SetValidatorToken {
     /// Token address, symbol, or name to use for validator fees.
     #[arg(value_name = "TOKEN")]
-    token: String,
+    token: Option<String>,
+
+    /// List the verified tokens available on the connected chain.
+    #[arg(long)]
+    list: bool,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -853,7 +858,14 @@ impl SetValidatorToken {
             .wrap_err("failed to get chain id")?;
 
         let tokens = fetch_verified_tokens(chain_id).await;
-        let token = match self.token.parse::<Address>() {
+        if self.list {
+            let tokens = tokens.wrap_err("failed to fetch the verified token list")?;
+            print_verified_tokens(tokens);
+            return Ok(());
+        }
+
+        let input = self.token.expect("clap requires either TOKEN or --list");
+        let token = match input.parse::<Address>() {
             Ok(address) => {
                 match tokens {
                     Ok(tokens) => match tokens.iter().find(|token| token.address == address) {
@@ -873,12 +885,26 @@ impl SetValidatorToken {
             }
             Err(_) => {
                 let tokens = tokens.wrap_err("failed to fetch the verified token list")?;
-                resolve_token_name(&self.token, &tokens)?
+                resolve_token_name(&input, &tokens)?
             }
         };
 
         let call = IFeeManager::setValidatorTokenCall { token };
         self.submit.call_to(TIP_FEE_MANAGER_ADDRESS, &call).await
+    }
+}
+
+fn print_verified_tokens(mut tokens: Vec<VerifiedToken>) {
+    tokens.sort_unstable_by(|a, b| {
+        a.symbol
+            .to_ascii_lowercase()
+            .cmp(&b.symbol.to_ascii_lowercase())
+            .then_with(|| a.address.cmp(&b.address))
+    });
+
+    println!("{:<16} {:<32} ADDRESS", "SYMBOL", "NAME");
+    for token in tokens {
+        println!("{:<16} {:<32} {}", token.symbol, token.name, token.address);
     }
 }
 
@@ -1558,14 +1584,44 @@ mod tests {
         ])
         .unwrap();
 
-        let SetValidatorToken { token, submit } = match cli.command {
+        let SetValidatorToken {
+            token,
+            list,
+            submit,
+        } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::SetValidatorToken(cmd),
             )) => cmd,
             other => panic!("expected SetValidatorToken, got `{other:?}`"),
         };
-        assert_eq!(token, TEST_VALIDATOR_TOKEN);
+        assert_eq!(token.as_deref(), Some(TEST_VALIDATOR_TOKEN));
+        assert!(!list);
         assert!(submit.dry_run);
+    }
+
+    #[test]
+    fn parse_list_validator_tokens() {
+        let cli = TempoCli::try_parse_from(["tempo", "consensus", "set-validator-token", "--list"])
+            .unwrap();
+
+        let SetValidatorToken { token, list, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert!(token.is_none());
+        assert!(list);
+    }
+
+    #[test]
+    fn set_validator_token_requires_token_or_list() {
+        let error =
+            TempoCli::try_parse_from(["tempo", "consensus", "set-validator-token"]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
