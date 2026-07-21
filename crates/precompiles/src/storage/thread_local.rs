@@ -123,7 +123,7 @@ impl StorageCtx {
 
     /// Copies deployed runtime bytecode between accounts.
     ///
-    /// Returns `None` when the source account has no deployed code.
+    /// Returns `None` when the source account's runtime bytecode is empty.
     pub fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
         Self::try_with_storage(|s| s.copy_runtime(source, destination))
     }

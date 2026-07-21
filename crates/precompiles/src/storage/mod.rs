@@ -65,10 +65,10 @@ pub trait PrecompileStorageProvider {
 
     /// Copies deployed runtime bytecode between accounts.
     ///
-    /// Returns `None` when the source account has no deployed code.
+    /// Returns `None` when the source account's runtime bytecode is empty.
     fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
         let (code_hash, code) = self.account_code(source)?;
-        if code_hash.is_zero() {
+        if code.is_empty() {
             return Ok(None);
         }
         self.set_code(destination, code)?;

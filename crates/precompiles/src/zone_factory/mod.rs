@@ -520,24 +520,30 @@ mod tests {
                 assert_eq!(installed, runtime);
             }
 
-            // The code hash is the only source validation. Empty runtime bytecode has a nonzero
-            // hash and is therefore accepted.
+            // Source validation is based on runtime length, so even an existing account with the
+            // empty-code hash is rejected.
             let empty_source = address!("0x0000000000000000000000000000000000000055");
             factory
                 .storage
                 .set_code(empty_source, Bytecode::default())?;
-            factory.set_verifier_implementation(
-                OWNER,
-                IZoneFactory::setVerifierImplementationCall {
-                    source: empty_source,
-                },
-            )?;
+            let err = factory
+                .set_verifier_implementation(
+                    OWNER,
+                    IZoneFactory::setVerifierImplementationCall {
+                        source: empty_source,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::invalid_verifier_implementation())
+            );
             let installed = factory
                 .storage
                 .with_account_info(ZONE_VERIFIER_ADDRESS, |info| {
-                    Ok(info.code.clone().expect("empty runtime installed"))
+                    Ok(info.code.clone().expect("shared runtime preserved"))
                 })?;
-            assert!(installed.is_empty());
+            assert_eq!(installed, runtime);
 
             let err = factory
                 .set_portal_implementation(

@@ -40,9 +40,6 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Runtime suffix for an EIP-1167-style delegatecall proxy.
     bytes15 internal constant PORTAL_PROXY_SUFFIX = 0x5af43d82803e903d91602b57fd5bf3;
 
-    /// @notice Code hash returned by EXTCODEHASH for an existing account with no runtime bytecode.
-    bytes32 internal constant EMPTY_CODE_HASH = keccak256("");
-
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -146,12 +143,9 @@ abstract contract ZoneFactory is IZoneFactory {
     function setPortalImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
         if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidPortalImplementation();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
-        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
-            revert InvalidPortalImplementation();
-        }
-
         emit PortalUpdated(source, codeHash);
     }
 
@@ -159,12 +153,9 @@ abstract contract ZoneFactory is IZoneFactory {
     function setZoneMessengerImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
         if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidZoneMessengerImplementation();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
-        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
-            revert InvalidZoneMessengerImplementation();
-        }
-
         emit MessengerUpdated(source, codeHash);
     }
 
@@ -172,12 +163,9 @@ abstract contract ZoneFactory is IZoneFactory {
     function setVerifierImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
         if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidVerifierImplementation();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
-        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
-            revert InvalidVerifierImplementation();
-        }
-
         emit VerifierUpdated(source, codeHash);
     }
 
@@ -210,8 +198,7 @@ abstract contract ZoneFactory is IZoneFactory {
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
     /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
-    /// Returns `EXTCODEHASH(source)`: zero for a nonexistent account and
-    /// EMPTY_CODE_HASH for an existing account with no runtime bytecode.
+    /// Returns `EXTCODEHASH(source)` for the emitted update event.
     function _nativeCopyRuntime(
         address source,
         address destination
@@ -233,4 +220,4 @@ abstract contract ZoneFactory is IZoneFactory {
         return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
     }
 
-}
+    }
