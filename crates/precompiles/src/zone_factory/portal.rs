@@ -49,8 +49,9 @@ struct PortalWithdrawalQueue {
 #[contract]
 pub(super) struct ZonePortalStorage {
     sequencer: Address,
-    admin: Address,
     pending_sequencer: Address,
+    admin: Address,
+    pending_admin: Address,
     zone_gas_rate: u128,
     withdrawal_batch_index: u64,
     block_hash: B256,
@@ -65,7 +66,6 @@ pub(super) struct ZonePortalStorage {
     refunds: Mapping<Address, Mapping<Address, u128>>,
     withdrawal_queue: PortalWithdrawalQueue,
     rpc_url: String,
-    pending_admin: Address,
     withdrawal_reentrancy_status: U256,
     zone_id: u32,
     messenger: Address,
