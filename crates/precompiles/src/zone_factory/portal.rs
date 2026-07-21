@@ -48,9 +48,7 @@ struct PortalWithdrawalQueue {
 /// slot numbers. This contract type is deliberately absent from the EVM precompile map.
 #[contract]
 pub(super) struct ZonePortalStorage {
-    sequencer: Address,
     admin: Address,
-    pending_sequencer: Address,
     zone_gas_rate: u128,
     withdrawal_batch_index: u64,
     block_hash: B256,
@@ -93,9 +91,6 @@ impl ZonePortalStorage {
             Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
         )?;
 
-        // Preserve the block-producer representative expected by zone-side components. Authority
-        // on Tempo comes from `is_sequencer`, so the first member has no distinct permissions.
-        self.sequencer.write(params.sequencers[0])?;
         self.admin.write(params.admin)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {
             enabled: true,
