@@ -9,7 +9,7 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @title StablecoinDEX Invariant Tests
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
 /// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
-/// Pinned to T8 so TEMPO-DEX7 covers quote/swap parity.
+/// Pinned to T9 so TEMPO-DEX7 covers quote/swap parity.
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs
@@ -895,7 +895,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     )
         internal
     {
-        // TEMPO-DEX7: Quote should match execution (T8+).
+        // TEMPO-DEX7: Quote should match execution (T9+).
         uint128 quotedOut;
         bool quoteSucceeded;
         try exchange.quoteSwapExactAmountIn(before.tokenIn, before.tokenOut, amount) returns (
@@ -943,7 +943,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 _assertSwapBalanceChanges(swapper, before, amount, amountOut);
             }
 
-            // TEMPO-DEX7: Quote matches execution (T8+).
+            // TEMPO-DEX7: Quote matches execution (T9+).
             if (quoteSucceeded) {
                 assertEq(amountOut, quotedOut, "TEMPO-DEX7: quote mismatch for swapExactAmountIn");
             }
@@ -1011,7 +1011,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 _assertSwapBalanceChanges(swapper, before, amountIn, amount);
             }
 
-            // TEMPO-DEX7: Quote matches execution (T8+).
+            // TEMPO-DEX7: Quote matches execution (T9+).
             if (quoteSucceeded) {
                 assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
             }
