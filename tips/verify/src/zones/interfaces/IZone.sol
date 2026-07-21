@@ -61,7 +61,6 @@ interface IZoneFactory {
     );
 
     error InvalidToken();
-    error InvalidOwner();
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencerSet();
