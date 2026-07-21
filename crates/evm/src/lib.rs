@@ -13,8 +13,7 @@ pub use action_replay::{
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
-use pool::EvmEnv;
-pub use pool::{TempoPoolValidationEvm};
+pub use pool::TempoPoolValidationEvm;
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
@@ -31,7 +30,7 @@ use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
-    self, EvmEnv as EthEvmEnv,
+    self, EvmEnv,
     block::BlockExecutorFactory,
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
@@ -141,7 +140,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let EthEvmEnv { cfg_env, block_env } = EthEvmEnv::for_eth_block(
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
@@ -189,7 +188,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let EthEvmEnv { cfg_env, block_env } = EthEvmEnv::for_eth_next_block(
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
                 timestamp: attributes.timestamp,

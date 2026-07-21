@@ -1,9 +1,6 @@
-use crate::{TempoBlockEnv, TempoInvalidTransaction};
+use crate::TempoInvalidTransaction;
 use alloy_evm::{Evm, revm::context::result::EVMError};
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{TempoTxEnv, ValidationContext};
-
-pub(crate) type EvmEnv = alloy_evm::EvmEnv<TempoHardfork, TempoBlockEnv>;
 
 /// An EVM that can run Tempo's transaction-pool validation lifecycle.
 ///
