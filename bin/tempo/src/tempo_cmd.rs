@@ -36,8 +36,9 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
+    IFeeManager,
     IValidatorConfigV2::{self, Validator},
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
@@ -162,6 +163,8 @@ pub enum ConsensusSubcommand {
     SetValidatorIpAddress(SetValidatorIpAddress),
     /// Set the validator fee recipient
     SetValidatorFeeRecipient(SetValidatorFeeRecipient),
+    /// Set the validator fee token.
+    SetValidatorToken(SetValidatorToken),
     /// Transfer validator ownership
     TransferValidatorOwnership(TransferValidatorOwnership),
     /// Look up a validator by etheruem address, e25519 public key, or index.
@@ -182,6 +185,7 @@ impl ConsensusSubcommand {
             Self::CreateRotateValidatorSignature(args) => args.run().await,
             Self::SetValidatorIpAddress(args) => args.run().await,
             Self::SetValidatorFeeRecipient(args) => args.run().await,
+            Self::SetValidatorToken(args) => args.run().await,
             Self::EncryptSigningKey(args) => args.run(),
             Self::GenerateSigningKey(args) => args.run(),
             Self::ShowVerificationKey(args) => args.run(),
@@ -454,8 +458,16 @@ pub struct ValidatorTransactionArgs {
 
 impl ValidatorTransactionArgs {
     async fn call<T: SolCall + Serialize>(&self, call: &T) -> eyre::Result<()> {
+        self.call_to(VALIDATOR_CONFIG_V2_ADDRESS, call).await
+    }
+
+    async fn call_to<T: SolCall + Serialize>(
+        &self,
+        address: Address,
+        call: &T,
+    ) -> eyre::Result<()> {
         let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .to(address)
             .input(call.abi_encode().into());
 
         let mut output: Box<dyn std::io::Write + Send> = if self.yes {
@@ -819,6 +831,23 @@ impl SetValidatorFeeRecipient {
 
         self.submit.call(&call).await?;
         Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SetValidatorToken {
+    /// Token to use for validator fees.
+    #[arg(value_name = "TOKEN_ADDRESS")]
+    token: Address,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+}
+
+impl SetValidatorToken {
+    async fn run(self) -> eyre::Result<()> {
+        let call = IFeeManager::setValidatorTokenCall { token: self.token };
+        self.submit.call_to(TIP_FEE_MANAGER_ADDRESS, &call).await
     }
 }
 
@@ -1410,6 +1439,7 @@ mod tests {
 
     const TEST_VALIDATOR_ADDRESS: &str = "0x0000000000000000000000000000000000000001";
     const TEST_FEE_RECIPIENT: &str = "0x0000000000000000000000000000000000000002";
+    const TEST_VALIDATOR_TOKEN: &str = "0x0000000000000000000000000000000000000003";
     const TEST_PUBLIC_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
@@ -1430,6 +1460,27 @@ mod tests {
             cli.command,
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
         ));
+    }
+
+    #[test]
+    fn parse_set_validator_token() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "set-validator-token",
+            TEST_VALIDATOR_TOKEN,
+            "--dry-run",
+        ])
+        .unwrap();
+
+        let SetValidatorToken { token, submit } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert_eq!(token, TEST_VALIDATOR_TOKEN.parse().unwrap());
+        assert!(submit.dry_run);
     }
 
     #[test]
