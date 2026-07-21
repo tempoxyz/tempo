@@ -94,7 +94,6 @@ pub mod contracts {
 pub use contracts::{CreateX, Multicall3, Permit2, SafeDeployer};
 
 pub mod precompiles;
-pub mod zones;
 
 #[cfg(test)]
 mod tests {
