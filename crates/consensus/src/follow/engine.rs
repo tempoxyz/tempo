@@ -141,7 +141,7 @@ impl<TUpstream> Config<TUpstream> {
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
             resolver::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
                 upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
             },
@@ -175,7 +175,7 @@ impl<TUpstream> Config<TUpstream> {
         let (driver, driver_mailbox) = driver::try_init(
             context.with_label("driver"),
             driver::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
@@ -209,7 +209,14 @@ where
     TUpstreamActor:,
 {
     context: ContextCell<TContext>,
-    driver: driver::Driver<TContext>,
+    driver: driver::Driver<
+        TContext,
+        BlockchainProvider<
+            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
+        >,
+        crate::alias::marshal::Mailbox,
+        feed::Mailbox,
+    >,
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
     resolver_mailbox: resolver::Mailbox,
