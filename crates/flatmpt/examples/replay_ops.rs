@@ -56,7 +56,19 @@ fn main() -> anyhow::Result<()> {
         // REPLAY_GC=1: run the follower's per-block gc pass (the live node
         // does; evacuation is the divergence suspect).
         if std::env::var("REPLAY_GC").as_deref() == Ok("1") {
-            db.gc_step().map_err(|e| anyhow::anyhow!("gc: {e:#}"))?;
+            let t_gc = Instant::now();
+            let evac = db.gc_step().map_err(|e| anyhow::anyhow!("gc: {e:#}"))?;
+            // REPLAY_GC_STATS=1: per-block reclamation telemetry — is growth
+            // contained when gc runs with no snapshot pins at all?
+            if std::env::var("REPLAY_GC_STATS").as_deref() == Ok("1") {
+                let sz = std::fs::metadata(&flat).map(|m| m.len()).unwrap_or(0);
+                eprintln!(
+                    "block {block}: gc evac={evac} gc_ms={} file_gb={:.2} util={:.3}",
+                    t_gc.elapsed().as_millis(),
+                    sz as f64 / 1e9,
+                    db.utilization(),
+                );
+            }
             // REPLAY_AUDIT_FROM=N: full forensic audit after each gc pass
             // from block N on — the first unclean audit names the corrupting
             // pass and the exact record.

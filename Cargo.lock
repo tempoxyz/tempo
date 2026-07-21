@@ -13347,6 +13347,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "anyhow",
+ "bincode",
+ "hex",
  "mpt-flat-poc",
  "parking_lot",
  "reth-db-api",
