@@ -27,7 +27,7 @@ use tempo_revm::{
     evm::TempoContext, handler::TempoEvmHandler,
 };
 
-use crate::{TempoBlockEnv, TempoPoolValidationEvm};
+use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
@@ -197,19 +197,25 @@ where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
-    fn validate_pool_transaction(
-        &mut self,
-        tx: TempoTxEnv,
-    ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
+    fn configure_for_pool(&mut self) {
         // The pool admits future-time and future-nonce transactions and performs its own cached
         // AMM liquidity check after EVM validation.
         self.inner.skip_valid_after_check = true;
         self.inner.skip_liquidity_check = true;
         self.ctx_mut().cfg.disable_nonce_check = true;
+    }
 
+    fn validate_pool_transaction(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult<DB::Error>, TempoTxEnv) {
         let result = self.validate_transaction(tx);
+        let tx = core::mem::take(&mut self.ctx_mut().tx);
+        // Discard this transaction's journaled writes (nonce bumps, fee deduction,
+        // key authorisation) while keeping loaded accounts and storage warm for the
+        // rest of the batch.
         self.ctx_mut().journal_mut().discard_tx();
-        result
+        (result, tx)
     }
 }
 

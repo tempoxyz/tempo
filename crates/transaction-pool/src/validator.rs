@@ -451,11 +451,10 @@ where
         //
         // Returns resolved fee token and key expiry for pool caching.
         let result = if let Some(tx_env) = transaction.cached_tx_env() {
-            let tx_env = tx_env.clone();
-            evm.validate_pool_transaction(tx_env)
+            let (result, _) = evm.validate_pool_transaction(tx_env.clone());
+            result
         } else {
-            let tx_env = transaction.tx_env_slow();
-            let result = evm.validate_pool_transaction(tx_env.clone());
+            let (result, tx_env) = evm.validate_pool_transaction(transaction.tx_env_slow());
             transaction.cache_tx_env(tx_env);
             result
         };
@@ -821,7 +820,9 @@ where
     ) -> impl TempoPoolValidationEvm<
         DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
     > + 'a {
-        self.evm_with_env(db, evm_env)
+        let mut evm = self.evm_with_env(db, evm_env);
+        evm.configure_for_pool();
+        evm
     }
 }
 

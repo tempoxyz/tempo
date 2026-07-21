@@ -13,7 +13,7 @@ pub use action_replay::{
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
-pub use pool::TempoPoolValidationEvm;
+pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
