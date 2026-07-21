@@ -4,7 +4,7 @@ const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
-const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "tip20"]
+const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "public" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "dex"
     "neobank-deposit"
@@ -33,7 +33,21 @@ def txgen-tip20-default-scenario [] {
     }
 }
 
+def txgen-tip20-public-scenario [] {
+    {
+        workload: "tip20"
+        recipient: "users"
+        auth: "direct"
+        nonce: "expiring"
+        fee_token: "pathusd"
+    }
+}
+
 def txgen-tip20-scenario-alias [name: string] {
+    if $name == "public" {
+        return (txgen-tip20-public-scenario)
+    }
+
     if $name in ["default" "tip20"] {
         return (txgen-tip20-default-scenario)
     }

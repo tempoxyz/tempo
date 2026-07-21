@@ -26,6 +26,9 @@ pub trait TempoAddressExt {
     /// NOTE: prefix alone does not prove a token exists — use `TIP20Factory::is_tip20()` for that.
     const TIP20_PREFIX: [u8; 12];
 
+    /// 12-byte prefix shared by all ZonePortal addresses.
+    const ZONE_PORTAL_PREFIX: [u8; 12];
+
     /// 10-byte magic value occupying bytes `[4:14]` of every [TIP-1022] virtual address.
     ///
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
@@ -38,6 +41,11 @@ pub trait TempoAddressExt {
     ///
     /// [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
     fn is_tip20(&self) -> bool;
+
+    /// Returns the nonzero zone ID encoded in a ZonePortal address.
+    ///
+    /// Returns `None` if the address does not match the ZonePortal format.
+    fn zone_portal_id(&self) -> Option<u64>;
 
     /// Returns `true` if the address is a precompile. This is the case if it is either:
     /// - A TIP-20 token address.
@@ -66,10 +74,23 @@ pub trait TempoAddressExt {
 
 impl TempoAddressExt for Address {
     const TIP20_PREFIX: [u8; 12] = TIP20_TOKEN_PREFIX;
+    const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
     fn is_tip20(&self) -> bool {
         is_tip20_prefix(*self)
+    }
+
+    fn zone_portal_id(&self) -> Option<u64> {
+        let bytes = self.as_slice();
+        if !bytes.starts_with(&Self::ZONE_PORTAL_PREFIX) {
+            return None;
+        }
+
+        let mut suffix = [0u8; 8];
+        suffix.copy_from_slice(&bytes[12..]);
+        let zone_id = u64::from_be_bytes(suffix);
+        (zone_id != 0).then_some(zone_id)
     }
 
     fn is_virtual(&self) -> bool {
@@ -160,6 +181,24 @@ mod tests {
     }
 
     #[test]
+    fn zone_portal_id_variations() {
+        assert_eq!(
+            address!("0x5AD0000000000000000000000000000000000001").zone_portal_id(),
+            Some(1)
+        );
+        assert_eq!(
+            address!("0x5AD000000000000000000000ffffffffffffffff").zone_portal_id(),
+            Some(u64::MAX)
+        );
+        assert!(
+            address!("0x5AD0000000000000000000000000000000000000")
+                .zone_portal_id()
+                .is_none()
+        );
+        assert!(Address::ZERO.zone_portal_id().is_none());
+    }
+
+    #[test]
     fn is_valid_master_variations() {
         // regular address is valid master
         let regular = address!("0x1111111111111111111111111111111111111111");
@@ -185,7 +224,7 @@ mod tests {
     fn test_is_precompile_address() {
         for &(address, activated) in SYSTEM_PRECOMPILES {
             assert!(address.is_precompile(activated));
-            assert!(address.is_precompile(TempoHardfork::T8));
+            assert!(address.is_precompile(TempoHardfork::T9));
 
             if activated != TempoHardfork::Genesis {
                 assert!(!address.is_precompile(TempoHardfork::Genesis));
