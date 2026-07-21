@@ -23,8 +23,10 @@ use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
+use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_provider::providers::BlockchainProvider;
 use tempo_chainspec::NetworkIdentity;
-use tempo_node::TempoFullNode;
+use tempo_node::{TempoFullNode, node::TempoNode};
 use tracing::{info, info_span};
 
 use super::{driver, executor, resolver, resolver::Resolver, stubs};
@@ -167,7 +169,7 @@ impl<TUpstream> Config<TUpstream> {
         let (driver, driver_mailbox) = driver::try_init(
             context.with_label("driver"),
             driver::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
@@ -201,7 +203,14 @@ where
     TUpstreamActor:,
 {
     context: ContextCell<TContext>,
-    driver: driver::Driver<TContext>,
+    driver: driver::Driver<
+        TContext,
+        BlockchainProvider<
+            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
+        >,
+        crate::alias::marshal::Mailbox,
+        feed::Mailbox,
+    >,
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
     resolver_mailbox: resolver::Mailbox,
