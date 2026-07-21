@@ -5,6 +5,7 @@
 
 mod action_replay;
 mod assemble;
+mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
@@ -12,6 +13,8 @@ pub use action_replay::{
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
+use pool::EvmEnv;
+pub use pool::{ConfigureTempoPoolEvm, TempoPoolValidationEvm};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
@@ -33,7 +36,7 @@ use alloy_evm::{
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
-pub use evm::{TempoEvmFactory, TempoPoolValidationEvm};
+pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
@@ -46,8 +49,6 @@ use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
-
-type EvmEnv = alloy_evm::EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>;
 
 pub use tempo_revm::{
     ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason,
@@ -65,18 +66,6 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
-}
-
-/// Configuration capable of constructing an EVM with Tempo transaction-pool semantics.
-///
-/// This pins pool validation to Tempo's EVM environment while allowing the configured EVM
-/// implementation to adapt its database and precompiles.
-pub trait ConfigureTempoPoolEvm: ConfigureEvm<Primitives = TempoPrimitives> + 'static {
-    /// Builds the Tempo environment used by pool validation for `header`.
-    fn pool_evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error>;
-
-    /// Creates the configured EVM with the pool-validation capability.
-    fn pool_evm<DB: Database>(&self, db: DB, env: EvmEnv) -> impl TempoPoolValidationEvm<DB = DB>;
 }
 
 impl TempoEvmConfig {
