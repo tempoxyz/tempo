@@ -28,12 +28,12 @@ use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
-    self, EvmEnv,
+    self, Database, EvmEnv as EthEvmEnv,
     block::BlockExecutorFactory,
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
-pub use evm::TempoEvmFactory;
+pub use evm::{TempoEvmFactory, TempoPoolValidationEvm};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
@@ -46,6 +46,8 @@ use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+
+type EvmEnv = alloy_evm::EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>;
 
 pub use tempo_revm::{
     ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason,
@@ -63,6 +65,18 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+}
+
+/// Configuration capable of constructing an EVM with Tempo transaction-pool semantics.
+///
+/// This pins pool validation to Tempo's EVM environment while allowing the configured EVM
+/// implementation to adapt its database and precompiles.
+pub trait ConfigureTempoPoolEvm: ConfigureEvm<Primitives = TempoPrimitives> + 'static {
+    /// Builds the Tempo environment used by pool validation for `header`.
+    fn pool_evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error>;
+
+    /// Creates the configured EVM with the pool-validation capability.
+    fn pool_evm<DB: Database>(&self, db: DB, env: EvmEnv) -> impl TempoPoolValidationEvm<DB = DB>;
 }
 
 impl TempoEvmConfig {
@@ -94,6 +108,16 @@ impl TempoEvmConfig {
     /// Returns the mainnet EVM config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))
+    }
+}
+
+impl ConfigureTempoPoolEvm for TempoEvmConfig {
+    fn pool_evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error> {
+        ConfigureEvm::evm_env(self, header)
+    }
+
+    fn pool_evm<DB: Database>(&self, db: DB, env: EvmEnv) -> impl TempoPoolValidationEvm<DB = DB> {
+        self.evm_with_env(db, env)
     }
 }
 
@@ -138,7 +162,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
+        let EthEvmEnv { cfg_env, block_env } = EthEvmEnv::for_eth_block(
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
@@ -186,7 +210,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
+        let EthEvmEnv { cfg_env, block_env } = EthEvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
                 timestamp: attributes.timestamp,
