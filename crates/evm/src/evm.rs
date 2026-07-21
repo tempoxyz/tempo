@@ -356,6 +356,21 @@ mod tests {
 
     use super::*;
 
+    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+        let code = Bytecode::new_legacy([0xef].into());
+        db.insert_account_info(
+            ZONE_FACTORY_ADDRESS,
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
+            .unwrap();
+    }
+
     #[test]
     fn can_execute_system_tx() {
         let mut evm = test_evm(EmptyDB::default());
@@ -528,11 +543,11 @@ mod tests {
                 ..Default::default()
             },
         );
+        initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T9));
 
         StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-            TIP20Setup::path_usd(admin).apply()?;
-            ZoneFactory::new().initialize(owner)
+            TIP20Setup::path_usd(admin).apply()
         })
         .unwrap();
         let setup_state = evm.ctx_mut().journaled_state.finalize();
@@ -610,11 +625,12 @@ mod tests {
         let sequencer = Address::repeat_byte(0x33);
         let mut env = evm_env_with_spec(TempoHardfork::T9);
         env.block_env.basefee = 0;
-        let mut evm = TempoEvm::new(CacheDB::new(EmptyDB::default()), env);
+        let mut db = CacheDB::new(EmptyDB::default());
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, env);
 
         StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-            TIP20Setup::path_usd(admin).apply()?;
-            ZoneFactory::new().initialize(owner)
+            TIP20Setup::path_usd(admin).apply()
         })
         .unwrap();
         let setup_state = evm.ctx_mut().journaled_state.finalize();
