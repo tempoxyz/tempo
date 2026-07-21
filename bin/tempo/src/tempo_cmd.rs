@@ -943,7 +943,7 @@ fn resolve_token_name(input: &str, tokens: &[VerifiedToken]) -> eyre::Result<Add
         .collect::<Vec<_>>();
 
     match matches.as_slice() {
-        [] => bail!("no verified token found with symbol or name `{input}`"),
+        [] => Err(eyre!("no verified token found with symbol or name `{input}`")),
         [token] => {
             eprintln!(
                 "resolved token: {} ({}) at {}",
@@ -957,7 +957,7 @@ fn resolve_token_name(input: &str, tokens: &[VerifiedToken]) -> eyre::Result<Add
                 .map(|token| token.address.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            bail!("token `{input}` is ambiguous; matching addresses: {addresses}")
+            Err(eyre!("token `{input}` is ambiguous; matching addresses: {addresses}"))
         }
     }
 }
