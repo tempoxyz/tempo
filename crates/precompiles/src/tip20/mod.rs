@@ -1008,9 +1008,10 @@ impl TIP20Token {
 
         // Set default values
         self.supply_cap.write(U128_MAX)?;
-        self.transfer_policy_id.write(1)?;
         if StorageCtx.spec().is_t9() {
             TIP403Registry::new().set_token_transfer_policy(self.address, 1)?;
+        } else {
+            self.transfer_policy_id.write(1)?;
         }
 
         // Initialize roles system and grant admin role
@@ -3737,6 +3738,7 @@ pub(crate) mod tests {
                 }
             );
             assert_eq!(token.transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             Ok(())
         })
