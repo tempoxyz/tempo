@@ -1,4 +1,4 @@
-//! ABI dispatch for the [`ZoneFactory`](super::ZoneFactory) precompile.
+//! ABI dispatch for the [`ZoneFactory`] precompile.
 
 use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
 use alloy::primitives::Address;
