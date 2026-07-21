@@ -44,7 +44,6 @@ pub struct ZoneFactory {
 struct ZoneInfoStorage {
     zone_id: u32,
     portal: Address,
-    initial_token: Address,
     admin: Address,
     sequencers: Vec<Address>,
     threshold: u8,
@@ -57,7 +56,6 @@ impl From<ZoneInfoStorage> for ZoneInfo {
         Self {
             zoneId: value.zone_id,
             portal: value.portal,
-            initialToken: value.initial_token,
             admin: value.admin,
             sequencers: value.sequencers,
             threshold: value.threshold,
@@ -207,7 +205,6 @@ impl ZoneFactory {
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
             portal,
-            initial_token: call.params.initialToken,
             admin: call.params.admin,
             sequencers: call.params.sequencers.clone(),
             threshold: call.params.threshold,
@@ -369,7 +366,6 @@ mod tests {
                 ZoneInfo {
                     zoneId: 1,
                     portal: created.portal,
-                    initialToken: PATH_USD_ADDRESS,
                     admin: ADMIN,
                     sequencers: vec![SEQUENCER_A, SEQUENCER_B],
                     threshold: 2,

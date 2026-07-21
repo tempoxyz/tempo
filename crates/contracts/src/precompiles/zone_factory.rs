@@ -28,7 +28,6 @@ crate::sol! {
     struct ZoneInfo {
         uint32 zoneId;
         address portal;
-        address initialToken;
         address admin;
         address[] sequencers;
         uint8 threshold;
