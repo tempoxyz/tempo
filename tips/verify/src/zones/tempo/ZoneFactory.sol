@@ -54,6 +54,9 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Initial value is configured by the T9 activation; exact address TBD.
     address public owner;
 
+    /// @notice Whether shared runtime updates have been permanently disabled.
+    bool public override implementationUpdatesLocked;
+
     mapping(uint32 => ZoneInfo) internal _zones;
 
     /*//////////////////////////////////////////////////////////////
@@ -134,8 +137,15 @@ abstract contract ZoneFactory is IZoneFactory {
     }
 
     /// @inheritdoc IZoneFactory
+    function lockImplementationUpdates() external {
+        if (msg.sender != owner) revert NotOwner();
+        implementationUpdatesLocked = true;
+    }
+
+    /// @inheritdoc IZoneFactory
     function setPortalImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
         if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
@@ -148,6 +158,7 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @inheritdoc IZoneFactory
     function setZoneMessengerImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
         if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
@@ -160,6 +171,7 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @inheritdoc IZoneFactory
     function setVerifierImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
         if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {

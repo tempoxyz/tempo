@@ -70,9 +70,12 @@ crate::sol! {
         error InvalidPortalImplementation();
         error InvalidZoneMessengerImplementation();
         error InvalidVerifierImplementation();
+        error ImplementationUpdatesLocked();
 
         function owner() external view returns (address);
+        function implementationUpdatesLocked() external view returns (bool);
         function transferOwnership(address newOwner) external;
+        function lockImplementationUpdates() external;
         function setPortalImplementation(address source) external;
         function setZoneMessengerImplementation(address source) external;
         function setVerifierImplementation(address source) external;

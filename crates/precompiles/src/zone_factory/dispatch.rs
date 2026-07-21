@@ -18,9 +18,17 @@ impl Precompile for ZoneFactory {
             |call| match call {
                 IZoneFactory::IZoneFactoryCalls {
                     owner(call) => view(call, |_| self.owner()),
+                    implementationUpdatesLocked(call) => {
+                        view(call, |_| self.implementation_updates_locked())
+                    },
                     transferOwnership(call) => {
                         mutate_void(call, msg_sender, |sender, call| {
                             self.transfer_ownership(sender, call)
+                        })
+                    },
+                    lockImplementationUpdates(call) => {
+                        mutate_void(call, msg_sender, |sender, _| {
+                            self.lock_implementation_updates(sender)
                         })
                     },
                     setPortalImplementation(call) => {

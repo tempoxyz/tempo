@@ -30,12 +30,13 @@ pub const MAX_SEQUENCERS: usize = 8;
 
 /// Native ZoneFactory storage.
 ///
-/// The field order mirrors the TIP-1091 Solidity reference artifact: `nextZoneId` and `owner`
-/// share slot 0, and `zones` occupies slot 1.
+/// The field order mirrors the TIP-1091 Solidity reference artifact: `nextZoneId`, `owner`, and
+/// `implementationUpdatesLocked` share slot 0, and `zones` occupies slot 1.
 #[contract(addr = ZONE_FACTORY_ADDRESS)]
 pub struct ZoneFactory {
     next_zone_id: u32,
     owner: Address,
+    implementation_updates_locked: bool,
     zones: Mapping<u32, ZoneInfoStorage>,
 }
 
@@ -71,6 +72,11 @@ impl ZoneFactory {
         self.owner.read()
     }
 
+    /// Returns whether shared runtime updates have been permanently disabled.
+    pub fn implementation_updates_locked(&self) -> Result<bool> {
+        self.implementation_updates_locked.read()
+    }
+
     /// Atomically transfers zone-creation authority.
     pub fn transfer_ownership(
         &mut self,
@@ -88,6 +94,21 @@ impl ZoneFactory {
         ))
     }
 
+    /// Permanently disables updates to the shared portal, messenger, and verifier runtimes.
+    pub fn lock_implementation_updates(&mut self, msg_sender: Address) -> Result<()> {
+        if msg_sender != self.owner()? {
+            return Err(ZoneFactoryError::not_owner().into());
+        }
+        self.implementation_updates_locked.write(true)
+    }
+
+    fn ensure_implementation_updates_unlocked(&self) -> Result<()> {
+        if self.implementation_updates_locked()? {
+            return Err(ZoneFactoryError::implementation_updates_locked().into());
+        }
+        Ok(())
+    }
+
     /// Copies a deployed runtime into the shared ZonePortal implementation account.
     pub fn set_portal_implementation(
         &mut self,
@@ -97,6 +118,7 @@ impl ZoneFactory {
         if msg_sender != self.owner()? {
             return Err(ZoneFactoryError::not_owner().into());
         }
+        self.ensure_implementation_updates_unlocked()?;
 
         let code_hash = self
             .copy_runtime(call.source, ZONE_PORTAL_IMPL_ADDRESS)?
@@ -115,6 +137,7 @@ impl ZoneFactory {
         if msg_sender != self.owner()? {
             return Err(ZoneFactoryError::not_owner().into());
         }
+        self.ensure_implementation_updates_unlocked()?;
 
         let code_hash =
             self.copy_runtime(call.source, ZONE_MESSENGER_ADDRESS)?
@@ -135,6 +158,7 @@ impl ZoneFactory {
         if msg_sender != self.owner()? {
             return Err(ZoneFactoryError::not_owner().into());
         }
+        self.ensure_implementation_updates_unlocked()?;
 
         let code_hash = self
             .copy_runtime(call.source, ZONE_VERIFIER_ADDRESS)?
@@ -546,6 +570,80 @@ mod tests {
                 Address::ZERO,
                 IZoneFactory::setPortalImplementationCall { source },
             )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn owner_can_permanently_lock_shared_runtime_updates() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut factory = factory_with_owner(OWNER)?;
+            let source = address!("0x0000000000000000000000000000000000000044");
+            factory.storage.set_code(
+                source,
+                Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x2a])),
+            )?;
+
+            assert!(!factory.implementation_updates_locked()?);
+            let err = factory.lock_implementation_updates(ADMIN).unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::not_owner())
+            );
+            assert!(!factory.implementation_updates_locked()?);
+
+            factory.lock_implementation_updates(OWNER)?;
+            assert!(factory.implementation_updates_locked()?);
+
+            let err = factory
+                .set_portal_implementation(
+                    OWNER,
+                    IZoneFactory::setPortalImplementationCall { source },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::implementation_updates_locked())
+            );
+
+            let err = factory
+                .set_zone_messenger_implementation(
+                    OWNER,
+                    IZoneFactory::setZoneMessengerImplementationCall { source },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::implementation_updates_locked())
+            );
+
+            let err = factory
+                .set_verifier_implementation(
+                    OWNER,
+                    IZoneFactory::setVerifierImplementationCall { source },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::implementation_updates_locked())
+            );
+
+            factory.transfer_ownership(
+                OWNER,
+                IZoneFactory::transferOwnershipCall { newOwner: ADMIN },
+            )?;
+            let err = factory
+                .set_portal_implementation(
+                    ADMIN,
+                    IZoneFactory::setPortalImplementationCall { source },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::implementation_updates_locked())
+            );
+
             Ok(())
         })
     }
