@@ -263,12 +263,6 @@ impl TIP403Registry {
         })
     }
 
-    /// Returns whether a registry binding exists without validating the token address.
-    pub(crate) fn has_token_transfer_policy_for(&self, token: Address) -> Result<bool> {
-        self.registered_token_transfer_policy_id(token)
-            .map(|policy_id| policy_id.is_some())
-    }
-
     /// Returns the registered policy ID without validating the token address.
     pub(crate) fn registered_token_transfer_policy_id(
         &self,
@@ -300,7 +294,9 @@ impl TIP403Registry {
         let mut migrated = U256::ZERO;
 
         for token in call.tokens {
-            if !factory.is_tip20(token)? || self.has_token_transfer_policy_for(token)? {
+            if !factory.is_tip20(token)?
+                || self.registered_token_transfer_policy_id(token)?.is_some()
+            {
                 continue;
             }
 

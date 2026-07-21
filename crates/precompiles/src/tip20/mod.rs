@@ -275,12 +275,8 @@ impl TIP20Token {
             return Err(TIP20Error::invalid_transfer_policy_id().into());
         }
 
-        let mut registry = TIP403Registry::new();
         if StorageCtx.spec().is_t9() {
-            if !registry.has_token_transfer_policy_for(self.address)? {
-                self.delete_legacy_transfer_policy_id()?;
-            }
-            registry.set_token_transfer_policy(self.address, call.newPolicyId)?;
+            TIP403Registry::new().set_token_transfer_policy(self.address, call.newPolicyId)?;
         } else {
             self.transfer_policy_id.write(call.newPolicyId)?;
         }
@@ -3622,7 +3618,11 @@ pub(crate) mod tests {
             // Simulate an existing token created before TIP-1092 activation.
             let mut token = TIP20Setup::path_usd(admin).apply()?;
             let mut registry = TIP403Registry::new();
-            assert!(!registry.has_token_transfer_policy_for(token.address)?);
+            assert!(
+                registry
+                    .registered_token_transfer_policy_id(token.address)?
+                    .is_none()
+            );
             assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
 
             StorageCtx.set_spec(TempoHardfork::T9);
@@ -3656,7 +3656,11 @@ pub(crate) mod tests {
                 )?,
                 U256::ZERO
             );
-            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert!(
+                registry
+                    .registered_token_transfer_policy_id(token.address)?
+                    .is_some()
+            );
             assert_eq!(token.legacy_transfer_policy_id()?, 0);
             token.approve(
                 Address::random(),
@@ -3692,7 +3696,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_change_transfer_policy_id_migrates_and_clears_legacy_policy() -> eyre::Result<()> {
+    fn test_change_transfer_policy_id_sets_registry_binding() -> eyre::Result<()> {
         let admin = Address::random();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
 
@@ -3710,9 +3714,13 @@ pub(crate) mod tests {
             )?;
 
             let registry = TIP403Registry::new();
-            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert!(
+                registry
+                    .registered_token_transfer_policy_id(token.address)?
+                    .is_some()
+            );
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
-            assert_eq!(token.legacy_transfer_policy_id()?, 0);
+            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
 
             Ok(())
         })
@@ -3727,7 +3735,11 @@ pub(crate) mod tests {
             let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
             let registry = TIP403Registry::new();
 
-            assert!(registry.has_token_transfer_policy_for(token.address)?);
+            assert!(
+                registry
+                    .registered_token_transfer_policy_id(token.address)?
+                    .is_some()
+            );
             assert_eq!(
                 registry.token_transfer_policy_id(ITIP403Registry::tokenTransferPolicyIdCall {
                     token: token.address,
