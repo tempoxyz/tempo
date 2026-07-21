@@ -24,7 +24,7 @@ pub trait TempoPoolValidationEvm: Evm<Tx = TempoTxEnv> {
     /// Validates `tx` using transaction-pool semantics.
     fn validate_pool_transaction(
         &mut self,
-        tx: &mut TempoTxEnv,
+        tx: TempoTxEnv,
     ) -> Result<
         ValidationContext,
         EVMError<<<Self as Evm>::DB as alloy_evm::revm::Database>::Error, TempoInvalidTransaction>,

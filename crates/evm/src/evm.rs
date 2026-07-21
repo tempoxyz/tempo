@@ -199,7 +199,7 @@ where
 {
     fn validate_pool_transaction(
         &mut self,
-        tx: &mut TempoTxEnv,
+        mut tx: TempoTxEnv,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         // The pool admits future-time and future-nonce transactions and performs its own cached
         // AMM liquidity check after EVM validation.
@@ -207,12 +207,12 @@ where
         self.inner.skip_liquidity_check = true;
         self.ctx_mut().cfg.disable_nonce_check = true;
 
-        core::mem::swap(&mut self.ctx_mut().tx, tx);
+        core::mem::swap(&mut self.ctx_mut().tx, &mut tx);
         let result = {
             let mut handler = TempoEvmHandler::<DB, I>::new();
             handler.validate_transaction(&mut self.inner)
         };
-        core::mem::swap(&mut self.ctx_mut().tx, tx);
+        core::mem::swap(&mut self.ctx_mut().tx, &mut tx);
         self.ctx_mut().journal_mut().discard_tx();
         result
     }

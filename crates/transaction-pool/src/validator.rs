@@ -451,11 +451,11 @@ where
         //
         // Returns resolved fee token and key expiry for pool caching.
         let result = if let Some(tx_env) = transaction.cached_tx_env() {
-            let mut tx_env = tx_env.clone();
-            evm.validate_pool_transaction(&mut tx_env)
+            let tx_env = tx_env.clone();
+            evm.validate_pool_transaction(tx_env)
         } else {
-            let mut tx_env = transaction.tx_env_slow();
-            let result = evm.validate_pool_transaction(&mut tx_env);
+            let tx_env = transaction.tx_env_slow();
+            let result = evm.validate_pool_transaction(tx_env.clone());
             transaction.cache_tx_env(tx_env);
             result
         };
