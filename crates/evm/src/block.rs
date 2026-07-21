@@ -11,9 +11,10 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
-use commonware_codec::DecodeExt;
+use alloy_sol_types::SolCall;
+use commonware_codec::{DecodeExt, ReadExt};
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
@@ -22,13 +23,14 @@ use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::{ExecutionResult, ResultAndState},
-    state::{Account, Bytecode, EvmState},
+    state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -171,6 +173,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    extra_data: Bytes,
 
     pub(crate) replay_state: StorageActionReplayState,
 
@@ -196,6 +199,7 @@ where
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
+            extra_data: ctx.inner.extra_data.clone(),
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
@@ -209,18 +213,17 @@ where
         }
     }
 
-    /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
     /// sparse trie task is aware of the change.
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
+        storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let info = self
-            .inner
-            .evm
-            .db_mut()
+        let db = self.inner.evm.db_mut();
+        let info = db
             .basic(address)
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
@@ -229,10 +232,74 @@ where
             let code = Bytecode::new_legacy([0xef].into());
             account.info.code_hash = code.hash_slow();
             account.info.code = Some(code);
+            for &(slot, value) in storage {
+                let original_value = db
+                    .storage(address, slot)
+                    .map_err(BlockExecutionError::other)?;
+                account.storage.insert(
+                    slot,
+                    EvmStorageSlot::new_changed(original_value, value, TransactionId::ZERO),
+                );
+            }
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
-            self.inner.evm.db_mut().commit(state);
+            db.commit(state);
         }
+        Ok(())
+    }
+
+    /// Installs and initializes the TIP-1091 ZoneFactory when T9 first becomes active.
+    ///
+    /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
+    /// fixed T9 protocol constants.
+    fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let factory_config =
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
+    }
+
+    fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
+        if !self.evm().cfg.spec.is_t8() {
+            return Ok(());
+        }
+
+        let epoch_length = self.evm().block().epoch_length.get();
+        let block_number = self.evm().block().number.saturating_to::<u64>();
+        if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
+            return Ok(());
+        }
+
+        let outcome =
+            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut self.extra_data.as_ref())
+                .map_err(|err| {
+                    BlockValidationError::msg(format!(
+                        "failed decoding boundary block extra data as DKG outcome: {err}"
+                    ))
+                })?;
+        let epoch = outcome.epoch.get();
+        let public_keys = outcome
+            .players()
+            .iter()
+            .map(|key| B256::from_slice(key.as_ref()))
+            .collect();
+
+        let calldata = ICurrentCommittee::setCommitteeMembersCall {
+            epoch,
+            publicKeys: public_keys,
+        }
+        .abi_encode()
+        .into();
+
+        let result = self
+            .evm_mut()
+            .transact_system_call(Address::ZERO, CURRENT_COMMITTEE_ADDRESS, calldata)
+            .map_err(BlockExecutionError::other)?;
+
+        if !result.result.is_success() {
+            return Err(BlockValidationError::msg("current committee system call failed").into());
+        }
+
+        self.evm_mut().db_mut().commit(result.state);
         Ok(())
     }
 
@@ -514,20 +581,26 @@ where
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS, &[])?;
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
+            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS, &[])?;
+        }
+        if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
+        }
+        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+            self.deploy_zone_factory_at_boundary()?;
         }
 
         Ok(())
@@ -647,7 +720,7 @@ where
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
@@ -660,6 +733,8 @@ where
         if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
             self.validate_shared_gas(&[])?;
         }
+
+        self.apply_current_committee_system_call()?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -728,18 +803,30 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
-    use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use commonware_codec::Encode as _;
+    use commonware_consensus::types::Epoch;
+    use commonware_cryptography::{Signer, bls12381::dkg, ed25519::PrivateKey};
+    use commonware_math::algebra::Random as _;
+    use commonware_utils::{N3f1, TryFromIterator as _, ordered};
+    use rand_08::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
-    use std::sync::{Arc, Mutex};
-    use tempo_chainspec::spec::DEV;
-    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
+    use std::{
+        iter::repeat_with,
+        sync::{Arc, Mutex},
+    };
+    use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
+    use tempo_contracts::precompiles::{
+        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_MESSENGER_ADDRESS,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    };
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -771,6 +858,60 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
+        let mut rng = rand_08::rngs::StdRng::seed_from_u64(epoch);
+        let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
+            .take(players)
+            .collect::<Vec<_>>();
+        player_keys.sort_by_key(|key| key.public_key());
+
+        let player_set =
+            ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap();
+        let (output, shares) =
+            dkg::deal::<_, _, N3f1>(&mut rng, Default::default(), player_set).unwrap();
+
+        OnchainDkgOutcome {
+            epoch: Epoch::new(epoch),
+            output,
+            next_players: shares.keys().clone(),
+            is_next_full_dkg: false,
+        }
+    }
+
+    fn read_current_committee<DB, I>(
+        executor: &mut TempoBlockExecutor<'_, DB, I>,
+    ) -> ICurrentCommittee::getCommitteeMembersReturn
+    where
+        DB: StateDB,
+        I: Inspector<TempoContext<DB>>,
+    {
+        let result = executor
+            .evm_mut()
+            .transact_system_call(
+                Address::ZERO,
+                CURRENT_COMMITTEE_ADDRESS,
+                ICurrentCommittee::getCommitteeMembersCall {}
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        assert!(
+            result.result.is_success(),
+            "getCommitteeMembers failed: {:?}",
+            result.result
+        );
+
+        let output = match result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("unexpected getCommitteeMembers result: {result:?}"),
+        };
+
+        ICurrentCommittee::getCommitteeMembersCall::abi_decode_returns(&output).unwrap()
     }
 
     #[test]
@@ -1364,6 +1505,74 @@ mod tests {
     }
 
     #[test]
+    fn test_current_committee_system_call_writes_boundary_outcome() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let outcome = create_dkg_outcome(42, 3);
+        let expected_public_keys = outcome
+            .players()
+            .iter()
+            .map(|key| B256::from_slice(key.as_ref()))
+            .collect::<Vec<_>>();
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(outcome.encode().into())
+            .with_spec(TempoHardfork::T8)
+            .build(&mut db, &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+
+        executor.apply_current_committee_system_call().unwrap();
+
+        let committee = read_current_committee(&mut executor);
+        assert_eq!(committee.epoch, outcome.epoch.get());
+        assert_eq!(committee.publicKeys, expected_public_keys);
+    }
+
+    #[test]
+    fn test_current_committee_system_call_skips_non_boundary_block() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(3)
+            .with_epoch_length(5)
+            .with_extra_data(Bytes::from_static(&[0xff]))
+            .with_spec(TempoHardfork::T8)
+            .build(&mut db, &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+
+        executor.apply_current_committee_system_call().unwrap();
+
+        let committee = read_current_committee(&mut executor);
+        assert_eq!(committee.epoch, 0);
+        assert!(committee.publicKeys.is_empty());
+    }
+
+    #[test]
+    fn test_current_committee_system_call_rejects_invalid_boundary_extra_data() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(Bytes::from_static(&[0xff]))
+            .with_spec(TempoHardfork::T8)
+            .build(&mut db, &chainspec);
+
+        let err = executor.apply_current_committee_system_call().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("failed decoding boundary block extra data as DKG outcome"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_finish() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
@@ -1758,7 +1967,7 @@ mod tests {
             })));
 
         let addr = Address::with_last_byte(0xff);
-        executor.deploy_precompile_at_boundary(addr).unwrap();
+        executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
         drop(executor);
 
         // Verify code was deployed.
@@ -1807,7 +2016,7 @@ mod tests {
                 hook_calls_clone.lock().unwrap().push(state);
             })));
 
-        executor.deploy_precompile_at_boundary(addr).unwrap();
+        executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
@@ -1816,6 +2025,63 @@ mod tests {
             original_info,
             "state hook account should preserve existing original_info"
         );
+    }
+
+    #[test]
+    fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
+        assert_eq!(
+            INITIAL_FACTORY_OWNER,
+            address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
+        );
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
+
+        executor.deploy_zone_factory_at_boundary().unwrap();
+        executor.deploy_zone_factory_at_boundary().unwrap();
+        drop(executor);
+
+        let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
+        assert_eq!(
+            factory
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap()
+                .original_bytes(),
+            Bytes::from_static(&[0xef])
+        );
+        let expected_factory_config =
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+        assert_eq!(
+            factory.storage_slot(U256::ZERO),
+            Some(expected_factory_config)
+        );
+
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
+        assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
+        for address in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ] {
+            assert!(
+                !calls[0].contains_key(&address),
+                "shared runtimes are installed through the factory, not the T9 state hook"
+            );
+        }
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.

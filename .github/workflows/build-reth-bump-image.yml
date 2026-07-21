@@ -1,0 +1,262 @@
+name: Build reth-bump image
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - reth-auto-bump
+
+concurrency:
+  group: reth-bump-image
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/tempoxyz/tempo
+  RETH_BUMP_BRANCH: reth-auto-bump
+
+jobs:
+  build:
+    name: Build candidate images
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker.yml
+    # docker.yml does not declare a workflow_call secret interface.
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+
+  wait_for_ci:
+    name: Wait for green CI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: read
+      statuses: read
+    outputs:
+      eligible: ${{ steps.ci.outputs.eligible }}
+    steps:
+      - name: Wait for required CI checks
+        id: ci
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          EXPECTED_CHECKS='["lint success","specs success","test success"]'
+          RUN_URL="${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${RUN_ID}/"
+          DEADLINE=$((SECONDS + 3600))
+
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            CURRENT_SHA="$(gh api "repos/${GH_REPO}/git/ref/heads/${RETH_BUMP_BRANCH}" --jq '.object.sha' 2>/dev/null || true)"
+            if [ -z "$CURRENT_SHA" ]; then
+              echo "Unable to read ${RETH_BUMP_BRANCH}; retrying"
+              sleep 30
+              continue
+            fi
+            if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+              echo "${RETH_BUMP_BRANCH} advanced to ${CURRENT_SHA}; skipping promotion of ${EXPECTED_SHA}"
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            PR_DATA="$(gh pr list \
+              --repo "$GH_REPO" \
+              --head "$RETH_BUMP_BRANCH" \
+              --base main \
+              --state open \
+              --json number,headRefOid \
+              --jq '.[0] // empty' 2>/dev/null || true)"
+            if ! jq -e --arg sha "$EXPECTED_SHA" '.headRefOid == $sha' <<< "$PR_DATA" > /dev/null 2>&1; then
+              echo "Waiting for an open PR at ${EXPECTED_SHA}"
+              sleep 30
+              continue
+            fi
+            PR_NUMBER="$(jq -r '.number' <<< "$PR_DATA")"
+
+            STATUS="$(gh pr checks "$PR_NUMBER" \
+              --repo "$GH_REPO" \
+              --required \
+              --json bucket,link,name,state 2>/dev/null || true)"
+            if ! jq -e 'type == "array"' <<< "$STATUS" > /dev/null 2>&1; then
+              echo "Waiting for required CI checks to start"
+              sleep 30
+              continue
+            fi
+
+            CHECKS="$(jq -c --arg run_url "$RUN_URL" '
+              [ .[]
+                | select(.name != "Review")
+                | select(((.link // "") | startswith($run_url)) | not)
+              ]
+            ' <<< "$STATUS")"
+            MISSING="$(jq -r --argjson expected "$EXPECTED_CHECKS" '
+              ($expected - [.[].name]) | join(", ")
+            ' <<< "$CHECKS")"
+            NOT_GREEN="$(jq -r '
+              [ .[]
+                | select(.bucket != "pass" and .bucket != "skipping")
+                | "\(.name)=\(.state)"
+              ] | join(", ")
+            ' <<< "$CHECKS")"
+
+            if [ -z "$MISSING" ] && [ -z "$NOT_GREEN" ]; then
+              echo "Required CI is green for ${EXPECTED_SHA}"
+              echo "eligible=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            [ -z "$MISSING" ] || echo "Waiting for checks to appear: ${MISSING}"
+            [ -z "$NOT_GREEN" ] || echo "Waiting for checks to pass: ${NOT_GREEN}"
+            sleep 30
+          done
+
+          echo "::warning::Required CI did not become green within 60 minutes; leaving reth-bump unchanged"
+          echo "eligible=false" >> "$GITHUB_OUTPUT"
+
+  promote:
+    name: Promote current candidate
+    needs:
+      - build
+      - wait_for_ci
+    if: ${{ needs.wait_for_ci.outputs.eligible == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check current branch head
+        id: branch-head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          CURRENT_SHA="$(gh api "repos/${GH_REPO}/git/ref/heads/${RETH_BUMP_BRANCH}" --jq '.object.sha')"
+          if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+            echo "reth-auto-bump advanced to ${CURRENT_SHA}; skipping promotion of ${EXPECTED_SHA}"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        if: steps.branch-head.outputs.current == 'true'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.branch-head.outputs.current == 'true'
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Resolve and verify immutable image
+        if: steps.branch-head.outputs.current == 'true'
+        id: image
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          IMMUTABLE_TAG="sha-${EXPECTED_SHA:0:7}"
+          TAG_INSPECTION="$(docker buildx imagetools inspect "${IMAGE}:${IMMUTABLE_TAG}" --format '{{json .}}')"
+          DIGEST="$(jq -er '.manifest.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$TAG_INSPECTION")"
+          IMAGE_INSPECTION="$(docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --format '{{json .}}')"
+
+          if ! jq -e --arg sha "$EXPECTED_SHA" '
+            [.image[] | .config.Labels["org.opencontainers.image.revision"]] as $revisions
+            | ($revisions | length > 0) and all($revisions[]; . == $sha)
+          ' <<< "$IMAGE_INSPECTION" > /dev/null; then
+            REVISIONS="$(jq -c '[.image[] | .config.Labels["org.opencontainers.image.revision"]]' <<< "$IMAGE_INSPECTION")"
+            echo "Image revisions ${REVISIONS} do not all match ${EXPECTED_SHA}" >&2
+            exit 1
+          fi
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "immutable_tag=${IMMUTABLE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote image digest
+        if: steps.branch-head.outputs.current == 'true'
+        id: promote
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          CURRENT_SHA="$(gh api "repos/${GH_REPO}/git/ref/heads/${RETH_BUMP_BRANCH}" --jq '.object.sha')"
+          if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+            echo "reth-auto-bump advanced to ${CURRENT_SHA}; skipping promotion of ${EXPECTED_SHA}"
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "${IMAGE}:reth-bump" \
+            "${IMAGE}@${DIGEST}"
+
+          PROMOTED_INSPECTION="$(docker buildx imagetools inspect "${IMAGE}:reth-bump" --format '{{json .}}')"
+          PROMOTED_DIGEST="$(jq -er '.manifest.digest' <<< "$PROMOTED_INSPECTION")"
+          if [ "$PROMOTED_DIGEST" != "$DIGEST" ]; then
+            echo "Promoted digest ${PROMOTED_DIGEST} does not match candidate digest ${DIGEST}" >&2
+            exit 1
+          fi
+
+          CURRENT_SHA="$(gh api "repos/${GH_REPO}/git/ref/heads/${RETH_BUMP_BRANCH}" --jq '.object.sha')"
+          if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+            echo "reth-auto-bump advanced to ${CURRENT_SHA} during promotion; suppressing the stale event"
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish reth-bump image event
+        if: steps.promote.outputs.promoted == 'true'
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          IMMUTABLE_TAG: ${{ steps.image.outputs.immutable_tag }}
+          PROMOTED_DIGEST: ${{ steps.image.outputs.digest }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"reth_bump_image_ready\",
+              \"data\": {
+                \"sha\": \"${COMMIT_SHA}\",
+                \"tag\": \"${IMMUTABLE_TAG}\",
+                \"branch\": \"${RETH_BUMP_BRANCH}\",
+                \"digest\": \"${PROMOTED_DIGEST}\",
+                \"workflow_run_id\": ${WORKFLOW_RUN_ID}
+              }
+            }"

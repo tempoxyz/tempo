@@ -1,0 +1,34 @@
+merge:
+  chain_id: 1337
+
+  gas:
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+
+  accounts:
+    users:
+      mnemonic: "test test test test test test test test test test test junk"
+      range:
+        - 0
+        - ${TXGEN_ACCOUNTS}
+
+  artifacts:
+    ERC20: "../../erc20.abi.json"
+
+  templates:
+    tip20_transfer:
+      type: tempo
+      from:
+        pool: users
+        select: random
+      max_fee_per_gas: 100000000000
+      max_priority_fee_per_gas: 100000000000
+      call:
+        to:
+          choice: ${TXGEN_TIP20_TOKENS}
+        abi: ERC20
+        function: transfer
+
+  mix:
+    - template: tip20_transfer
+      weight: 100

@@ -967,7 +967,9 @@ impl Dealer {
                     .await
                     .wrap_err("unable to append ack to journal")?;
             }
-            None => bail!("dealer was already finalized, dropping ack of player `{player}`"),
+            None => {
+                bail!("dealer was already finalized, dropping ack of player `{player}`");
+            }
         }
         Ok(())
     }

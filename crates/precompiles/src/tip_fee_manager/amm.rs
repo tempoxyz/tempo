@@ -1,8 +1,9 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, StorageAction, StorageCtx, StorageKey},
+    storage::{ContractStorage, Handler, StorageAction, StorageCtx, StorageKey},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip403_registry::AuthRole,
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -233,15 +234,13 @@ impl TipFeeManager {
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
-        TIP20Token::from_address(validator_token)?.system_transfer_from(
-            self.address,
-            msg_sender,
-            amount_in,
-        )?;
+        let mut validator_token = TIP20Token::from_address(validator_token)?;
+        validator_token.system_transfer_from(self.address, msg_sender, amount_in)?;
 
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
         StorageCtx.set_tip1060_storage_credit_minting(false);
-        TIP20Token::from_address(user_token)?.transfer(
+        let mut user_token = TIP20Token::from_address(user_token)?;
+        user_token.transfer(
             self.address,
             ITIP20::transferCall {
                 to,
@@ -250,8 +249,8 @@ impl TipFeeManager {
         )?;
 
         self.emit_event(TIPFeeAMMEvent::rebalance_swap(
-            user_token,
-            validator_token,
+            user_token.address(),
+            validator_token.address(),
             msg_sender,
             amount_in,
             amount_out,
@@ -298,7 +297,18 @@ impl TipFeeManager {
         validate_usd_currency(user_token)?;
         validate_usd_currency(validator_token)?;
 
-        let pool_id = self.pool_id(user_token, validator_token);
+        let user_token = TIP20Token::from_address(user_token)?;
+        let mut validator_token = TIP20Token::from_address(validator_token)?;
+        if self.storage.spec().is_t8() {
+            user_token.ensure_authorized_as(&[
+                (msg_sender, AuthRole::sender()),
+                (self.address, AuthRole::recipient()),
+                (to, AuthRole::recipient()),
+            ])?;
+            validator_token.ensure_authorized_as(&[(to, AuthRole::recipient())])?;
+        }
+
+        let pool_id = self.pool_id(user_token.address(), validator_token.address());
         let mut pool = self.pools[pool_id].read()?;
         let mut total_supply = self.get_total_supply(pool_id)?;
 
@@ -346,7 +356,7 @@ impl TipFeeManager {
         }
 
         // Transfer validator tokens from user
-        let _ = TIP20Token::from_address(validator_token)?.system_transfer_from(
+        let _ = validator_token.system_transfer_from(
             self.address,
             msg_sender,
             amount_validator_token,
@@ -385,8 +395,8 @@ impl TipFeeManager {
         self.emit_event(TIPFeeAMMEvent::mint(
             msg_sender,
             to,
-            user_token,
-            validator_token,
+            user_token.address(),
+            validator_token.address(),
             amount_validator_token,
             liquidity,
         ))?;
@@ -427,7 +437,14 @@ impl TipFeeManager {
         validate_usd_currency(user_token)?;
         validate_usd_currency(validator_token)?;
 
-        let pool_id = self.pool_id(user_token, validator_token);
+        let mut user_token = TIP20Token::from_address(user_token)?;
+        let mut validator_token = TIP20Token::from_address(validator_token)?;
+        if self.storage.spec().is_t8() {
+            user_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
+            validator_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
+        }
+
+        let pool_id = self.pool_id(user_token.address(), validator_token.address());
         // Check user has sufficient liquidity
         let balance = self.get_liquidity_balances(pool_id, msg_sender)?;
         if balance < liquidity {
@@ -490,7 +507,7 @@ impl TipFeeManager {
         self.pools[pool_id].write(pool)?;
 
         // Transfer tokens to user
-        let _ = TIP20Token::from_address(user_token)?.transfer(
+        let _ = user_token.transfer(
             self.address,
             ITIP20::transferCall {
                 to,
@@ -498,7 +515,7 @@ impl TipFeeManager {
             },
         )?;
 
-        let _ = TIP20Token::from_address(validator_token)?.transfer(
+        let _ = validator_token.transfer(
             self.address,
             ITIP20::transferCall {
                 to,
@@ -509,8 +526,8 @@ impl TipFeeManager {
         // Emit Burn event
         self.emit_event(TIPFeeAMMEvent::burn(
             msg_sender,
-            user_token,
-            validator_token,
+            user_token.address(),
+            validator_token.address(),
             amount_user_token,
             amount_validator_token,
             liquidity,
@@ -702,14 +719,16 @@ impl TipFeeManager {
 mod tests {
     use alloy::primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
     use crate::{
+        TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip_fee_manager::TIPFeeAMMError,
+        tip20::TIP20Error,
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
     /// Integer square root using the Babylonian method
@@ -743,6 +762,30 @@ mod tests {
         let liquidity = sqrt(user_amount * validator_amount);
         amm.total_supply[pool_id].write(liquidity)?;
         Ok(pool_id)
+    }
+
+    fn set_whitelist_policy(
+        token: &mut TIP20Token,
+        admin: Address,
+        accounts: Vec<Address>,
+    ) -> Result<u64> {
+        let mut registry = TIP403Registry::new();
+        registry.initialize()?;
+        let policy_id = registry.create_policy_with_accounts(
+            admin,
+            ITIP403Registry::createPolicyWithAccountsCall {
+                admin,
+                policyType: ITIP403Registry::PolicyType::WHITELIST,
+                accounts,
+            },
+        )?;
+        token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
+        Ok(policy_id)
     }
 
     #[test]
@@ -868,6 +911,137 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_requires_fee_manager_recipient_on_user_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, U256::from(10000))
+                .apply()?;
+            set_whitelist_policy(&mut user_token, admin, vec![admin])?;
+
+            let mut amm = TipFeeManager::new();
+            let result = amm.mint(
+                admin,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mint_requires_caller_sender_on_user_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let admin = Address::random();
+        let caller = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(caller, U256::from(10000))
+                .apply()?;
+
+            set_whitelist_policy(&mut user_token, admin, vec![admin, TIP_FEE_MANAGER_ADDRESS])?;
+
+            let mut amm = TipFeeManager::new();
+            let result = amm.mint(
+                caller,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mint_requires_to_recipient_on_user_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let admin = Address::random();
+        let to = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, U256::from(10000))
+                .apply()?;
+
+            set_whitelist_policy(&mut user_token, admin, vec![admin, TIP_FEE_MANAGER_ADDRESS])?;
+
+            let mut amm = TipFeeManager::new();
+            let result = amm.mint(
+                admin,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                to,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mint_requires_to_recipient_on_validator_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let admin = Address::random();
+        let to = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, U256::from(10000))
+                .apply()?;
+
+            set_whitelist_policy(
+                &mut user_token,
+                admin,
+                vec![admin, TIP_FEE_MANAGER_ADDRESS, to],
+            )?;
+            set_whitelist_policy(
+                &mut validator_token,
+                admin,
+                vec![admin, TIP_FEE_MANAGER_ADDRESS],
+            )?;
+
+            let mut amm = TipFeeManager::new();
+            let result = amm.mint(
+                admin,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                to,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_burn_rejects_non_usd_tokens() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -901,6 +1075,96 @@ mod tests {
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
             ));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_requires_lp_sender_authorization_on_both_tokens() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let admin = Address::random();
+        let lp = Address::random();
+        let to = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
+
+            set_whitelist_policy(&mut user_token, admin, vec![TIP_FEE_MANAGER_ADDRESS, to])?;
+            set_whitelist_policy(
+                &mut validator_token,
+                admin,
+                vec![lp, TIP_FEE_MANAGER_ADDRESS, to],
+            )?;
+
+            let mut amm = TipFeeManager::new();
+            let pool_id = setup_pool_with_liquidity(
+                &mut amm,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                U256::from(10000),
+            )?;
+            amm.set_liquidity_balances(pool_id, lp, U256::from(10000))?;
+
+            let result = amm.burn(
+                lp,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(1000),
+                to,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_requires_lp_sender_authorization_on_validator_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let admin = Address::random();
+        let lp = Address::random();
+        let to = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
+
+            set_whitelist_policy(
+                &mut user_token,
+                admin,
+                vec![lp, TIP_FEE_MANAGER_ADDRESS, to],
+            )?;
+            set_whitelist_policy(
+                &mut validator_token,
+                admin,
+                vec![TIP_FEE_MANAGER_ADDRESS, to],
+            )?;
+
+            let mut amm = TipFeeManager::new();
+            let pool_id = setup_pool_with_liquidity(
+                &mut amm,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(10000),
+                U256::from(10000),
+            )?;
+            amm.set_liquidity_balances(pool_id, lp, U256::from(10000))?;
+
+            let result = amm.burn(
+                lp,
+                user_token.address(),
+                validator_token.address(),
+                U256::from(1000),
+                to,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
             Ok(())
         })
     }

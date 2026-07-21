@@ -74,7 +74,7 @@ jobs:
       warmup: ${{ steps.config.outputs.warmup }}
       samply: ${{ steps.config.outputs.samply }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts
@@ -145,10 +145,13 @@ jobs:
 
       - name: Alert on stale nightly
         if: steps.refs.outputs.is-stale == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.slack == 'never')
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
           SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+          STALE_AGE_HOURS: ${{ steps.refs.outputs.stale-age-hours }}
+          NIGHTLY_CREATED: ${{ steps.refs.outputs.nightly-created }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         with:
           script: |
             const token = process.env.SLACK_BENCH_BOT_TOKEN;
@@ -158,11 +161,11 @@ jobs:
               return;
             }
 
-            const repo = '${{ github.repository }}';
+            const repo = `${context.repo.owner}/${context.repo.repo}`;
             const runUrl = `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
-            const ageHours = '${{ steps.refs.outputs.stale-age-hours }}';
-            const created = '${{ steps.refs.outputs.nightly-created }}';
-            const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+            const ageHours = process.env.STALE_AGE_HOURS;
+            const created = process.env.NIGHTLY_CREATED;
+            const featureRef = process.env.FEATURE_REF;
             const shortSha = featureRef.slice(0, 8);
             const blocks = [
               {
