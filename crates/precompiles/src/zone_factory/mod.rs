@@ -26,7 +26,7 @@ use portal::ZonePortalStorage;
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
 /// Maximum number of equal sequencers in a zone settlement set.
-pub const MAX_SEQUENCERS: usize = 32;
+pub const MAX_SEQUENCERS: usize = 8;
 
 /// Native ZoneFactory storage.
 ///
@@ -425,7 +425,7 @@ mod tests {
                 (vec![SEQUENCER_A, SEQUENCER_A], 1),
                 (vec![SEQUENCER_A], 0),
                 (vec![SEQUENCER_A], 2),
-                ((1u8..=33).map(Address::with_last_byte).collect(), 1),
+                ((1u8..=9).map(Address::with_last_byte).collect(), 1),
             ] {
                 let mut params = create_params(PATH_USD_ADDRESS);
                 params.sequencers = sequencers;

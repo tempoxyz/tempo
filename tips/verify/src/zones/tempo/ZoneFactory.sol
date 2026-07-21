@@ -20,7 +20,7 @@ abstract contract ZoneFactory is IZoneFactory {
     uint256 public constant ZONE_CREATION_GAS = 15_000_000;
 
     /// @notice Maximum number of equal sequencers in a zone's settlement set.
-    uint256 public constant MAX_SEQUENCERS = 32;
+    uint256 public constant MAX_SEQUENCERS = 8;
 
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
