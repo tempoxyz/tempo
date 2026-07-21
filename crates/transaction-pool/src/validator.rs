@@ -8,7 +8,7 @@ use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
-use reth_chainspec::ChainSpecProvider;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
@@ -34,10 +34,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
 };
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
@@ -116,7 +113,8 @@ pub struct TempoTransactionValidator<Client> {
 
 impl<Client> TempoTransactionValidator<Client>
 where
-    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + StateProviderFactory,
 {
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
@@ -670,7 +668,8 @@ where
 
 impl<Client> TransactionValidator for TempoTransactionValidator<Client>
 where
-    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + StateProviderFactory,
 {
     type Transaction = TempoPooledTransaction;
     type Block = Block;
@@ -812,8 +811,9 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tempo_chainspec::spec::{
-        MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP,
+    use tempo_chainspec::{
+        TempoChainSpec,
+        spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_precompiles::{
         PATH_USD_ADDRESS,

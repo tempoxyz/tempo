@@ -48,8 +48,8 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction,
-    TempoStateAccess,
+    ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason,
+    TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]

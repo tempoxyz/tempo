@@ -3,6 +3,7 @@ name: Build reth-bump image
 permissions: {}
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - reth-auto-bump
@@ -19,6 +20,7 @@ jobs:
   build:
     name: Build candidate images
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write

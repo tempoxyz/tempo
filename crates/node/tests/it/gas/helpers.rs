@@ -307,7 +307,7 @@ impl TempoCalls {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        eyre::bail!("timed out waiting for tempo calls receipt {tx_hash}")
+        eyre::bail!("timed out waiting for tempo calls receipt {tx_hash}");
     }
 }
 

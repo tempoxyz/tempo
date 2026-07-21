@@ -5,7 +5,12 @@ const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_TIP20_PIECES_DIR = "contrib/bench/txgen/presets/tip20"
 const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "tip20"]
-const TXGEN_HELPER_ALWAYS_FUND_PRESETS = ["dex"]
+const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
+    "dex"
+    "neobank-deposit"
+    "neobank-swap"
+    "neobank-withdraw"
+]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
 const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
@@ -293,7 +298,6 @@ def --env txgen-configure-fee-amm-env [spec_path: string] {
     }
     $env.TXGEN_FEE_AMM_LIQUIDITY_AMOUNT = ($amount | into string)
 }
-
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
     let escaped = ($s | str replace -a "'" "'\"'\"'")

@@ -10,6 +10,7 @@ use futures::{
     FutureExt as _, StreamExt as _,
     stream::{self, BoxStream, Fuse},
 };
+use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{
     TempoFullNode,
     rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query},
@@ -21,7 +22,11 @@ use tokio::{
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tracing::{debug, debug_span, info, instrument};
 
-use crate::{feed::FeedStateHandle, utils::OptionFuture};
+use crate::{
+    consensus::{Block, Digest},
+    feed::FeedStateHandle,
+    utils::OptionFuture,
+};
 
 use super::ingress::{Mailbox, Message};
 
@@ -51,8 +56,7 @@ pub struct Actor<TContext> {
     config: Config,
     event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
-
-    waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
+    waiters: Vec<Message>,
 }
 
 impl<TContext> Actor<TContext>
@@ -108,20 +112,26 @@ where
                     }
                 }
 
-                Some(msg) = self.mailbox.recv() => {
-                    match msg {
-                        super::ingress::Message::GetFinalization { height, response, } => {
-                            self.waiters.push((height, response));
-                        }
-                    }
+                Some(request) = self.mailbox.recv() => {
+                    self.waiters.push(request);
                 }
             );
             if connected {
-                for (height, response) in self.waiters.drain(..) {
-                    let feed = self.config.feed.clone();
-                    self.context
-                        .with_label("get_finalization")
-                        .spawn(move |_| get_finalization(feed, height, response));
+                for request in self.waiters.drain(..) {
+                    match request {
+                        Message::GetFinalization { height, response } => {
+                            let feed = self.config.feed.clone();
+                            self.context
+                                .with_label("get_finalization")
+                                .spawn(move |_| get_finalization(feed, height, response));
+                        }
+                        Message::GetBlock { digest, response } => {
+                            let execution_node = self.config.execution_node.clone();
+                            self.context
+                                .with_label("get_block")
+                                .spawn(move |_| get_block(execution_node, digest, response));
+                        }
+                    }
                 }
             }
         }
@@ -145,5 +155,21 @@ async fn get_finalization(
     };
     response
         .send(finalization)
+        .map_err(|_| eyre::eyre!("receiver went away"))
+}
+
+#[instrument(skip_all, fields(%digest), err)]
+async fn get_block(
+    execution_node: Arc<TempoFullNode>,
+    digest: Digest,
+    response: oneshot::Sender<Option<Block>>,
+) -> eyre::Result<()> {
+    let block = execution_node
+        .provider
+        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
+        .map_err(eyre::Report::new)?
+        .map(|block| Block::from_execution_block_unchecked(block, None));
+    response
+        .send(block)
         .map_err(|_| eyre::eyre!("receiver went away"))
 }
