@@ -140,7 +140,7 @@ impl<TUpstream> Config<TUpstream> {
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
             resolver::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
                 upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
             },
