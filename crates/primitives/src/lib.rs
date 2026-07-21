@@ -7,7 +7,10 @@
 pub use alloy_consensus::Header;
 
 mod address;
-pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
+pub use address::{
+    MasterId, TEMPORARY_STORAGE_EPOCH_LENGTH, TempoAddressExt, TemporaryStorageAccount, UserTag,
+    is_tip20_prefix,
+};
 pub mod ed25519;
 
 #[cfg(feature = "evm")]

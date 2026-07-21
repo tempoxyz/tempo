@@ -1,7 +1,8 @@
 //! EVM storage abstraction layer for Tempo precompile contracts.
 //!
 //! Provides traits and types for reading/writing contract state from EVM storage,
-//! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
+//! including persistent (SLOAD/SSTORE), transient (TLOAD/TSTORE), and TIP-1040
+//! [`temporary`] operations.
 
 pub mod actions;
 pub use actions::{StorageAction, StorageActions};
@@ -9,6 +10,7 @@ pub use actions::{StorageAction, StorageActions};
 pub mod evm;
 pub use evm::SstoreTransitionFlags;
 pub mod hashmap;
+pub mod temporary;
 
 pub mod thread_local;
 use alloy::primitives::keccak256;
@@ -28,7 +30,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -68,6 +70,41 @@ pub trait PrecompileStorageProvider {
 
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Stores `value` for `namespace` under `key` in [TIP-1040] temporary storage.
+    ///
+    /// A complete TIP-1040 store: writes `keccak256(namespace || key)` in the current
+    /// epoch's account and charges the TIP-1040 gas schedule (see [`temporary`]).
+    /// Bypasses TIP-1060 storage-credit accounting (expiring storage must neither mint
+    /// nor spend credits). Like [`sstore`](Self::sstore), static-call protection is the
+    /// dispatcher's job (`mutate`/`mutate_void`), not this method's.
+    ///
+    /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+    fn temporary_store(&mut self, namespace: Address, key: B256, value: U256) -> Result<()>;
+
+    /// Loads `namespace`'s [TIP-1040] temporary storage value for `key`, checking the
+    /// current epoch and falling back to the previous one. Returns zero if the key is
+    /// unset in both. Each accessed slot is charged standard SLOAD pricing.
+    ///
+    /// [TIP-1040]: <https://docs.tempo.xyz/protocol/tip1040>
+    fn temporary_load(&mut self, namespace: Address, key: B256) -> Result<U256> {
+        let slot = temporary::slot(namespace, key);
+        let block_number = self.block_env().number.saturating_to::<u64>();
+
+        let value = self.sload(
+            TemporaryStorageAccount::for_block(block_number).address(),
+            slot,
+        )?;
+        let in_first_epoch = block_number < tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH;
+        if !value.is_zero() || in_first_epoch {
+            return Ok(value);
+        }
+        // One epoch length back lands in the previous epoch's account.
+        let previous = TemporaryStorageAccount::for_block(
+            block_number - tempo_primitives::TEMPORARY_STORAGE_EPOCH_LENGTH,
+        );
+        self.sload(previous.address(), slot)
+    }
 
     /// Increments a persistent storage slot by `delta`.
     ///

@@ -1,9 +1,9 @@
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction, temporary},
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use bitflags::bitflags;
 use revm::{
@@ -14,7 +14,7 @@ use revm::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -385,6 +385,35 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.sstore_inner(address, key, value, |result| {
             StorageAction::Sstore(address, key, result.present_value, value)
         })
+    }
+
+    #[inline]
+    fn temporary_store(
+        &mut self,
+        namespace: Address,
+        key: B256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let slot = temporary::slot(namespace, key);
+        let block_number = self.block_env().number.saturating_to::<u64>();
+        let address = TemporaryStorageAccount::for_block(block_number).address();
+
+        // Pre-charge the minimum store cost before touching storage, and skip the
+        // expensive cold load when the remaining gas cannot cover a cold access — every
+        // cold store path charges at least that much. Mirrors the metered SSTORE path.
+        self.deduct_gas(temporary::STORE_GAS_EXISTING_WARM)?;
+        let skip_cold_load =
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost();
+        let result = self.sstore_journal(address, slot, value, skip_cold_load)?;
+        self.actions.record(StorageAction::Sstore(
+            address,
+            slot,
+            result.data.present_value,
+            value,
+        ));
+        self.deduct_gas(
+            temporary::store_gas(&result.data, result.is_cold) - temporary::STORE_GAS_EXISTING_WARM,
+        )
     }
 
     #[inline]

@@ -525,6 +525,19 @@ where
         Ok(())
     }
 
+    fn temporary_store(
+        &mut self,
+        namespace: Address,
+        key: B256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let slot = tempo_precompiles::storage::temporary::slot(namespace, key);
+        let block_number = self.block_env.number.saturating_to::<u64>();
+        let address = tempo_primitives::TemporaryStorageAccount::for_block(block_number).address();
+        self.overlay.insert((address, slot), value);
+        Ok(())
+    }
+
     fn tstore(
         &mut self,
         _address: Address,

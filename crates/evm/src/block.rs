@@ -30,11 +30,11 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TEMPORARY_STORAGE_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    subblock::PartialValidatorKey,
+    TemporaryStorageAccount, subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
@@ -221,6 +221,18 @@ where
         &mut self,
         address: Address,
     ) -> Result<(), BlockExecutionError> {
+        self.deploy_marker_at_boundary(address, Bytecode::new_legacy([0xef].into()))
+    }
+
+    /// Deploys marker bytecode to an address if it doesn't already have code.
+    ///
+    /// This also dispatches the state change to the system caller's state hook so that the
+    /// sparse trie task is aware of the change.
+    fn deploy_marker_at_boundary(
+        &mut self,
+        address: Address,
+        code: Bytecode,
+    ) -> Result<(), BlockExecutionError> {
         let info = self
             .inner
             .evm
@@ -230,7 +242,6 @@ where
             .unwrap_or_default();
         if info.is_empty_code_hash() {
             let mut account = Account::from(info);
-            let code = Bytecode::new_legacy([0xef].into());
             account.info.code_hash = code.hash_slow();
             account.info.code = Some(code);
             account.mark_touch();
@@ -580,6 +591,18 @@ where
         }
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
+        }
+        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(TEMPORARY_STORAGE_ADDRESS)?;
+
+            // Keep the TIP-1040 epoch account non-empty so EIP-161 state clear can't drop it.
+            // The marker bytes are the preimage of the spec's `EPOCH_ACCOUNT_CODE_HASH`.
+            let block_number = self.evm().block().number.saturating_to::<u64>();
+            let epoch_account = TemporaryStorageAccount::for_block(block_number);
+            self.deploy_marker_at_boundary(
+                epoch_account.address(),
+                Bytecode::new_legacy(TemporaryStorageAccount::MARKER_CODE.into()),
+            )?;
         }
 
         Ok(())
@@ -1905,6 +1928,34 @@ mod tests {
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_temporary_storage_code() {
+        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(TEMPORARY_STORAGE_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+
+        // The current epoch's storage account must also carry the marker, otherwise it is
+        // an empty touched account and EIP-161 state clear drops its storage at commit.
+        // Its code hash is TIP-1040's `EPOCH_ACCOUNT_CODE_HASH`.
+        let epoch_account = TemporaryStorageAccount::for_block(0).address();
+        let acc = db.load_cache_account(epoch_account).unwrap();
+        let info = acc.account_info().unwrap();
+        assert_eq!(
+            info.code_hash,
+            alloy_primitives::keccak256(TemporaryStorageAccount::MARKER_CODE)
+        );
     }
 
     #[test]

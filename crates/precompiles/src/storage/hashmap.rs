@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, U256};
 use revm::{
     context::{BlockEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::GasParams,
@@ -7,11 +7,11 @@ use revm::{
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TemporaryStorageAccount};
 
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, SstoreTransitionFlags},
+    storage::{PrecompileStorageProvider, SstoreTransitionFlags, temporary},
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
@@ -158,6 +158,23 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             sstore_storage_credits(self, address, Some(key), &state_load)?;
         }
 
+        Ok(())
+    }
+
+    /// NOTE: unmetered like all `HashMapStorageProvider` operations — gas assertions
+    /// must run against the journal-backed
+    /// [`EvmPrecompileStorageProvider`](super::evm::EvmPrecompileStorageProvider).
+    fn temporary_store(
+        &mut self,
+        namespace: Address,
+        key: B256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let slot = temporary::slot(namespace, key);
+        let block_number = self.block_env.number.saturating_to::<u64>();
+        let address = TemporaryStorageAccount::for_block(block_number).address();
+        self.counter_sstore += 1;
+        self.internals.insert((address, slot), value);
         Ok(())
     }
 
@@ -370,6 +387,11 @@ impl HashMapStorageProvider {
     /// Overrides the block timestamp.
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.block_env.timestamp = timestamp;
+    }
+
+    /// Overrides the static-call flag.
+    pub fn set_is_static(&mut self, is_static: bool) {
+        self.is_static = is_static;
     }
 
     /// Overrides the block beneficiary (coinbase).
