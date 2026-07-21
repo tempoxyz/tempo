@@ -31,7 +31,7 @@ use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
-    self, Database, EvmEnv as EthEvmEnv,
+    self, EvmEnv as EthEvmEnv,
     block::BlockExecutorFactory,
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
@@ -97,16 +97,6 @@ impl TempoEvmConfig {
     /// Returns the mainnet EVM config.
     pub fn mainnet() -> Self {
         Self::new(Arc::new(TempoChainSpec::mainnet()))
-    }
-}
-
-impl ConfigureTempoPoolEvm for TempoEvmConfig {
-    fn pool_evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error> {
-        ConfigureEvm::evm_env(self, header)
-    }
-
-    fn pool_evm<DB: Database>(&self, db: DB, env: EvmEnv) -> impl TempoPoolValidationEvm<DB = DB> {
-        self.evm_with_env(db, env)
     }
 }
 

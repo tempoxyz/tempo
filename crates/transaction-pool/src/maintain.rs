@@ -5,6 +5,7 @@ use crate::{
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
+    validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
@@ -24,7 +25,6 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
-use tempo_evm::ConfigureTempoPoolEvm;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
 };

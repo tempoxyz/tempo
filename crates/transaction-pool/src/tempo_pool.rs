@@ -3,9 +3,12 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
-    validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool,
+    validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -30,7 +33,7 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::{ConfigureTempoPoolEvm, TempoEvmConfig};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,

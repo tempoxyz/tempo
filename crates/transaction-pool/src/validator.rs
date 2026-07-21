@@ -9,6 +9,7 @@ use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
+use reth_evm::{ConfigureEvm, EvmEnvFor, EvmFactory, EvmFor, block::BlockExecutorFactory};
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -31,13 +32,13 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::{ConfigureTempoPoolEvm, TempoEvmConfig, TempoPoolValidationEvm};
+use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
     storage::StorageActions,
 };
 use tempo_primitives::{
-    Block, TempoHeader,
+    Block, TempoHeader, TempoPrimitives,
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
 };
@@ -129,7 +130,7 @@ where
             .expect("latest header is None");
         let evm_env = inner
             .evm_config()
-            .pool_evm_env(latest_header.header())
+            .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
         let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
         Self {
@@ -341,13 +342,16 @@ where
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
+        let db = StateCacheDb::new(
+            &cached_state,
+            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+        );
         let evm_env = self.cached_evm_env.read().clone();
 
         // Create one throwaway EVM through the configured factory for the whole batch. The
         // capability hook owns all pool-only configuration and per-transaction cleanup while the
         // EVM and tip-scoped state cache keep repeated reads warm.
-        let mut evm = self.inner.evm_config().pool_evm(&mut db, evm_env);
+        let mut evm = self.inner.evm_config().pool_evm(db, evm_env);
 
         transactions
             .into_iter()
@@ -733,7 +737,7 @@ where
         let evm_env = self
             .inner
             .evm_config()
-            .pool_evm_env(new_tip_block.header())
+            .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
@@ -775,6 +779,49 @@ where
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
         Ok(Some(Bytecode(self.db.code_by_hash_ref(*code_hash)?)))
+    }
+}
+
+/// Configuration capable of constructing an EVM with Tempo transaction-pool semantics.
+///
+/// This pins pool validation to Tempo's EVM environment while allowing the configured EVM
+/// implementation to adapt its database and precompiles.
+pub trait ConfigureTempoPoolEvm:
+    ConfigureEvm<
+        Primitives = TempoPrimitives,
+        BlockExecutorFactory: BlockExecutorFactory<
+            EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
+        >,
+    > + 'static
+{
+    fn pool_evm<'a>(
+        &self,
+        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        evm_env: EvmEnvFor<Self>,
+    ) -> impl TempoPoolValidationEvm<
+        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+    > + 'a;
+}
+
+impl<T> ConfigureTempoPoolEvm for T
+where
+    T: ConfigureEvm<
+            Primitives = TempoPrimitives,
+            BlockExecutorFactory: BlockExecutorFactory<
+                EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
+            >,
+        > + 'static,
+    for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
+        TempoPoolValidationEvm,
+{
+    fn pool_evm<'a>(
+        &self,
+        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        evm_env: EvmEnvFor<Self>,
+    ) -> impl TempoPoolValidationEvm<
+        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+    > + 'a {
+        self.evm_with_env(db, evm_env)
     }
 }
 
