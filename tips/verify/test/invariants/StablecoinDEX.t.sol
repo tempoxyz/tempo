@@ -9,7 +9,7 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @title StablecoinDEX Invariant Tests
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
 /// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
-/// Pinned to T8 so TEMPO-DEX7 covers quote/swap parity.
+/// Pinned to T9 so TEMPO-DEX7 covers quote/swap parity.
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs
@@ -19,7 +19,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// and tick consistency checks. Kept small to concentrate liquidity so orders interact
     /// during swaps. Dense cluster [-30..30] enables multi-tick swap traversal through both
     /// bitmap words (symmetric across the word boundary at 0). Also covers: boundaries
-    /// (±2000) and int8 bitmap boundary (±1280 → compressed ±128).
+    /// (±2000) and int9 bitmap boundary (±1280 → compressed ±128).
     int16[11] private _ticks = [int16(-2000), -1280, -30, -20, -10, 0, 10, 20, 30, 1280, 2000];
 
     /// @dev Expected next order ID, used to verify TEMPO-DEX1
@@ -895,7 +895,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     )
         internal
     {
-        // TEMPO-DEX7: Quote should match execution (T8+).
+        // TEMPO-DEX7: Quote should match execution (T9+).
         uint128 quotedOut;
         bool quoteSucceeded;
         try exchange.quoteSwapExactAmountIn(before.tokenIn, before.tokenOut, amount) returns (
@@ -943,7 +943,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 _assertSwapBalanceChanges(swapper, before, amount, amountOut);
             }
 
-            // TEMPO-DEX7: Quote matches execution (T8+).
+            // TEMPO-DEX7: Quote matches execution (T9+).
             if (quoteSucceeded) {
                 assertEq(amountOut, quotedOut, "TEMPO-DEX7: quote mismatch for swapExactAmountIn");
             }
@@ -1011,7 +1011,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 _assertSwapBalanceChanges(swapper, before, amountIn, amount);
             }
 
-            // TEMPO-DEX7: Quote matches execution (T8+).
+            // TEMPO-DEX7: Quote matches execution (T9+).
             if (quoteSucceeded) {
                 assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
             }
