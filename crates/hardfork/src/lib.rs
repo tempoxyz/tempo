@@ -89,11 +89,8 @@ macro_rules! tempo_hardfork {
         /// [`TempoHardfork`] without depending on Tempo's chainspec implementation.
         #[macro_export]
         macro_rules! tempo_post_genesis_hardforks {
-            (@items $callback:ident) => {
-                $callback! { $($variant),* }
-            };
             ($callback:ident) => {
-                $callback!($($variant),*)
+                $callback! { $($variant),* }
             };
         }
 

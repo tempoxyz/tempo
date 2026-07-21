@@ -176,6 +176,7 @@ reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "01d340
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400", default-features = false }
+reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
@@ -197,6 +198,7 @@ reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "01d34
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
+reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "01d3400" }
