@@ -8,6 +8,9 @@ pub use IZonePortal::IZonePortalEvents as ZonePortalEvent;
 /// Native TIP-1091 ZoneFactory precompile address.
 pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF2000000000000000000000000000000000000");
 
+/// Initial ZoneFactory owner installed by the T9 activation.
+pub const INITIAL_FACTORY_OWNER: Address = address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14");
+
 /// Protocol-managed shared ZonePortal implementation address.
 pub const ZONE_PORTAL_IMPL_ADDRESS: Address =
     address!("0x5AD1000000000000000000000000000000000000");

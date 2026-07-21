@@ -28,7 +28,7 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
 };
@@ -251,12 +251,10 @@ where
     /// Installs and initializes the TIP-1091 ZoneFactory when T9 first becomes active.
     ///
     /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
-    /// configured by the chainspec.
+    /// fixed T9 protocol constants.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let owner = self.inner.spec.info.zone_factory_owner().ok_or_else(|| {
-            BlockValidationError::msg("missing zoneFactoryOwner for T9 activation")
-        })?;
-        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        let factory_config =
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
     }
 
@@ -2031,12 +2029,11 @@ mod tests {
 
     #[test]
     fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let expected_owner = chainspec.info.zone_factory_owner().unwrap();
         assert_eq!(
-            expected_owner,
+            INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2066,7 +2063,7 @@ mod tests {
             Bytes::from_static(&[0xef])
         );
         let expected_factory_config =
-            U256::from(1) | (U256::from_be_slice(expected_owner.as_slice()) << u32::BITS);
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
             factory.storage_slot(U256::ZERO),
             Some(expected_factory_config)
@@ -2085,23 +2082,6 @@ mod tests {
                 "shared runtimes are installed through the factory, not the T9 state hook"
             );
         }
-    }
-
-    #[test]
-    fn test_deploy_zone_factory_at_boundary_requires_chainspec_owner() {
-        let mut genesis = DEV.genesis().clone();
-        let _ = genesis
-            .config
-            .extra_fields
-            .remove_deserialized::<Address>("zoneFactoryOwner");
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .build(&mut db, &chainspec);
-
-        let err = executor.deploy_zone_factory_at_boundary().unwrap_err();
-        assert!(err.to_string().contains("missing zoneFactoryOwner"));
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
