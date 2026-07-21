@@ -14,7 +14,7 @@ use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 use pool::EvmEnv;
-pub use pool::{ConfigureTempoPoolEvm, TempoPoolValidationEvm};
+pub use pool::{TempoPoolValidationEvm};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;

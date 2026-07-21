@@ -1,8 +1,6 @@
 use crate::{TempoBlockEnv, TempoInvalidTransaction};
-use alloy_evm::{Database, Evm, revm::context::result::EVMError};
-use reth_evm::ConfigureEvm;
+use alloy_evm::{Evm, revm::context::result::EVMError};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoHeader, TempoPrimitives};
 use tempo_revm::{TempoTxEnv, ValidationContext};
 
 pub(crate) type EvmEnv = alloy_evm::EvmEnv<TempoHardfork, TempoBlockEnv>;
@@ -29,16 +27,4 @@ pub trait TempoPoolValidationEvm: Evm<Tx = TempoTxEnv> {
         ValidationContext,
         EVMError<<<Self as Evm>::DB as alloy_evm::revm::Database>::Error, TempoInvalidTransaction>,
     >;
-}
-
-/// Configuration capable of constructing an EVM with Tempo transaction-pool semantics.
-///
-/// This pins pool validation to Tempo's EVM environment while allowing the configured EVM
-/// implementation to adapt its database and precompiles.
-pub trait ConfigureTempoPoolEvm: ConfigureEvm<Primitives = TempoPrimitives> + 'static {
-    /// Builds the Tempo environment used by pool validation for `header`.
-    fn pool_evm_env(&self, header: &TempoHeader) -> Result<EvmEnv, Self::Error>;
-
-    /// Creates the configured EVM with the pool-validation capability.
-    fn pool_evm<DB: Database>(&self, db: DB, env: EvmEnv) -> impl TempoPoolValidationEvm<DB = DB>;
 }
