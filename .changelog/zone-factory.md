@@ -6,4 +6,4 @@ tempo-precompiles: minor
 tempo-xtask: minor
 ---
 
-Implemented TIP-1091 with a native permissioned ZoneFactory, deterministic ZonePortal proxy accounts, and canonical Zones runtimes loaded by pinned hash from verified deployments at T9.
+Implemented TIP-1091 with a native permissioned ZoneFactory, deterministic ZonePortal proxy accounts, and owner-managed runtimes copied from verified source deployments.
