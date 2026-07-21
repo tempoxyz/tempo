@@ -20,7 +20,7 @@ abstract contract ZoneFactory is IZoneFactory {
     uint256 public constant ZONE_CREATION_GAS = 15_000_000;
 
     /// @notice Maximum number of equal sequencers in a zone's settlement set.
-    uint256 public constant MAX_SEQUENCERS = 32;
+    uint256 public constant MAX_SEQUENCERS = 8;
 
     /// @notice 12-byte prefix reserved for zone portal vanity addresses.
     bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
@@ -40,9 +40,6 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Runtime suffix for an EIP-1167-style delegatecall proxy.
     bytes15 internal constant PORTAL_PROXY_SUFFIX = 0x5af43d82803e903d91602b57fd5bf3;
 
-    /// @notice Code hash returned by EXTCODEHASH for an existing account with no runtime bytecode.
-    bytes32 internal constant EMPTY_CODE_HASH = keccak256("");
-
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -51,8 +48,11 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Starts at 1, reserving zone ID 0 for potential future use.
     uint32 public override nextZoneId = 1;
 
-    /// @notice Initial value is configured by the T9 activation; exact address TBD.
+    /// @notice Initial value is configured by the T9 activation.
     address public owner;
+
+    /// @notice Whether shared runtime updates have been permanently disabled.
+    bool public override implementationUpdatesLocked;
 
     mapping(uint32 => ZoneInfo) internal _zones;
 
@@ -106,7 +106,6 @@ abstract contract ZoneFactory is IZoneFactory {
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
-            initialToken: params.initialToken,
             admin: params.admin,
             sequencers: params.sequencers,
             threshold: params.threshold,
@@ -135,39 +134,39 @@ abstract contract ZoneFactory is IZoneFactory {
     }
 
     /// @inheritdoc IZoneFactory
+    function lockImplementationUpdates() external {
+        if (msg.sender != owner) revert NotOwner();
+        implementationUpdatesLocked = true;
+    }
+
+    /// @inheritdoc IZoneFactory
     function setPortalImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidPortalImplementation();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
-        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
-            revert InvalidPortalImplementation();
-        }
-
-        emit PortalImplementationUpdated(source, codeHash);
+        emit PortalUpdated(source, codeHash);
     }
 
     /// @inheritdoc IZoneFactory
     function setZoneMessengerImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidZoneMessengerImplementation();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
-        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
-            revert InvalidZoneMessengerImplementation();
-        }
-
-        emit ZoneMessengerImplementationUpdated(source, codeHash);
+        emit MessengerUpdated(source, codeHash);
     }
 
     /// @inheritdoc IZoneFactory
     function setVerifierImplementation(address source) external {
         if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidVerifierImplementation();
 
         bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
-        if (codeHash == bytes32(0) || codeHash == EMPTY_CODE_HASH) {
-            revert InvalidVerifierImplementation();
-        }
-
-        emit VerifierImplementationUpdated(source, codeHash);
+        emit VerifierUpdated(source, codeHash);
     }
 
     /// @notice Returns the deterministic portal vanity address for a zone ID.
@@ -187,11 +186,12 @@ abstract contract ZoneFactory is IZoneFactory {
             revert InvalidSequencerSet();
         }
 
-        address previous;
         for (uint256 i = 0; i < length; ++i) {
             address current = sequencers[i];
-            if (current == address(0) || current <= previous) revert InvalidSequencerSet();
-            previous = current;
+            if (current == address(0)) revert InvalidSequencerSet();
+            for (uint256 j = 0; j < i; ++j) {
+                if (current == sequencers[j]) revert InvalidSequencerSet();
+            }
         }
     }
 
@@ -199,8 +199,7 @@ abstract contract ZoneFactory is IZoneFactory {
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
     /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
-    /// Returns `EXTCODEHASH(source)`: zero for a nonexistent account and
-    /// EMPTY_CODE_HASH for an existing account with no runtime bytecode.
+    /// Returns `EXTCODEHASH(source)` for the emitted update event.
     function _nativeCopyRuntime(
         address source,
         address destination
