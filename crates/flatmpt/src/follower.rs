@@ -269,6 +269,19 @@ pub fn follower(shadow: &'static RwLock<FlatShadow>) -> &'static Follower {
 ///
 /// `TEMPO_FLATMPT_BG_GC=0` disables; `TEMPO_FLATMPT_GC_CHUNK` sets the
 /// victim-regions-per-cycle budget (default 512 = 64 MiB of region reads).
+/// Utilization floor below which gc ignores the idle-window gate
+/// (`TEMPO_FLATMPT_GC_FORCE_UTIL`, default 0.45; engine target is 0.60).
+fn gc_force_util() -> f64 {
+    use std::sync::OnceLock;
+    static V: OnceLock<f64> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("TEMPO_FLATMPT_GC_FORCE_UTIL")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.45)
+    })
+}
+
 fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>, depth: Arc<AtomicUsize>) {
     if std::env::var("TEMPO_FLATMPT_BG_GC").as_deref() == Ok("0") {
         return;
@@ -280,8 +293,23 @@ fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>, depth: Arc<AtomicUsize>) {
     std::thread::Builder::new()
         .name("flatmpt-gc".into())
         .spawn(move || loop {
-            // Only start work in a dead window: no queued applies.
-            if depth.load(Ordering::SeqCst) > 0 {
+            // Only start work in a dead window: no queued applies. Exception:
+            // a sustained flood saturates the follower (the queue never
+            // empties for the whole leg — r155 ran ZERO gc cycles and grew
+            // 90->418G), so below the emergency utilization floor gc runs
+            // regardless; collect is still lock-free and install still
+            // try_writes, so the worst case is disk-bandwidth sharing.
+            let emergency = {
+                let g = match shadow.try_read() {
+                    Some(g) => g,
+                    None => {
+                        std::thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
+                };
+                g.utilization() < gc_force_util()
+            };
+            if !emergency && depth.load(Ordering::SeqCst) > 0 {
                 std::thread::sleep(Duration::from_millis(20));
                 continue;
             }
@@ -316,7 +344,7 @@ fn spawn_bg_gc(shadow: &'static RwLock<FlatShadow>, depth: Arc<AtomicUsize>) {
             let mut batch = Some(batch);
             let deadline = Instant::now() + Duration::from_secs(30);
             while let Some(b) = batch.take() {
-                if depth.load(Ordering::SeqCst) > 0 {
+                if !emergency && depth.load(Ordering::SeqCst) > 0 {
                     if Instant::now() >= deadline {
                         tracing::debug!(target: "flatmpt", regions, items, "bg gc batch dropped (no idle window)");
                         break;

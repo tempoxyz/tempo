@@ -340,6 +340,11 @@ impl FlatShadow {
         &self.db
     }
 
+    /// Active-file utilization of the flat store (gc scheduling input).
+    pub fn utilization(&self) -> f64 {
+        self.db.utilization()
+    }
+
     /// Root of the live flat state.
     pub fn current_root(&self) -> B256 {
         B256::from(self.db.root())
