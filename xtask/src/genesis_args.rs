@@ -201,6 +201,10 @@ pub(crate) struct GenesisArgs {
     /// T9 hardfork activation time.
     #[arg(long, default_value = "0")]
     t9_time: u64,
+
+    /// Initial ZoneFactory owner installed when T9 activates.
+    #[arg(long, default_value = "0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")]
+    zone_factory_owner: Address,
 }
 
 #[derive(Clone, Debug)]
@@ -621,6 +625,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t9Time".to_string(), self.t9_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("zoneFactoryOwner".to_string(), self.zone_factory_owner)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {

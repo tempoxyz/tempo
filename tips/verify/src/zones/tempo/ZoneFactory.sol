@@ -51,7 +51,7 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Starts at 1, reserving zone ID 0 for potential future use.
     uint32 public override nextZoneId = 1;
 
-    /// @notice Initial value is configured by the T9 activation; exact address TBD.
+    /// @notice Initial value is configured by the T9 activation.
     address public owner;
 
     /// @notice Whether shared runtime updates have been permanently disabled.

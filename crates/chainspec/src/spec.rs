@@ -77,6 +77,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T9 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t9_time: Option<u64>,
+    /// Initial ZoneFactory owner installed when T9 activates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zone_factory_owner: Option<Address>,
 }
 
 impl TempoGenesisInfo {
@@ -95,6 +98,11 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Returns the initial ZoneFactory owner installed when T9 activates.
+    pub fn zone_factory_owner(&self) -> Option<Address> {
+        self.zone_factory_owner
     }
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
@@ -496,6 +504,13 @@ mod tests {
     fn can_load_dev() {
         let _ = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
+    }
+
+    #[test]
+    fn supported_chains_configure_zone_factory_owner() {
+        for chainspec in [&*super::DEV, &*super::MODERATO, &*super::PRESTO] {
+            assert!(chainspec.info.zone_factory_owner().is_some());
+        }
     }
 
     #[test]
