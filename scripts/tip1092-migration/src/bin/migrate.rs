@@ -4,7 +4,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use clap::Parser;
-use eyre::{Context, Result, bail};
+use eyre::{Context, ContextCompat, Result, bail};
 use futures::{StreamExt, stream};
 use std::{path::PathBuf, str::FromStr};
 use tempo_alloy::{
@@ -64,7 +64,8 @@ async fn main() -> Result<()> {
     let rpc_url = args
         .rpc_url
         .clone()
-        .unwrap_or_else(|| args.network.rpc_url().to_owned());
+        .or_else(|| args.network.default_rpc_url().map(str::to_owned))
+        .context("--rpc-url is required for nextfork")?;
     let state_file = args.state_file.clone().unwrap_or_else(|| {
         PathBuf::from(format!(
             ".tip1092-migration-{}.json",

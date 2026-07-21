@@ -24,6 +24,7 @@ pub const DEFAULT_RPC_RETRIES: u32 = 5;
 pub enum Network {
     Mainnet,
     Testnet,
+    Nextfork,
 }
 
 impl Network {
@@ -31,6 +32,7 @@ impl Network {
         match self {
             Self::Mainnet => "mainnet",
             Self::Testnet => "testnet",
+            Self::Nextfork => "nextfork",
         }
     }
 
@@ -38,13 +40,15 @@ impl Network {
         match self {
             Self::Mainnet => 4_217,
             Self::Testnet => 42_431,
+            Self::Nextfork => 31_318,
         }
     }
 
-    pub const fn rpc_url(self) -> &'static str {
+    pub const fn default_rpc_url(self) -> Option<&'static str> {
         match self {
-            Self::Mainnet => "https://rpc.presto.tempo.xyz",
-            Self::Testnet => "https://rpc.moderato.tempo.xyz",
+            Self::Mainnet => Some("https://rpc.tempo.xyz"),
+            Self::Testnet => Some("https://rpc.moderato.tempo.xyz"),
+            Self::Nextfork => None,
         }
     }
 
@@ -63,7 +67,7 @@ impl Network {
 
         match self {
             Self::Mainnet => MAINNET,
-            Self::Testnet => TESTNET,
+            Self::Testnet | Self::Nextfork => TESTNET,
         }
     }
 }
@@ -238,8 +242,19 @@ mod tests {
     fn network_constants_match_chainspec() {
         assert_eq!(Network::Mainnet.chain_id(), 4_217);
         assert_eq!(Network::Testnet.chain_id(), 42_431);
+        assert_eq!(Network::Nextfork.chain_id(), 31_318);
+        assert_eq!(
+            Network::Mainnet.default_rpc_url(),
+            Some("https://rpc.tempo.xyz")
+        );
+        assert_eq!(
+            Network::Testnet.default_rpc_url(),
+            Some("https://rpc.moderato.tempo.xyz")
+        );
+        assert_eq!(Network::Nextfork.default_rpc_url(), None);
         assert_eq!(Network::Mainnet.genesis_tokens().len(), 2);
         assert_eq!(Network::Testnet.genesis_tokens().len(), 4);
+        assert_eq!(Network::Nextfork.genesis_tokens().len(), 4);
     }
 
     #[test]

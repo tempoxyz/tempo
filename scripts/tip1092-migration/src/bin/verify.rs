@@ -1,6 +1,6 @@
 use alloy::providers::ProviderBuilder;
 use clap::Parser;
-use eyre::{Context, Result, bail};
+use eyre::{Context, ContextCompat, Result, bail};
 use futures::{StreamExt, stream};
 use std::{fs::File, io::Write, path::PathBuf};
 use tempo_alloy::{
@@ -51,7 +51,8 @@ async fn main() -> Result<()> {
     let rpc_url = args
         .rpc_url
         .clone()
-        .unwrap_or_else(|| args.network.rpc_url().to_owned());
+        .or_else(|| args.network.default_rpc_url().map(str::to_owned))
+        .context("--rpc-url is required for nextfork")?;
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect(&rpc_url)
         .await

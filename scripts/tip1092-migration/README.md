@@ -1,6 +1,6 @@
 # TIP-1092 migration
 
-These scripts migrate every historical TIP-20 token on Presto mainnet or Moderato testnet into
+These scripts migrate every historical TIP-20 token on Tempo mainnet or Moderato testnet into
 the TIP-403 transfer-policy registry, then independently verify the result.
 
 The migrator scans `TIP20Factory.TokenCreated` logs in bounded ranges, includes the genesis tokens
@@ -24,10 +24,11 @@ For mainnet, make the target explicit:
 ./scripts/tip1092-verify.sh --network mainnet --report tip1092-mainnet-report.ndjson
 ```
 
-Both commands select the repository's canonical RPC URL and reject a chain-ID mismatch. Use
-`--rpc-url` to point at an archival or higher-capacity endpoint. The verifier scans independently
-through the latest block captured at startup, checks `tokenTransferPolicyId` for every token, and
-exits nonzero if any binding is unset or any lookup fails.
+Both commands select the repository's canonical public RPC URL and reject a chain-ID mismatch. Use
+`--rpc-url` to point at an archival or higher-capacity endpoint. The authenticated nextfork devnet
+is also supported with `--network nextfork --rpc-url "$TEMPO_NEXTFORK_RPC_URL"`. The verifier scans
+independently through the latest block captured at startup, checks `tokenTransferPolicyId` for every
+token, and exits nonzero if any binding is unset or any lookup fails.
 
 Useful tuning options:
 
