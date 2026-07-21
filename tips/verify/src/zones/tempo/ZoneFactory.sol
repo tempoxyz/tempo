@@ -186,11 +186,12 @@ abstract contract ZoneFactory is IZoneFactory {
             revert InvalidSequencerSet();
         }
 
-        address previous;
         for (uint256 i = 0; i < length; ++i) {
             address current = sequencers[i];
-            if (current == address(0) || current <= previous) revert InvalidSequencerSet();
-            previous = current;
+            if (current == address(0)) revert InvalidSequencerSet();
+            for (uint256 j = 0; j < i; ++j) {
+                if (current == sequencers[j]) revert InvalidSequencerSet();
+            }
         }
     }
 
