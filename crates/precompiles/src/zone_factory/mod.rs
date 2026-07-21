@@ -68,22 +68,6 @@ impl From<ZoneInfoStorage> for ZoneInfo {
 }
 
 impl ZoneFactory {
-    /// Initializes the factory marker and activation state.
-    ///
-    /// This is an internal node hook, not part of the public precompile ABI.
-    pub fn initialize(&mut self, owner: Address) -> Result<()> {
-        if owner.is_zero() {
-            return Err(ZoneFactoryError::invalid_owner().into());
-        }
-        self.__initialize()?;
-        self.next_zone_id.write(1)?;
-        self.owner.write(owner)?;
-        self.emit_event(ZoneFactoryEvent::ownership_transferred(
-            Address::ZERO,
-            owner,
-        ))
-    }
-
     /// Returns the configured factory owner.
     pub fn owner(&self) -> Result<Address> {
         self.owner.read()
@@ -341,6 +325,13 @@ mod tests {
         }
     }
 
+    fn factory_with_owner(owner: Address) -> Result<ZoneFactory> {
+        let mut factory = ZoneFactory::new();
+        factory.next_zone_id.write(1)?;
+        factory.owner.write(owner)?;
+        Ok(factory)
+    }
+
     #[test]
     fn portal_address_uses_big_endian_zone_id_suffix() {
         assert_eq!(
@@ -358,8 +349,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = ZoneFactory::new();
-            factory.initialize(OWNER)?;
+            let mut factory = factory_with_owner(OWNER)?;
 
             let params = create_params(PATH_USD_ADDRESS);
             let created = factory.create_zone(
@@ -427,8 +417,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = ZoneFactory::new();
-            factory.initialize(OWNER)?;
+            let mut factory = factory_with_owner(OWNER)?;
 
             for (sequencers, threshold) in [
                 (vec![], 1),
@@ -464,8 +453,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = ZoneFactory::new();
-            factory.initialize(OWNER)?;
+            let mut factory = factory_with_owner(OWNER)?;
 
             let err = factory
                 .create_zone(
@@ -489,8 +477,7 @@ mod tests {
     fn owner_can_install_and_upgrade_shared_runtimes() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut factory = ZoneFactory::new();
-            factory.initialize(OWNER)?;
+            let mut factory = factory_with_owner(OWNER)?;
             let source = address!("0x0000000000000000000000000000000000000044");
             let runtime = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x2a]));
             factory.storage.set_code(source, runtime.clone())?;
