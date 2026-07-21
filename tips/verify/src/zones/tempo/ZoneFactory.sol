@@ -103,7 +103,6 @@ abstract contract ZoneFactory is IZoneFactory {
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
-            initialToken: params.initialToken,
             admin: params.admin,
             sequencers: params.sequencers,
             threshold: params.threshold,
