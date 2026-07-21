@@ -121,6 +121,13 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.account_code(address))
     }
 
+    /// Copies deployed runtime bytecode between accounts.
+    ///
+    /// Returns `None` when the source account has no deployed code.
+    pub fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        Self::try_with_storage(|s| s.copy_runtime(source, destination))
+    }
+
     /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())

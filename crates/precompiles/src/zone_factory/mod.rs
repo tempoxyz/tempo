@@ -10,7 +10,7 @@ use crate::{
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, IntoLogData};
+use alloy::primitives::{Address, IntoLogData};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
     ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent,
@@ -121,6 +121,7 @@ impl ZoneFactory {
         self.ensure_implementation_updates_unlocked()?;
 
         let code_hash = self
+            .storage
             .copy_runtime(call.source, ZONE_PORTAL_IMPL_ADDRESS)?
             .ok_or_else(|| {
                 TempoPrecompileError::from(ZoneFactoryError::invalid_portal_implementation())
@@ -140,7 +141,8 @@ impl ZoneFactory {
         self.ensure_implementation_updates_unlocked()?;
 
         let code_hash =
-            self.copy_runtime(call.source, ZONE_MESSENGER_ADDRESS)?
+            self.storage
+                .copy_runtime(call.source, ZONE_MESSENGER_ADDRESS)?
                 .ok_or_else(|| {
                     TempoPrecompileError::from(
                         ZoneFactoryError::invalid_zone_messenger_implementation(),
@@ -161,21 +163,12 @@ impl ZoneFactory {
         self.ensure_implementation_updates_unlocked()?;
 
         let code_hash = self
+            .storage
             .copy_runtime(call.source, ZONE_VERIFIER_ADDRESS)?
             .ok_or_else(|| {
                 TempoPrecompileError::from(ZoneFactoryError::invalid_verifier_implementation())
             })?;
         self.emit_event(ZoneFactoryEvent::verifier_updated(call.source, code_hash))
-    }
-
-    /// Returns `None` when the source account has no deployed code.
-    fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
-        let (code_hash, code) = self.storage.account_code(source)?;
-        if code_hash.is_zero() {
-            return Ok(None);
-        }
-        self.storage.set_code(destination, code)?;
-        Ok(Some(code_hash))
     }
 
     /// Creates and initializes a deterministic ZonePortal account.
@@ -318,7 +311,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Bytes, address};
+    use alloy::primitives::{B256, Bytes, address};
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 

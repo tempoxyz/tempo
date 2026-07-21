@@ -63,6 +63,18 @@ pub trait PrecompileStorageProvider {
     /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode)>;
 
+    /// Copies deployed runtime bytecode between accounts.
+    ///
+    /// Returns `None` when the source account has no deployed code.
+    fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        let (code_hash, code) = self.account_code(source)?;
+        if code_hash.is_zero() {
+            return Ok(None);
+        }
+        self.set_code(destination, code)?;
+        Ok(Some(code_hash))
+    }
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
