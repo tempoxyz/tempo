@@ -10,6 +10,8 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
 /// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
 /// Pinned to T9 so TEMPO-DEX7 covers quote/swap parity.
+/// forge-config: default.hardfork = "tempo:T9"
+/// forge-config: fuzz500.hardfork = "tempo:T9"
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs
