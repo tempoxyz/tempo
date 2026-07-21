@@ -93,8 +93,8 @@ impl ZonePortalStorage {
             Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
         )?;
 
-        // Preserve the legacy getter expected by the portal storage layout. Authority comes from
-        // `is_sequencer` for versioned sets, so the first member is not a primary sequencer.
+        // Preserve the block-producer representative expected by zone-side components. Authority
+        // on Tempo comes from `is_sequencer`, so the first member has no distinct permissions.
         self.sequencer.write(params.sequencers[0])?;
         self.admin.write(params.admin)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {
@@ -107,7 +107,6 @@ impl ZonePortalStorage {
         self.messenger.write(ZONE_MESSENGER_ADDRESS)?;
         self.verifier.write(ZONE_VERIFIER_ADDRESS)?;
         self.initialized.write(true)?;
-        self.sequencer_set_version.write(1)?;
         self.sequencer_threshold.write(params.threshold)?;
         self.sequencers.write(params.sequencers.clone())?;
         for sequencer in &params.sequencers {

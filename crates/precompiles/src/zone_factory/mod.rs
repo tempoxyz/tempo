@@ -223,7 +223,7 @@ impl ZoneFactory {
         self.storage.emit_event(
             portal,
             ZonePortalEvent::sequencer_set_updated(
-                1,
+                0,
                 call.params.threshold,
                 call.params.sequencers.clone(),
             )
@@ -407,7 +407,7 @@ mod tests {
             assert_eq!(portal.messenger.read()?, ZONE_MESSENGER_ADDRESS);
             assert_eq!(portal.verifier.read()?, ZONE_VERIFIER_ADDRESS);
             assert!(portal.initialized.read()?);
-            assert_eq!(portal.sequencer_set_version.read()?, 1);
+            assert_eq!(portal.sequencer_set_version.read()?, 0);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
             assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
             assert!(portal.is_sequencer[SEQUENCER_A].read()?);
