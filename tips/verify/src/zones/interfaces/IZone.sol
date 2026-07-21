@@ -5,7 +5,6 @@ pragma solidity ^0.8.13;
 struct ZoneInfo {
     uint32 zoneId;
     address portal;
-    address initialToken;
     address admin;
     address[] sequencers;
     uint8 threshold;
@@ -44,11 +43,11 @@ interface IZoneFactory {
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
-    event PortalImplementationUpdated(address indexed source, bytes32 indexed codeHash);
+    event PortalUpdated(address indexed source, bytes32 indexed codeHash);
 
-    event ZoneMessengerImplementationUpdated(address indexed source, bytes32 indexed codeHash);
+    event MessengerUpdated(address indexed source, bytes32 indexed codeHash);
 
-    event VerifierImplementationUpdated(address indexed source, bytes32 indexed codeHash);
+    event VerifierUpdated(address indexed source, bytes32 indexed codeHash);
 
     event ZoneCreated(
         uint32 indexed zoneId,
@@ -67,10 +66,15 @@ interface IZoneFactory {
     error InvalidPortalImplementation();
     error InvalidZoneMessengerImplementation();
     error InvalidVerifierImplementation();
+    error ImplementationUpdatesLocked();
 
     function owner() external view returns (address);
 
+    function implementationUpdatesLocked() external view returns (bool);
+
     function transferOwnership(address newOwner) external;
+
+    function lockImplementationUpdates() external;
 
     function setPortalImplementation(address source) external;
 
