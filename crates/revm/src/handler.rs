@@ -2536,8 +2536,8 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use crate::{
-        ProtocolFeeManager, TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
-        tx::TempoBatchCallEnv,
+        FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
+        evm::TempoEvm, gas_params::tempo_gas_params, tx::TempoBatchCallEnv,
     };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use proptest::prelude::*;
@@ -3026,7 +3026,8 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx.journaled_state.get_fee_token(
+            let fee_token = TempoFeeManager.resolve_fee_token(
+                &mut ctx.journaled_state,
                 &ctx.tx,
                 user,
                 ctx.cfg.spec,
@@ -3046,7 +3047,8 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx.journaled_state.get_fee_token(
+            let fee_token = TempoFeeManager.resolve_fee_token(
+                &mut ctx.journaled_state,
                 &ctx.tx,
                 user,
                 ctx.cfg.spec,
@@ -3057,7 +3059,8 @@ mod tests {
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx.journaled_state.get_fee_token(
+        let fee_token = TempoFeeManager.resolve_fee_token(
+            &mut ctx.journaled_state,
             &ctx.tx,
             user,
             ctx.cfg.spec,
