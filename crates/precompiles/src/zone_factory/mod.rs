@@ -18,8 +18,6 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
 
-#[cfg(test)]
-use portal::PortalTokenConfig;
 /// Generated storage slots for ZonePortal accounts.
 pub use portal::slots as zone_portal_slots;
 pub use portal::{ZONE_PORTAL_PROXY_RUNTIME, ZonePortalStorage};
@@ -316,6 +314,7 @@ mod tests {
         primitives::{B256, Bytes, U256, address, keccak256},
         sol_types::SolValue,
     };
+    use portal::PortalTokenConfig;
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
