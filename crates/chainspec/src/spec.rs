@@ -500,6 +500,42 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cli")]
+    fn dev_genesis_contains_zone_factory_and_history_storage() {
+        use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
+        use alloy_primitives::{B256, U256, address};
+        use tempo_contracts::precompiles::ZONE_FACTORY_ADDRESS;
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let alloc = &chainspec.genesis().alloc;
+
+        let owner = address!("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
+        let factory = alloc
+            .get(&ZONE_FACTORY_ADDRESS)
+            .expect("dev genesis must install the ZoneFactory");
+        assert_eq!(
+            factory.code.as_ref().map(|code| code.as_ref()),
+            Some(&[0xef][..])
+        );
+
+        let config = factory
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.get(&B256::ZERO))
+            .expect("dev ZoneFactory must initialize slot zero");
+        let config = U256::from_be_slice(config.as_slice());
+        assert_eq!(config & U256::from(u32::MAX), U256::from(1));
+        assert_eq!(config >> u32::BITS, U256::from_be_slice(owner.as_slice()));
+
+        let history = alloc
+            .get(&HISTORY_STORAGE_ADDRESS)
+            .expect("dev genesis must install EIP-2935 history storage");
+        assert_eq!(history.nonce, Some(1));
+        assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
     fn test_tempo_chainspec_has_tempo_hardforks() {
         let chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");

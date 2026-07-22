@@ -31,6 +31,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    zone_factory_initial_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -222,6 +223,15 @@ where
         address: Address,
         storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
+        self.deploy_precompile_state_at_boundary(address, Bytes::from_static(&[0xef]), storage)
+    }
+
+    fn deploy_precompile_state_at_boundary(
+        &mut self,
+        address: Address,
+        code: Bytes,
+        storage: &[(U256, U256)],
+    ) -> Result<(), BlockExecutionError> {
         let db = self.inner.evm.db_mut();
         let info = db
             .basic(address)
@@ -229,7 +239,7 @@ where
             .unwrap_or_default();
         if info.is_empty_code_hash() {
             let mut account = Account::from(info);
-            let code = Bytecode::new_legacy([0xef].into());
+            let code = Bytecode::new_legacy(code);
             account.info.code_hash = code.hash_slow();
             account.info.code = Some(code);
             for &(slot, value) in storage {
@@ -253,9 +263,8 @@ where
     /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
     /// fixed T9 protocol constants.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
+        let (code, storage) = zone_factory_initial_state(INITIAL_FACTORY_OWNER);
+        self.deploy_precompile_state_at_boundary(ZONE_FACTORY_ADDRESS, code, &storage)
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {

@@ -38,6 +38,7 @@ commonware-codec = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempo-contracts.workspace = true
 
 [features]
 default = ["std", "serde", "reth", "cli"]

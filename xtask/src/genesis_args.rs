@@ -1,4 +1,5 @@
 use alloy::{
+    eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
     genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
@@ -42,7 +43,9 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{IValidatorConfigV2, createTokenCall},
+    precompiles::{
+        IValidatorConfigV2, ZONE_FACTORY_ADDRESS, createTokenCall, zone_factory_initial_state,
+    },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -128,6 +131,11 @@ pub(crate) struct GenesisArgs {
     /// If not set, uses the first generated account.
     #[arg(long)]
     validator_admin: Option<Address>,
+
+    /// Custom owner address for the ZoneFactory when T9 is active at genesis.
+    /// If not set, uses the first generated account.
+    #[arg(long)]
+    zone_factory_owner: Option<Address>,
 
     /// Custom onchain addresses for validators.
     /// Must match the number of validators if provided.
@@ -551,6 +559,20 @@ impl GenesisArgs {
             },
         );
 
+        genesis_alloc.insert(
+            HISTORY_STORAGE_ADDRESS,
+            GenesisAccount {
+                code: Some(HISTORY_STORAGE_CODE.clone()),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
+
+        if self.t9_time == 0 {
+            let owner = self.zone_factory_owner.unwrap_or_else(|| addresses[0]);
+            insert_zone_factory_account(&mut genesis_alloc, owner);
+        }
+
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -654,6 +676,24 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
+}
+
+fn insert_zone_factory_account(alloc: &mut BTreeMap<Address, GenesisAccount>, owner: Address) {
+    let (code, storage) = zone_factory_initial_state(owner);
+    alloc.insert(
+        ZONE_FACTORY_ADDRESS,
+        GenesisAccount {
+            code: Some(code),
+            nonce: Some(0),
+            storage: Some(
+                storage
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect(),
+            ),
+            ..Default::default()
+        },
+    );
 }
 
 fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
@@ -1187,4 +1227,47 @@ fn mint_pairwise_liquidity(
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::B256;
+    use clap::Parser as _;
+
+    #[derive(clap::Parser)]
+    struct Args {
+        #[clap(flatten)]
+        genesis: GenesisArgs,
+    }
+
+    #[test]
+    fn custom_zone_factory_owner_reaches_genesis_storage() {
+        let owner = address!("0x0000000000000000000000000000000000000011");
+        let owner_arg = owner.to_string();
+        let args = Args::try_parse_from([
+            "test",
+            "--no-dkg-in-genesis",
+            "--zone-factory-owner",
+            owner_arg.as_str(),
+        ])
+        .unwrap();
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_account(&mut alloc, args.genesis.zone_factory_owner.unwrap());
+
+        let factory = alloc.get(&ZONE_FACTORY_ADDRESS).unwrap();
+        assert_eq!(factory.nonce, Some(0));
+        assert_eq!(
+            factory.code.as_ref().map(|code| code.as_ref()),
+            Some(&[0xef][..])
+        );
+        let config = factory
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.get(&B256::ZERO))
+            .unwrap();
+        let config = U256::from_be_slice(config.as_slice());
+        assert_eq!(config & U256::from(u32::MAX), U256::from(1));
+        assert_eq!(config >> u32::BITS, U256::from_be_slice(owner.as_slice()));
+    }
 }

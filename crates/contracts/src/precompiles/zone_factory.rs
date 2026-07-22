@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, address};
+use alloy_primitives::{Address, Bytes, U256, address, bytes};
 
 pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
@@ -10,6 +10,12 @@ pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF20000000000000000000000
 
 /// Initial ZoneFactory owner installed by the T9 activation.
 pub const INITIAL_FACTORY_OWNER: Address = address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14");
+
+/// Returns the code and storage installed when the ZoneFactory becomes active.
+pub fn zone_factory_initial_state(owner: Address) -> (Bytes, [(U256, U256); 1]) {
+    let config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+    (bytes!("ef"), [(U256::ZERO, config)])
+}
 
 /// Protocol-managed shared ZonePortal implementation address.
 pub const ZONE_PORTAL_IMPL_ADDRESS: Address =
