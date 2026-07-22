@@ -42,7 +42,9 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{IValidatorConfigV2, createTokenCall},
+    precompiles::{
+        INITIAL_FACTORY_OWNER, IValidatorConfigV2, ZONE_FACTORY_ADDRESS, createTokenCall,
+    },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -551,6 +553,8 @@ impl GenesisArgs {
             },
         );
 
+        insert_zone_factory_at_genesis(self.t9_time, &mut genesis_alloc);
+
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -653,6 +657,26 @@ impl GenesisArgs {
         genesis.config = chain_config;
 
         Ok((genesis, consensus_config))
+    }
+}
+
+fn zone_factory_genesis_account() -> GenesisAccount {
+    let factory_config =
+        U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+    GenesisAccount {
+        code: Some(Bytes::from_static(&[0xef])),
+        storage: Some(BTreeMap::from([(B256::ZERO, factory_config.into())])),
+        ..Default::default()
+    }
+}
+
+fn insert_zone_factory_at_genesis(
+    t9_time: u64,
+    genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
+) {
+    if t9_time == 0 {
+        println!("Initializing ZoneFactory (T9 active at genesis)");
+        genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
     }
 }
 
@@ -1187,4 +1211,32 @@ fn mint_pairwise_liquidity(
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t9_genesis_zone_factory_has_marker_and_initial_config() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_at_genesis(0, &mut alloc);
+        let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
+        let expected_config =
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+
+        assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
+        assert_eq!(
+            account.storage.unwrap().get(&B256::ZERO),
+            Some(&expected_config.into())
+        );
+    }
+
+    #[test]
+    fn future_t9_does_not_install_zone_factory_at_genesis() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_at_genesis(1, &mut alloc);
+
+        assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
+    }
 }
