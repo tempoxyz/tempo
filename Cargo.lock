@@ -12967,6 +12967,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
+ "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-hardfork",
  "tempo-primitives",
