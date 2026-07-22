@@ -24,7 +24,7 @@ use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
 use reth_engine_primitives::ConsensusEngineHandle;
-use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_node_builder::{NodeTypesWithDBAdapter, rpc::RethRpcServerHandles};
 use reth_provider::providers::BlockchainProvider;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::{TempoFullNode, TempoPayloadTypes, node::TempoNode};
@@ -188,6 +188,14 @@ impl<TUpstream> Config<TUpstream> {
 
         Ok(Engine {
             context: ContextCell::new(context),
+            // Keep the RPC server handles alive after the builder's execution node is dropped.
+            // Followers only retain the narrower provider and engine handles below, but dropping
+            // the last RPC handles shuts down the HTTP, WS, IPC, and auth servers.
+            _rpc_server_handles: self
+                .execution_node
+                .add_ons_handle
+                .rpc_server_handles
+                .clone(),
             driver,
             driver_mailbox,
             resolver,
@@ -209,6 +217,7 @@ where
     TUpstreamActor:,
 {
     context: ContextCell<TContext>,
+    _rpc_server_handles: RethRpcServerHandles,
     driver: driver::Driver<
         TContext,
         BlockchainProvider<
