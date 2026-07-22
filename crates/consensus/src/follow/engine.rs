@@ -189,7 +189,7 @@ impl<TUpstream> Config<TUpstream> {
         Ok(Engine {
             context: ContextCell::new(context),
             // Keep every execution-node service alive for the lifetime of the follower engine.
-            _execution_node: self.execution_node.clone(),
+            _execution_node: self.execution_node,
             driver,
             driver_mailbox,
             resolver,
@@ -259,6 +259,8 @@ where
 
     async fn run(self) -> eyre::Result<()> {
         let Self {
+            context: _context,
+            _execution_node,
             upstream,
             driver,
             driver_mailbox,
@@ -270,7 +272,6 @@ where
             executor_mailbox,
             feed,
             broadcast,
-            ..
         } = self;
 
         let actors = vec![
