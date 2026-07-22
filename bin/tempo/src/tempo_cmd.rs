@@ -1187,6 +1187,10 @@ struct InfoOutput {
     current_epoch: u64,
     /// The current height (at the time of query)
     current_height: u64,
+    /// Percentage of blocks completed in the current epoch
+    epoch_progress_percentage: f64,
+    /// Estimated seconds until the current epoch ends
+    estimated_time_remaining_seconds: Option<u64>,
     // The boundary height from which the DKG outcome was read
     last_boundary: u64,
     // The epoch length as set in the chain spec
@@ -1197,6 +1201,39 @@ struct InfoOutput {
     next_full_dkg_epoch: u64,
     /// List of validators participating in the DKG
     validators: Vec<ValidatorOutput>,
+}
+
+fn epoch_progress(
+    current_height: u64,
+    epoch_length: u64,
+    boundary_timestamp: u64,
+    current_timestamp: u64,
+) -> (f64, Option<u64>) {
+    let blocks_completed = current_height % epoch_length + 1;
+    let blocks_remaining = epoch_length - blocks_completed;
+    let percentage = blocks_completed as f64 / epoch_length as f64 * 100.0;
+
+    if blocks_remaining == 0 {
+        return (percentage, Some(0));
+    }
+
+    // For epoch zero, the boundary block is genesis and does not represent a completed
+    // interval. Later epochs use the final block of the previous epoch as their boundary.
+    let completed_intervals = if current_height < epoch_length {
+        current_height
+    } else {
+        blocks_completed
+    };
+    let elapsed_seconds = current_timestamp.saturating_sub(boundary_timestamp);
+    if completed_intervals == 0 || elapsed_seconds == 0 {
+        return (percentage, None);
+    }
+
+    let estimated_seconds = (u128::from(elapsed_seconds) * u128::from(blocks_remaining))
+        .div_ceil(u128::from(completed_intervals));
+    let estimated_seconds = u64::try_from(estimated_seconds).unwrap_or(u64::MAX);
+
+    (percentage, Some(estimated_seconds))
 }
 
 #[derive(Debug, clap::Args)]
@@ -1273,6 +1310,26 @@ impl Info {
                 )
             })?
             .ok_or_eyre("boundary block not found")?;
+
+        let current_block = if boundary_height == current_height {
+            boundary_block.clone()
+        } else {
+            provider
+                .get_block_by_number(latest_block_number.into())
+                .hashes()
+                .await
+                .wrap_err_with(|| {
+                    format!("failed to get block header at height {latest_block_number}")
+                })?
+                .ok_or_eyre("current block not found")?
+        };
+
+        let (epoch_progress_percentage, estimated_time_remaining_seconds) = epoch_progress(
+            latest_block_number,
+            epoch_length.get(),
+            boundary_block.header.timestamp(),
+            current_block.header.timestamp(),
+        );
 
         let extra_data = boundary_block.header.extra_data();
         if extra_data.is_empty() {
@@ -1375,6 +1432,8 @@ impl Info {
             validators,
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
+            epoch_progress_percentage,
+            estimated_time_remaining_seconds,
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
@@ -1415,6 +1474,28 @@ mod tests {
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     const TEST_INGRESS: &str = "127.0.0.1:8000";
     const TEST_EGRESS: &str = "127.0.0.1";
+
+    #[test]
+    fn calculates_epoch_progress_and_eta() {
+        let (percentage, eta) = epoch_progress(24, 100, 1_000, 1_012);
+
+        assert_eq!(percentage, 25.0);
+        assert_eq!(eta, Some(38));
+    }
+
+    #[test]
+    fn calculates_epoch_progress_after_genesis_epoch() {
+        let (percentage, eta) = epoch_progress(109, 100, 2_000, 2_006);
+
+        assert_eq!(percentage, 10.0);
+        assert_eq!(eta, Some(54));
+    }
+
+    #[test]
+    fn epoch_progress_eta_requires_timing_history() {
+        assert_eq!(epoch_progress(0, 100, 1_000, 1_000), (1.0, None));
+        assert_eq!(epoch_progress(99, 100, 1_000, 1_050), (100.0, Some(0)));
+    }
 
     #[test]
     fn parse_p2p_proxy_defaults() {
