@@ -680,34 +680,6 @@ fn insert_zone_factory_at_genesis(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn t9_genesis_zone_factory_has_marker_and_initial_config() {
-        let mut alloc = BTreeMap::new();
-        insert_zone_factory_at_genesis(0, &mut alloc);
-        let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
-        let expected_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-
-        assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
-        assert_eq!(
-            account.storage.unwrap().get(&B256::ZERO),
-            Some(&expected_config.into())
-        );
-    }
-
-    #[test]
-    fn future_t9_does_not_install_zone_factory_at_genesis() {
-        let mut alloc = BTreeMap::new();
-        insert_zone_factory_at_genesis(1, &mut alloc);
-
-        assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
-    }
-}
-
 fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
@@ -1239,4 +1211,32 @@ fn mint_pairwise_liquidity(
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t9_genesis_zone_factory_has_marker_and_initial_config() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_at_genesis(0, &mut alloc);
+        let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
+        let expected_config =
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+
+        assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
+        assert_eq!(
+            account.storage.unwrap().get(&B256::ZERO),
+            Some(&expected_config.into())
+        );
+    }
+
+    #[test]
+    fn future_t9_does_not_install_zone_factory_at_genesis() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_at_genesis(1, &mut alloc);
+
+        assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
+    }
 }
