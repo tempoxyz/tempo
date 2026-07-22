@@ -253,8 +253,7 @@ where
     /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
     /// fixed T9 protocol constants.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+        let factory_config = tempo_contracts::precompiles::initial_factory_config();
         self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
     }
 
@@ -2062,8 +2061,7 @@ mod tests {
                 .original_bytes(),
             Bytes::from_static(&[0xef])
         );
-        let expected_factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+        let expected_factory_config = tempo_contracts::precompiles::initial_factory_config();
         assert_eq!(
             factory.storage_slot(U256::ZERO),
             Some(expected_factory_config)

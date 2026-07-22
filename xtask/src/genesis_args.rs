@@ -42,7 +42,9 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{IValidatorConfigV2, createTokenCall},
+    precompiles::{
+        IValidatorConfigV2, ZONE_FACTORY_ADDRESS, createTokenCall, initial_factory_config,
+    },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -551,6 +553,8 @@ impl GenesisArgs {
             },
         );
 
+        insert_zone_factory_at_genesis(self.t9_time, &mut genesis_alloc);
+
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -653,6 +657,53 @@ impl GenesisArgs {
         genesis.config = chain_config;
 
         Ok((genesis, consensus_config))
+    }
+}
+
+fn zone_factory_genesis_account() -> GenesisAccount {
+    GenesisAccount {
+        code: Some(Bytes::from_static(&[0xef])),
+        storage: Some(BTreeMap::from([(
+            B256::ZERO,
+            initial_factory_config().into(),
+        )])),
+        ..Default::default()
+    }
+}
+
+fn insert_zone_factory_at_genesis(
+    t9_time: u64,
+    genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
+) {
+    if t9_time == 0 {
+        println!("Initializing ZoneFactory (T9 active at genesis)");
+        genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t9_genesis_zone_factory_has_marker_and_initial_config() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_at_genesis(0, &mut alloc);
+        let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
+
+        assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
+        assert_eq!(
+            account.storage.unwrap().get(&B256::ZERO),
+            Some(&initial_factory_config().into())
+        );
+    }
+
+    #[test]
+    fn future_t9_does_not_install_zone_factory_at_genesis() {
+        let mut alloc = BTreeMap::new();
+        insert_zone_factory_at_genesis(1, &mut alloc);
+
+        assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
     }
 }
 
