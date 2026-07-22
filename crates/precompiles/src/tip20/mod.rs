@@ -1193,7 +1193,7 @@ impl TIP20Token {
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
-    pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+    pub fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
             if amount > from_balance {
@@ -1403,7 +1403,7 @@ impl TIP20Token {
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 #[derive(Debug, PartialEq)]
-pub(crate) struct Recipient {
+pub struct Recipient {
     /// The effective (resolved) address where the balance is credited.
     pub(crate) target: Address,
     /// The virtual address, if registered.
