@@ -178,6 +178,14 @@ jobs:
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
       - name: Run e2e tests
         run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4
+      - name: Upload e2e test timings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-junit-${{ matrix.partition }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
 
   e2e-flaky:
     name: e2e-flaky
