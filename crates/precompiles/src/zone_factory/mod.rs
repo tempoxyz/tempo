@@ -223,7 +223,7 @@ impl ZoneFactory {
         self.storage.emit_event(
             portal,
             ZonePortalEvent::sequencer_set_updated(
-                1,
+                0,
                 call.params.threshold,
                 call.params.sequencers.clone(),
             )
@@ -311,7 +311,10 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{B256, Bytes, address};
+    use alloy::{
+        primitives::{B256, Bytes, U256, address, keccak256},
+        sol_types::SolValue,
+    };
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -391,7 +394,6 @@ mod tests {
             );
 
             let portal = ZonePortalStorage::new(created.portal);
-            assert_eq!(portal.sequencer.read()?, SEQUENCER_A);
             assert_eq!(portal.admin.read()?, ADMIN);
             assert_eq!(portal.block_hash.read()?, B256::ZERO);
             assert_eq!(
@@ -407,11 +409,27 @@ mod tests {
             assert_eq!(portal.messenger.read()?, ZONE_MESSENGER_ADDRESS);
             assert_eq!(portal.verifier.read()?, ZONE_VERIFIER_ADDRESS);
             assert!(portal.initialized.read()?);
-            assert_eq!(portal.sequencer_set_version.read()?, 1);
+            assert_eq!(portal.sequencer_set_version.read()?, 0);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
             assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
             assert!(portal.is_sequencer[SEQUENCER_A].read()?);
             assert!(portal.is_sequencer[SEQUENCER_B].read()?);
+
+            // Pin the native storage handlers to the canonical Solidity layout.
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::ZERO)?,
+                U256::from_be_slice(ADMIN.as_slice())
+            );
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(18))?,
+                U256::from(2)
+            );
+            let membership_slot =
+                U256::from_be_bytes(keccak256((SEQUENCER_A, U256::from(19)).abi_encode()).0);
+            assert_eq!(
+                StorageCtx.sload(created.portal, membership_slot)?,
+                U256::ONE
+            );
             Ok(())
         })
     }

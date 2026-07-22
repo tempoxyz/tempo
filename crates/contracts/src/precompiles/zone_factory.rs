@@ -90,7 +90,7 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IZonePortal {
-        event SequencerSetUpdated(uint64 indexed version, uint8 threshold, address[] sequencers);
+        event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
     }
 }
