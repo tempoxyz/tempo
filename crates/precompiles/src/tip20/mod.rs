@@ -1413,7 +1413,7 @@ pub struct Recipient {
 impl Recipient {
     /// Creates a [`Recipient`] with no virtual indirection.
     #[inline]
-    pub(crate) fn direct(addr: Address) -> Self {
+    pub fn direct(addr: Address) -> Self {
         Self {
             target: addr,
             virtual_addr: None,
