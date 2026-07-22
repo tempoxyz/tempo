@@ -276,7 +276,14 @@ impl TIP20Token {
         }
 
         if StorageCtx.spec().is_t9() {
-            TIP403Registry::new().set_token_transfer_policy(self.address, call.newPolicyId)?;
+            let mut registry = TIP403Registry::new();
+            if registry
+                .registered_token_transfer_policy_id(self.address)?
+                .is_none()
+            {
+                self.delete_legacy_transfer_policy_id()?;
+            }
+            registry.set_token_transfer_policy(self.address, call.newPolicyId)?;
         } else {
             self.transfer_policy_id.write(call.newPolicyId)?;
         }
@@ -3696,7 +3703,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_change_transfer_policy_id_sets_registry_binding() -> eyre::Result<()> {
+    fn test_change_transfer_policy_id_sets_registry_binding_and_clears_legacy_policy()
+    -> eyre::Result<()> {
         let admin = Address::random();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
 
@@ -3720,7 +3728,7 @@ pub(crate) mod tests {
                     .is_some()
             );
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
-            assert_eq!(token.legacy_transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
+            assert_eq!(token.legacy_transfer_policy_id()?, 0);
 
             Ok(())
         })
