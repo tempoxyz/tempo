@@ -72,6 +72,21 @@ abstract contract ZoneFactory is IZoneFactory {
         if (!_nativeTokenTransferPolicyIsSet(params.initialToken)) {
             revert TokenTransferPolicyNotSet();
         }
+        if (params.allowedAccounts.length == 0 || params.zoneGateways.length == 0) {
+            revert InvalidClosedLoopConfig();
+        }
+        for (uint256 i; i < params.allowedAccounts.length; ++i) {
+            if (params.allowedAccounts[i] == ZONE_MESSENGER_ADDRESS) {
+                revert InvalidClosedLoopConfig();
+            }
+        }
+        for (uint256 i; i < params.zoneGateways.length; ++i) {
+            for (uint256 j; j < params.allowedAccounts.length; ++j) {
+                if (params.zoneGateways[i] == params.allowedAccounts[j]) {
+                    revert InvalidClosedLoopConfig();
+                }
+            }
+        }
         if (params.admin == address(0)) revert InvalidAdmin();
         _validateSequencerSet(params.sequencers, params.threshold);
 
@@ -98,6 +113,8 @@ abstract contract ZoneFactory is IZoneFactory {
             .initialize(
                 zoneId,
                 params.initialToken,
+                params.allowedAccounts,
+                params.zoneGateways,
                 ZONE_MESSENGER_ADDRESS,
                 params.admin,
                 params.sequencers,

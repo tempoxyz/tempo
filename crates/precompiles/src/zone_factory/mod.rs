@@ -14,7 +14,7 @@ use crate::{
 use alloy::primitives::{Address, IntoLogData};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent,
+    ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -191,6 +191,7 @@ impl ZoneFactory {
         {
             return Err(ZoneFactoryError::token_transfer_policy_not_set().into());
         }
+        validate_closed_loop_config(&call.params.allowedAccounts, &call.params.zoneGateways)?;
         if call.params.admin.is_zero() {
             return Err(ZoneFactoryError::invalid_admin().into());
         }
@@ -235,6 +236,30 @@ impl ZoneFactory {
             )
             .into_log_data(),
         )?;
+
+        for gateway in &call.params.zoneGateways {
+            self.storage.emit_event(
+                portal,
+                ZonePortalEvent::role_updated(
+                    *gateway,
+                    ZonePortalRole::None,
+                    ZonePortalRole::CallbackGateway,
+                )
+                .into_log_data(),
+            )?;
+        }
+
+        for account in &call.params.allowedAccounts {
+            self.storage.emit_event(
+                portal,
+                ZonePortalEvent::role_updated(
+                    *account,
+                    ZonePortalRole::None,
+                    ZonePortalRole::Account,
+                )
+                .into_log_data(),
+            )?;
+        }
 
         self.storage.emit_event(
             portal,
@@ -283,6 +308,22 @@ impl ZoneFactory {
     }
 }
 
+fn validate_closed_loop_config(
+    allowed_accounts: &[Address],
+    zone_gateways: &[Address],
+) -> Result<()> {
+    if allowed_accounts.is_empty()
+        || zone_gateways.is_empty()
+        || allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS)
+        || zone_gateways
+            .iter()
+            .any(|gateway| allowed_accounts.contains(gateway))
+    {
+        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+    }
+    Ok(())
+}
+
 fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {
     if sequencers.is_empty()
         || sequencers.len() > MAX_SEQUENCERS
@@ -329,10 +370,14 @@ mod tests {
     const ADMIN: Address = address!("0x0000000000000000000000000000000000000022");
     const SEQUENCER_A: Address = address!("0x0000000000000000000000000000000000000033");
     const SEQUENCER_B: Address = address!("0x0000000000000000000000000000000000000044");
+    const ALLOWED_ACCOUNT: Address = address!("0x0000000000000000000000000000000000000055");
+    const ZONE_GATEWAY: Address = address!("0x0000000000000000000000000000000000000066");
 
     fn create_params(initial_token: Address) -> IZoneFactory::CreateZoneParams {
         IZoneFactory::CreateZoneParams {
             initialToken: initial_token,
+            allowedAccounts: vec![ALLOWED_ACCOUNT],
+            zoneGateways: vec![ZONE_GATEWAY],
             admin: ADMIN,
             sequencers: vec![SEQUENCER_A, SEQUENCER_B],
             threshold: 2,
@@ -421,6 +466,14 @@ mod tests {
             assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
             assert!(portal.is_sequencer[SEQUENCER_A].read()?);
             assert!(portal.is_sequencer[SEQUENCER_B].read()?);
+            assert_eq!(
+                portal.role[ALLOWED_ACCOUNT].read()?,
+                ZonePortalRole::Account as u8
+            );
+            assert_eq!(
+                portal.role[ZONE_GATEWAY].read()?,
+                ZonePortalRole::CallbackGateway as u8
+            );
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -437,6 +490,41 @@ mod tests {
                 StorageCtx.sload(created.portal, membership_slot)?,
                 U256::ONE
             );
+            let role_slot =
+                U256::from_be_bytes(keccak256((ALLOWED_ACCOUNT, U256::from(20)).abi_encode()).0);
+            assert_eq!(
+                StorageCtx.sload(created.portal, role_slot)?,
+                U256::from(ZonePortalRole::Account as u8)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_rejects_invalid_closed_loop_config() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+
+            for (allowed_accounts, zone_gateways) in [
+                (vec![], vec![ZONE_GATEWAY]),
+                (vec![ALLOWED_ACCOUNT], vec![]),
+                (vec![ZONE_MESSENGER_ADDRESS], vec![ZONE_GATEWAY]),
+                (vec![ALLOWED_ACCOUNT], vec![ALLOWED_ACCOUNT]),
+            ] {
+                let mut params = create_params(PATH_USD_ADDRESS);
+                params.allowedAccounts = allowed_accounts;
+                params.zoneGateways = zone_gateways;
+                let err = factory
+                    .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                    .unwrap_err();
+                assert_eq!(
+                    err,
+                    TempoPrecompileError::from(ZoneFactoryError::invalid_closed_loop_config())
+                );
+                assert_eq!(factory.next_zone_id()?, 1);
+            }
             Ok(())
         })
     }

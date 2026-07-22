@@ -3,7 +3,7 @@ use alloy_primitives::{Address, address};
 pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
 };
-pub use IZonePortal::IZonePortalEvents as ZonePortalEvent;
+pub use IZonePortal::{IZonePortalEvents as ZonePortalEvent, Role as ZonePortalRole};
 
 /// Native TIP-1091 ZoneFactory precompile address.
 pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF2000000000000000000000000000000000000");
@@ -40,6 +40,8 @@ crate::sol! {
     interface IZoneFactory {
         struct CreateZoneParams {
             address initialToken;
+            address[] allowedAccounts;
+            address[] zoneGateways;
             address admin;
             address[] sequencers;
             uint8 threshold;
@@ -64,6 +66,7 @@ crate::sol! {
 
         error InvalidToken();
         error TokenTransferPolicyNotSet();
+        error InvalidClosedLoopConfig();
         error NotOwner();
         error InvalidAdmin();
         error InvalidSequencerSet();
@@ -91,7 +94,14 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IZonePortal {
+        enum Role {
+            None,
+            Account,
+            CallbackGateway
+        }
+
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
+        event RoleUpdated(address indexed account, Role prev, Role next);
     }
 }

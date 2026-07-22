@@ -18,6 +18,8 @@ interface IZonePortalInitializer {
     function initialize(
         uint32 zoneId,
         address initialToken,
+        address[] calldata allowedAccounts,
+        address[] calldata zoneGateways,
         address messenger,
         address admin,
         address[] calldata sequencers,
@@ -35,6 +37,8 @@ interface IZoneFactory {
 
     struct CreateZoneParams {
         address initialToken;
+        address[] allowedAccounts;
+        address[] zoneGateways;
         address admin;
         address[] sequencers;
         uint8 threshold;
@@ -61,6 +65,7 @@ interface IZoneFactory {
 
     error InvalidToken();
     error TokenTransferPolicyNotSet();
+    error InvalidClosedLoopConfig();
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencerSet();

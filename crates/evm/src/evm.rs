@@ -605,6 +605,8 @@ mod tests {
                 IZoneFactory::createZoneCall {
                     params: IZoneFactory::CreateZoneParams {
                         initialToken: PATH_USD_ADDRESS,
+                        allowedAccounts: vec![admin],
+                        zoneGateways: vec![Address::repeat_byte(0x44)],
                         admin,
                         sequencers: vec![sequencer],
                         threshold: 1,
@@ -666,6 +668,8 @@ mod tests {
         let input = IZoneFactory::createZoneCall {
             params: IZoneFactory::CreateZoneParams {
                 initialToken: PATH_USD_ADDRESS,
+                allowedAccounts: vec![admin],
+                zoneGateways: vec![Address::repeat_byte(0x44)],
                 admin,
                 sequencers: vec![sequencer],
                 threshold: 1,
