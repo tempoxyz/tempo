@@ -1187,14 +1187,14 @@ struct InfoOutput {
     current_epoch: u64,
     /// The current height (at the time of query)
     current_height: u64,
+    // The epoch length as set in the chain spec
+    epoch_length: u64,
     /// Percentage of blocks completed in the current epoch
     epoch_progress_percentage: u64,
     /// Estimated minutes until the current epoch ends
     epoch_est_time_remaining_minutes: Option<u64>,
     // The boundary height from which the DKG outcome was read
     last_boundary: u64,
-    // The epoch length as set in the chain spec
-    epoch_length: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
