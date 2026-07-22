@@ -69,6 +69,9 @@ abstract contract ZoneFactory is IZoneFactory {
         if (!ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS).isTIP20(params.initialToken)) {
             revert InvalidToken();
         }
+        if (!_nativeTokenTransferPolicyIsSet(params.initialToken)) {
+            revert TokenTransferPolicyNotSet();
+        }
         if (params.admin == address(0)) revert InvalidAdmin();
         _validateSequencerSet(params.sequencers, params.threshold);
 
@@ -198,6 +201,9 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
     function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
 
+    /// @dev Native host hook: return whether TIP-403 stores an explicit policy binding for `token`.
+    function _nativeTokenTransferPolicyIsSet(address token) internal virtual returns (bool);
+
     /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
     /// Returns `EXTCODEHASH(source)` for the emitted update event.
     function _nativeCopyRuntime(
@@ -221,4 +227,4 @@ abstract contract ZoneFactory is IZoneFactory {
         return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
     }
 
-}
+    }
