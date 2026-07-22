@@ -845,6 +845,10 @@ pub struct SetValidatorToken {
     #[arg(long)]
     list: bool,
 
+    /// Skip verified token metadata lookup. TOKEN must be an address.
+    #[arg(long, conflicts_with = "list")]
+    no_fetch_verified_tokens: bool,
+
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
 }
@@ -857,9 +861,10 @@ impl SetValidatorToken {
             .await
             .wrap_err("failed to get chain id")?;
 
-        let tokens = fetch_verified_tokens(chain_id).await;
         if self.list {
-            let tokens = tokens.wrap_err("failed to fetch the verified token list")?;
+            let tokens = fetch_verified_tokens(chain_id)
+                .await
+                .wrap_err("failed to fetch the verified token list")?;
             print_verified_tokens(tokens);
             return Ok(());
         }
@@ -867,24 +872,33 @@ impl SetValidatorToken {
         let input = self.token.expect("clap requires either TOKEN or --list");
         let token = match input.parse::<Address>() {
             Ok(address) => {
-                match tokens {
-                    Ok(tokens) => match tokens.iter().find(|token| token.address == address) {
-                        Some(token) => eprintln!(
-                            "resolved token: {} ({}) at {}",
-                            token.name, token.symbol, token.address
-                        ),
-                        None => eprintln!(
-                            "warning: token address {address} is not in the verified token list"
-                        ),
-                    },
-                    Err(error) => {
-                        eprintln!("warning: failed to look up token metadata: {error:#}")
+                if !self.no_fetch_verified_tokens {
+                    match fetch_verified_tokens(chain_id).await {
+                        Ok(tokens) => match tokens.iter().find(|token| token.address == address) {
+                            Some(token) => eprintln!(
+                                "resolved token: {} ({}) at {}",
+                                token.name, token.symbol, token.address
+                            ),
+                            None => eprintln!(
+                                "warning: token address {address} is not in the verified token list"
+                            ),
+                        },
+                        Err(error) => {
+                            eprintln!("warning: failed to look up token metadata: {error:#}")
+                        }
                     }
                 }
                 address
             }
             Err(_) => {
-                let tokens = tokens.wrap_err("failed to fetch the verified token list")?;
+                if self.no_fetch_verified_tokens {
+                    return Err(eyre!(
+                        "`--no-fetch-verified-tokens` requires TOKEN to be an address"
+                    ));
+                }
+                let tokens = fetch_verified_tokens(chain_id)
+                    .await
+                    .wrap_err("failed to fetch the verified token list")?;
                 resolve_token_name(&input, &tokens)?
             }
         };
@@ -943,7 +957,9 @@ fn resolve_token_name(input: &str, tokens: &[VerifiedToken]) -> eyre::Result<Add
         .collect::<Vec<_>>();
 
     match matches.as_slice() {
-        [] => Err(eyre!("no verified token found with symbol or name `{input}`")),
+        [] => Err(eyre!(
+            "no verified token found with symbol or name `{input}`"
+        )),
         [token] => {
             eprintln!(
                 "resolved token: {} ({}) at {}",
@@ -957,7 +973,9 @@ fn resolve_token_name(input: &str, tokens: &[VerifiedToken]) -> eyre::Result<Add
                 .map(|token| token.address.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(eyre!("token `{input}` is ambiguous; matching addresses: {addresses}"))
+            Err(eyre!(
+                "token `{input}` is ambiguous; matching addresses: {addresses}"
+            ))
         }
     }
 }
@@ -1588,6 +1606,7 @@ mod tests {
             token,
             list,
             submit,
+            no_fetch_verified_tokens,
         } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::SetValidatorToken(cmd),
@@ -1596,6 +1615,7 @@ mod tests {
         };
         assert_eq!(token.as_deref(), Some(TEST_VALIDATOR_TOKEN));
         assert!(!list);
+        assert!(!no_fetch_verified_tokens);
         assert!(submit.dry_run);
     }
 
@@ -1612,6 +1632,29 @@ mod tests {
         };
         assert!(token.is_none());
         assert!(list);
+    }
+
+    #[test]
+    fn parse_set_validator_token_without_verified_token_fetch() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "set-validator-token",
+            TEST_VALIDATOR_TOKEN,
+            "--no-fetch-verified-tokens",
+        ])
+        .unwrap();
+
+        let SetValidatorToken {
+            no_fetch_verified_tokens,
+            ..
+        } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert!(no_fetch_verified_tokens);
     }
 
     #[test]
