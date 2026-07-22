@@ -63,6 +63,7 @@ crate::sol! {
         );
 
         error InvalidToken();
+        error TokenTransferPolicyNotSet();
         error NotOwner();
         error InvalidAdmin();
         error InvalidSequencerSet();

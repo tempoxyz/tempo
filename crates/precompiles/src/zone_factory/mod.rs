@@ -9,6 +9,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
 };
 use alloy::primitives::{Address, IntoLogData};
 use tempo_contracts::precompiles::{
@@ -184,6 +185,12 @@ impl ZoneFactory {
         }
         if !TIP20Factory::new().is_tip20(call.params.initialToken)? {
             return Err(ZoneFactoryError::invalid_token().into());
+        }
+        if TIP403Registry::new()
+            .registered_token_transfer_policy_id(call.params.initialToken)?
+            .is_none()
+        {
+            return Err(ZoneFactoryError::token_transfer_policy_not_set().into());
         }
         if call.params.admin.is_zero() {
             return Err(ZoneFactoryError::invalid_admin().into());
@@ -466,6 +473,42 @@ mod tests {
             params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];
             factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
             assert_eq!(factory.zone(1)?.sequencers, vec![SEQUENCER_B, SEQUENCER_A]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_requires_initial_token_policy_binding() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            StorageCtx.set_spec(TempoHardfork::T9);
+
+            let err = factory
+                .create_zone(
+                    OWNER,
+                    IZoneFactory::createZoneCall {
+                        params: create_params(PATH_USD_ADDRESS),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::token_transfer_policy_not_set())
+            );
+            assert_eq!(factory.next_zone_id()?, 1);
+            assert!(!factory.is_zone_portal(portal_address(1))?);
+
+            TIP403Registry::new().set_token_transfer_policy(PATH_USD_ADDRESS, 1)?;
+            factory.create_zone(
+                OWNER,
+                IZoneFactory::createZoneCall {
+                    params: create_params(PATH_USD_ADDRESS),
+                },
+            )?;
+            assert_eq!(factory.next_zone_id()?, 2);
+
             Ok(())
         })
     }
