@@ -4,7 +4,7 @@ use alloy_evm::{
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::{
-            DBErrorMarker,
+            ContextTr, DBErrorMarker, JournalTr,
             result::{EVMError, ResultAndState, ResultGas},
         },
         inspector::NoOpInspector,
@@ -27,7 +27,7 @@ use tempo_revm::{
     evm::TempoContext, handler::TempoEvmHandler,
 };
 
-use crate::TempoBlockEnv;
+use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
@@ -189,6 +189,33 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.inner.actions().replace(actions)
+    }
+}
+
+impl<DB, I> TempoPoolValidationEvm for TempoEvm<DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<DB>>,
+{
+    fn configure_for_pool(&mut self) {
+        // The pool admits future-time and future-nonce transactions and performs its own cached
+        // AMM liquidity check after EVM validation.
+        self.inner.skip_valid_after_check = true;
+        self.inner.skip_liquidity_check = true;
+        self.ctx_mut().cfg.disable_nonce_check = true;
+    }
+
+    fn validate_pool_transaction(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult<DB::Error>, TempoTxEnv) {
+        let result = self.validate_transaction(tx);
+        let tx = core::mem::take(&mut self.ctx_mut().tx);
+        // Discard this transaction's journaled writes (nonce bumps, fee deduction,
+        // key authorisation) while keeping loaded accounts and storage warm for the
+        // rest of the batch.
+        self.ctx_mut().journal_mut().discard_tx();
+        (result, tx)
     }
 }
 

@@ -5,6 +5,7 @@
 
 mod action_replay;
 mod assemble;
+mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
@@ -12,6 +13,7 @@ pub use action_replay::{
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
+pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
