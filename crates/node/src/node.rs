@@ -73,10 +73,6 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
 
-    /// Disable the FeeAMM liquidity check during transaction pool validation.
-    #[arg(long = "txpool.disable-fee-amm-check", default_value_t = false)]
-    pub disable_fee_amm_check: bool,
-
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
@@ -117,7 +113,6 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-            disable_fee_amm_check: false,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
@@ -134,7 +129,6 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
-            disable_fee_amm_check: self.disable_fee_amm_check,
             ..Default::default()
         }
     }
@@ -529,9 +523,9 @@ impl TempoPoolBuilder {
         self
     }
 
-    /// Disables the FeeAMM liquidity check during pool admission.
-    pub const fn disable_fee_amm_check(mut self) -> Self {
-        self.disable_fee_amm_check = true;
+    /// Configures whether to disable the FeeAMM liquidity check during pool admission.
+    pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
+        self.disable_fee_amm_check = disable;
         self
     }
 
@@ -804,13 +798,8 @@ mod tests {
 
     #[test]
     fn tempo_node_disables_fee_amm_pool_check() {
-        let node = TempoNode::new(
-            &TempoNodeArgs {
-                disable_fee_amm_check: true,
-                ..Default::default()
-            },
-            None,
-        );
+        let node =
+            TempoNode::default().map_pool_builder(|pool| pool.with_disable_fee_amm_check(true));
 
         assert!(node.pool_builder.disable_fee_amm_check);
     }
