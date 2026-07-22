@@ -184,7 +184,12 @@ fn transfer_blocked(
 async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    // `blockedAt` is copied into claim calldata, whose intrinsic gas depends on
+    // zero bytes. Pin the clock so this gas snapshot is independent of wall time.
+    let setup = TestNodeBuilder::new()
+        .with_initial_block_timestamp(0x0101_0101)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let [
