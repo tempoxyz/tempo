@@ -73,6 +73,10 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
 
+    /// Disable the FeeAMM liquidity check during transaction pool validation.
+    #[arg(long = "txpool.disable-fee-amm-check", default_value_t = false)]
+    pub disable_fee_amm_check: bool,
+
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
@@ -113,6 +117,7 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            disable_fee_amm_check: false,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
@@ -129,6 +134,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            disable_fee_amm_check: self.disable_fee_amm_check,
             ..Default::default()
         }
     }
@@ -502,6 +508,8 @@ pub struct TempoPoolBuilder {
     pub aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
+    /// Whether to skip the FeeAMM liquidity check during pool admission.
+    pub disable_fee_amm_check: bool,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
     /// Optional additional stateful validation check forwarded to the inner ETH validator.
@@ -518,6 +526,12 @@ impl TempoPoolBuilder {
     /// Sets the maximum number of authorizations allowed in an AA transaction.
     pub const fn with_max_tempo_authorizations(mut self, max: usize) -> Self {
         self.max_tempo_authorizations = max;
+        self
+    }
+
+    /// Disables the FeeAMM liquidity check during pool admission.
+    pub const fn disable_fee_amm_check(mut self) -> Self {
+        self.disable_fee_amm_check = true;
         self
     }
 
@@ -595,6 +609,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
         f.debug_struct("TempoPoolBuilder")
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
+            .field("disable_fee_amm_check", &self.disable_fee_amm_check)
             .field(
                 "additional_stateless_validation",
                 &self.additional_stateless_validation.as_ref().map(|_| "..."),
@@ -612,6 +627,7 @@ impl Default for TempoPoolBuilder {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            disable_fee_amm_check: false,
             additional_stateless_validation: None,
             additional_stateful_validation: None,
         }
@@ -660,6 +676,7 @@ where
         let Self {
             aa_valid_after_max_secs,
             max_tempo_authorizations,
+            disable_fee_amm_check,
             additional_stateless_validation,
             additional_stateful_validation,
         } = self;
@@ -672,6 +689,7 @@ where
                 max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
+            .with_disable_fee_amm_check(disable_fee_amm_check)
         });
         let protocol_pool = Pool::new(
             validator,
@@ -782,6 +800,19 @@ mod tests {
 
         assert_eq!(node.pool_builder.aa_valid_after_max_secs, 12);
         assert_eq!(node.pool_builder.max_tempo_authorizations, 7);
+    }
+
+    #[test]
+    fn tempo_node_disables_fee_amm_pool_check() {
+        let node = TempoNode::new(
+            &TempoNodeArgs {
+                disable_fee_amm_check: true,
+                ..Default::default()
+            },
+            None,
+        );
+
+        assert!(node.pool_builder.disable_fee_amm_check);
     }
 
     #[test]

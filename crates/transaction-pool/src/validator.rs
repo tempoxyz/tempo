@@ -95,6 +95,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) max_tempo_authorizations: usize,
     /// Cache of AMM liquidity for validator tokens.
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
+    /// Whether to skip the FeeAMM liquidity check during pool admission.
+    pub(crate) disable_fee_amm_check: bool,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
@@ -138,10 +140,17 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
+            disable_fee_amm_check: false,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
         }
+    }
+
+    /// Configures whether to skip the FeeAMM liquidity check during pool admission.
+    pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
+        self.disable_fee_amm_check = disable;
+        self
     }
 
     /// Returns the Tempo hardfork active at the current tip.
@@ -510,30 +519,33 @@ where
             transaction.set_key_expiry(Some(key_expiry));
         }
 
-        // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
-        let fee = transaction.fee_token_cost();
-        match self.amm_liquidity_cache.has_enough_liquidity(
-            validation_ctx.fee_token,
-            fee,
-            evm.db_mut(),
-        ) {
-            Ok(true) => {}
-            Ok(false) => {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::CollectFeePreTx(
-                            FeePaymentError::InsufficientAmmLiquidity {
-                                user_token: Some(validation_ctx.fee_token),
-                                validator_token: None,
-                                fee,
-                            },
-                        ),
-                    )),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+        // Validate that transaction has enough liquidity against at least one of the recent
+        // validator tokens, unless the node's fee mechanism does not use the FeeAMM.
+        if !self.disable_fee_amm_check {
+            let fee = transaction.fee_token_cost();
+            match self.amm_liquidity_cache.has_enough_liquidity(
+                validation_ctx.fee_token,
+                fee,
+                evm.db_mut(),
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                            TempoInvalidTransaction::CollectFeePreTx(
+                                FeePaymentError::InsufficientAmmLiquidity {
+                                    user_token: Some(validation_ctx.fee_token),
+                                    validator_token: None,
+                                    fee,
+                                },
+                            ),
+                        )),
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
             }
         }
 
