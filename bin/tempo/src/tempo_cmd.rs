@@ -1189,8 +1189,8 @@ struct InfoOutput {
     current_height: u64,
     /// Percentage of blocks completed in the current epoch
     epoch_progress_percentage: f64,
-    /// Estimated seconds until the current epoch ends
-    estimated_time_remaining_seconds: Option<u64>,
+    /// Estimated minutes until the current epoch ends
+    epoch_est_time_remaining_minutes: Option<u64>,
     // The boundary height from which the DKG outcome was read
     last_boundary: u64,
     // The epoch length as set in the chain spec
@@ -1211,7 +1211,7 @@ fn epoch_progress(
 ) -> (f64, Option<u64>) {
     let blocks_completed = current_height % epoch_length + 1;
     let blocks_remaining = epoch_length - blocks_completed;
-    let percentage = blocks_completed as f64 / epoch_length as f64 * 100.0;
+    let percentage = (blocks_completed as f64 / epoch_length as f64 * 10_000.0).round() / 100.0;
 
     if blocks_remaining == 0 {
         return (percentage, Some(0));
@@ -1229,11 +1229,11 @@ fn epoch_progress(
         return (percentage, None);
     }
 
-    let estimated_seconds = (u128::from(elapsed_seconds) * u128::from(blocks_remaining))
-        .div_ceil(u128::from(completed_intervals));
-    let estimated_seconds = u64::try_from(estimated_seconds).unwrap_or(u64::MAX);
+    let estimated_minutes = (u128::from(elapsed_seconds) * u128::from(blocks_remaining))
+        .div_ceil(u128::from(completed_intervals) * 60);
+    let estimated_minutes = u64::try_from(estimated_minutes).unwrap_or(u64::MAX);
 
-    (percentage, Some(estimated_seconds))
+    (percentage, Some(estimated_minutes))
 }
 
 #[derive(Debug, clap::Args)]
@@ -1324,7 +1324,7 @@ impl Info {
                 .ok_or_eyre("current block not found")?
         };
 
-        let (epoch_progress_percentage, estimated_time_remaining_seconds) = epoch_progress(
+        let (epoch_progress_percentage, epoch_est_time_remaining_minutes) = epoch_progress(
             latest_block_number,
             epoch_length.get(),
             boundary_block.header.timestamp(),
@@ -1433,7 +1433,7 @@ impl Info {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             epoch_progress_percentage,
-            estimated_time_remaining_seconds,
+            epoch_est_time_remaining_minutes,
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
@@ -1480,7 +1480,7 @@ mod tests {
         let (percentage, eta) = epoch_progress(24, 100, 1_000, 1_012);
 
         assert_eq!(percentage, 25.0);
-        assert_eq!(eta, Some(38));
+        assert_eq!(eta, Some(1));
     }
 
     #[test]
@@ -1488,13 +1488,18 @@ mod tests {
         let (percentage, eta) = epoch_progress(109, 100, 2_000, 2_006);
 
         assert_eq!(percentage, 10.0);
-        assert_eq!(eta, Some(54));
+        assert_eq!(eta, Some(1));
     }
 
     #[test]
     fn epoch_progress_eta_requires_timing_history() {
         assert_eq!(epoch_progress(0, 100, 1_000, 1_000), (1.0, None));
         assert_eq!(epoch_progress(99, 100, 1_000, 1_050), (100.0, Some(0)));
+    }
+
+    #[test]
+    fn epoch_progress_percentage_has_at_most_two_decimal_places() {
+        assert_eq!(epoch_progress(0, 3, 1_000, 1_000).0, 33.33);
     }
 
     #[test]
