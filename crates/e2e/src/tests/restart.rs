@@ -495,11 +495,19 @@ fn backfill_on_start_after_crash() {
         // Wait for the node to recover and produce past the pre-unwind height
         wait_for_height(&context, 1, el_before + 5).await;
 
-        // Verify EL actually persisted the recovered blocks
-        let el_recovered = validators[0]
-            .execution_provider()
-            .last_block_number()
-            .unwrap();
+        // Verify EL actually persisted the recovered blocks. Reth keeps recent
+        // canonical blocks in memory, so consensus progress can precede the DB.
+        let mut el_recovered = 0;
+        for _ in 0..10 {
+            el_recovered = validators[0]
+                .execution_provider()
+                .last_block_number()
+                .unwrap();
+            if el_recovered >= el_before {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
         assert!(
             el_recovered >= el_before,
             "EL should have recovered to at least {el_before} after backfill, \
