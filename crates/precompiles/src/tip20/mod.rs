@@ -1023,7 +1023,7 @@ impl TIP20Token {
         self.balances[account].write(amount)
     }
 
-    fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+    pub fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
         self.balances[account].sinc(amount).map_err(|err| {
             if err == TempoPrecompileError::under_overflow() {
                 TIP20Error::supply_cap_exceeded().into()
@@ -1033,7 +1033,7 @@ impl TIP20Token {
         })
     }
 
-    fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+    pub fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
         self.balances[account]
             .sdec(amount)
             .map_err(|err| match err {
