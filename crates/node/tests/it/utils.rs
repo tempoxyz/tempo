@@ -286,13 +286,7 @@ use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::TempoChainSpec,
@@ -439,7 +433,6 @@ pub(crate) struct TestNodeBuilder {
     external_rpc: Option<Url>,
     custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
-    initial_block_timestamp: Option<u64>,
     schedule: ForkSchedule,
 }
 
@@ -454,7 +447,6 @@ impl TestNodeBuilder {
             external_rpc: None,
             custom_validator: None,
             dynamic_validator: None,
-            initial_block_timestamp: None,
             schedule: ForkSchedule::Devnet,
         }
     }
@@ -495,12 +487,6 @@ impl TestNodeBuilder {
         validator: Arc<std::sync::Mutex<Address>>,
     ) -> Self {
         self.dynamic_validator = Some(validator);
-        self
-    }
-
-    /// Start locally built blocks at a deterministic timestamp, incrementing by one per payload.
-    pub(crate) fn with_initial_block_timestamp(mut self, timestamp: u64) -> Self {
-        self.initial_block_timestamp = Some(timestamp);
         self
     }
 
@@ -584,10 +570,6 @@ impl TestNodeBuilder {
             .custom_validator
             .unwrap_or(chain_spec.inner.genesis.coinbase);
         let dynamic_validator = self.dynamic_validator.clone();
-        let next_block_timestamp = self
-            .initial_block_timestamp
-            .map(AtomicU64::new)
-            .map(Arc::new);
 
         let mut node_config = NodeConfig::new(Arc::new(chain_spec))
             .with_unused_ports()
@@ -606,9 +588,6 @@ impl TestNodeBuilder {
             .node(TempoNode::default())
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
-                if let Some(next_block_timestamp) = &next_block_timestamp {
-                    attributes.timestamp = next_block_timestamp.fetch_add(1, Ordering::Relaxed);
-                }
                 let validator = dynamic_validator
                     .as_ref()
                     .map(|v| *v.lock().unwrap())
