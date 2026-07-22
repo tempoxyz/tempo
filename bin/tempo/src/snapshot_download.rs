@@ -7,7 +7,9 @@ use std::{
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
-use reth_cli_commands::download::{DownloadCommand, manifest::OutputFileChecksum};
+use reth_cli_commands::download::{
+    DownloadCommand, DownloadPlanArchive, manifest::OutputFileChecksum,
+};
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
@@ -57,6 +59,22 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
 
     runner.block_on(async move {
+        if args.inner.prints_plan_json() {
+            let mut plan = args
+                .inner
+                .plan()
+                .await
+                .wrap_err("failed to plan execution layer download")?;
+
+            if !args.skip_consensus {
+                let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
+                plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
+            }
+
+            plan.write_json(io::stdout().lock())?;
+            return Ok(());
+        }
+
         info!("running execution layer download...");
 
         let start = Instant::now();
@@ -98,6 +116,36 @@ enum ConsensusArchiveSource {
 enum ManifestSource {
     Url(String),
     Path(PathBuf),
+}
+
+fn consensus_download_plan_archive(
+    loaded: &LoadedConsensusManifest,
+) -> eyre::Result<DownloadPlanArchive> {
+    let archive = &loaded.manifest.consensus_archive;
+    let url = match &loaded.archive_source {
+        ConsensusArchiveSource::Url(url) => url.clone(),
+        ConsensusArchiveSource::Path(path) => {
+            let path = if path.is_absolute() {
+                path.clone()
+            } else {
+                std::env::current_dir()
+                    .wrap_err("failed to resolve current directory")?
+                    .join(path)
+            };
+            Url::from_file_path(&path)
+                .map_err(|_| eyre::eyre!("invalid consensus archive path: {}", path.display()))?
+                .to_string()
+        }
+    };
+
+    Ok(DownloadPlanArchive::new(
+        TEMPO_CONSENSUS_MANIFEST_KEY,
+        archive.file.clone(),
+        url,
+        archive.size,
+        archive.output_size(),
+        archive.blake3.clone(),
+    ))
 }
 
 async fn load_consensus_manifest(
@@ -476,6 +524,57 @@ mod tests {
         .unwrap();
 
         assert!(!args.skip_consensus);
+    }
+
+    #[test]
+    fn args_accepts_print_plan_json() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--manifest-url",
+            "https://snap/manifest.json",
+            "--datadir",
+            "/d",
+            "--minimal",
+            "--print-plan-json",
+            "--skip-consensus=false",
+        ])
+        .unwrap();
+
+        assert!(args.inner.prints_plan_json());
+        assert!(!args.skip_consensus);
+    }
+
+    #[test]
+    fn consensus_download_plan_archive_includes_resolved_metadata() {
+        let loaded = LoadedConsensusManifest {
+            manifest: TempoConsensusManifest {
+                execution_finalized_height: 40,
+                execution_finalized_digest: B256::with_last_byte(0x28),
+                tip_finalization_height: 42,
+                tip_finalization_digest: B256::with_last_byte(0x2a),
+                anchor_finalization_height: 41,
+                anchor_finalization_digest: B256::with_last_byte(0x29),
+                consensus_archive: reth_cli_commands::download::manifest::SingleArchive {
+                    file: "consensus.tar.zst".to_string(),
+                    size: 12,
+                    decompressed_size: 34,
+                    blake3: Some("abc".to_string()),
+                    output_files: Vec::new(),
+                },
+            },
+            archive_source: ConsensusArchiveSource::Url(
+                "https://snap/consensus.tar.zst".to_string(),
+            ),
+        };
+
+        let archive = consensus_download_plan_archive(&loaded).unwrap();
+
+        assert_eq!(archive.component, "consensus");
+        assert_eq!(archive.file_name, "consensus.tar.zst");
+        assert_eq!(archive.url, "https://snap/consensus.tar.zst");
+        assert_eq!(archive.download_size, 12);
+        assert_eq!(archive.output_size, 34);
+        assert_eq!(archive.blake3.as_deref(), Some("abc"));
     }
 
     #[test]
