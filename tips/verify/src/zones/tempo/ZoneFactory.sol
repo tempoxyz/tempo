@@ -227,4 +227,4 @@ abstract contract ZoneFactory is IZoneFactory {
         return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
     }
 
-    }
+}
