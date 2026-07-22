@@ -47,7 +47,7 @@ struct PortalWithdrawalQueue {
 /// The generated handlers let the native factory initialize a portal without duplicating raw
 /// slot numbers. This contract type is deliberately absent from the EVM precompile map.
 #[contract]
-pub(super) struct ZonePortalStorage {
+pub struct ZonePortalStorage {
     admin: Address,
     zone_gas_rate: u128,
     withdrawal_batch_index: u64,
@@ -77,7 +77,7 @@ pub(super) struct ZonePortalStorage {
 }
 
 impl ZonePortalStorage {
-    pub(super) fn new(address: Address) -> Self {
+    pub fn new(address: Address) -> Self {
         Self::__new(address)
     }
 
