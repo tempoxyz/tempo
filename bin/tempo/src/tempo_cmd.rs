@@ -1187,55 +1187,18 @@ struct InfoOutput {
     current_epoch: u64,
     /// The current height (at the time of query)
     current_height: u64,
-    // The epoch length as set in the chain spec
-    epoch_length: u64,
-    /// Percentage of blocks completed in the current epoch
-    epoch_progress_percentage: u64,
-    /// Estimated minutes until the current epoch ends
-    epoch_est_time_remaining_minutes: Option<u64>,
     // The boundary height from which the DKG outcome was read
     last_boundary: u64,
+    // The epoch length as set in the chain spec
+    epoch_length: u64,
+    /// Number of blocks remaining until the next epoch
+    epoch_blocks_remaining: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
     next_full_dkg_epoch: u64,
     /// List of validators participating in the DKG
     validators: Vec<ValidatorOutput>,
-}
-
-const EPOCH_ETA_LOOKBACK_BLOCKS: u64 = 120;
-
-fn epoch_eta_reference_height(current_height: u64) -> u64 {
-    current_height.saturating_sub(EPOCH_ETA_LOOKBACK_BLOCKS)
-}
-
-fn epoch_progress(
-    current_height: u64,
-    epoch_length: u64,
-    reference_height: u64,
-    reference_timestamp: u64,
-    current_timestamp: u64,
-) -> (u64, Option<u64>) {
-    let blocks_completed = current_height % epoch_length + 1;
-    let blocks_remaining = epoch_length - blocks_completed;
-    let percentage = u64::try_from(u128::from(blocks_completed) * 100 / u128::from(epoch_length))
-        .expect("epoch completion percentage is at most 100");
-
-    if blocks_remaining == 0 {
-        return (percentage, Some(0));
-    }
-
-    let completed_intervals = current_height.saturating_sub(reference_height);
-    let elapsed_seconds = current_timestamp.saturating_sub(reference_timestamp);
-    if completed_intervals == 0 || elapsed_seconds == 0 {
-        return (percentage, None);
-    }
-
-    let estimated_minutes = (u128::from(elapsed_seconds) * u128::from(blocks_remaining))
-        .div_ceil(u128::from(completed_intervals) * 60);
-    let estimated_minutes = u64::try_from(estimated_minutes).unwrap_or(u64::MAX);
-
-    (percentage, Some(estimated_minutes))
 }
 
 #[derive(Debug, clap::Args)]
@@ -1312,45 +1275,6 @@ impl Info {
                 )
             })?
             .ok_or_eyre("boundary block not found")?;
-
-        let current_block = if boundary_height == current_height {
-            boundary_block.clone()
-        } else {
-            provider
-                .get_block_by_number(latest_block_number.into())
-                .hashes()
-                .await
-                .wrap_err_with(|| {
-                    format!("failed to get block header at height {latest_block_number}")
-                })?
-                .ok_or_eyre("current block not found")?
-        };
-
-        let eta_reference_height = epoch_eta_reference_height(latest_block_number);
-        let eta_reference_timestamp = if eta_reference_height == boundary_height.get() {
-            boundary_block.header.timestamp()
-        } else if eta_reference_height == latest_block_number {
-            current_block.header.timestamp()
-        } else {
-            provider
-                .get_block_by_number(eta_reference_height.into())
-                .hashes()
-                .await
-                .wrap_err_with(|| {
-                    format!("failed to get block header at height {eta_reference_height}")
-                })?
-                .ok_or_eyre("ETA reference block not found")?
-                .header
-                .timestamp()
-        };
-
-        let (epoch_progress_percentage, epoch_est_time_remaining_minutes) = epoch_progress(
-            latest_block_number,
-            epoch_length.get(),
-            eta_reference_height,
-            eta_reference_timestamp,
-            current_block.header.timestamp(),
-        );
 
         let extra_data = boundary_block.header.extra_data();
         if extra_data.is_empty() {
@@ -1453,10 +1377,10 @@ impl Info {
             validators,
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
-            epoch_progress_percentage,
-            epoch_est_time_remaining_minutes,
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
+            epoch_blocks_remaining: epoch_length.get()
+                - (current_height.get() % epoch_length.get() + 1),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
         };
@@ -1495,41 +1419,6 @@ mod tests {
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     const TEST_INGRESS: &str = "127.0.0.1:8000";
     const TEST_EGRESS: &str = "127.0.0.1";
-
-    #[test]
-    fn calculates_epoch_progress_and_eta() {
-        let (percentage, eta) = epoch_progress(24, 100, 0, 1_000, 1_012);
-
-        assert_eq!(percentage, 25);
-        assert_eq!(eta, Some(1));
-    }
-
-    #[test]
-    fn calculates_epoch_progress_after_genesis_epoch() {
-        let (percentage, eta) = epoch_progress(109, 100, 0, 2_000, 2_060);
-
-        assert_eq!(percentage, 10);
-        assert_eq!(eta, Some(1));
-    }
-
-    #[test]
-    fn epoch_progress_eta_requires_timing_history() {
-        assert_eq!(epoch_progress(0, 100, 0, 1_000, 1_000), (1, None));
-        assert_eq!(epoch_progress(99, 100, 0, 1_000, 1_050), (100, Some(0)));
-    }
-
-    #[test]
-    fn epoch_progress_percentage_is_a_whole_number() {
-        assert_eq!(epoch_progress(0, 3, 0, 1_000, 1_000).0, 33);
-    }
-
-    #[test]
-    fn epoch_eta_looks_back_up_to_120_blocks() {
-        assert_eq!(epoch_eta_reference_height(0), 0);
-        assert_eq!(epoch_eta_reference_height(80), 0);
-        assert_eq!(epoch_eta_reference_height(120), 0);
-        assert_eq!(epoch_eta_reference_height(121), 1);
-    }
 
     #[test]
     fn parse_p2p_proxy_defaults() {
