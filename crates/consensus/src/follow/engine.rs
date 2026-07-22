@@ -259,7 +259,6 @@ where
 
     async fn run(self) -> eyre::Result<()> {
         let Self {
-            context: _context,
             _execution_node,
             upstream,
             driver,
@@ -272,6 +271,7 @@ where
             executor_mailbox,
             feed,
             broadcast,
+            ..
         } = self;
 
         let actors = vec![
