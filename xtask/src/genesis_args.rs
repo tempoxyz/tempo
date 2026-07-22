@@ -43,7 +43,7 @@ use tempo_contracts::{
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        IValidatorConfigV2, ZONE_FACTORY_ADDRESS, createTokenCall, initial_factory_config,
+        INITIAL_FACTORY_OWNER, IValidatorConfigV2, ZONE_FACTORY_ADDRESS, createTokenCall,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -661,12 +661,11 @@ impl GenesisArgs {
 }
 
 fn zone_factory_genesis_account() -> GenesisAccount {
+    let factory_config =
+        U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
     GenesisAccount {
         code: Some(Bytes::from_static(&[0xef])),
-        storage: Some(BTreeMap::from([(
-            B256::ZERO,
-            initial_factory_config().into(),
-        )])),
+        storage: Some(BTreeMap::from([(B256::ZERO, factory_config.into())])),
         ..Default::default()
     }
 }
@@ -690,11 +689,13 @@ mod tests {
         let mut alloc = BTreeMap::new();
         insert_zone_factory_at_genesis(0, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
+        let expected_config =
+            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
 
         assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
         assert_eq!(
             account.storage.unwrap().get(&B256::ZERO),
-            Some(&initial_factory_config().into())
+            Some(&expected_config.into())
         );
     }
 
