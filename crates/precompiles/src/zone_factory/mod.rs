@@ -22,6 +22,8 @@ use tempo_primitives::TempoAddressExt;
 use portal::PortalTokenConfig;
 pub use portal::ZONE_PORTAL_PROXY_RUNTIME;
 use portal::ZonePortalStorage;
+/// Generated storage slots for ZonePortal accounts.
+pub use portal::slots as zone_portal_slots;
 /// Minimum gas consumed by a successful zone creation.
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
