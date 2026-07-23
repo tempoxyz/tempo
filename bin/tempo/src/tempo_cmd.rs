@@ -1191,6 +1191,8 @@ struct InfoOutput {
     last_boundary: u64,
     // The epoch length as set in the chain spec
     epoch_length: u64,
+    /// Number of blocks remaining until the next epoch
+    epoch_blocks_remaining: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
@@ -1377,6 +1379,8 @@ impl Info {
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
             epoch_length: epoch_length.get(),
+            epoch_blocks_remaining: epoch_length.get()
+                - (current_height.get() % epoch_length.get() + 1),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
         };
