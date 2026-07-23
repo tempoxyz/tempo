@@ -211,6 +211,10 @@ tempo_hardfork! (
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t9>.
         T9,
+        /// T10 hardfork.
+        ///
+        /// Illustrative only; no production activation is scheduled.
+        T10,
     }
 );
 
@@ -325,6 +329,7 @@ impl TempoHardfork {
             Self::T7 => None,
             Self::T8 => None,
             Self::T9 => None,
+            Self::T10 => None,
         }
     }
 
@@ -346,6 +351,7 @@ impl TempoHardfork {
             Self::T7 => Some(MAINNET_T7_TIMESTAMP),
             Self::T8 => Some(MAINNET_T8_TIMESTAMP),
             Self::T9 => None,
+            Self::T10 => None,
         }
     }
 
@@ -367,6 +373,7 @@ impl TempoHardfork {
             Self::T7 => None,
             Self::T8 => None,
             Self::T9 => None,
+            Self::T10 => None,
         }
     }
 
@@ -388,6 +395,7 @@ impl TempoHardfork {
             Self::T7 => Some(MODERATO_T7_TIMESTAMP),
             Self::T8 => Some(MODERATO_T8_TIMESTAMP),
             Self::T9 => None,
+            Self::T10 => None,
         }
     }
 }

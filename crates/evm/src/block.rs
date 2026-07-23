@@ -26,11 +26,12 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, TempoHardfork, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -38,6 +39,15 @@ use tempo_primitives::{
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
+
+// Illustrative T10 source deployments. These deliberately arbitrary addresses must be replaced
+// before T10 is scheduled on any network.
+const EXAMPLE_T10_PORTAL_SOURCE: Address =
+    alloy_primitives::address!("0xa5c4cf2602a892565ac368e91ba0431ec8fefddf");
+const EXAMPLE_T10_VERIFIER_SOURCE: Address =
+    alloy_primitives::address!("0xfb556b33f9eb532054a31be32f83ec19ad60c1a7");
+const EXAMPLE_T10_MESSENGER_SOURCE: Address =
+    alloy_primitives::address!("0x3e4dd4c72df468a72df9c079c79be3dbf05fa79b");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -256,6 +266,56 @@ where
         let factory_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
+    }
+
+    /// Copies the example T10 Zone runtimes from deployed source accounts to the fixed protocol
+    /// addresses. Loading every source before committing makes the replacement atomic.
+    fn apply_example_t10_zone_runtime_upgrade(&mut self) -> Result<(), BlockExecutionError> {
+        let upgrades = [
+            (EXAMPLE_T10_PORTAL_SOURCE, ZONE_PORTAL_IMPL_ADDRESS),
+            (EXAMPLE_T10_VERIFIER_SOURCE, ZONE_VERIFIER_ADDRESS),
+            (EXAMPLE_T10_MESSENGER_SOURCE, ZONE_MESSENGER_ADDRESS),
+        ];
+        let db = self.inner.evm.db_mut();
+        let mut state = EvmState::default();
+
+        for (source, destination) in upgrades {
+            let source_info = db
+                .basic(source)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            let code = match source_info.code.clone() {
+                Some(code) => code,
+                None => db
+                    .code_by_hash(source_info.code_hash)
+                    .map_err(BlockExecutionError::other)?,
+            };
+            if code.is_empty() {
+                return Err(BlockValidationError::msg(format!(
+                    "T10 Zone runtime source {source} has empty code"
+                ))
+                .into());
+            }
+
+            let destination_info = db
+                .basic(destination)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            if destination_info.code_hash == source_info.code_hash {
+                continue;
+            }
+
+            let mut account = Account::from(destination_info);
+            account.info.code_hash = source_info.code_hash;
+            account.info.code = Some(code);
+            account.mark_touch();
+            state.insert(destination, account);
+        }
+
+        if !state.is_empty() {
+            db.commit(state);
+        }
+        Ok(())
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
@@ -601,6 +661,9 @@ where
         }
         if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.evm().cfg.spec == TempoHardfork::T10 {
+            self.apply_example_t10_zone_runtime_upgrade()?;
         }
 
         Ok(())
@@ -2081,6 +2144,151 @@ mod tests {
                 !calls[0].contains_key(&address),
                 "shared runtimes are installed through the factory, not the T9 state hook"
             );
+        }
+    }
+
+    #[test]
+    fn test_example_t10_zone_runtime_upgrade_is_atomic_and_idempotent() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let upgrades = [
+            (
+                EXAMPLE_T10_PORTAL_SOURCE,
+                ZONE_PORTAL_IMPL_ADDRESS,
+                Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x01])),
+            ),
+            (
+                EXAMPLE_T10_VERIFIER_SOURCE,
+                ZONE_VERIFIER_ADDRESS,
+                Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x02])),
+            ),
+            (
+                EXAMPLE_T10_MESSENGER_SOURCE,
+                ZONE_MESSENGER_ADDRESS,
+                Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x03])),
+            ),
+        ];
+
+        for (source, destination, runtime) in &upgrades {
+            db.insert_account(
+                *source,
+                AccountInfo {
+                    code_hash: runtime.hash_slow(),
+                    code: Some(runtime.clone()),
+                    ..Default::default()
+                },
+            );
+            db.insert_account(
+                *destination,
+                AccountInfo {
+                    balance: U256::from(42),
+                    nonce: 7,
+                    code_hash: Bytecode::new_legacy(Bytes::from_static(&[0x00])).hash_slow(),
+                    code: Some(Bytecode::new_legacy(Bytes::from_static(&[0x00]))),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T10)
+            .build(&mut db, &chainspec);
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
+
+        executor.apply_pre_execution_changes().unwrap();
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        for (_, destination, runtime) in upgrades {
+            let info = db
+                .load_cache_account(destination)
+                .unwrap()
+                .account_info()
+                .unwrap();
+            assert_eq!(info.code_hash, runtime.hash_slow());
+            assert_eq!(info.code.unwrap(), runtime);
+            assert_eq!(info.balance, U256::from(42));
+            assert_eq!(info.nonce, 7);
+        }
+
+        let calls = hook_calls.lock().unwrap();
+        let zone_calls: Vec<_> = calls
+            .iter()
+            .filter(|state| {
+                [
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    ZONE_VERIFIER_ADDRESS,
+                    ZONE_MESSENGER_ADDRESS,
+                ]
+                .iter()
+                .all(|address| state.contains_key(address))
+            })
+            .collect();
+        assert_eq!(zone_calls.len(), 1, "upgrade must commit exactly once");
+        assert_eq!(
+            zone_calls[0].len(),
+            3,
+            "all runtimes must share one state commit"
+        );
+    }
+
+    #[test]
+    fn test_example_t10_zone_runtime_upgrade_rejects_empty_source_atomically() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let original = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0xff]));
+
+        for source in [EXAMPLE_T10_PORTAL_SOURCE, EXAMPLE_T10_VERIFIER_SOURCE] {
+            db.insert_account(
+                source,
+                AccountInfo {
+                    code_hash: original.hash_slow(),
+                    code: Some(original.clone()),
+                    ..Default::default()
+                },
+            );
+        }
+        for destination in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ] {
+            db.insert_account(
+                destination,
+                AccountInfo {
+                    code_hash: original.hash_slow(),
+                    code: Some(original.clone()),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        assert!(executor.apply_example_t10_zone_runtime_upgrade().is_err());
+        drop(executor);
+
+        for destination in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ] {
+            let info = db
+                .load_cache_account(destination)
+                .unwrap()
+                .account_info()
+                .unwrap();
+            assert_eq!(info.code_hash, original.hash_slow());
+            assert_eq!(info.code.unwrap(), original);
         }
     }
 
