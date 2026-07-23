@@ -9,7 +9,7 @@
 //! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
 //! marshal gap repair to fill history.
 
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
@@ -21,12 +21,10 @@ use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spaw
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
-use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_provider::{BlockHashReader as _, DatabaseProviderFactory as _};
-use tempo_node::{TempoExecutionData, TempoFullNode};
+use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
-use super::Config;
+use super::{Config, ExecutionEngine, FinalizedBlockProvider, Marshal};
 use crate::{
     consensus::{Digest, block::Block},
     utils::OptionFuture,
@@ -38,13 +36,16 @@ struct FinalizedTip {
     digest: Digest,
 }
 
-pub(crate) struct Actor<TContext> {
+pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
-    execution_node: Arc<TempoFullNode>,
-    marshal: crate::alias::marshal::Mailbox,
+    mailbox: mpsc::UnboundedReceiver<Update<Block>>,
+
+    execution_provider: P,
+    execution_engine: E,
+    marshal: M,
+
     epoch_strategy: FixedEpocher,
     floor: Height,
-    mailbox: mpsc::UnboundedReceiver<Update<Block>>,
 
     last_fcu: FinalizedTip,
     latest_tip: FinalizedTip,
@@ -56,37 +57,34 @@ pub(crate) struct Actor<TContext> {
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
 }
 
-impl<TContext> Actor<TContext>
+impl<TContext, P, E, M> Actor<TContext, P, E, M>
 where
     TContext: Clock + Pacer + Spawner,
+    P: FinalizedBlockProvider + 'static,
+    E: Clone + ExecutionEngine + 'static,
+    M: Marshal + 'static,
 {
     pub(super) fn new(
         context: TContext,
-        config: Config,
+        config: Config<P, E, M>,
         mailbox: mpsc::UnboundedReceiver<Update<Block>>,
     ) -> Self {
         let Config {
-            execution_node,
+            execution_provider,
+            execution_engine,
             marshal,
             epoch_strategy,
             floor,
             fcu_heartbeat_interval,
         } = config;
 
-        let tip = execution_node
-            .provider
-            .canonical_in_memory_state()
-            .get_finalized_num_hash()
-            .map_or_else(
-                || FinalizedTip {
-                    height: Height::new(0),
-                    digest: Digest(execution_node.chain_spec().genesis_hash()),
-                },
-                |tip| FinalizedTip {
-                    height: Height::new(tip.number),
-                    digest: Digest(tip.hash),
-                },
-            );
+        let tip = execution_provider
+            .finalized_block_num_hash()
+            .expect("failed reading finalized execution tip");
+        let tip = FinalizedTip {
+            height: Height::new(tip.number),
+            digest: Digest(tip.hash),
+        };
 
         Self {
             context: ContextCell::new(context),
@@ -95,7 +93,8 @@ where
             marshal,
             epoch_strategy,
             floor,
-            execution_node,
+            execution_provider,
+            execution_engine,
 
             last_fcu: tip,
             latest_tip: tip,
@@ -184,21 +183,15 @@ where
 
         let last_fcu = self.last_fcu;
         let context = self.context.clone();
-        let execution_node = self.execution_node.clone();
+        let execution_engine = self.execution_engine.clone();
         self.execution_task
-            .replace(execute_request(context, execution_node, last_fcu, request).boxed());
+            .replace(execute_request(context, execution_engine, last_fcu, request).boxed());
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
-        let Some(finalized) = self
-            .execution_node
-            .provider
-            .canonical_in_memory_state()
-            .get_finalized_num_hash()
-        else {
-            return Ok(());
-        };
+        let finalized = self.execution_provider.finalized_block_num_hash()?;
+
         let finalized_height = Height::new(finalized.number);
         let epoch_length = self
             .epoch_strategy
@@ -211,14 +204,9 @@ where
             return Ok(());
         }
 
-        let database = self
-            .execution_node
-            .provider
-            .database_provider_ro()
-            .wrap_err("failed opening execution database")?;
-
-        let floor_digest = database
-            .block_hash(floor_height.get())
+        let floor_digest = self
+            .execution_provider
+            .durable_block_hash(floor_height.get())
             .wrap_err("failed reading floor block hash")?;
 
         let Some(floor_digest) = floor_digest else {
@@ -244,15 +232,15 @@ enum ExecutionTaskResult {
     Fatal(Report),
 }
 
-async fn execute_request<TContext: Pacer>(
+async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: ContextCell<TContext>,
-    execution_node: Arc<TempoFullNode>,
+    execution_engine: E,
     last_fcu: FinalizedTip,
     request: ExecutionRequest,
 ) -> ExecutionTaskResult {
     match request {
         ExecutionRequest::Forkchoice(tip) => {
-            match submit_forkchoice_update(&context, &execution_node, &tip).await {
+            match submit_forkchoice_update(&context, &execution_engine, &tip).await {
                 Ok(()) => ExecutionTaskResult::Completed(tip),
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
@@ -263,12 +251,13 @@ async fn execute_request<TContext: Pacer>(
                 digest: block.digest(),
             };
 
-            if let Err(error) = submit_new_payload(&context, &execution_node, block).await {
+            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
 
             let last_fcu = if tip.height > last_fcu.height {
-                if let Err(error) = submit_forkchoice_update(&context, &execution_node, &tip).await
+                if let Err(error) =
+                    submit_forkchoice_update(&context, &execution_engine, &tip).await
                 {
                     return ExecutionTaskResult::Fatal(error);
                 }
@@ -288,15 +277,13 @@ async fn execute_request<TContext: Pacer>(
     fields(block.height = %block.height(), block.digest = %block.digest()),
     err,
 )]
-async fn submit_new_payload<TContext: Pacer>(
+async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
-    execution_node: &TempoFullNode,
+    execution_engine: &E,
     block: Block,
 ) -> eyre::Result<()> {
     let (block, block_access_list) = block.into_parts();
-    let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
+    let payload_status = execution_engine
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
@@ -317,9 +304,9 @@ async fn submit_new_payload<TContext: Pacer>(
 }
 
 #[instrument(skip_all, fields(height = %tip.height, digest = %tip.digest))]
-async fn submit_forkchoice_update<TContext: Pacer>(
+async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
-    execution_node: &TempoFullNode,
+    execution_engine: &E,
     tip: &FinalizedTip,
 ) -> eyre::Result<()> {
     let hash = tip.digest.0;
@@ -329,9 +316,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
         finalized_block_hash: hash,
     };
 
-    let response = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
+    let response = execution_engine
         .fork_choice_updated(forkchoice, None)
         .pace(context, Duration::from_millis(20))
         .await

@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.13;
+
+import { IZoneFactory, IZonePortalInitializer, ZoneInfo } from "../interfaces/IZone.sol";
+import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
+import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
+
+/// @title ZoneFactory
+/// @notice Reference registry logic for the enshrined ZoneFactory precompile.
+/// @dev This is not deployable EVM bytecode. Native host hooks below model the
+///      protocol operations that install portal proxy bytecode at vanity addresses.
+abstract contract ZoneFactory is IZoneFactory {
+
+    /*//////////////////////////////////////////////////////////////
+                                CONSTANTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Minimum gas consumed by a successful native zone creation.
+    /// @dev Enforced by the native implementation's host gas accounting.
+    uint256 public constant ZONE_CREATION_GAS = 15_000_000;
+
+    /// @notice Maximum number of equal sequencers in a zone's settlement set.
+    uint256 public constant MAX_SEQUENCERS = 8;
+
+    /// @notice 12-byte prefix reserved for zone portal vanity addresses.
+    bytes12 public constant ZONE_PORTAL_PREFIX = 0x5AD000000000000000000000;
+
+    /// @notice Protocol-managed account that stores the central ZonePortal implementation.
+    address public constant ZONE_PORTAL_IMPL_ADDRESS = 0x5AD1000000000000000000000000000000000000;
+
+    /// @notice Protocol-managed verifier account (0x56 is ASCII "V").
+    address public constant ZONE_VERIFIER_ADDRESS = 0x5a56000000000000000000000000000000000000;
+
+    /// @notice Protocol-managed shared messenger account (0x4d is ASCII "M").
+    address public constant ZONE_MESSENGER_ADDRESS = 0x5A4d000000000000000000000000000000000000;
+
+    /// @notice Runtime prefix for an EIP-1167-style delegatecall proxy.
+    bytes10 internal constant PORTAL_PROXY_PREFIX = 0x363d3d373d3d3d363d73;
+
+    /// @notice Runtime suffix for an EIP-1167-style delegatecall proxy.
+    bytes15 internal constant PORTAL_PROXY_SUFFIX = 0x5af43d82803e903d91602b57fd5bf3;
+
+    /*//////////////////////////////////////////////////////////////
+                                STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Next zone ID to be assigned.
+    /// @dev Starts at 1, reserving zone ID 0 for potential future use.
+    uint32 public override nextZoneId = 1;
+
+    /// @notice Initial value is configured by the T9 activation.
+    address public owner;
+
+    /// @notice Whether shared runtime updates have been permanently disabled.
+    bool public override implementationUpdatesLocked;
+
+    mapping(uint32 => ZoneInfo) internal _zones;
+
+    /*//////////////////////////////////////////////////////////////
+                            ZONE CREATION
+    //////////////////////////////////////////////////////////////*/
+
+    function createZone(CreateZoneParams calldata params)
+        external
+        returns (uint32 zoneId, address portal)
+    {
+        if (msg.sender != owner) revert NotOwner();
+
+        if (!ITIP20Factory(StdPrecompiles.TIP20_FACTORY_ADDRESS).isTIP20(params.initialToken)) {
+            revert InvalidToken();
+        }
+        if (!_nativeTokenTransferPolicyIsSet(params.initialToken)) {
+            revert TokenTransferPolicyNotSet();
+        }
+        for (uint256 i; i < params.allowedAccounts.length; ++i) {
+            if (params.allowedAccounts[i] == ZONE_MESSENGER_ADDRESS) {
+                revert InvalidClosedLoopConfig();
+            }
+        }
+        for (uint256 i; i < params.zoneGateways.length; ++i) {
+            for (uint256 j; j < params.allowedAccounts.length; ++j) {
+                if (params.zoneGateways[i] == params.allowedAccounts[j]) {
+                    revert InvalidClosedLoopConfig();
+                }
+            }
+        }
+        if (params.admin == address(0)) revert InvalidAdmin();
+        _validateSequencerSet(params.sequencers, params.threshold);
+
+        zoneId = nextZoneId;
+        nextZoneId = zoneId + 1;
+
+        portal = portalAddress(zoneId);
+
+        // Native precompile operation, not EVM CREATE or CREATE2:
+        //
+        // 1. The protocol etches minimal portal proxy/caller bytecode directly into
+        //    the reserved `portal` account. The runtime delegatecalls into
+        //    ZONE_PORTAL_IMPL_ADDRESS, the single protocol-managed ZonePortal logic
+        //    implementation.
+        // 2. This factory calls the portal's one-time initializer with the zone ID,
+        //    initial token, shared messenger, admin, equal sequencer set, settlement
+        //    threshold, verifier, and RPC URL.
+        //
+        // The exact host operations are implementation details of the Tempo
+        // precompile, represented by abstract hooks here so this artifact documents
+        // the required behavior without pretending it is ordinary Solidity.
+        _nativeEtchPortalProxy(portal, portalProxyRuntime());
+        IZonePortalInitializer(portal)
+            .initialize(
+                zoneId,
+                params.initialToken,
+                params.accessMode,
+                params.gatewayMode,
+                params.allowedAccounts,
+                params.zoneGateways,
+                ZONE_MESSENGER_ADDRESS,
+                params.admin,
+                params.sequencers,
+                params.threshold,
+                ZONE_VERIFIER_ADDRESS,
+                params.rpcUrl
+            );
+
+        _zones[zoneId] = ZoneInfo({
+            zoneId: zoneId,
+            portal: portal,
+            accessMode: params.accessMode,
+            gatewayMode: params.gatewayMode,
+            admin: params.admin,
+            sequencers: params.sequencers,
+            threshold: params.threshold,
+            verifier: ZONE_VERIFIER_ADDRESS,
+            rpcUrl: params.rpcUrl
+        });
+
+        emit ZoneCreated(
+            zoneId,
+            portal,
+            params.initialToken,
+            params.accessMode,
+            params.gatewayMode,
+            params.admin,
+            params.sequencers,
+            params.threshold,
+            ZONE_VERIFIER_ADDRESS
+        );
+    }
+
+    /// @inheritdoc IZoneFactory
+    function transferOwnership(address newOwner) external {
+        if (msg.sender != owner) revert NotOwner();
+
+        address previousOwner = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(previousOwner, newOwner);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function lockImplementationUpdates() external {
+        if (msg.sender != owner) revert NotOwner();
+        implementationUpdatesLocked = true;
+    }
+
+    /// @inheritdoc IZoneFactory
+    function setPortalImplementation(address source) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidPortalImplementation();
+
+        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
+        emit PortalUpdated(source, codeHash);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function setZoneMessengerImplementation(address source) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidZoneMessengerImplementation();
+
+        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
+        emit MessengerUpdated(source, codeHash);
+    }
+
+    /// @inheritdoc IZoneFactory
+    function setVerifierImplementation(address source) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
+        if (source.code.length == 0) revert InvalidVerifierImplementation();
+
+        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
+        emit VerifierUpdated(source, codeHash);
+    }
+
+    /// @notice Returns the deterministic portal vanity address for a zone ID.
+    function portalAddress(uint32 zoneId) public pure returns (address) {
+        uint160 prefix = uint160(bytes20(ZONE_PORTAL_PREFIX));
+        return address(prefix | uint160(uint64(zoneId)));
+    }
+
+    /// @notice Returns the exact runtime bytecode etched into each portal account.
+    function portalProxyRuntime() public pure returns (bytes memory) {
+        return abi.encodePacked(PORTAL_PROXY_PREFIX, ZONE_PORTAL_IMPL_ADDRESS, PORTAL_PROXY_SUFFIX);
+    }
+
+    function _validateSequencerSet(address[] calldata sequencers, uint8 threshold) internal pure {
+        uint256 length = sequencers.length;
+        if (length == 0 || length > MAX_SEQUENCERS || threshold == 0 || threshold > length) {
+            revert InvalidSequencerSet();
+        }
+
+        for (uint256 i = 0; i < length; ++i) {
+            address current = sequencers[i];
+            if (current == address(0)) revert InvalidSequencerSet();
+            for (uint256 j = 0; j < i; ++j) {
+                if (current == sequencers[j]) revert InvalidSequencerSet();
+            }
+        }
+    }
+
+    /// @dev Native host hook: etch proxy/caller runtime bytecode at `portal`.
+    function _nativeEtchPortalProxy(address portal, bytes memory runtime) internal virtual;
+
+    /// @dev Native host hook: return whether TIP-403 stores an explicit policy binding for `token`.
+    function _nativeTokenTransferPolicyIsSet(address token) internal virtual returns (bool);
+
+    /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
+    /// Returns `EXTCODEHASH(source)` for the emitted update event.
+    function _nativeCopyRuntime(
+        address source,
+        address destination
+    )
+        internal
+        virtual
+        returns (bytes32 codeHash);
+
+    /*//////////////////////////////////////////////////////////////
+                                 VIEWS
+    //////////////////////////////////////////////////////////////*/
+
+    function zones(uint32 zoneId) external view returns (ZoneInfo memory info) {
+        return _zones[zoneId];
+    }
+
+    function isZonePortal(address portal) external view returns (bool) {
+        uint64 zoneId = uint64(uint160(portal));
+        return bytes12(bytes20(portal)) == ZONE_PORTAL_PREFIX && zoneId != 0 && zoneId < nextZoneId;
+    }
+
+}

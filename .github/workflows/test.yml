@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
@@ -108,7 +108,7 @@ jobs:
           version: v0.15.0
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
-          tool: nextest@0.9.124
+          tool: nextest@0.9.127
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -150,7 +150,7 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e (${{ matrix.partition }}/3)
+    name: e2e (${{ matrix.partition }}/4)
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -158,7 +158,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3]
+        partition: [1, 2, 3, 4]
     env:
       # Set to 8 MiB because some tests run into stack overflows with jemalloc
       RUST_MIN_STACK: 8388608
@@ -166,18 +166,26 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: v0.15.0
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
-          tool: nextest@0.9.124
+          tool: nextest@0.9.127
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3 --no-run
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4 --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition count:${{ matrix.partition }}/3
+        run: cargo nextest run --profile ci -E 'package(tempo-e2e)' --partition slice:${{ matrix.partition }}/4
+      - name: Upload e2e test timings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-junit-${{ matrix.partition }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
 
   e2e-flaky:
     name: e2e-flaky
@@ -192,14 +200,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: v0.15.0
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
-          tool: nextest@0.9.124
+          tool: nextest@0.9.127
       - name: Build flaky e2e tests
         run: cargo nextest run --profile ci-flaky --no-run
       - name: Run flaky e2e tests
@@ -215,7 +223,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
@@ -257,7 +265,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: "1.96" # MSRV
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1

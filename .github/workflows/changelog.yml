@@ -26,7 +26,7 @@ jobs:
 
       - run: curl -fsSL https://ampcode.com/install.sh | bash
 
-      - uses: wevm/changelogs/check@466632795bfca34dc9bb7f7bcab9f50c6e3f3726 # master
+      - uses: wevm/changelogs/check@74f07b39c7c85773575e32472dfd5298ec6baaf4 # master
         with:
           ai: 'amp -x'
           ecosystem: rust

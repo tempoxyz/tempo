@@ -3,6 +3,9 @@ fail-fast = false
 retries = 2
 test-threads = "num-cpus"
 
+[profile.ci.junit]
+path = "junit.xml"
+
 # Treat timeout as success while debugging snapshot-restart flakiness.
 [[profile.ci.overrides]]
 filter = "test(can_restart_after_joining_from_snapshot)"
