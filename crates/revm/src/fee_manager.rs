@@ -1,13 +1,12 @@
 use crate::{
-    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
-    common::is_tip20_fee_inference_call,
+    TempoBlockEnv, TempoStateAccess, TempoTx, TempoTxEnv, common::is_tip20_fee_inference_call,
 };
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolCall;
 use core::fmt::Debug;
 use revm::{
     Database,
-    context::{CfgEnv, Journal, result::EVMError},
+    context::{CfgEnv, Journal},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -16,8 +15,9 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::{Handler, StorageActions, StorageCtx},
+    storage::{ContractStorage, Handler, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
+    tip20::TIP20Token,
 };
 
 /// EVM state needed to install storage for an internal protocol fee hook.
@@ -48,6 +48,66 @@ impl<DB: alloy_evm::Database> ProtocolFeeContext<'_, DB> {
             f,
         )
     }
+}
+
+/// Read-only state exposed to fee-token validation.
+pub struct FeeTokenValidationContext<'a, DB: Database> {
+    journal: &'a mut Journal<DB>,
+    spec: TempoHardfork,
+    actions: StorageActions,
+}
+
+impl<DB: Database> FeeTokenValidationContext<'_, DB> {
+    pub(crate) fn new(
+        journal: &mut Journal<DB>,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> FeeTokenValidationContext<'_, DB> {
+        FeeTokenValidationContext {
+            journal,
+            spec,
+            actions,
+        }
+    }
+
+    fn enter<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        self.journal
+            .with_read_only_storage_ctx(self.spec, self.actions.clone(), f)
+    }
+
+    /// Returns whether a TIP-20 has been initialized.
+    pub fn is_initialized(&mut self, fee_token: Address) -> TempoResult<bool> {
+        self.enter(|| TIP20Token::from_address_unchecked(fee_token).is_initialized())
+    }
+
+    /// Reads the TIP-20 currency without allocating unbounded malformed data.
+    pub fn currency(&mut self, fee_token: Address) -> TempoResult<String> {
+        self.enter(|| {
+            let token = TIP20Token::from_address_unchecked(fee_token);
+            let len = token.currency.len()?;
+            if len > 31 {
+                Ok(format!("<{len} bytes>"))
+            } else {
+                token.currency.read()
+            }
+        })
+    }
+
+    /// Reads a storage slot for a custom eligibility policy.
+    pub fn storage(&mut self, address: Address, key: U256) -> TempoResult<U256> {
+        self.enter(|| StorageCtx.sload(address, key))
+    }
+}
+
+/// Protocol-level result of fee-token eligibility validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeeTokenValidation {
+    /// The token can pay fees.
+    Valid,
+    /// The token is not eligible to pay fees.
+    Invalid,
+    /// The token uses an unsupported currency.
+    UnsupportedCurrency(String),
 }
 
 /// Resolves a transaction's fee token for state consumers outside the EVM handler.
@@ -84,12 +144,15 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
     /// The handler checks the TIP-20 prefix first. Implementations define which tokens are valid.
     fn validate_fee_token(
         &self,
-        journal: &mut Journal<DB>,
+        ctx: &mut FeeTokenValidationContext<'_, DB>,
         fee_token: Address,
-        spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        journal.ensure_tip20_usd(spec, fee_token, actions)
+    ) -> TempoResult<FeeTokenValidation> {
+        let currency = ctx.currency(fee_token)?;
+        Ok(if currency == "USD" {
+            FeeTokenValidation::Valid
+        } else {
+            FeeTokenValidation::UnsupportedCurrency(currency)
+        })
     }
 
     /// Resolves the validator token used to receive protocol fees.

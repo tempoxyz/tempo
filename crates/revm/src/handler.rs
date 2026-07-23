@@ -64,7 +64,8 @@ use tempo_primitives::{
 };
 
 use crate::{
-    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    FeeTokenValidation, FeeTokenValidationContext, ProtocolFeeContext, TempoBatchCallEnv, TempoEvm,
+    TempoInvalidTransaction, TempoTxEnv,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
@@ -987,7 +988,25 @@ where
         // Skip fee token validation when the transaction is free and not part of a subblock.
         // The TIP20 prefix is already validated above.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            fee_manager.validate_fee_token(journal, fee_token, cfg.spec, actions.clone())?;
+            let mut validation_ctx =
+                FeeTokenValidationContext::new(journal, cfg.spec, actions.clone());
+            let validation = fee_manager
+                .validate_fee_token(&mut validation_ctx, fee_token)
+                .map_err(|error| EVMError::Custom(error.to_string()))?;
+
+            match validation {
+                FeeTokenValidation::Valid => {}
+                FeeTokenValidation::Invalid => {
+                    return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+                }
+                FeeTokenValidation::UnsupportedCurrency(currency) => {
+                    return Err(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: fee_token,
+                        currency,
+                    }
+                    .into());
+                }
+            }
         }
 
         // Load the fee payer balance
