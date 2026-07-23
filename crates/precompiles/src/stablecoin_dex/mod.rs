@@ -500,11 +500,30 @@ impl StablecoinDEX {
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
         let book_key = compute_book_key(base, quote);
-        if is_bid {
-            self.books[book_key].bids[tick].read()
+        let mut level = if is_bid {
+            self.books[book_key].bids[tick].read()?
         } else {
-            self.books[book_key].asks[tick].read()
+            self.books[book_key].asks[tick].read()?
+        };
+
+        if self.storage.spec().is_t9() {
+            level.total_liquidity = self.compute_tick_liquidity(level.head)?;
         }
+
+        Ok(level)
+    }
+
+    /// Sums the remaining amount of every order reachable from a tick's head.
+    fn compute_tick_liquidity(&self, mut order_id: u128) -> Result<u128> {
+        let mut total = 0u128;
+        while order_id != 0 {
+            let order = self.orders[order_id].read()?;
+            total = total
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            order_id = order.next();
+        }
+        Ok(total)
     }
 
     /// Returns the [`Orderbook`] for a given pair key.
@@ -713,6 +732,18 @@ impl StablecoinDEX {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
+        let t9_liquidity = self
+            .storage
+            .spec()
+            .is_t9()
+            .then(|| self.compute_tick_liquidity(level.head))
+            .transpose()?;
+        if let Some(liquidity) = t9_liquidity {
+            // Preserve the placement-time overflow guard before making any linked-list writes.
+            liquidity
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
@@ -747,11 +778,12 @@ impl StablecoinDEX {
             level.tail = order.order_id();
         }
 
-        let new_liquidity = level
-            .total_liquidity
-            .checked_add(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
 
         self.books[order.book_key()]
             .tick_level_handler_mut(order.tick(), order.is_bid())
@@ -1030,16 +1062,16 @@ impl StablecoinDEX {
         let amount_out = taker_output(fill_amount, order.tick(), order.is_bid())
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        // Update price level total liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(fill_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_sub(fill_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
 
-        self.books[order.book_key()]
-            .tick_level_handler_mut(order.tick(), order.is_bid())
-            .write(*level)?;
+            self.books[order.book_key()]
+                .tick_level_handler_mut(order.tick(), order.is_bid())
+                .write(*level)?;
+        }
 
         // Emit OrderFilled event for partial fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
@@ -1169,11 +1201,12 @@ impl StablecoinDEX {
                 self.orders[order.next()].prev()?.delete()
             })?;
 
-            let new_liquidity = level
-                .total_liquidity
-                .checked_sub(fill_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            level.total_liquidity = new_liquidity;
+            if !self.storage.spec().is_t9() {
+                level.total_liquidity = level
+                    .total_liquidity
+                    .checked_sub(fill_amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+            }
 
             self.books[book_key]
                 .tick_level_handler_mut(order.tick(), order.is_bid())
@@ -1352,12 +1385,12 @@ impl StablecoinDEX {
             level.tail = order.prev();
         }
 
-        // Update level liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_sub(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
 
         // If this was the last order at this tick, clear the bitmap bit
         if level.head == 0 {
@@ -6689,7 +6722,13 @@ mod tests {
                 .read()?;
             assert_eq!(level.head, order_2);
             assert_eq!(level.tail, order_2);
-            assert_eq!(level.total_liquidity, size_2 - 1);
+            assert_eq!(level.total_liquidity, 0, "stored T9 aggregate stays unused");
+            assert_eq!(
+                exchange
+                    .get_price_level(base_token, tick, true)?
+                    .total_liquidity,
+                size_2 - 1
+            );
 
             let new_events = &exchange.emitted_events()[events_before..];
             let fill_events: Vec<_> = new_events
@@ -6999,7 +7038,16 @@ mod tests {
                 .read()?;
             assert_eq!(bid_level_after.head, next_order);
             assert_eq!(bid_level_after.tail, next_order);
-            assert_eq!(bid_level_after.total_liquidity, amount + 6);
+            assert_eq!(
+                bid_level_after.total_liquidity, 0,
+                "stored T9 aggregate stays unused"
+            );
+            assert_eq!(
+                exchange
+                    .get_price_level(base_token, tick, true)?
+                    .total_liquidity,
+                amount + 6
+            );
 
             Ok(())
         })
