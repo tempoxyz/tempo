@@ -51,9 +51,6 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Initial value is configured by the T9 activation.
     address public owner;
 
-    /// @notice Whether shared runtime updates have been permanently disabled.
-    bool public override implementationUpdatesLocked;
-
     mapping(uint32 => ZoneInfo) internal _zones;
 
     /*//////////////////////////////////////////////////////////////
@@ -156,42 +153,6 @@ abstract contract ZoneFactory is IZoneFactory {
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
-    /// @inheritdoc IZoneFactory
-    function lockImplementationUpdates() external {
-        if (msg.sender != owner) revert NotOwner();
-        implementationUpdatesLocked = true;
-    }
-
-    /// @inheritdoc IZoneFactory
-    function setPortalImplementation(address source) external {
-        if (msg.sender != owner) revert NotOwner();
-        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
-        if (source.code.length == 0) revert InvalidPortalImplementation();
-
-        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
-        emit PortalUpdated(source, codeHash);
-    }
-
-    /// @inheritdoc IZoneFactory
-    function setZoneMessengerImplementation(address source) external {
-        if (msg.sender != owner) revert NotOwner();
-        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
-        if (source.code.length == 0) revert InvalidZoneMessengerImplementation();
-
-        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
-        emit MessengerUpdated(source, codeHash);
-    }
-
-    /// @inheritdoc IZoneFactory
-    function setVerifierImplementation(address source) external {
-        if (msg.sender != owner) revert NotOwner();
-        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
-        if (source.code.length == 0) revert InvalidVerifierImplementation();
-
-        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
-        emit VerifierUpdated(source, codeHash);
-    }
-
     /// @notice Returns the deterministic portal vanity address for a zone ID.
     function portalAddress(uint32 zoneId) public pure returns (address) {
         uint160 prefix = uint160(bytes20(ZONE_PORTAL_PREFIX));
@@ -224,15 +185,8 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Native host hook: return whether TIP-403 stores an explicit policy binding for `token`.
     function _nativeTokenTransferPolicyIsSet(address token) internal virtual returns (bool);
 
-    /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
-    /// Returns `EXTCODEHASH(source)` for the emitted update event.
-    function _nativeCopyRuntime(
-        address source,
-        address destination
-    )
-        internal
-        virtual
-        returns (bytes32 codeHash);
+    /// @dev Hardfork-only host hook: copy `source` runtime bytecode to `destination`.
+    function _nativeCopyRuntime(address source, address destination) internal virtual;
 
     /*//////////////////////////////////////////////////////////////
                                  VIEWS
