@@ -358,7 +358,9 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS};
+    use tempo_contracts::precompiles::{
+        IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneAccessMode, ZoneGatewayMode,
+    };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,

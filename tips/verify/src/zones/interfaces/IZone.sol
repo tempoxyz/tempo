@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+enum ZoneAccessMode {
+    Closed,
+    Open
+}
+
+enum ZoneGatewayMode {
+    Enforced,
+    Open
+}
+
 /// @notice Zone metadata recorded by the native factory.
 struct ZoneInfo {
     uint32 zoneId;
