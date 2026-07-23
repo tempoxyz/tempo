@@ -260,61 +260,26 @@ where
         let runtimes = [
             (
                 ZONE_PORTAL_IMPL_ADDRESS,
-                "ZonePortal",
                 Bytecode::new_legacy(ZONE_PORTAL_RUNTIME),
             ),
             (
                 ZONE_VERIFIER_ADDRESS,
-                "Verifier",
                 Bytecode::new_legacy(ZONE_VERIFIER_RUNTIME),
             ),
             (
                 ZONE_MESSENGER_ADDRESS,
-                "ZoneMessenger",
                 Bytecode::new_legacy(ZONE_MESSENGER_RUNTIME),
             ),
         ];
 
-        let first_post_genesis_block = self.evm().block().number == U256::from(1);
         let db = self.inner.evm.db_mut();
         let factory_info = db
             .basic(ZONE_FACTORY_ADDRESS)
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
-        if !factory_info.is_empty_code_hash() && !first_post_genesis_block {
-            return Ok(());
-        }
-
+        // Genesis allocations are authoritative, and the marker also records a completed
+        // post-genesis installation.
         if !factory_info.is_empty_code_hash() {
-            let installed_config = db
-                .storage(ZONE_FACTORY_ADDRESS, U256::ZERO)
-                .map_err(BlockExecutionError::other)?;
-            if installed_config != factory_config {
-                return Err(BlockValidationError::msg(
-                    "T9 ZoneFactory slot 0 does not contain the initial configuration",
-                )
-                .into());
-            }
-
-            for (destination, name, expected) in runtimes {
-                let info = db
-                    .basic(destination)
-                    .map_err(BlockExecutionError::other)?
-                    .unwrap_or_default();
-                let installed = match info.code.clone() {
-                    Some(code) => code,
-                    None if !info.is_empty_code_hash() => db
-                        .code_by_hash(info.code_hash)
-                        .map_err(BlockExecutionError::other)?,
-                    None => Bytecode::default(),
-                };
-                if installed != expected {
-                    return Err(BlockValidationError::msg(format!(
-                        "T9 {name} runtime is not installed at {destination}"
-                    ))
-                    .into());
-                }
-            }
             return Ok(());
         }
 
@@ -332,7 +297,7 @@ where
         factory.mark_touch();
 
         let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory)]);
-        for (destination, _, code) in runtimes {
+        for (destination, code) in runtimes {
             let info = db
                 .basic(destination)
                 .map_err(BlockExecutionError::other)?
