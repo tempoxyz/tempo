@@ -129,7 +129,8 @@ jobs:
             }')"
 
           # EVENTS_ARGS may contain additional curl arguments, not just a URL.
-          curl -sf -o /dev/null -X POST $EVENTS_ARGS \
+          read -r -a events_args <<< "$EVENTS_ARGS"
+          curl -sf -o /dev/null -X POST "${events_args[@]}" \
             --key "$key_file" \
             --cert "$cert_file" \
             -H "Content-Type: application/json" \
