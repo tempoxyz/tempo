@@ -507,23 +507,19 @@ impl StablecoinDEX {
         };
 
         if self.storage.spec().is_t9() {
-            level.total_liquidity = self.compute_tick_liquidity(level.head)?;
+            let mut order_id = level.head;
+            level.total_liquidity = 0;
+            while order_id != 0 {
+                let order = self.orders[order_id].read()?;
+                level.total_liquidity = level
+                    .total_liquidity
+                    .checked_add(order.remaining())
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                order_id = order.next();
+            }
         }
 
         Ok(level)
-    }
-
-    /// Sums the remaining amount of every order reachable from a tick's head.
-    fn compute_tick_liquidity(&self, mut order_id: u128) -> Result<u128> {
-        let mut total = 0u128;
-        while order_id != 0 {
-            let order = self.orders[order_id].read()?;
-            total = total
-                .checked_add(order.remaining())
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            order_id = order.next();
-        }
-        Ok(total)
     }
 
     /// Returns the [`Orderbook`] for a given pair key.
