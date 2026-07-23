@@ -40,6 +40,7 @@ alloy = { workspace = true, features = [
   "getrandom",
 ] }
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 bytes.workspace = true

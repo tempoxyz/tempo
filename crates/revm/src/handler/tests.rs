@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    ProtocolFeeManager, TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
-    tx::TempoBatchCallEnv,
+    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
+    evm::TempoEvm, gas_params::tempo_gas_params, tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use proptest::prelude::*;
@@ -489,7 +489,8 @@ fn test_get_fee_token() -> eyre::Result<()> {
         .unwrap();
 
     {
-        let fee_token = ctx.journaled_state.get_fee_token(
+        let fee_token = TempoFeeManager.resolve_fee_token(
+            &mut ctx.journaled_state,
             &ctx.tx,
             user,
             ctx.cfg.spec,
@@ -509,7 +510,8 @@ fn test_get_fee_token() -> eyre::Result<()> {
         .unwrap();
 
     {
-        let fee_token = ctx.journaled_state.get_fee_token(
+        let fee_token = TempoFeeManager.resolve_fee_token(
+            &mut ctx.journaled_state,
             &ctx.tx,
             user,
             ctx.cfg.spec,
@@ -520,7 +522,8 @@ fn test_get_fee_token() -> eyre::Result<()> {
 
     // Set tx fee token
     ctx.tx.fee_token = Some(tx_fee_token);
-    let fee_token = ctx.journaled_state.get_fee_token(
+    let fee_token = TempoFeeManager.resolve_fee_token(
+        &mut ctx.journaled_state,
         &ctx.tx,
         user,
         ctx.cfg.spec,

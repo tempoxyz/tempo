@@ -9,6 +9,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
 };
 use alloy::primitives::{Address, IntoLogData};
 use tempo_contracts::precompiles::{
@@ -18,10 +19,9 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
 
-#[cfg(test)]
-use portal::PortalTokenConfig;
-pub use portal::ZONE_PORTAL_PROXY_RUNTIME;
-use portal::ZonePortalStorage;
+/// Generated storage slots for ZonePortal accounts.
+pub use portal::slots as zone_portal_slots;
+pub use portal::{ZONE_PORTAL_PROXY_RUNTIME, ZonePortalStorage};
 /// Minimum gas consumed by a successful zone creation.
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
@@ -185,6 +185,12 @@ impl ZoneFactory {
         if !TIP20Factory::new().is_tip20(call.params.initialToken)? {
             return Err(ZoneFactoryError::invalid_token().into());
         }
+        if TIP403Registry::new()
+            .registered_token_transfer_policy_id(call.params.initialToken)?
+            .is_none()
+        {
+            return Err(ZoneFactoryError::token_transfer_policy_not_set().into());
+        }
         if call.params.admin.is_zero() {
             return Err(ZoneFactoryError::invalid_admin().into());
         }
@@ -223,7 +229,7 @@ impl ZoneFactory {
         self.storage.emit_event(
             portal,
             ZonePortalEvent::sequencer_set_updated(
-                1,
+                0,
                 call.params.threshold,
                 call.params.sequencers.clone(),
             )
@@ -311,7 +317,11 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{B256, Bytes, address};
+    use alloy::{
+        primitives::{B256, Bytes, U256, address, keccak256},
+        sol_types::SolValue,
+    };
+    use portal::PortalTokenConfig;
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -391,7 +401,6 @@ mod tests {
             );
 
             let portal = ZonePortalStorage::new(created.portal);
-            assert_eq!(portal.sequencer.read()?, SEQUENCER_A);
             assert_eq!(portal.admin.read()?, ADMIN);
             assert_eq!(portal.block_hash.read()?, B256::ZERO);
             assert_eq!(
@@ -407,11 +416,27 @@ mod tests {
             assert_eq!(portal.messenger.read()?, ZONE_MESSENGER_ADDRESS);
             assert_eq!(portal.verifier.read()?, ZONE_VERIFIER_ADDRESS);
             assert!(portal.initialized.read()?);
-            assert_eq!(portal.sequencer_set_version.read()?, 1);
+            assert_eq!(portal.sequencer_set_version.read()?, 0);
             assert_eq!(portal.sequencer_threshold.read()?, 2);
             assert_eq!(portal.sequencers.read()?, vec![SEQUENCER_A, SEQUENCER_B]);
             assert!(portal.is_sequencer[SEQUENCER_A].read()?);
             assert!(portal.is_sequencer[SEQUENCER_B].read()?);
+
+            // Pin the native storage handlers to the canonical Solidity layout.
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::ZERO)?,
+                U256::from_be_slice(ADMIN.as_slice())
+            );
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(18))?,
+                U256::from(2)
+            );
+            let membership_slot =
+                U256::from_be_bytes(keccak256((SEQUENCER_A, U256::from(19)).abi_encode()).0);
+            assert_eq!(
+                StorageCtx.sload(created.portal, membership_slot)?,
+                U256::ONE
+            );
             Ok(())
         })
     }
@@ -448,6 +473,42 @@ mod tests {
             params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];
             factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
             assert_eq!(factory.zone(1)?.sequencers, vec![SEQUENCER_B, SEQUENCER_A]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_requires_initial_token_policy_binding() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            StorageCtx.set_spec(TempoHardfork::T9);
+
+            let err = factory
+                .create_zone(
+                    OWNER,
+                    IZoneFactory::createZoneCall {
+                        params: create_params(PATH_USD_ADDRESS),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::token_transfer_policy_not_set())
+            );
+            assert_eq!(factory.next_zone_id()?, 1);
+            assert!(!factory.is_zone_portal(portal_address(1))?);
+
+            TIP403Registry::new().set_token_transfer_policy(PATH_USD_ADDRESS, 1)?;
+            factory.create_zone(
+                OWNER,
+                IZoneFactory::createZoneCall {
+                    params: create_params(PATH_USD_ADDRESS),
+                },
+            )?;
+            assert_eq!(factory.next_zone_id()?, 2);
+
             Ok(())
         })
     }

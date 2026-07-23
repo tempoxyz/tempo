@@ -3,7 +3,7 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::{
     Setup, TestingNode, connect_execution_peers,
@@ -20,13 +20,75 @@ use commonware_runtime::{
     BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
-use futures::future::join_all;
+use futures::{channel::oneshot, future::join_all};
+use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRngCore;
 use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
+
+#[tokio::test]
+#[test_traced]
+async fn follower_rpc_survives_execution_node_handle_drop() {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let (addr_tx, addr_rx) = oneshot::channel::<SocketAddr>();
+    let (done_tx, done_rx) = oneshot::channel::<()>();
+
+    let executor_handle = std::thread::spawn(move || {
+        let executor = Runner::from(cfg);
+        executor.start(|mut context| async move {
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+            validators[0].start(&context).await;
+
+            let follower = Follower::builder()
+                .runtime(execution_runtime.handle())
+                .follow(&mut context, &validators[0])
+                .await;
+
+            let http_addr = follower
+                .execution_node
+                .node
+                .add_ons_handle
+                .rpc_server_handles
+                .rpc
+                .http_local_addr()
+                .unwrap();
+
+            let Follower {
+                execution_node,
+                _handle,
+                ..
+            } = follower;
+            let ExecutionNode {
+                node,
+                runtime: _runtime,
+                exit_fut: _exit_fut,
+            } = execution_node;
+
+            // Production drops this owner after starting the follower engine. The engine must
+            // retain every lifetime-sensitive handle needed to keep RPC available.
+            drop(node);
+            addr_tx.send(http_addr).unwrap();
+
+            let _ = done_rx.await;
+            drop(_handle);
+        });
+    });
+
+    let http_addr = addr_rx.await.unwrap();
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{http_addr}"))
+        .unwrap();
+    let _: String = client.request("eth_chainId", rpc_params![]).await.unwrap();
+
+    done_tx.send(()).unwrap();
+    executor_handle.join().unwrap();
+}
 
 trait FeedStateProvider {
     fn feed_state(&self) -> FeedStateHandle;

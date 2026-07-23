@@ -24,8 +24,10 @@ use crate::{
     RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
+    tip20::TIP20Token,
+    tip20_factory::TIP20Factory,
 };
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
@@ -61,6 +63,18 @@ pub struct TIP403Registry {
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
     receive_policies: Mapping<Address, ReceivePolicy>,
+    /// TIP-1092 token-to-policy bindings. Unset entries fall back to the policy ID stored on the
+    /// TIP-20 token.
+    token_transfer_policies: Mapping<Address, TokenTransferPolicy>,
+}
+
+/// Packed TIP-1092 token-to-policy binding.
+#[derive(Debug, Clone, Default, Storable)]
+pub struct TokenTransferPolicy {
+    /// Active transfer policy ID.
+    policy_id: u64,
+    /// Distinguishes an unset binding from the valid reject-all policy ID `0`.
+    is_set: bool,
 }
 
 /// Per-account TIP-1028 receive policy configuration.
@@ -221,6 +235,79 @@ impl TIP403Registry {
         // Check if policy ID is within the range of created policies
         let counter = self.policy_id_counter()?;
         Ok(call.policyId < counter)
+    }
+
+    /// Returns whether TIP-403 stores a transfer-policy binding for `token` and the effective
+    /// policy ID. The policy ID falls back to legacy token-local storage when no binding exists.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `token` is not a deployed TIP-20 token
+    pub fn token_transfer_policy_id(
+        &self,
+        call: ITIP403Registry::tokenTransferPolicyIdCall,
+    ) -> Result<ITIP403Registry::tokenTransferPolicyIdReturn> {
+        if !TIP20Factory::new().is_tip20(call.token)? {
+            return Err(tempo_contracts::precompiles::TIP20Error::invalid_token().into());
+        }
+
+        let registered_policy_id = self.registered_token_transfer_policy_id(call.token)?;
+        let is_set = registered_policy_id.is_some();
+        let policy_id = match registered_policy_id {
+            Some(policy_id) => policy_id,
+            None => TIP20Token::from_address(call.token)?.legacy_transfer_policy_id()?,
+        };
+
+        Ok(ITIP403Registry::tokenTransferPolicyIdReturn {
+            isSet: is_set,
+            policyId: policy_id,
+        })
+    }
+
+    /// Returns the registered policy ID without validating the token address.
+    pub(crate) fn registered_token_transfer_policy_id(
+        &self,
+        token: Address,
+    ) -> Result<Option<u64>> {
+        let binding = self.token_transfer_policies[token].read()?;
+        Ok(binding.is_set.then_some(binding.policy_id))
+    }
+
+    /// Writes the active registry binding for a TIP-20 token.
+    pub(crate) fn set_token_transfer_policy(
+        &mut self,
+        token: Address,
+        policy_id: u64,
+    ) -> Result<()> {
+        self.token_transfer_policies[token].write(TokenTransferPolicy {
+            policy_id,
+            is_set: true,
+        })
+    }
+
+    /// Migrates valid, unregistered TIP-20 tokens to registry-owned transfer policy bindings.
+    /// Invalid and already-registered token addresses are skipped.
+    pub fn migrate_transfer_policy_ids(
+        &mut self,
+        call: ITIP403Registry::migrateTransferPolicyIdsCall,
+    ) -> Result<U256> {
+        let factory = TIP20Factory::new();
+        let mut migrated = U256::ZERO;
+
+        for token in call.tokens {
+            if !factory.is_tip20(token)?
+                || self.registered_token_transfer_policy_id(token)?.is_some()
+            {
+                continue;
+            }
+
+            let mut token_contract = TIP20Token::from_address(token)?;
+            let policy_id = token_contract.legacy_transfer_policy_id()?;
+            self.set_token_transfer_policy(token, policy_id)?;
+            token_contract.delete_legacy_transfer_policy_id()?;
+            migrated += U256::ONE;
+        }
+
+        Ok(migrated)
     }
 
     /// Returns the type and admin of a policy. Reverts if the policy does not exist or has an

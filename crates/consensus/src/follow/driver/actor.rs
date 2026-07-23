@@ -1,52 +1,40 @@
-//! Follower finalization driver.
-//!
-//! Validates finalized blocks received from upstream and reports them to
-//! marshal and the consensus feed.
-
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::{
-    Epochable, Heightable as _, Reporter, marshal,
+    Epochable, Heightable as _, marshal,
     simplex::{
         scheme::bls12381_threshold::vrf::Scheme,
         types::{Activity, Finalization},
     },
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, Height},
 };
 use commonware_cryptography::{
-    Signer as _,
-    bls12381::primitives::variant::MinSig,
-    certificate::Provider,
-    ed25519::{self, PublicKey},
+    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
 };
-use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
-use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
-use rand_08::{CryptoRng, Rng};
-
+use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
-use reth_provider::HeaderProvider as _;
-use tempo_chainspec::NetworkIdentity;
-use tempo_node::{
-    TempoFullNode,
-    rpc::consensus::{CertifiedBlock, Event},
-};
+use rand_08::{CryptoRng, Rng};
+use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
 
-use crate::{
-    consensus::{Digest, block::Block},
-    epoch::SchemeProvider,
-    feed,
-};
+use super::{Config, ExecutionProvider, Feed, Mailbox, Marshal, ingress::Message};
+use crate::consensus::{Block, Digest};
 
-pub(super) fn try_init<TContext>(
+pub(super) fn try_init<TContext, P, M, F>(
     context: TContext,
-    config: Config,
-) -> eyre::Result<(Driver<TContext>, Mailbox)> {
+    config: Config<P, M, F>,
+) -> eyre::Result<(Driver<TContext, P, M, F>, Mailbox)>
+where
+    TContext: Clock + Spawner,
+    P: ExecutionProvider + 'static,
+    M: Marshal + 'static,
+    F: Feed + 'static,
+{
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
@@ -55,12 +43,7 @@ pub(super) fn try_init<TContext>(
     //
     // TODO: Provide a certificate with the latest boundary to not just trust
     // but also verify.
-    let last_finalized_number = config
-        .execution_node
-        .provider
-        .canonical_in_memory_state()
-        .get_finalized_num_hash()
-        .map_or(0u64, |num_hash| num_hash.number);
+    let last_finalized_number = config.execution_provider.finalized_block_number()?;
 
     let epoch_info = config
         .epoch_strategy
@@ -80,11 +63,9 @@ pub(super) fn try_init<TContext>(
 
     let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
         &mut config
-            .execution_node
-            .provider
-            .header_by_number(startup_execution_boundary.get())
-            .map_err(Report::new)
-            .and_then(|maybe_header| maybe_header.ok_or_eyre("execution layer did not have header"))
+            .execution_provider
+            .finalized_header_by_number(startup_execution_boundary.get())
+            .and_then(|header| header.ok_or_eyre("execution layer did not have header"))
             .wrap_err_with(|| {
                 format!(
                     "cannot establish baseline - unable to read the header \
@@ -126,90 +107,23 @@ pub(super) fn try_init<TContext>(
     Ok((actor, mailbox))
 }
 
-pub(super) struct Config {
-    pub(super) execution_node: Arc<TempoFullNode>,
-    pub(super) scheme_provider: SchemeProvider,
-    pub(super) network_identity: NetworkIdentity,
-
-    pub(super) last_finalized_height: Height,
-
-    pub(super) marshal: crate::alias::marshal::Mailbox,
-    pub(super) feed: feed::Mailbox,
-
-    pub(super) epoch_strategy: FixedEpocher,
-}
-
-#[derive(Debug)]
-enum Message {
-    Event(Box<Event>),
-    Finalized(marshal::Update<Block>),
-}
-
-impl From<Event> for Message {
-    fn from(value: Event) -> Self {
-        Self::Event(Box::new(value))
-    }
-}
-
-impl From<marshal::Update<Block>> for Message {
-    fn from(value: marshal::Update<Block>) -> Self {
-        Self::Finalized(value)
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct Mailbox(mpsc::UnboundedSender<Message>);
-
-impl Mailbox {
-    pub(super) fn to_event_reporter(&self) -> EventReporter {
-        EventReporter(self.clone())
-    }
-
-    pub(super) fn to_marshal_reporter(&self) -> MarshalReporter {
-        MarshalReporter(self.clone())
-    }
-
-    fn send(&self, msg: impl Into<Message>) {
-        let _ = self.0.send(msg.into());
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct EventReporter(Mailbox);
-
-impl Reporter for EventReporter {
-    type Activity = Event;
-
-    async fn report(&mut self, activity: Self::Activity) {
-        self.0.send(activity);
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct MarshalReporter(Mailbox);
-
-impl Reporter for MarshalReporter {
-    type Activity = marshal::Update<Block>;
-
-    async fn report(&mut self, activity: Self::Activity) {
-        self.0.send(activity);
-    }
-}
-
-pub(super) struct Driver<TContext> {
+pub(crate) struct Driver<TContext, P, M, F> {
     context: ContextCell<TContext>,
-    config: Config,
+    config: Config<P, M, F>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
-impl<C: Clock + Rng + CryptoRng> Driver<C>
+impl<C, P, M, F> Driver<C, P, M, F>
 where
-    C: Spawner,
+    C: Clock + Rng + CryptoRng + Spawner,
+    P: ExecutionProvider + 'static,
+    M: Marshal + 'static,
+    F: Feed + 'static,
 {
-    pub(super) fn start(mut self) -> commonware_runtime::Handle<()> {
+    pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run())
     }
 
@@ -364,19 +278,13 @@ where
                 .last(self.current_epoch)
                 .expect("strategy is valid for all heights and epochs");
 
-            let stub_peers =
-                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
-
             debug!(
                 current_epoch = %self.current_epoch,
                 %boundary_height,
                 "hinting current epoch boundary after finalization verification failed",
             );
 
-            self.config
-                .marshal
-                .hint_finalized(boundary_height, stub_peers)
-                .await;
+            self.config.marshal.hint_finalized(boundary_height).await;
 
             return Ok(());
         }
