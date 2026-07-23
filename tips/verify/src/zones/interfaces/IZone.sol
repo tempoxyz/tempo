@@ -53,12 +53,6 @@ interface IZoneFactory {
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
-    event PortalUpdated(address indexed source, bytes32 indexed codeHash);
-
-    event MessengerUpdated(address indexed source, bytes32 indexed codeHash);
-
-    event VerifierUpdated(address indexed source, bytes32 indexed codeHash);
-
     event ZoneCreated(
         uint32 indexed zoneId,
         address indexed portal,
@@ -77,24 +71,9 @@ interface IZoneFactory {
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencerSet();
-    error InvalidPortalImplementation();
-    error InvalidZoneMessengerImplementation();
-    error InvalidVerifierImplementation();
-    error ImplementationUpdatesLocked();
-
     function owner() external view returns (address);
 
-    function implementationUpdatesLocked() external view returns (bool);
-
     function transferOwnership(address newOwner) external;
-
-    function lockImplementationUpdates() external;
-
-    function setPortalImplementation(address source) external;
-
-    function setZoneMessengerImplementation(address source) external;
-
-    function setVerifierImplementation(address source) external;
 
     function createZone(CreateZoneParams calldata params)
         external
