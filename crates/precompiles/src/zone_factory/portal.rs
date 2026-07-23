@@ -22,14 +22,14 @@ pub const ZONE_PORTAL_PROXY_RUNTIME: [u8; 45] = hex!(
 
 /// Packed `TokenConfig` stored in the portal token registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
-pub(super) struct PortalTokenConfig {
-    pub(super) enabled: bool,
-    pub(super) deposits_active: bool,
+pub struct PortalTokenConfig {
+    pub enabled: bool,
+    pub deposits_active: bool,
 }
 
 /// Historical encryption-key entry stored by ZonePortal.
 #[derive(Debug, Clone, Copy, Storable)]
-struct PortalEncryptionKeyEntry {
+pub struct PortalEncryptionKeyEntry {
     x: B256,
     y_parity: u8,
     activation_block: u64,
@@ -37,7 +37,7 @@ struct PortalEncryptionKeyEntry {
 
 /// Withdrawal queue stored by ZonePortal.
 #[derive(Debug, Clone, Storable)]
-struct PortalWithdrawalQueue {
+pub struct PortalWithdrawalQueue {
     head: U256,
     tail: U256,
     #[allow(dead_code)]
