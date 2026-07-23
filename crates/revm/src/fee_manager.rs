@@ -58,7 +58,8 @@ pub struct FeeTokenValidationContext<'a, DB: Database> {
 }
 
 impl<DB: Database> FeeTokenValidationContext<'_, DB> {
-    pub(crate) fn new(
+    /// Creates a read-only validation view over the transaction journal.
+    pub fn new(
         journal: &mut Journal<DB>,
         spec: TempoHardfork,
         actions: StorageActions,
