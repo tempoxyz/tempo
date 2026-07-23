@@ -1,0 +1,154 @@
+name: Refresh Zone hardfork devnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type "zone-factory-hf" to confirm the destructive regenesis
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: refresh-zone-hf-devnet
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require the default branch and confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "Run this workflow from the default branch, not $REF_NAME." >&2
+            exit 1
+          fi
+
+          if [ "$CONFIRMATION" != "zone-factory-hf" ]; then
+            echo 'Confirmation must be exactly "zone-factory-hf".' >&2
+            exit 1
+          fi
+
+  build-tempo-images:
+    name: Build exact Tempo images
+    needs: validate
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    secrets:
+      DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+      EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
+      EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+      EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+
+  request-regenesis:
+    name: Request L1 and Zone regenesis
+    needs: build-tempo-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Resolve and verify immutable images
+        id: images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEMPO_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          zones_sha="$(gh api repos/tempoxyz/zones/commits/main --jq .sha)"
+          tempo_image="sha-${TEMPO_SHA:0:7}"
+          zones_image="sha-${zones_sha:0:7}"
+
+          echo "${GH_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          docker manifest inspect "ghcr.io/tempoxyz/tempo:${tempo_image}" >/dev/null
+          docker manifest inspect "ghcr.io/tempoxyz/tempo-xtask:${tempo_image}" >/dev/null
+          docker manifest inspect "ghcr.io/tempoxyz/tempo-zone-xtask:${zones_image}" >/dev/null
+
+          {
+            echo "tempo_image=${tempo_image}"
+            echo "zones_image=${zones_image}"
+            echo "zones_sha=${zones_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish refresh request
+        env:
+          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          GH_REPO: ${{ github.repository }}
+          REQUESTED_BY: ${{ github.actor }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          TEMPO_BRANCH: ${{ github.ref_name }}
+          TEMPO_IMAGE: ${{ steps.images.outputs.tempo_image }}
+          TEMPO_SHA: ${{ github.sha }}
+          ZONES_IMAGE: ${{ steps.images.outputs.zones_image }}
+          ZONES_SHA: ${{ steps.images.outputs.zones_sha }}
+        run: |
+          set -euo pipefail
+
+          key_file="${RUNNER_TEMP}/events-key"
+          cert_file="${RUNNER_TEMP}/events-cert"
+          trap 'rm -f "$key_file" "$cert_file"' EXIT
+          printf '%s' "$EVENTS_KEY" > "$key_file"
+          printf '%s' "$EVENTS_CERT" > "$cert_file"
+
+          payload="$(jq -n \
+            --arg repository "$GH_REPO" \
+            --arg tempo_branch "$TEMPO_BRANCH" \
+            --arg tempo_image "$TEMPO_IMAGE" \
+            --arg tempo_sha "$TEMPO_SHA" \
+            --arg zones_image "$ZONES_IMAGE" \
+            --arg zones_sha "$ZONES_SHA" \
+            --arg requested_by "$REQUESTED_BY" \
+            '{
+              repository: $repository,
+              event: "refresh_zone_hf_devnet",
+              data: {
+                tempo_branch: $tempo_branch,
+                tempo_image: $tempo_image,
+                tempo_sha: $tempo_sha,
+                zones_image: $zones_image,
+                zones_sha: $zones_sha,
+                requested_by: $requested_by
+              }
+            }')"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          read -r -a events_args <<< "$EVENTS_ARGS"
+          curl -sf -o /dev/null -X POST "${events_args[@]}" \
+            --key "$key_file" \
+            --cert "$cert_file" \
+            -H "Content-Type: application/json" \
+            --data "$payload"
+
+      - name: Summarize request
+        env:
+          TEMPO_IMAGE: ${{ steps.images.outputs.tempo_image }}
+          ZONES_IMAGE: ${{ steps.images.outputs.zones_image }}
+          ZONES_SHA: ${{ steps.images.outputs.zones_sha }}
+        run: |
+          {
+            echo "## Zone hardfork devnet refresh"
+            echo
+            echo "| Component | Revision | Image |"
+            echo "| --- | --- | --- |"
+            echo "| Tempo | \`${{ github.sha }}\` | \`${TEMPO_IMAGE}\` |"
+            echo "| Zones | \`${ZONES_SHA}\` | \`${ZONES_IMAGE}\` |"
+            echo
+            echo "Requested a sequential \`zone-factory-hf\` and \`zone-unstable\` regenesis."
+          } >> "$GITHUB_STEP_SUMMARY"
