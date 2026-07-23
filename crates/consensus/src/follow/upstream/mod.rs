@@ -11,8 +11,6 @@ use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 use url::Url;
 
-use crate::utils::OptionFuture;
-
 mod actor;
 pub mod in_process;
 mod ingress;
@@ -50,24 +48,13 @@ pub(crate) fn init<TContext>(
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = ingress::Mailbox::new(tx);
 
-    let url = Box::leak(Box::from(
-        parse_upstream_url(&config.upstream_url).wrap_err_with(|| {
-            format!(
-                "failed parsing upstream location as websocket URL: `{}`",
-                config.upstream_url
-            )
-        })?,
-    ));
-    let actor = Actor {
-        context: ContextCell::new(context),
-        connection: None,
-        mailbox: rx,
-        url,
-        pending_connect: OptionFuture::none(),
-        pending_stream: OptionFuture::none(),
-        event_stream: actor::inactive_event_stream(),
-        waiters: Vec::new(),
-    };
+    let url = parse_upstream_url(&config.upstream_url).wrap_err_with(|| {
+        format!(
+            "failed parsing upstream location as websocket URL: `{}`",
+            config.upstream_url
+        )
+    })?;
+    let actor = Actor::new(ContextCell::new(context), rx, url);
 
     Ok((actor, mailbox))
 }

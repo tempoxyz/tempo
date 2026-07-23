@@ -52,7 +52,6 @@ commonware-utils.workspace = true
 eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
-jsonrpsee = { workspace = true, features = ["http-client", "ws-client"] }
 indexmap.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
