@@ -1,0 +1,172 @@
+name: Promote canary image
+
+permissions: {}
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "Optional image digest to promote instead of a soaked nightly (sha256:...)"
+        required: false
+        default: ""
+        type: string
+      soak_days:
+        description: "Optional number of days the nightly image must have soaked"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: promote-canary-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/tempoxyz/tempo
+  DEFAULT_SOAK_DAYS: ${{ vars.CANARY_SOAK_DAYS || '3' }}
+
+jobs:
+  promote:
+    name: Promote image to canary
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Resolve image digest
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DIGEST_OVERRIDE: ${{ inputs.digest || '' }}
+          SOAK_DAYS_OVERRIDE: ${{ inputs.soak_days || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "$DIGEST_OVERRIDE" ] && [ -n "$SOAK_DAYS_OVERRIDE" ]; then
+            echo "Specify either digest or soak_days, not both" >&2
+            exit 1
+          fi
+
+          if [ -n "$DIGEST_OVERRIDE" ]; then
+            if [[ ! "$DIGEST_OVERRIDE" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Digest override must have the form sha256:<64 lowercase hexadecimal characters>" >&2
+              exit 1
+            fi
+
+            digest="$DIGEST_OVERRIDE"
+            source="manual digest override"
+            source_ref="${IMAGE}@${digest}"
+          else
+            soak_days_input="${SOAK_DAYS_OVERRIDE:-$DEFAULT_SOAK_DAYS}"
+            if [[ ! "$soak_days_input" =~ ^[0-9]+$ ]]; then
+              echo "soak_days and CANARY_SOAK_DAYS must be non-negative integers; got: ${soak_days_input}" >&2
+              exit 1
+            fi
+
+            soak_days=$((10#$soak_days_input))
+            cutoff_epoch=$(( $(date -u +%s) - soak_days * 86400 ))
+            cutoff="$(date -u -d "@${cutoff_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+
+            run="$(gh run list \
+              --repo "$GH_REPO" \
+              --workflow docker.yml \
+              --event schedule \
+              --status success \
+              --created "<=${cutoff}" \
+              --limit 10 \
+              --json databaseId,headSha,updatedAt,url \
+              --jq "[.[] | select((.updatedAt | fromdateiso8601) <= ${cutoff_epoch})] | first // empty")"
+
+            if [ -z "$run" ]; then
+              echo "No successful scheduled docker.yml run completed on or before ${cutoff}" >&2
+              exit 1
+            fi
+
+            head_sha="$(jq -er '.headSha | select(test("^[0-9a-f]{40}$"))' <<< "$run")"
+            run_id="$(jq -er '.databaseId' <<< "$run")"
+            run_completed_at="$(jq -er '.updatedAt' <<< "$run")"
+            run_url="$(jq -er '.url' <<< "$run")"
+            sha_tag="sha-${head_sha:0:7}"
+            source_ref="${IMAGE}:${sha_tag}"
+            source="nightly run ${run_id}"
+
+            inspection="$(docker buildx imagetools inspect "$source_ref" --format '{{json .}}')"
+            digest="$(jq -er '.manifest.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$inspection")"
+
+            if ! jq -e --arg sha "$head_sha" '
+              [.image[] | .config.Labels["org.opencontainers.image.revision"]] as $revisions
+              | ($revisions | length > 0) and all($revisions[]; . == $sha)
+            ' <<< "$inspection" > /dev/null; then
+              revisions="$(jq -c '[.image[] | .config.Labels["org.opencontainers.image.revision"]]' <<< "$inspection")"
+              echo "Image revisions ${revisions} do not all match nightly commit ${head_sha}" >&2
+              exit 1
+            fi
+
+            echo "cutoff=${cutoff}" >> "$GITHUB_OUTPUT"
+            echo "nightly_completed_at=${run_completed_at}" >> "$GITHUB_OUTPUT"
+            echo "nightly_run_url=${run_url}" >> "$GITHUB_OUTPUT"
+            echo "soak_days=${soak_days}" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "source=${source}" >> "$GITHUB_OUTPUT"
+          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Move canary tag
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "${IMAGE}:canary" \
+            "${IMAGE}@${DIGEST}"
+
+          promoted_inspection="$(docker buildx imagetools inspect "${IMAGE}:canary" --format '{{json .}}')"
+          promoted_digest="$(jq -er '.manifest.digest' <<< "$promoted_inspection")"
+          if [ "$promoted_digest" != "$DIGEST" ]; then
+            echo "Promoted digest ${promoted_digest} does not match source digest ${DIGEST}" >&2
+            exit 1
+          fi
+
+      - name: Summarize promotion
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          SOURCE: ${{ steps.image.outputs.source }}
+          SOURCE_REF: ${{ steps.image.outputs.source_ref }}
+          CUTOFF: ${{ steps.image.outputs.cutoff }}
+          NIGHTLY_COMPLETED_AT: ${{ steps.image.outputs.nightly_completed_at }}
+          NIGHTLY_RUN_URL: ${{ steps.image.outputs.nightly_run_url }}
+          SOAK_DAYS: ${{ steps.image.outputs.soak_days }}
+        shell: bash
+        run: |
+          {
+            echo "## Canary image promotion"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Image | \`${IMAGE}:canary\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Source | \`${SOURCE_REF}\` (${SOURCE}) |"
+            if [ -n "$NIGHTLY_RUN_URL" ]; then
+              echo "| Soak days | \`${SOAK_DAYS}\` |"
+              echo "| Soak cutoff | \`${CUTOFF}\` |"
+              echo "| Nightly completed | \`${NIGHTLY_COMPLETED_AT}\` |"
+              echo "| Nightly workflow | [run](${NIGHTLY_RUN_URL}) |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
