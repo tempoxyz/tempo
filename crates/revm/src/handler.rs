@@ -831,11 +831,17 @@ where
     /// Upstream's [`Handler::tx_gas`] subtracts the intrinsic gas unguarded,
     /// which would underflow for pre-T0 (Genesis) transactions that pass
     /// validation with `gas_limit < intrinsic` (nonce gas is added after
-    /// validation). [`TempoEvm::initial_gas_and_reservoir`] falls back to
+    /// validation). `TempoEvm::initial_gas_and_reservoir` falls back to
     /// `(u64::MAX, 0)` in that case, matching the historic behavior.
+    ///
+    /// This is also the last hook that still sees `init_and_floor_gas`, so it
+    /// records whether the intrinsic gas ended up above the gas limit for
+    /// [`Handler::execution`] — see `TempoEvm::intrinsic_gas_exceeds_limit`.
     #[inline]
     fn tx_gas(&self, evm: &mut Self::Evm, init_and_floor_gas: &InitialAndFloorGas) -> GasTracker {
         let tx_gas_limit = evm.ctx_ref().tx().gas_limit();
+        evm.intrinsic_gas_exceeds_limit = evm.ctx_ref().cfg().spec().is_t0()
+            && tx_gas_limit < init_and_floor_gas.initial_total_gas();
         let (remaining, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
         GasTracker::new(tx_gas_limit, remaining, reservoir)
     }
@@ -854,8 +860,14 @@ where
     ) -> Result<Option<FrameResult>, Self::Error> {
         // Tempo keeps the EIP-2780 runtime gas phase disabled: first-frame
         // creation charges nothing, so the phase checkpoint opened by
-        // `pre_execution` (or `run_system_call`) commits immediately.
+        // `pre_execution` (or `run_system_call`) commits immediately. The
+        // EIP-7702 delegations applied under that checkpoint stay applied even
+        // when execution is skipped below, matching revm 41.
         evm.ctx().journal_mut().checkpoint_commit();
+
+        if let Some(oog) = oog_frame_result_if_intrinsic_exceeds_limit(evm) {
+            return Ok(Some(oog));
+        }
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
@@ -2495,6 +2507,10 @@ where
         // checkpoint immediately.
         evm.ctx().journal_mut().checkpoint_commit();
 
+        if let Some(oog) = oog_frame_result_if_intrinsic_exceeds_limit(evm) {
+            return Ok(Some(oog));
+        }
+
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, gas, calls).map(Some)
@@ -2502,6 +2518,41 @@ where
             self.inspect_execute_single_call(evm, gas).map(Some)
         }
     }
+}
+
+/// Builds the out-of-gas frame result for a transaction whose intrinsic gas
+/// ended up above its gas limit, or `None` when execution should proceed.
+///
+/// `Handler::validate` checks the gas limit against the intrinsic gas, but
+/// Tempo's `validate_against_state_and_deduct_caller` charges state-dependent
+/// intrinsics after that check: pre-T1B a keychain precompile that runs out of
+/// gas raises `initial_regular_gas` to `u64::MAX`. Such a transaction stays
+/// valid and burns its gas limit, but must not execute — in particular the
+/// CREATE frame, and with it the caller nonce bump, is never reached, which is
+/// what makes the poisoned payload replayable on those historic forks.
+///
+/// Upstream's [`Handler::runtime_oog_result`] is deliberately not reused: it
+/// bumps the caller nonce for CREATE transactions.
+#[inline]
+fn oog_frame_result_if_intrinsic_exceeds_limit<DB, I>(evm: &TempoEvm<DB, I>) -> Option<FrameResult>
+where
+    DB: Database + Debug,
+    DB::Error: Debug,
+{
+    if !evm.intrinsic_gas_exceeds_limit {
+        return None;
+    }
+    let tx = &evm.ctx.tx;
+    let gas_limit = tx.gas_limit();
+    let kind = *tx
+        .first_call()
+        .expect("we already checked that there is at least one call in aa tx")
+        .0;
+    Some(if kind.is_call() {
+        FrameResult::new_call_oog(gas_limit, 0..0, 0)
+    } else {
+        FrameResult::new_create_oog(gas_limit, 0)
+    })
 }
 
 /// Validates time window for AA transactions

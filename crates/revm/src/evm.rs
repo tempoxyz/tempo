@@ -53,6 +53,14 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Set when the intrinsic gas ended up above the transaction gas limit.
+    ///
+    /// `validate_against_state_and_deduct_caller` can raise the intrinsic gas
+    /// after `validate` already accepted the transaction (pre-T1B the keychain
+    /// precompile running out of gas sets `initial_regular_gas` to `u64::MAX`).
+    /// Recorded by `Handler::tx_gas` and consumed by `Handler::execution`,
+    /// which then skips execution entirely.
+    pub(crate) intrinsic_gas_exceeds_limit: bool,
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
@@ -106,6 +114,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
+            intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
             ..
@@ -119,6 +128,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
+            intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
             fee_manager,
@@ -148,6 +158,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            intrinsic_gas_exceeds_limit: false,
             actions,
             non_creditable_slots,
             fee_manager,
