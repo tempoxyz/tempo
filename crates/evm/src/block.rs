@@ -272,43 +272,35 @@ where
             ),
         ];
 
-        let db = self.inner.evm.db_mut();
-        let factory_info = db
-            .basic(ZONE_FACTORY_ADDRESS)
-            .map_err(BlockExecutionError::other)?
-            .unwrap_or_default();
-        // Genesis allocations are authoritative, and the marker also records a completed
-        // post-genesis installation.
-        if !factory_info.is_empty_code_hash() {
-            return Ok(());
-        }
-
-        let mut factory = Account::from(factory_info);
-        let marker = Bytecode::new_legacy([0xef].into());
-        factory.info.code_hash = marker.hash_slow();
-        factory.info.code = Some(marker);
-        let original_value = db
-            .storage(ZONE_FACTORY_ADDRESS, U256::ZERO)
-            .map_err(BlockExecutionError::other)?;
-        factory.storage.insert(
-            U256::ZERO,
-            EvmStorageSlot::new_changed(original_value, factory_config, TransactionId::ZERO),
-        );
-        factory.mark_touch();
-
-        let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory)]);
-        for (destination, code) in runtimes {
-            let info = db
-                .basic(destination)
+        let runtime_state = {
+            let db = self.inner.evm.db_mut();
+            let factory_info = db
+                .basic(ZONE_FACTORY_ADDRESS)
                 .map_err(BlockExecutionError::other)?
                 .unwrap_or_default();
-            let mut account = Account::from(info);
-            account.info.code_hash = code.hash_slow();
-            account.info.code = Some(code);
-            account.mark_touch();
-            state.insert(destination, account);
-        }
-        db.commit(state);
+            // Genesis allocations are authoritative, and the marker also records a completed
+            // post-genesis installation.
+            if !factory_info.is_empty_code_hash() {
+                return Ok(());
+            }
+
+            let mut state = EvmState::default();
+            for (destination, code) in runtimes {
+                let info = db
+                    .basic(destination)
+                    .map_err(BlockExecutionError::other)?
+                    .unwrap_or_default();
+                let mut account = Account::from(info);
+                account.info.code_hash = code.hash_slow();
+                account.info.code = Some(code);
+                account.mark_touch();
+                state.insert(destination, account);
+            }
+            state
+        };
+
+        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])?;
+        self.inner.evm.db_mut().commit(runtime_state);
         Ok(())
     }
 
@@ -2082,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
+    fn test_deploy_zone_factory_at_boundary_installs_t9_state() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
@@ -2141,7 +2133,7 @@ mod tests {
         }
 
         let calls = hook_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
+        assert_eq!(calls.len(), 2, "T9 installation must dispatch both updates");
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
@@ -2149,8 +2141,8 @@ mod tests {
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                calls[0].contains_key(&address),
-                "shared runtime must be installed in the atomic T9 state hook"
+                calls[1].contains_key(&address),
+                "shared runtime must be installed in the runtime state hook"
             );
         }
     }
