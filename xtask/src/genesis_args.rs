@@ -3,6 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
+use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
@@ -554,6 +555,15 @@ impl GenesisArgs {
         );
 
         insert_zone_factory_at_genesis(self.t9_time, &mut genesis_alloc);
+
+        genesis_alloc.insert(
+            HISTORY_STORAGE_ADDRESS,
+            GenesisAccount {
+                code: Some(HISTORY_STORAGE_CODE.clone()),
+                nonce: Some(1),
+                ..Default::default()
+            },
+        );
 
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,

@@ -70,7 +70,7 @@ pub struct TIP403Registry {
 
 /// Packed TIP-1092 token-to-policy binding.
 #[derive(Debug, Clone, Default, Storable)]
-struct TokenTransferPolicy {
+pub struct TokenTransferPolicy {
     /// Active transfer policy ID.
     policy_id: u64,
     /// Distinguishes an unset binding from the valid reject-all policy ID `0`.
