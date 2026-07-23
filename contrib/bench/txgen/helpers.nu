@@ -26,7 +26,7 @@ const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
 def txgen-tip20-default-scenario [] {
     {
         workload: "tip20"
-        recipient: "users"
+        recipient: "existing"
         auth: "direct"
         nonce: "expiring"
         fee_token: "pathusd"
