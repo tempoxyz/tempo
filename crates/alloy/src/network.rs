@@ -161,18 +161,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        if !self.calls.is_empty()
-            || self.nonce_key.is_some()
-            || self.fee_token.is_some()
-            || !self.tempo_authorization_list.is_empty()
-            || self.key_authorization.is_some()
-            || self.key_id.is_some()
-            || self.key_type.is_some()
-            || self.key_data.is_some()
-            || self.valid_before.is_some()
-            || self.valid_after.is_some()
-            || self.fee_payer_signature.is_some()
-        {
+        if self.has_aa_fields() {
             TempoTxType::AA
         } else {
             match NetworkTransactionBuilder::<Ethereum>::output_tx_type(&self.inner) {

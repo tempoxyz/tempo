@@ -24,6 +24,7 @@ use tempo_contracts::precompiles::{
     ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
     StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError,
     TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+    ZoneFactoryError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -107,6 +108,10 @@ pub enum TempoPrecompileError {
     #[error("Current committee error: {0:?}")]
     CurrentCommitteeError(CurrentCommitteeError),
 
+    /// Error from the TIP-1091 ZoneFactory precompile
+    #[error("ZoneFactory error: {0:?}")]
+    ZoneFactoryError(ZoneFactoryError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -171,6 +176,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
+            Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
@@ -202,6 +208,7 @@ impl TempoPrecompileError {
             | Self::ReceivePolicyGuardError(_)
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
+            | Self::ZoneFactoryError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -264,6 +271,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
+            Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -338,6 +346,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
 
     registry
 }
@@ -360,10 +369,23 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
         .and_then(|decoder| decoder(data))
 }
 
-/// Extension trait to convert `Result<T, TempoPrecompileError>` into a [`PrecompileResult`].
-pub trait IntoPrecompileResult<T> {
+/// Extension trait to convert an error into a [`PrecompileResult`].
+pub trait IntoPrecompileResult {
+    /// Converts `self` into a [`PrecompileResult`].
+    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult;
+}
+
+impl<E: Into<TempoPrecompileError>> IntoPrecompileResult for E {
+    #[inline]
+    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+        self.into().into_precompile_result(gas, reservoir)
+    }
+}
+
+/// Extension trait to convert a [`Result`](core::result::Result) into a [`PrecompileResult`].
+pub trait EncodePrecompileResult<T> {
     /// Converts `self` into a [`PrecompileResult`], using `encode_ok` for the success path.
-    fn into_precompile_result(
+    fn encode_precompile_result(
         self,
         gas: u64,
         reservoir: u64,
@@ -371,8 +393,11 @@ pub trait IntoPrecompileResult<T> {
     ) -> PrecompileResult;
 }
 
-impl<T> IntoPrecompileResult<T> for Result<T> {
-    fn into_precompile_result(
+impl<T, E> EncodePrecompileResult<T> for core::result::Result<T, E>
+where
+    E: IntoPrecompileResult,
+{
+    fn encode_precompile_result(
         self,
         gas: u64,
         reservoir: u64,
@@ -493,9 +518,9 @@ mod tests {
     }
 
     #[test]
-    fn test_into_precompile_result_trait_success() {
+    fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.into_precompile_result(0, 0, |val| {
+        let precompile_result = result.encode_precompile_result(0, 0, |val| {
             alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
         });
 

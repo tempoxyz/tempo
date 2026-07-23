@@ -152,7 +152,7 @@ jobs:
           targets: default
           project: 0c6tg19qsp
           push: true
-          no-cache: ${{ github.event_name != 'merge_group' }}
+          no-cache: ${{ startsWith(github.ref, 'refs/tags/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}

@@ -23,16 +23,18 @@ use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
+use reth_engine_primitives::ConsensusEngineHandle;
+use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_provider::providers::BlockchainProvider;
 use tempo_chainspec::NetworkIdentity;
-use tempo_node::TempoFullNode;
+use tempo_node::{TempoFullNode, TempoPayloadTypes, node::TempoNode};
 use tracing::{info, info_span};
 
-use super::{driver, resolver, resolver::Resolver, stubs};
+use super::{driver, executor, resolver, resolver::Resolver, stubs};
 use crate::{
     alias,
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
-    executor,
     feed::{self, FeedStateHandle},
     follow::upstream,
     storage,
@@ -110,7 +112,7 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip,
+            finalized_tip: _,
         } = alias::marshal::init(
             context.clone(),
             page_cache_ref,
@@ -139,7 +141,7 @@ impl<TUpstream> Config<TUpstream> {
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
             resolver::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
                 upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
             },
@@ -154,15 +156,18 @@ impl<TUpstream> Config<TUpstream> {
         let (executor_actor, executor_mailbox) = executor::init(
             context.with_label("executor"),
             executor::Config {
-                execution_node: self.execution_node.clone(),
-                finalized_floor: last_finalized_height,
-                finalized_tip,
+                execution_provider: self.execution_node.provider.clone(),
+                execution_engine: self
+                    .execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
                 marshal: marshal_mailbox.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                floor: last_finalized_height,
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
-                public_key: None,
             },
-        )
-        .wrap_err("failed to initialize executor")?;
+        );
 
         // No broadcast is needed in follow mode.
         let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
@@ -170,7 +175,7 @@ impl<TUpstream> Config<TUpstream> {
         let (driver, driver_mailbox) = driver::try_init(
             context.with_label("driver"),
             driver::Config {
-                execution_node: self.execution_node.clone(),
+                execution_provider: self.execution_node.provider.clone(),
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
@@ -183,6 +188,8 @@ impl<TUpstream> Config<TUpstream> {
 
         Ok(Engine {
             context: ContextCell::new(context),
+            // Keep every execution-node service alive for the lifetime of the follower engine.
+            _execution_node: self.execution_node,
             driver,
             driver_mailbox,
             resolver,
@@ -204,13 +211,27 @@ where
     TUpstreamActor:,
 {
     context: ContextCell<TContext>,
-    driver: driver::Driver<TContext>,
+    _execution_node: Arc<TempoFullNode>,
+    driver: driver::Driver<
+        TContext,
+        BlockchainProvider<
+            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
+        >,
+        crate::alias::marshal::Mailbox,
+        feed::Mailbox,
+    >,
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
     resolver_mailbox: resolver::Mailbox,
     resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
     marshal: crate::alias::marshal::Actor<TContext>,
-    executor: executor::Actor<TContext>,
+    executor: executor::Actor<
+        TContext,
+        BlockchainProvider<
+            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
+        >,
+        ConsensusEngineHandle<TempoPayloadTypes>,
+    >,
     executor_mailbox: executor::Mailbox,
     feed: feed::Actor<TContext>,
     broadcast: buffered::Mailbox<PublicKey, Block>,
@@ -238,6 +259,7 @@ where
 
     async fn run(self) -> eyre::Result<()> {
         let Self {
+            _execution_node,
             upstream,
             driver,
             driver_mailbox,

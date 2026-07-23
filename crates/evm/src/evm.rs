@@ -4,7 +4,7 @@ use alloy_evm::{
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::{
-            DBErrorMarker,
+            ContextTr, DBErrorMarker, JournalTr,
             result::{EVMError, ResultAndState, ResultGas},
         },
         inspector::NoOpInspector,
@@ -27,7 +27,7 @@ use tempo_revm::{
     evm::TempoContext, handler::TempoEvmHandler,
 };
 
-use crate::TempoBlockEnv;
+use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
@@ -192,6 +192,33 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 }
 
+impl<DB, I> TempoPoolValidationEvm for TempoEvm<DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<DB>>,
+{
+    fn configure_for_pool(&mut self) {
+        // The pool admits future-time and future-nonce transactions and performs its own cached
+        // AMM liquidity check after EVM validation.
+        self.inner.skip_valid_after_check = true;
+        self.inner.skip_liquidity_check = true;
+        self.ctx_mut().cfg.disable_nonce_check = true;
+    }
+
+    fn validate_pool_transaction(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult<DB::Error>, TempoTxEnv) {
+        let result = self.validate_transaction(tx);
+        let tx = core::mem::take(&mut self.ctx_mut().tx);
+        // Discard this transaction's journaled writes (nonce bumps, fee deduction,
+        // key authorisation) while keeping loaded accounts and storage warm for the
+        // rest of the batch.
+        self.ctx_mut().journal_mut().discard_tx();
+        (result, tx)
+    }
+}
+
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
     DB: Database,
@@ -325,15 +352,17 @@ mod tests {
     use indexmap::IndexMap;
     use revm::{
         DatabaseCommit, DatabaseRef,
-        context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
+        context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
         database::{EmptyDB, in_memory_db::CacheDB},
-        state::EvmState,
+        state::{AccountInfo, Bytecode, EvmState},
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS};
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
@@ -347,11 +376,27 @@ mod tests {
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
+        zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
+
+    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+        let code = Bytecode::new_legacy([0xef].into());
+        db.insert_account_info(
+            ZONE_FACTORY_ADDRESS,
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
+            .unwrap();
+    }
 
     #[test]
     fn can_execute_system_tx() {
@@ -504,6 +549,160 @@ mod tests {
 
         let result = result.unwrap();
         assert!(result.result.is_success());
+    }
+
+    #[test]
+    fn zone_factory_created_portal_executes_deployed_runtime() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let implementation_source = Address::repeat_byte(0x44);
+        // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
+        let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
+            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+        ]));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            implementation_source,
+            AccountInfo {
+                code_hash: logic_runtime.hash_slow(),
+                code: Some(logic_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T9));
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin).apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let result = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::setPortalImplementationCall {
+                    source: implementation_source,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            result.result.is_success(),
+            "setPortalImplementation failed: {:?}",
+            result.result
+        );
+        evm.db_mut().commit(result.state);
+
+        let result = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            result.result.is_success(),
+            "createZone failed: {:?}",
+            result.result
+        );
+        assert!(result.result.tx_gas_used() >= ZONE_CREATION_GAS);
+        assert!(result.result.gas().block_regular_gas_used() >= ZONE_CREATION_GAS);
+        let create_output = match &result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output.clone(),
+            result => panic!("unexpected createZone result: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create_output).unwrap();
+        evm.db_mut().commit(result.state);
+
+        let result = evm
+            .transact_system_call(Address::ZERO, created.portal, Bytes::new())
+            .unwrap();
+        let output = match result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("portal call failed: {result:?}"),
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_factory_creation_oog_below_minimum_reverts_state() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let mut env = evm_env_with_spec(TempoHardfork::T9);
+        env.block_env.basefee = 0;
+        let mut db = CacheDB::new(EmptyDB::default());
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, env);
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin).apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let input = IZoneFactory::createZoneCall {
+            params: IZoneFactory::CreateZoneParams {
+                initialToken: PATH_USD_ADDRESS,
+                admin,
+                sequencers: vec![sequencer],
+                threshold: 1,
+                rpcUrl: "https://zone.example".to_string(),
+            },
+        }
+        .abi_encode();
+
+        let result = evm
+            .transact_raw(TempoTxEnv {
+                inner: TxEnv {
+                    caller: owner,
+                    gas_price: 0,
+                    gas_limit: ZONE_CREATION_GAS - 1,
+                    kind: TxKind::Call(ZONE_FACTORY_ADDRESS),
+                    data: input.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_matches!(
+            result.result,
+            ExecutionResult::Halt {
+                reason: TempoHaltReason::Ethereum(HaltReason::OutOfGas(_)),
+                ..
+            }
+        );
+        evm.db_mut().commit(result.state);
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            let factory = ZoneFactory::new();
+            assert_eq!(factory.next_zone_id()?, 1);
+            assert!(!factory.is_zone_portal(portal_address(1))?);
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .unwrap();
     }
 
     #[derive(Default)]

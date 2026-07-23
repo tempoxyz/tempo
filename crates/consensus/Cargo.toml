@@ -29,6 +29,7 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }
 alloy-rpc-types-engine.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-rlp.workspace = true
 
 axum.workspace = true
@@ -60,6 +61,7 @@ prometheus-client.workspace = true
 rand_08.workspace = true
 
 reth-consensus-common.workspace = true
+reth-engine-primitives.workspace = true
 rand_core.workspace = true
 reth-ethereum.workspace = true
 reth-evm.workspace = true

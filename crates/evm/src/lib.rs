@@ -5,6 +5,7 @@
 
 mod action_replay;
 mod assemble;
+mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
@@ -12,6 +13,7 @@ pub use action_replay::{
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
+pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
@@ -33,6 +35,7 @@ use alloy_evm::{
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
+use alloy_primitives::Address;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
@@ -44,12 +47,16 @@ use tempo_primitives::{
 
 use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
+use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
+use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction,
-    TempoStateAccess,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
+    TempoHaltReason, TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]
@@ -63,6 +70,22 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+}
+
+impl FeeTokenResolver for TempoEvmConfig {
+    fn resolve_fee_token<S, M>(
+        &self,
+        state: &mut S,
+        tx: &TempoTxEnv,
+        fee_payer: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> TempoResult<Address>
+    where
+        S: TempoStateAccess<M>,
+    {
+        TempoFeeManager::new().resolve_fee_token(state, tx, fee_payer, spec, actions)
+    }
 }
 
 impl TempoEvmConfig {

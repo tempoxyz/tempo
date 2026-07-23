@@ -5,6 +5,7 @@ use crate::{
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
+    validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
@@ -13,7 +14,7 @@ use alloy_primitives::{
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use itertools::{Either, Itertools};
-use reth_chainspec::ChainSpecProvider;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
@@ -22,7 +23,7 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -580,11 +581,12 @@ impl Default for PendingStalenessTracker {
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
-pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
+pub async fn maintain_tempo_pool<Client, EvmConfig>(pool: TempoTransactionPool<Client, EvmConfig>)
 where
+    EvmConfig: ConfigureTempoPoolEvm,
     Client: StateProviderFactory
         + HeaderProvider<Header = TempoHeader>
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
