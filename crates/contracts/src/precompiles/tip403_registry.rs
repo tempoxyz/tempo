@@ -49,6 +49,7 @@ crate::sol! {
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
         event CompoundPolicyCreated(uint64 indexed policyId, address indexed creator, uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
         event ReceivePolicyUpdated(address indexed account, uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority);
+        event TransferPolicyIdMigrated(address indexed token, uint64 policyId);
 
         // Errors
         error Unauthorized();

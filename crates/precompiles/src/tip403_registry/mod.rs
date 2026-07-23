@@ -304,6 +304,12 @@ impl TIP403Registry {
             let policy_id = token_contract.legacy_transfer_policy_id()?;
             self.set_token_transfer_policy(token, policy_id)?;
             token_contract.delete_legacy_transfer_policy_id()?;
+            self.emit_event(TIP403RegistryEvent::TransferPolicyIdMigrated(
+                ITIP403Registry::TransferPolicyIdMigrated {
+                    token,
+                    policyId: policy_id,
+                },
+            ))?;
             migrated += U256::ONE;
         }
 

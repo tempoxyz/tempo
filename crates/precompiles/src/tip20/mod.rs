@@ -1596,7 +1596,7 @@ pub(crate) mod tests {
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IReceivePolicyGuard, ReceivePolicyGuardEvent, createTokenCall,
+        IReceivePolicyGuard, ReceivePolicyGuardEvent, TIP403RegistryEvent, createTokenCall,
     };
 
     #[test]
@@ -3656,6 +3656,12 @@ pub(crate) mod tests {
                 )?,
                 U256::ZERO
             );
+            registry.assert_emitted_events(vec![TIP403RegistryEvent::TransferPolicyIdMigrated(
+                ITIP403Registry::TransferPolicyIdMigrated {
+                    token: token.address,
+                    policyId: ALLOW_ALL_POLICY_ID,
+                },
+            )]);
             assert!(
                 registry
                     .registered_token_transfer_policy_id(token.address)?
@@ -3689,6 +3695,12 @@ pub(crate) mod tests {
                 )?,
                 U256::ZERO
             );
+            registry.assert_emitted_events(vec![TIP403RegistryEvent::TransferPolicyIdMigrated(
+                ITIP403Registry::TransferPolicyIdMigrated {
+                    token: token.address,
+                    policyId: ALLOW_ALL_POLICY_ID,
+                },
+            )]);
             assert_eq!(token.transfer_policy_id()?, REJECT_ALL_POLICY_ID);
 
             Ok(())
