@@ -691,9 +691,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
             | Self::AccessKeyExpired { .. }
-            | Self::KeyAuthorizationExpired { .. }
-            | Self::Keychain(_) => false,
+            | Self::KeyAuthorizationExpired { .. } => false,
             Self::SubblockNonceKey
+            | Self::Keychain(_)
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
@@ -1156,7 +1156,7 @@ mod tests {
                 },
                 false,
             ),
-            (TempoPoolTransactionError::Keychain("test error"), false),
+            (TempoPoolTransactionError::Keychain("test error"), true),
             (
                 TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
                     "nonce error".to_string(),

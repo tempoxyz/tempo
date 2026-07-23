@@ -869,7 +869,7 @@ mod tests {
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
-            TempoTransaction,
+            CallScope, KeyAuthorization, SelectorRule, SignatureType, TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
             tempo_transaction::Call,
             tt_signature::{PrimitiveSignature, TempoSignature},
@@ -2773,6 +2773,60 @@ mod tests {
             is_paused.unwrap(),
             "Paused validator token should be detected by is_fee_token_paused BEFORE reaching has_enough_liquidity"
         );
+    }
+
+    #[test]
+    fn test_keychain_cardinality_limits_are_bad_transactions() {
+        use reth_transaction_pool::error::PoolTransactionError;
+
+        let cases = [
+            (
+                MAX_KEYCHAIN_CALL_SCOPES as usize + 1,
+                1,
+                0,
+                "too many call scopes in key authorization",
+            ),
+            (
+                1,
+                MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE as usize + 1,
+                0,
+                "too many selector rules in call scope",
+            ),
+            (
+                1,
+                1,
+                MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR as usize + 1,
+                "too many recipients in selector rule",
+            ),
+        ];
+
+        for (scope_count, rule_count, recipient_count, expected_message) in cases {
+            let rule = SelectorRule {
+                selector: [0; 4],
+                recipients: vec![Address::random(); recipient_count],
+            };
+            let scope = CallScope {
+                target: Address::random(),
+                selector_rules: vec![rule; rule_count],
+            };
+            let key_authorization =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
+                    .with_allowed_calls(vec![scope; scope_count])
+                    .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            let transaction = TxBuilder::aa(Address::random())
+                .key_authorization(key_authorization)
+                .build();
+            let validator = setup_validator(&transaction, 0);
+
+            let err = validator
+                .ensure_aa_field_limits(&transaction)
+                .expect_err("over-limit key authorization must be rejected");
+            assert!(
+                matches!(&err, TempoPoolTransactionError::Keychain(message) if *message == expected_message),
+                "unexpected keychain cardinality error: {err}"
+            );
+            assert!(err.is_bad_transaction());
+        }
     }
 
     #[tokio::test]
