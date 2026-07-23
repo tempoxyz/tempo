@@ -12,6 +12,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && (github.event.label.name == 'cyclops' || github.event.label.name == 'agentic-audit')
+    permissions:
+      issues: write
     steps:
       - name: Publish event
         run: |
@@ -33,6 +35,17 @@ jobs:
                 "sha": "${{ github.event.pull_request.head.sha }}"
               }
             }'
+
+      - name: Record audit run
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['cyclops-audited'],
+            });
 
   publish-comment:
     runs-on: ubuntu-latest
@@ -222,6 +235,7 @@ jobs:
             core.setOutput('actor', context.payload.comment.user.login);
             core.setOutput('payload-b64', Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'));
             core.setOutput('summary', `**Config:** ${summaryParts.join(', ')}`);
+            core.setOutput('dry-run', defaults['dry-run']);
 
       - name: Acknowledge request
         id: ack
@@ -300,3 +314,15 @@ jobs:
               body,
             });
             if (!success) core.setFailed('Failed to publish pr_audit event');
+
+      - name: Record audit run
+        if: ${{ steps.publish.outcome == 'success' && steps.args.outputs['dry-run'] != 'true' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['cyclops-audited'],
+            });
