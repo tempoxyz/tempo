@@ -732,12 +732,7 @@ impl StablecoinDEX {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
-        if self.storage.spec().is_t9() {
-            // Preserve the placement-time overflow guard before making any linked-list writes.
-            self.compute_tick_liquidity(level.head)?
-                .checked_add(order.remaining())
-                .ok_or(TempoPrecompileError::under_overflow())?;
-        } else {
+        if !self.storage.spec().is_t9() {
             level.total_liquidity = level
                 .total_liquidity
                 .checked_add(order.remaining())
