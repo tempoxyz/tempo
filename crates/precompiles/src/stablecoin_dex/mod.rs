@@ -1948,6 +1948,65 @@ mod tests {
     }
 
     #[test]
+    fn test_get_price_level_preserves_pre_t9_liquidity_across_fork() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let maker = Address::random();
+        let admin = Address::random();
+        let tick = 10;
+        let amount = MIN_ORDER_AMOUNT;
+
+        let (base, book_key, first_order) = StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+            let (base, _) = setup_test_tokens(admin, maker, exchange.address, amount * 3)?;
+            let book_key = exchange.create_pair(base)?;
+            let first_order = exchange.place(maker, base, amount, true, tick)?;
+            exchange.place(maker, base, amount, true, tick)?;
+
+            let stored = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(stored.total_liquidity, amount * 2);
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 2,
+                "pre-T9 must return the maintained aggregate"
+            );
+
+            Ok::<_, eyre::Report>((base, book_key, first_order))
+        })?;
+
+        let mut storage = storage.with_spec(TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 2,
+                "T9 must derive the same liquidity at the fork boundary"
+            );
+
+            exchange.cancel(maker, first_order)?;
+
+            let stored = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T9 must leave the legacy aggregate stale"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount,
+                "T9 must derive liquidity from the remaining order"
+            );
+
+            Ok::<_, eyre::Report>(())
+        })
+    }
+
+    #[test]
     fn test_t8_book_index_rejects_uninitialized_book_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
