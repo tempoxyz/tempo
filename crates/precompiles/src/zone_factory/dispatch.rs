@@ -72,7 +72,7 @@ mod tests {
     fn create_zone_selector_matches_tip_1091() {
         assert_eq!(
             IZoneFactory::createZoneCall::SELECTOR,
-            [0xf2, 0xc5, 0x8f, 0x2b]
+            [0x89, 0x67, 0x7d, 0x9e]
         );
     }
 

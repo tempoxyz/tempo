@@ -10,7 +10,9 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Bytes, U256, hex};
 use revm::state::Bytecode;
-use tempo_contracts::precompiles::{IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS};
+use tempo_contracts::precompiles::{
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZonePortalRole,
+};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Exact ERC-1167 deployed proxy runtime installed at every ZonePortal address.
@@ -74,6 +76,9 @@ pub struct ZonePortalStorage {
     zone_height: U256,
     sequencers: Vec<Address>,
     is_sequencer: Mapping<Address, bool>,
+    role: Mapping<Address, u8>,
+    is_access_enforced: bool,
+    is_gateway_enforced: bool,
 }
 
 impl ZonePortalStorage {
@@ -106,6 +111,14 @@ impl ZonePortalStorage {
         self.sequencers.write(params.sequencers.clone())?;
         for sequencer in &params.sequencers {
             self.is_sequencer[*sequencer].write(true)?;
+        }
+        self.is_access_enforced.write(params.accessMode)?;
+        self.is_gateway_enforced.write(params.gatewayMode)?;
+        for gateway in &params.zoneGateways {
+            self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
+        }
+        for account in &params.allowedAccounts {
+            self.role[*account].write(ZonePortalRole::Account as u8)?;
         }
         Ok(())
     }

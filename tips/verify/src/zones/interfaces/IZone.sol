@@ -5,6 +5,8 @@ pragma solidity ^0.8.13;
 struct ZoneInfo {
     uint32 zoneId;
     address portal;
+    bool accessMode;
+    bool gatewayMode;
     address admin;
     address[] sequencers;
     uint8 threshold;
@@ -18,6 +20,10 @@ interface IZonePortalInitializer {
     function initialize(
         uint32 zoneId,
         address initialToken,
+        bool accessMode,
+        bool gatewayMode,
+        address[] calldata allowedAccounts,
+        address[] calldata zoneGateways,
         address messenger,
         address admin,
         address[] calldata sequencers,
@@ -35,6 +41,10 @@ interface IZoneFactory {
 
     struct CreateZoneParams {
         address initialToken;
+        bool accessMode;
+        bool gatewayMode;
+        address[] allowedAccounts;
+        address[] zoneGateways;
         address admin;
         address[] sequencers;
         uint8 threshold;
@@ -53,6 +63,8 @@ interface IZoneFactory {
         uint32 indexed zoneId,
         address indexed portal,
         address initialToken,
+        bool accessMode,
+        bool gatewayMode,
         address admin,
         address[] sequencers,
         uint8 threshold,
@@ -61,6 +73,7 @@ interface IZoneFactory {
 
     error InvalidToken();
     error TokenTransferPolicyNotSet();
+    error InvalidClosedLoopConfig();
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencerSet();

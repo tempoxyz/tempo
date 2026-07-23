@@ -72,6 +72,18 @@ abstract contract ZoneFactory is IZoneFactory {
         if (!_nativeTokenTransferPolicyIsSet(params.initialToken)) {
             revert TokenTransferPolicyNotSet();
         }
+        for (uint256 i; i < params.allowedAccounts.length; ++i) {
+            if (params.allowedAccounts[i] == ZONE_MESSENGER_ADDRESS) {
+                revert InvalidClosedLoopConfig();
+            }
+        }
+        for (uint256 i; i < params.zoneGateways.length; ++i) {
+            for (uint256 j; j < params.allowedAccounts.length; ++j) {
+                if (params.zoneGateways[i] == params.allowedAccounts[j]) {
+                    revert InvalidClosedLoopConfig();
+                }
+            }
+        }
         if (params.admin == address(0)) revert InvalidAdmin();
         _validateSequencerSet(params.sequencers, params.threshold);
 
@@ -98,6 +110,10 @@ abstract contract ZoneFactory is IZoneFactory {
             .initialize(
                 zoneId,
                 params.initialToken,
+                params.accessMode,
+                params.gatewayMode,
+                params.allowedAccounts,
+                params.zoneGateways,
                 ZONE_MESSENGER_ADDRESS,
                 params.admin,
                 params.sequencers,
@@ -109,6 +125,8 @@ abstract contract ZoneFactory is IZoneFactory {
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
+            accessMode: params.accessMode,
+            gatewayMode: params.gatewayMode,
             admin: params.admin,
             sequencers: params.sequencers,
             threshold: params.threshold,
@@ -120,6 +138,8 @@ abstract contract ZoneFactory is IZoneFactory {
             zoneId,
             portal,
             params.initialToken,
+            params.accessMode,
+            params.gatewayMode,
             params.admin,
             params.sequencers,
             params.threshold,
