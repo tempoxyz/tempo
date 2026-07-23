@@ -1014,6 +1014,7 @@ where
     fn get(&self, tx_hash: &B256) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         self.protocol_pool
             .get(tx_hash)
+            .map(|tx| Arc::clone(&tx))
             .or_else(|| self.aa_2d_pool.read().get(tx_hash))
     }
 
