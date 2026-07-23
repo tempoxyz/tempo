@@ -11,18 +11,6 @@ pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF20000000000000000000000
 /// Initial ZoneFactory owner installed by the T9 activation.
 pub const INITIAL_FACTORY_OWNER: Address = address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14");
 
-/// T9 source deployment for the canonical ZonePortal implementation runtime.
-pub const T9_ZONE_PORTAL_SOURCE_ADDRESS: Address =
-    address!("0x362cd82f16578ff7a1c5d0ba64053448e5d15f0f");
-
-/// T9 source deployment for the canonical ZoneMessenger runtime.
-pub const T9_ZONE_MESSENGER_SOURCE_ADDRESS: Address =
-    address!("0x5838153bd0a53764ef93020084811f9cfeab9589");
-
-/// T9 source deployment for the canonical Verifier runtime.
-pub const T9_ZONE_VERIFIER_SOURCE_ADDRESS: Address =
-    address!("0xabf6c27c8269cfe313e5e983d1fb46b7a66b60c1");
-
 /// Protocol-managed shared ZonePortal implementation address.
 pub const ZONE_PORTAL_IMPL_ADDRESS: Address =
     address!("0x5AD1000000000000000000000000000000000000");

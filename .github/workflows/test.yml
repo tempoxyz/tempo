@@ -72,10 +72,7 @@ jobs:
             --accounts 100 \
             --no-dkg-in-genesis \
             --output generated \
-            --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1 \
-            --zone-portal-runtime 0x00 \
-            --zone-messenger-runtime 0x5b00 \
-            --zone-verifier-runtime 0x60005000
+            --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1
       - name: Compare with existing test genesis
         run: |
           # Compare the generated genesis with the existing test-genesis.json

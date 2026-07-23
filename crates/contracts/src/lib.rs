@@ -13,6 +13,8 @@ pub use tempo_hardfork::TempoHardfork;
 
 use alloy_primitives::{Address, B256, address, b256};
 
+pub mod zones;
+
 /// Default address for the Multicall3 contract on most chains. See: <https://github.com/mds1/multicall>
 pub const MULTICALL3_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");
 pub const CREATEX_ADDRESS: Address = address!("0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed");

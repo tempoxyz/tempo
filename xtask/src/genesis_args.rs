@@ -1,7 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, U256, address},
-    providers::{Provider, ProviderBuilder},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
@@ -45,10 +44,10 @@ use tempo_contracts::{
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        INITIAL_FACTORY_OWNER, IValidatorConfigV2, T9_ZONE_MESSENGER_SOURCE_ADDRESS,
-        T9_ZONE_PORTAL_SOURCE_ADDRESS, T9_ZONE_VERIFIER_SOURCE_ADDRESS, ZONE_FACTORY_ADDRESS,
-        ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS, createTokenCall,
+        INITIAL_FACTORY_OWNER, IValidatorConfigV2, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS, createTokenCall,
     },
+    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -207,22 +206,6 @@ pub(crate) struct GenesisArgs {
     /// T9 hardfork activation time.
     #[arg(long, default_value = "0")]
     t9_time: u64,
-
-    /// RPC containing the deployed T9 Zone runtime sources.
-    #[arg(long)]
-    zone_runtime_source_rpc_url: Option<String>,
-
-    /// Offline ZonePortal runtime input for T9-at-genesis generation.
-    #[arg(long)]
-    zone_portal_runtime: Option<Bytes>,
-
-    /// Offline ZoneMessenger runtime input for T9-at-genesis generation.
-    #[arg(long)]
-    zone_messenger_runtime: Option<Bytes>,
-
-    /// Offline Verifier runtime input for T9-at-genesis generation.
-    #[arg(long)]
-    zone_verifier_runtime: Option<Bytes>,
 }
 
 #[derive(Clone, Debug)]
@@ -306,7 +289,6 @@ impl GenesisArgs {
     /// And creates accounts for system contracts.
     pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
         println!("Generating {:?} accounts", self.accounts);
-        let zone_runtimes = self.zone_runtimes().await?;
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
@@ -574,7 +556,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t9_time, zone_runtimes.as_ref(), &mut genesis_alloc)?;
+        insert_zone_state_at_genesis(self.t9_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -688,80 +670,6 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
-
-    async fn zone_runtimes(&self) -> eyre::Result<Option<ZoneRuntimes>> {
-        if self.t9_time != 0 {
-            return Ok(None);
-        }
-
-        if let Some(rpc_url) = &self.zone_runtime_source_rpc_url {
-            eyre::ensure!(
-                self.zone_portal_runtime.is_none()
-                    && self.zone_messenger_runtime.is_none()
-                    && self.zone_verifier_runtime.is_none(),
-                "--zone-runtime-source-rpc-url conflicts with explicit Zone runtime inputs"
-            );
-            let provider = ProviderBuilder::new()
-                .connect(rpc_url)
-                .await
-                .wrap_err("failed to connect to the Zone runtime source RPC")?;
-            let runtimes = ZoneRuntimes {
-                portal: provider
-                    .get_code_at(T9_ZONE_PORTAL_SOURCE_ADDRESS)
-                    .await
-                    .wrap_err("failed to fetch the T9 ZonePortal runtime")?,
-                messenger: provider
-                    .get_code_at(T9_ZONE_MESSENGER_SOURCE_ADDRESS)
-                    .await
-                    .wrap_err("failed to fetch the T9 ZoneMessenger runtime")?,
-                verifier: provider
-                    .get_code_at(T9_ZONE_VERIFIER_SOURCE_ADDRESS)
-                    .await
-                    .wrap_err("failed to fetch the T9 Verifier runtime")?,
-            };
-            runtimes.ensure_nonempty()?;
-            return Ok(Some(runtimes));
-        }
-
-        let runtimes = ZoneRuntimes {
-            portal: self.zone_portal_runtime.clone().ok_or_else(|| {
-                eyre!(
-                    "T9-at-genesis requires --zone-runtime-source-rpc-url or all explicit Zone runtime inputs"
-                )
-            })?,
-            messenger: self.zone_messenger_runtime.clone().ok_or_else(|| {
-                eyre!(
-                    "T9-at-genesis requires --zone-runtime-source-rpc-url or all explicit Zone runtime inputs"
-                )
-            })?,
-            verifier: self.zone_verifier_runtime.clone().ok_or_else(|| {
-                eyre!(
-                    "T9-at-genesis requires --zone-runtime-source-rpc-url or all explicit Zone runtime inputs"
-                )
-            })?,
-        };
-        runtimes.ensure_nonempty()?;
-        Ok(Some(runtimes))
-    }
-}
-
-#[derive(Debug)]
-struct ZoneRuntimes {
-    portal: Bytes,
-    messenger: Bytes,
-    verifier: Bytes,
-}
-
-impl ZoneRuntimes {
-    fn ensure_nonempty(&self) -> eyre::Result<()> {
-        eyre::ensure!(!self.portal.is_empty(), "T9 ZonePortal runtime is empty");
-        eyre::ensure!(
-            !self.messenger.is_empty(),
-            "T9 ZoneMessenger runtime is empty"
-        );
-        eyre::ensure!(!self.verifier.is_empty(), "T9 Verifier runtime is empty");
-        Ok(())
-    }
 }
 
 fn zone_factory_genesis_account() -> GenesisAccount {
@@ -776,40 +684,25 @@ fn zone_factory_genesis_account() -> GenesisAccount {
 
 fn insert_zone_state_at_genesis(
     t9_time: u64,
-    runtimes: Option<&ZoneRuntimes>,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
-) -> eyre::Result<()> {
+) {
     if t9_time == 0 {
-        let runtimes = runtimes.ok_or_else(|| eyre!("T9-at-genesis runtimes are missing"))?;
-        runtimes.ensure_nonempty()?;
         println!("Initializing ZoneFactory and shared runtimes (T9 active at genesis)");
         genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
-        for (source, destination, runtime) in [
-            (
-                T9_ZONE_PORTAL_SOURCE_ADDRESS,
-                ZONE_PORTAL_IMPL_ADDRESS,
-                &runtimes.portal,
-            ),
-            (
-                T9_ZONE_VERIFIER_SOURCE_ADDRESS,
-                ZONE_VERIFIER_ADDRESS,
-                &runtimes.verifier,
-            ),
-            (
-                T9_ZONE_MESSENGER_SOURCE_ADDRESS,
-                ZONE_MESSENGER_ADDRESS,
-                &runtimes.messenger,
-            ),
+        for (destination, runtime) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
         ] {
-            let account = GenesisAccount {
-                code: Some(runtime.clone()),
-                ..Default::default()
-            };
-            genesis_alloc.insert(source, account.clone());
-            genesis_alloc.insert(destination, account);
+            genesis_alloc.insert(
+                destination,
+                GenesisAccount {
+                    code: Some(runtime),
+                    ..Default::default()
+                },
+            );
         }
     }
-    Ok(())
 }
 
 fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
@@ -1350,14 +1243,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn t9_genesis_installs_factory_sources_and_shared_runtimes() {
+    fn t9_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        let runtimes = ZoneRuntimes {
-            portal: Bytes::from_static(&[0x60, 0x01]),
-            messenger: Bytes::from_static(&[0x60, 0x02]),
-            verifier: Bytes::from_static(&[0x60, 0x03]),
-        };
-        insert_zone_state_at_genesis(0, Some(&runtimes), &mut alloc).unwrap();
+        insert_zone_state_at_genesis(0, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -1367,24 +1255,11 @@ mod tests {
             account.storage.unwrap().get(&B256::ZERO),
             Some(&expected_config.into())
         );
-        for (source, destination, expected) in [
-            (
-                T9_ZONE_PORTAL_SOURCE_ADDRESS,
-                ZONE_PORTAL_IMPL_ADDRESS,
-                runtimes.portal,
-            ),
-            (
-                T9_ZONE_VERIFIER_SOURCE_ADDRESS,
-                ZONE_VERIFIER_ADDRESS,
-                runtimes.verifier,
-            ),
-            (
-                T9_ZONE_MESSENGER_SOURCE_ADDRESS,
-                ZONE_MESSENGER_ADDRESS,
-                runtimes.messenger,
-            ),
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
         ] {
-            assert_eq!(alloc[&source].code.as_ref(), Some(&expected));
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
     }
@@ -1392,7 +1267,7 @@ mod tests {
     #[test]
     fn future_t9_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
-        insert_zone_state_at_genesis(1, None, &mut alloc).unwrap();
+        insert_zone_state_at_genesis(1, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
     }
