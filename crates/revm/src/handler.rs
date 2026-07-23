@@ -984,9 +984,8 @@ where
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
 
-        // Skip fee-token policy validation for cases when the transaction is free and is not a
-        // part of a subblock. The TIP20 prefix is always validated above; the fee manager owns the
-        // remaining protocol-specific eligibility rule.
+        // Skip fee token validation when the transaction is free and not part of a subblock.
+        // The TIP20 prefix is already validated above.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
             fee_manager.validate_fee_token(journal, fee_token, cfg.spec, actions.clone())?;
         }

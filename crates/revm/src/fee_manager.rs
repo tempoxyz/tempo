@@ -79,11 +79,9 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         TempoFeeManager::new().resolve_fee_token(journal, tx, fee_payer, spec, actions)
     }
 
-    /// Validates protocol-specific eligibility for a TIP-20 fee token.
+    /// Validates whether a TIP-20 can be used to pay fees.
     ///
-    /// The handler validates the TIP-20 address prefix before calling this hook. Tempo keeps the
-    /// canonical USD-only policy by default; downstream EVMs may replace it with their own
-    /// state-backed eligibility rule.
+    /// The handler checks the TIP-20 prefix first. Implementations define which tokens are valid.
     fn validate_fee_token(
         &self,
         journal: &mut Journal<DB>,
