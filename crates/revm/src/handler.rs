@@ -65,7 +65,6 @@ use tempo_primitives::{
 
 use crate::{
     ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
-    common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
@@ -985,10 +984,11 @@ where
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
 
-        // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
-        // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
+        // Skip fee-token policy validation for cases when the transaction is free and is not a
+        // part of a subblock. The TIP20 prefix is always validated above; the fee manager owns the
+        // remaining protocol-specific eligibility rule.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token, actions.clone())?;
+            fee_manager.validate_fee_token(journal, fee_token, cfg.spec, actions.clone())?;
         }
 
         // Load the fee payer balance

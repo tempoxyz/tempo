@@ -1,12 +1,13 @@
 use crate::{
-    TempoBlockEnv, TempoStateAccess, TempoTx, TempoTxEnv, common::is_tip20_fee_inference_call,
+    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
+    common::is_tip20_fee_inference_call,
 };
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolCall;
 use core::fmt::Debug;
 use revm::{
     Database,
-    context::{CfgEnv, Journal},
+    context::{CfgEnv, Journal, result::EVMError},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -76,6 +77,21 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         actions: StorageActions,
     ) -> TempoResult<Address> {
         TempoFeeManager::new().resolve_fee_token(journal, tx, fee_payer, spec, actions)
+    }
+
+    /// Validates protocol-specific eligibility for a TIP-20 fee token.
+    ///
+    /// The handler validates the TIP-20 address prefix before calling this hook. Tempo keeps the
+    /// canonical USD-only policy by default; downstream EVMs may replace it with their own
+    /// state-backed eligibility rule.
+    fn validate_fee_token(
+        &self,
+        journal: &mut Journal<DB>,
+        fee_token: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        journal.ensure_tip20_usd(spec, fee_token, actions)
     }
 
     /// Resolves the validator token used to receive protocol fees.
