@@ -30,7 +30,9 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    T9_ZONE_MESSENGER_SOURCE_ADDRESS, T9_ZONE_PORTAL_SOURCE_ADDRESS,
+    T9_ZONE_VERIFIER_SOURCE_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -248,14 +250,120 @@ where
         Ok(())
     }
 
-    /// Installs and initializes the TIP-1091 ZoneFactory when T9 first becomes active.
-    ///
-    /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
-    /// fixed T9 protocol constants.
+    /// Installs and initializes the complete TIP-1091 state when T9 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let factory_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
+        let runtime_copies = [
+            (
+                T9_ZONE_PORTAL_SOURCE_ADDRESS,
+                ZONE_PORTAL_IMPL_ADDRESS,
+                "ZonePortal",
+            ),
+            (
+                T9_ZONE_VERIFIER_SOURCE_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                "Verifier",
+            ),
+            (
+                T9_ZONE_MESSENGER_SOURCE_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+                "ZoneMessenger",
+            ),
+        ];
+
+        let first_post_genesis_block = self.evm().block().number == U256::from(1);
+        let db = self.inner.evm.db_mut();
+        let factory_info = db
+            .basic(ZONE_FACTORY_ADDRESS)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if !factory_info.is_empty_code_hash() && !first_post_genesis_block {
+            return Ok(());
+        }
+
+        let mut runtimes = Vec::with_capacity(runtime_copies.len());
+        for (source, destination, name) in runtime_copies {
+            let info = db
+                .basic(source)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            let code = match info.code.clone() {
+                Some(code) => code,
+                None if !info.is_empty_code_hash() => db
+                    .code_by_hash(info.code_hash)
+                    .map_err(BlockExecutionError::other)?,
+                None => Bytecode::default(),
+            };
+            if code.is_empty() {
+                return Err(BlockValidationError::msg(format!(
+                    "T9 {name} source {source} has empty runtime"
+                ))
+                .into());
+            }
+            runtimes.push((destination, name, code));
+        }
+
+        if !factory_info.is_empty_code_hash() {
+            let installed_config = db
+                .storage(ZONE_FACTORY_ADDRESS, U256::ZERO)
+                .map_err(BlockExecutionError::other)?;
+            if installed_config != factory_config {
+                return Err(BlockValidationError::msg(
+                    "T9 ZoneFactory slot 0 does not contain the initial configuration",
+                )
+                .into());
+            }
+
+            for (destination, name, expected) in runtimes {
+                let info = db
+                    .basic(destination)
+                    .map_err(BlockExecutionError::other)?
+                    .unwrap_or_default();
+                let installed = match info.code.clone() {
+                    Some(code) => code,
+                    None if !info.is_empty_code_hash() => db
+                        .code_by_hash(info.code_hash)
+                        .map_err(BlockExecutionError::other)?,
+                    None => Bytecode::default(),
+                };
+                if installed != expected {
+                    return Err(BlockValidationError::msg(format!(
+                        "T9 {name} runtime is not installed at {destination}"
+                    ))
+                    .into());
+                }
+            }
+            return Ok(());
+        }
+
+        let mut factory = Account::from(factory_info);
+        let marker = Bytecode::new_legacy([0xef].into());
+        factory.info.code_hash = marker.hash_slow();
+        factory.info.code = Some(marker);
+        let original_value = db
+            .storage(ZONE_FACTORY_ADDRESS, U256::ZERO)
+            .map_err(BlockExecutionError::other)?;
+        factory.storage.insert(
+            U256::ZERO,
+            EvmStorageSlot::new_changed(original_value, factory_config, TransactionId::ZERO),
+        );
+        factory.mark_touch();
+
+        let mut state = EvmState::from_iter([(ZONE_FACTORY_ADDRESS, factory)]);
+        for (destination, _, code) in runtimes {
+            let info = db
+                .basic(destination)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            let mut account = Account::from(info);
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
+            account.mark_touch();
+            state.insert(destination, account);
+        }
+        db.commit(state);
+        Ok(())
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
@@ -833,6 +941,25 @@ mod tests {
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use tempo_revm::TempoHaltReason;
+
+    fn seed_t9_runtime_sources<DB: StateDB>(db: &mut DB) {
+        let runtime = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
+        let mut state = EvmState::default();
+        for source in [
+            T9_ZONE_PORTAL_SOURCE_ADDRESS,
+            T9_ZONE_VERIFIER_SOURCE_ADDRESS,
+            T9_ZONE_MESSENGER_SOURCE_ADDRESS,
+        ] {
+            let mut account = Account::from(AccountInfo {
+                code_hash: runtime.hash_slow(),
+                code: Some(runtime.clone()),
+                ..Default::default()
+            });
+            account.mark_touch();
+            state.insert(source, account);
+        }
+        db.commit(state);
+    }
 
     fn create_legacy_tx() -> TempoTxEnvelope {
         let tx = TxLegacy {
@@ -1586,6 +1713,7 @@ mod tests {
     fn test_finish_t4_without_metadata_passes_when_incentive_gas_is_zero() {
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_validator_set(vec![B256::repeat_byte(0x01)])
@@ -1601,6 +1729,7 @@ mod tests {
     fn test_finish_t4_without_metadata_rejects_incentive_gas() {
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_validator_set(vec![B256::repeat_byte(0x01)])
@@ -1786,6 +1915,7 @@ mod tests {
     fn test_t4_non_shared_gas_excludes_state_gas() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1841,6 +1971,7 @@ mod tests {
     fn test_t4_incentive_gas_excludes_state_gas() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
@@ -1883,6 +2014,7 @@ mod tests {
         // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -1900,6 +2032,7 @@ mod tests {
         // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -1917,6 +2050,7 @@ mod tests {
         // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2035,6 +2169,23 @@ mod tests {
         );
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        let portal_runtime = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x01]));
+        let verifier_runtime = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x02]));
+        let messenger_runtime = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x03]));
+        for (source, runtime) in [
+            (T9_ZONE_PORTAL_SOURCE_ADDRESS, portal_runtime.clone()),
+            (T9_ZONE_VERIFIER_SOURCE_ADDRESS, verifier_runtime.clone()),
+            (T9_ZONE_MESSENGER_SOURCE_ADDRESS, messenger_runtime.clone()),
+        ] {
+            db.insert_account(
+                source,
+                AccountInfo {
+                    code_hash: runtime.hash_slow(),
+                    code: Some(runtime),
+                    ..Default::default()
+                },
+            );
+        }
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2068,6 +2219,20 @@ mod tests {
             factory.storage_slot(U256::ZERO),
             Some(expected_factory_config)
         );
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, portal_runtime),
+            (ZONE_VERIFIER_ADDRESS, verifier_runtime),
+            (ZONE_MESSENGER_ADDRESS, messenger_runtime),
+        ] {
+            let installed = db
+                .load_cache_account(destination)
+                .unwrap()
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap();
+            assert_eq!(installed, expected);
+        }
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
@@ -2078,10 +2243,47 @@ mod tests {
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                !calls[0].contains_key(&address),
-                "shared runtimes are installed through the factory, not the T9 state hook"
+                calls[0].contains_key(&address),
+                "shared runtime must be installed in the atomic T9 state hook"
             );
         }
+    }
+
+    #[test]
+    fn test_deploy_zone_factory_at_boundary_rejects_empty_runtime_source() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let runtime = Bytecode::new_legacy(Bytes::from_static(&[0x60, 0x01]));
+        for source in [
+            T9_ZONE_PORTAL_SOURCE_ADDRESS,
+            T9_ZONE_MESSENGER_SOURCE_ADDRESS,
+        ] {
+            db.insert_account(
+                source,
+                AccountInfo {
+                    code_hash: runtime.hash_slow(),
+                    code: Some(runtime.clone()),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let err = executor.deploy_zone_factory_at_boundary().unwrap_err();
+        assert!(
+            err.to_string().contains("Verifier source"),
+            "unexpected error: {err}"
+        );
+        drop(executor);
+
+        assert!(
+            db.load_cache_account(ZONE_FACTORY_ADDRESS)
+                .ok()
+                .and_then(|account| account.account_info())
+                .is_none_or(|info| info.is_empty_code_hash())
+        );
     }
 
     /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
@@ -2093,6 +2295,7 @@ mod tests {
         // DEV chainspec has T4 active at timestamp 0.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        seed_t9_runtime_sources(&mut db);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_amsterdam_eip8037_enabled(true)
