@@ -74,17 +74,21 @@ pub(crate) fn walk_resting_orders(
         let remaining = order.remaining();
         let s = step(amount, remaining, order.tick(), is_bid)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        total = total
-            .checked_add(s.accumulate)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
+        // Preserve historical settlement-before-overflow ordering for replay gas.
         if s.fill_amount < remaining {
             // Partial fill terminates the trade.
             settle(order, Fill::Partial(s.fill_amount))?;
+            total = total
+                .checked_add(s.accumulate)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             break;
         }
 
-        match settle(order, Fill::Full)? {
+        let next = settle(order, Fill::Full)?;
+        total = total
+            .checked_add(s.accumulate)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        match next {
             Some(next) => order = next,
             None => {
                 if s.next_amount > 0 {
