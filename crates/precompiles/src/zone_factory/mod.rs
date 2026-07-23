@@ -12,6 +12,7 @@ use crate::{
     tip403_registry::TIP403Registry,
 };
 use alloy::primitives::{Address, IntoLogData};
+use std::collections::HashMap;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
     ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
@@ -235,6 +236,15 @@ impl ZoneFactory {
 
         self.storage.emit_event(
             portal,
+            ZonePortalEvent::enforcement_modes_updated(
+                call.params.accessMode,
+                call.params.gatewayMode,
+            )
+            .into_log_data(),
+        )?;
+
+        self.storage.emit_event(
+            portal,
             ZonePortalEvent::sequencer_set_updated(
                 0,
                 call.params.threshold,
@@ -243,36 +253,26 @@ impl ZoneFactory {
             .into_log_data(),
         )?;
 
-        self.storage.emit_event(
-            portal,
-            ZonePortalEvent::enforcement_modes_updated(
-                call.params.accessMode,
-                call.params.gatewayMode,
-            )
-            .into_log_data(),
-        )?;
-
+        let mut emitted_roles = HashMap::new();
         for gateway in &call.params.zoneGateways {
+            let previous = emitted_roles
+                .insert(*gateway, ZonePortalRole::CallbackGateway)
+                .unwrap_or(ZonePortalRole::None);
             self.storage.emit_event(
                 portal,
-                ZonePortalEvent::role_updated(
-                    *gateway,
-                    ZonePortalRole::None,
-                    ZonePortalRole::CallbackGateway,
-                )
-                .into_log_data(),
+                ZonePortalEvent::role_updated(*gateway, previous, ZonePortalRole::CallbackGateway)
+                    .into_log_data(),
             )?;
         }
 
         for account in &call.params.allowedAccounts {
+            let previous = emitted_roles
+                .insert(*account, ZonePortalRole::Account)
+                .unwrap_or(ZonePortalRole::None);
             self.storage.emit_event(
                 portal,
-                ZonePortalEvent::role_updated(
-                    *account,
-                    ZonePortalRole::None,
-                    ZonePortalRole::Account,
-                )
-                .into_log_data(),
+                ZonePortalEvent::role_updated(*account, previous, ZonePortalRole::Account)
+                    .into_log_data(),
             )?;
         }
 
@@ -523,6 +523,58 @@ mod tests {
             );
             Ok(())
         })
+    }
+
+    #[test]
+    fn create_zone_emits_constructor_events_in_order_with_duplicate_roles() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let portal = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.zoneGateways = vec![ZONE_GATEWAY, ZONE_GATEWAY];
+            params.allowedAccounts = vec![ALLOWED_ACCOUNT, ALLOWED_ACCOUNT];
+
+            Ok(factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })?
+                .portal)
+        })?;
+
+        let events = storage.get_events(portal);
+        assert!(events.len() >= 6);
+        assert_eq!(
+            &events[..6],
+            &[
+                ZonePortalEvent::enforcement_modes_updated(true, true).into_log_data(),
+                ZonePortalEvent::sequencer_set_updated(0, 2, vec![SEQUENCER_A, SEQUENCER_B],)
+                    .into_log_data(),
+                ZonePortalEvent::role_updated(
+                    ZONE_GATEWAY,
+                    ZonePortalRole::None,
+                    ZonePortalRole::CallbackGateway,
+                )
+                .into_log_data(),
+                ZonePortalEvent::role_updated(
+                    ZONE_GATEWAY,
+                    ZonePortalRole::CallbackGateway,
+                    ZonePortalRole::CallbackGateway,
+                )
+                .into_log_data(),
+                ZonePortalEvent::role_updated(
+                    ALLOWED_ACCOUNT,
+                    ZonePortalRole::None,
+                    ZonePortalRole::Account,
+                )
+                .into_log_data(),
+                ZonePortalEvent::role_updated(
+                    ALLOWED_ACCOUNT,
+                    ZonePortalRole::Account,
+                    ZonePortalRole::Account,
+                )
+                .into_log_data(),
+            ]
+        );
+        Ok(())
     }
 
     #[test]
