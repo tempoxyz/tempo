@@ -542,12 +542,7 @@ where
             ceremony_boundary,
         )
         .await
-        .wrap_err_with(|| {
-            format!(
-                "failed reading boundary outcome that initialized ceremony epoch \
-                `{ceremony_epoch}`"
-            )
-        })?;
+        .wrap_err("failed reading outcome for ceremony boundary")?;
 
         ensure!(
             ceremony_outcome.epoch == ceremony_epoch,
