@@ -507,6 +507,7 @@ impl StablecoinDEX {
         };
 
         if self.storage.spec().is_t9() {
+            // Sum the remaining amount of every order reachable from the tick's head.
             let mut order_id = level.head;
             level.total_liquidity = 0;
             while order_id != 0 {
