@@ -253,13 +253,10 @@ where
     {
         let mut state = storage.current();
 
+        // Recovery is best-effort and shouldn't fail the dkg loop
         if !state.share.is_present()
-            && let Some(share) = self
-                .maybe_recover_revealed_share(storage, &state)
-                .await
-                .wrap_err("failed to attempt share recovery from public dealer logs")?
+            && let Ok(Some(share)) = self.maybe_recover_revealed_share(storage, &state).await
         {
-            // Recovery is a fallback, hence the warn severity
             warn!(%state.epoch, "recovered share from public dealer logs");
 
             state.share = state::ShareState::Plaintext(Some(share));
@@ -512,7 +509,7 @@ where
     /// The on-chain DKG outcome only records which players may have had their shares revealed. The
     /// scalar dealings themselves remain in the dealer logs included in regular block headers, so
     /// a node without the previous epoch's consensus journal must scan those headers.
-    #[instrument(skip_all, fields(epoch = %state.epoch))]
+    #[instrument(skip_all, fields(epoch = %state.epoch), err)]
     async fn maybe_recover_revealed_share<TStorageContext>(
         &mut self,
         storage: &state::Storage<TStorageContext>,
@@ -557,6 +554,13 @@ where
             "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
             ceremony_outcome.epoch,
         );
+
+        // A failed ceremony carries its input output forward. In that case, the current share was
+        // produced by an older ceremony, not by the dealer logs from the immediately previous
+        // epoch. Do not attempt an unbounded search through earlier epochs here.
+        if ceremony_outcome.output == state.output {
+            return Ok(None);
+        }
 
         let ceremony_state = State {
             epoch: ceremony_outcome.epoch,
