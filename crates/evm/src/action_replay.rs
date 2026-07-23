@@ -1,13 +1,15 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxEnv, TempoTxResult};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
 use alloy_primitives::{
     Address, B256, U256,
     map::{AddressMap, U256Map, hash_map::Entry},
 };
 use evm2::{
     TxResult,
-    evm::{AccountChange, CacheDB, DynDatabase, StateChanges, Tracked},
+    evm::{CacheDB, DynDatabase, PendingState},
 };
-use reth_evm::{BlockExecutionError, BlockExecutor, InternalBlockExecutionError};
+use reth_evm::{
+    BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
+};
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
@@ -21,12 +23,13 @@ impl TempoBlockExecutor<'_> {
     /// `result_closure` observes the synthesized result before the replayed state is committed.
     pub fn execute_transaction_with_actions(
         &mut self,
-        tx: TempoTxEnv,
+        transaction: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
-        let recovered = tx.transaction();
+        let (tx, recovered) = transaction.into_parts();
+        let original = recovered.tx();
 
         let StorageActionReplay {
             result,
@@ -43,7 +46,7 @@ impl TempoBlockExecutor<'_> {
 
         let state = self
             .replay_actions(
-                tx.evm_tx().signer(),
+                tx.inner().evm_tx().signer(),
                 actions.drain(..),
                 commit_reads,
                 expiring_nonce,
@@ -60,15 +63,15 @@ impl TempoBlockExecutor<'_> {
             gas.tx_gas_used()
         };
         let next_section = self
-            .validate_tx(recovered, block_gas_used)
+            .validate_tx(original, block_gas_used)
             .map_err(BlockExecutionError::from)?;
 
         let result = TempoTxResult::new_precomputed(
-            recovered,
+            original,
             result,
             state,
             next_section,
-            self.is_payment(recovered),
+            self.is_payment(original),
             block_gas_used,
             validator_fee,
         );
@@ -85,7 +88,7 @@ impl TempoBlockExecutor<'_> {
         actions: impl IntoIterator<Item = StorageAction>,
         commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
-    ) -> Result<StateChanges, BlockExecutionError> {
+    ) -> Result<PendingState, BlockExecutionError> {
         let block_timestamp = self.evm().block().timestamp.to::<u64>();
         let is_expiring_nonce = expiring_nonce.is_some();
 
@@ -93,7 +96,7 @@ impl TempoBlockExecutor<'_> {
             self.apply_expiring_nonce_replay(expiring_nonce, block_timestamp)?;
         }
 
-        let db = self.inner.evm.overlay_db_mut();
+        let db = self.inner.evm_mut().overlay_db_mut();
         for action in actions {
             // Expiring nonces are handled above
             if is_expiring_nonce && action.address() == NONCE_PRECOMPILE_ADDRESS {
@@ -165,39 +168,30 @@ impl TempoBlockExecutor<'_> {
             }
         }
 
-        let mut state = StateChanges::default();
+        let mut state = PendingState::default();
 
         if commit_reads {
             let original = db
                 .get_account(&sender)
                 .map_err(|code| BlockExecutionError::other(db.error(code)))?;
-            let mut account = AccountChange::default();
-            account.original = original.clone();
-            account.current = original;
-            state.accounts.insert(sender, account);
+            state.insert_account(sender, original.clone(), original);
         }
 
         for (address, slots) in self.replay_state.tx_changes.iter() {
+            let mut inserted_account = false;
             for (slot, change) in slots {
                 if !change.written && !commit_reads {
                     continue;
                 }
 
-                let account = match state.accounts.entry(*address) {
-                    Entry::Occupied(e) => e.into_mut(),
-                    Entry::Vacant(e) => {
-                        let original = db
-                            .get_account(address)
-                            .map_err(|code| BlockExecutionError::other(db.error(code)))?;
-                        let mut account = AccountChange::default();
-                        account.original = original.clone();
-                        account.current = original;
-                        e.insert(account)
-                    }
-                };
-                account
-                    .storage
-                    .insert(*slot, Tracked::from_parts(change.original, change.current));
+                if !inserted_account {
+                    let original = db
+                        .get_account(address)
+                        .map_err(|code| BlockExecutionError::other(db.error(code)))?;
+                    state.insert_account(*address, original.clone(), original);
+                    inserted_account = true;
+                }
+                state.insert_storage(*address, *slot, change.original, change.current);
             }
         }
 
@@ -215,7 +209,7 @@ impl TempoBlockExecutor<'_> {
         {
             return Err(StorageActionReplayError::ActionConflict.into());
         }
-        let db = self.inner.evm.overlay_db_mut();
+        let db = self.inner.evm_mut().overlay_db_mut();
 
         let nonce_manager = NonceManager::new();
         let now = U256::from(block_timestamp);

@@ -674,6 +674,26 @@ impl GenesisArgs {
     }
 }
 
+fn zone_factory_genesis_account() -> GenesisAccount {
+    let factory_config =
+        U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+    GenesisAccount {
+        code: Some(Bytes::from_static(&[0xef])),
+        storage: Some(BTreeMap::from([(B256::ZERO, factory_config.into())])),
+        ..Default::default()
+    }
+}
+
+fn insert_zone_factory_at_genesis(
+    t9_time: u64,
+    genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
+) {
+    if t9_time == 0 {
+        println!("Initializing ZoneFactory (T9 active at genesis)");
+        genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
+    }
+}
+
 fn setup_tempo_evm(chain_id: u64) -> TempoEvm<'static> {
     build_tempo_evm(
         tempo_chainspec::hardfork::TempoHardfork::T0,
@@ -690,15 +710,14 @@ fn with_evm_storage<R>(evm: &mut TempoEvm<'_>, f: impl FnOnce() -> R) -> R {
     let actions = evm.ext().actions.clone();
     let non_creditable_slots = evm.ext().non_creditable_slots.clone();
     let mut gas = GasTracker::new(u64::MAX);
-    let mut storage = EvmPrecompileStorageProvider::new(evm.internals(), &mut gas, spec, false)
+    let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
         .with_actions(actions)
         .with_non_creditable_slots(non_creditable_slots);
     let result = StorageCtx::enter(&mut storage, f);
     drop(storage);
 
-    let internals = evm.internals();
-    internals.state.commit_transaction();
-    internals.state.clear_transaction_state();
+    evm.state_mut().commit_transaction();
+    evm.state_mut().clear_transaction_state();
     result
 }
 

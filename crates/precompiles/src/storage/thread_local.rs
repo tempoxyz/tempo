@@ -4,6 +4,7 @@ use alloy::{
 };
 use evm2::{
     Evm, EvmTypes,
+    bytecode::Bytecode,
     evm::precompile::PrecompileOutput,
     interpreter::GasTracker,
     precompiles::{PrecompileError, PrecompileResult},
@@ -129,7 +130,7 @@ impl StorageCtx {
         let actions = evm.ext().storage_actions();
         let non_creditable_slots = evm.ext().non_creditable_slots();
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm.internals(), gas, spec, false)
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
             .with_actions(actions)
             .with_non_creditable_slots(non_creditable_slots);
         storage.set_tip1060_storage_credits(tip1060_storage_credits);

@@ -33,7 +33,7 @@ use reth_transaction_pool::{
 };
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::TempoStateAccess;
+use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,

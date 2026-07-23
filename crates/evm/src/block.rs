@@ -1,6 +1,4 @@
-use crate::{
-    StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm, TempoEvmTypes, TempoTxEnv,
-};
+use crate::{StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm, TempoEvmTypes};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
@@ -12,16 +10,15 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use evm2::{
-    TxResult, TxResultWithState,
+    EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
-    evm::{AccountChange, Bal, StateChanges, SystemTx},
+    evm::{Bal, PendingState, SystemTx},
 };
-use reth_chainspec::EthChainSpec;
 use reth_evm::{
-    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockValidationError, GasOutput,
-    ReceiptBuilder, ReceiptBuilderCtx,
+    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
+    BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
 };
-use reth_evm_ethereum::EthBlockExecutor;
+use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::HashedPostState;
 use std::{
     collections::{HashMap, HashSet},
@@ -34,7 +31,7 @@ use tempo_contracts::precompiles::{
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
 };
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
+    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
 use tracing::trace;
@@ -60,12 +57,13 @@ pub(crate) enum BlockSection {
 #[non_exhaustive]
 pub struct TempoReceiptBuilder;
 
-impl ReceiptBuilder<TempoTxType, TxResult<TempoEvmTypes>> for TempoReceiptBuilder {
+impl ReceiptBuilder for TempoReceiptBuilder {
+    type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
 
-    fn build_receipt(
+    fn build_receipt<T: EvmTypes>(
         &self,
-        ctx: ReceiptBuilderCtx<TempoTxType, TxResult<TempoEvmTypes>>,
+        ctx: ReceiptBuilderCtx<TempoTxType, TxResult<T>>,
     ) -> Self::Receipt {
         let ReceiptBuilderCtx {
             tx_type,
@@ -89,13 +87,11 @@ impl ReceiptBuilder<TempoTxType, TxResult<TempoEvmTypes>> for TempoReceiptBuilde
 #[derive(Debug)]
 pub struct TempoTxResult {
     /// Inner transaction execution result.
-    inner: TxResultWithState<TempoEvmTypes>,
+    inner: EthTransactionResultWithState<TempoEvmTypes, TempoTxType>,
     /// Next section of the block.
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
     is_payment: bool,
-    /// Transaction type used to build its receipt.
-    tx_type: TempoTxType,
     /// Full transaction that is being committed.
     ///
     /// This is only populated for subblock transactions for which we need to store
@@ -115,21 +111,24 @@ impl TempoTxResult {
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
         result: TxResult<TempoEvmTypes>,
-        state: StateChanges,
+        state: PendingState,
         next_section: BlockSection,
         is_payment: bool,
         block_gas_used: u64,
         validator_fee: U256,
     ) -> Self {
         Self {
-            inner: TxResultWithState {
-                result,
-                state_changes: state,
-                _non_exhaustive: (),
-            },
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result,
+                    pending_state: state,
+                    _non_exhaustive: (),
+                },
+                tx.tx_type(),
+                0,
+            ),
             next_section,
             is_payment,
-            tx_type: tx.tx_type(),
             tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
             block_gas_used,
             validator_fee,
@@ -138,7 +137,7 @@ impl TempoTxResult {
 
     /// Returns the EVM2 execution result.
     pub const fn result(&self) -> &TxResult<TempoEvmTypes> {
-        &self.inner.result
+        &self.inner.result().result
     }
 
     /// Returns the block gas consumed by this transaction.
@@ -148,7 +147,7 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.state_gas_spent()
+        self.inner.result().result.state_gas_spent()
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
@@ -156,9 +155,15 @@ impl TempoTxResult {
         self.validator_fee
     }
 
-    /// Returns the transaction's EVM2 state changes.
-    pub const fn state_changes(&self) -> &StateChanges {
-        &self.inner.state_changes
+    /// Returns the transaction's pending EVM2 state.
+    pub const fn pending_state(&self) -> &PendingState {
+        &self.inner.result().pending_state
+    }
+}
+
+impl BlockTransactionResult<TempoEvmTypes> for TempoTxResult {
+    fn result(&self) -> &TxResultWithState<TempoEvmTypes> {
+        self.inner.result()
     }
 }
 
@@ -175,7 +180,7 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 #[expect(missing_debug_implementations)]
 pub struct TempoBlockExecutor<'a> {
-    pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceipt>,
+    pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
@@ -189,6 +194,7 @@ pub struct TempoBlockExecutor<'a> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+    block_gas_used: u64,
 }
 
 impl<'a> TempoBlockExecutor<'a> {
@@ -198,23 +204,15 @@ impl<'a> TempoBlockExecutor<'a> {
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         let block_gas_limit = evm.block().gas_limit.to::<u64>();
-        let spec_id = evm.config_spec_id().into();
         Self {
             incentive_gas_used: 0,
+            block_gas_used: 0,
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
             extra_data: ctx.inner.extra_data.clone(),
-            inner: EthBlockExecutor::new_with_evm(
-                evm,
-                spec_id,
-                ctx.inner,
-                chain_spec,
-                chain_spec
-                    .deposit_contract()
-                    .map(|contract| contract.address),
-            ),
+            inner: EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder),
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
@@ -231,11 +229,11 @@ impl<'a> TempoBlockExecutor<'a> {
         address: Address,
         storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let original = match self.inner.evm.state_mut().account_info_untracked(&address) {
+        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
             Ok(info) => info,
             Err(code) => {
                 return Err(BlockExecutionError::other(
-                    self.inner.evm.database_mut().error(code),
+                    self.evm_mut().database_mut().error(code),
                 ));
             }
         };
@@ -247,16 +245,25 @@ impl<'a> TempoBlockExecutor<'a> {
         }
 
         let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
-        let current = original.clone().unwrap_or_default().with_code(code.clone());
-        let mut account = AccountChange::default();
-        account.original = original;
-        account.current = Some(current);
-        let changes = StateChanges {
-            accounts: [(address, account)].into_iter().collect(),
-            code: [(code.hash_slow(), code)].into_iter().collect(),
-            _non_exhaustive: (),
-        };
-        self.inner.commit_state_changes(&changes);
+        let current = original.clone().unwrap_or_default().with_code(code);
+        let mut state = PendingState::default();
+        state.insert_account(address, original, Some(current));
+        for &(slot, value) in storage {
+            let original = match self
+                .evm_mut()
+                .state_mut()
+                .storage_slot_untracked(&address, &slot)
+            {
+                Ok(value) => value,
+                Err(code) => {
+                    return Err(BlockExecutionError::other(
+                        self.evm_mut().database_mut().error(code),
+                    ));
+                }
+            };
+            state.insert_storage(address, slot, original, value);
+        }
+        self.inner.commit_pending_state(&state);
         Ok(())
     }
 
@@ -314,7 +321,7 @@ impl<'a> TempoBlockExecutor<'a> {
             return Err(BlockValidationError::msg("current committee system call failed").into());
         }
 
-        self.inner.commit_state_changes(&result.state_changes);
+        self.inner.commit_pending_state(&result.pending_state);
         Ok(())
     }
 
@@ -429,7 +436,7 @@ impl<'a> TempoBlockExecutor<'a> {
             let signature_hash = SubBlock {
                 version: metadata.version,
                 fee_recipient: metadata.fee_recipient,
-                parent_hash: self.inner.ctx.parent_hash,
+                parent_hash: self.inner.context().parent_hash,
                 transactions: transactions.clone(),
             }
             .signature_hash();
@@ -566,18 +573,16 @@ impl<'a> TempoBlockExecutor<'a> {
 }
 
 impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
-    type Primitives = TempoPrimitives;
+    type Transaction = TempoTxEnvelope;
+    type Receipt = TempoReceipt;
     type Evm = TempoEvm<'a>;
-    type Transaction = TempoTxEnv;
-    type TransactionResult = TxResult<TempoEvmTypes>;
     type TransactionResultWithState = TempoTxResult;
     type BlockAccessList = Bal;
-    type TransactionOutput = GasOutput;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         if self
             .inner
-            .ctx
+            .context()
             .withdrawals
             .as_ref()
             .is_some_and(|withdrawals| !withdrawals.is_empty())
@@ -589,23 +594,26 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         if self.evm().config_spec_id().is_t2() {
-            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS, &[])?;
         }
         if self.evm().config_spec_id().is_t3() {
-            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS, &[])?;
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS, &[])?;
         }
         if self.evm().config_spec_id().is_t5() {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS, &[])?;
         }
         if self.evm().config_spec_id().is_t6() {
-            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS, &[])?;
         }
         if self.evm().config_spec_id().is_t7() {
-            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
+            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS, &[])?;
         }
         if self.evm().config_spec_id().is_t8() {
-            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
+            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
+        }
+        if self.evm().config_spec_id().is_t9() {
+            self.deploy_zone_factory_at_boundary()?;
         }
 
         Ok(())
@@ -617,12 +625,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
     fn execute_transaction_without_commit(
         &mut self,
-        mut tx: Self::Transaction,
+        transaction: impl ExecutorTx<Self>,
     ) -> Result<Self::TransactionResultWithState, BlockExecutionError> {
+        let (mut tx, recovered) = transaction.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
-        tx.set_expiring_nonce_idx(None);
-        let original = tx.transaction();
-        let next_section = self.validate_tx_pre_execution(original)?;
+        tx.inner_mut().set_expiring_nonce_idx(None);
+        let original = recovered.tx().clone();
+        let next_section = self.validate_tx_pre_execution(&original)?;
 
         let block = *self.evm().block();
         // If we are dealing with a subblock transaction, configure the fee recipient context.
@@ -638,7 +647,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
         let result = self
             .inner
-            .execute_transaction_without_commit(&tx, original.gas_limit());
+            .execute_transaction_without_commit((tx, recovered));
 
         self.evm_mut().set_block(block);
 
@@ -647,25 +656,24 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
         let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            inner.result.regular_gas_spent()
+            inner.result().result.regular_gas_spent()
         } else {
-            inner.result.tx_gas_used()
+            inner.result().result.tx_gas_used()
         };
 
         let next_section = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(original, block_gas_used)?
+            self.validate_tx(&original, block_gas_used)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
-        let validator_fee = inner.result.ext.validator_fee;
+        let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: self.is_payment(original),
-            tx_type: original.tx_type(),
-            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| original.clone()),
+            is_payment: self.is_payment(&original),
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then_some(original),
             block_gas_used,
             validator_fee,
         })
@@ -674,20 +682,18 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     fn commit_transaction(
         &mut self,
         output: Self::TransactionResultWithState,
-    ) -> Result<Self::TransactionOutput, BlockExecutionError> {
+    ) -> Result<GasOutput, BlockExecutionError> {
         let TempoTxResult {
             inner,
             next_section,
             is_payment,
-            tx_type,
             tx,
             block_gas_used,
             validator_fee: _,
         } = output;
 
-        let gas_output = self
-            .inner
-            .commit_transaction(inner, tx_type, 0, &TempoReceiptBuilder);
+        let gas_output = self.inner.commit_transaction(inner)?;
+        self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
 
         self.section = next_section;
 
@@ -748,34 +754,21 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         self.apply_current_committee_system_call()?;
 
-        let amsterdam_eip8037_enabled = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-
-        let regular_gas_used = self.inner.block_regular_gas_used();
-        let (mut output, block_access_list) = self
-            .inner
-            .finish_with_block_access_list(&TempoReceiptBuilder)?;
-
-        // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
-        // State gas is charged to users (in receipts) but exempted from block
-        // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
-        //
-        // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
-        // cumulative_tx_gas_used (total_spent - refunded), matching the original
-        // block header semantics.
-        if amsterdam_eip8037_enabled {
-            output.result.gas_used = regular_gas_used;
+        let block_gas_used = self.block_gas_used;
+        let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
+        let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
+        if use_regular_gas {
+            output.result.gas_used = block_gas_used;
         }
-
         Ok((output, block_access_list))
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
-        &mut self.inner.evm
+        self.inner.evm_mut()
     }
 
     fn evm(&self) -> &Self::Evm {
-        &self.inner.evm
+        self.inner.evm()
     }
 
     fn set_state_hook(&mut self, hook: impl FnMut(HashedPostState) + Send + 'static) -> bool {
@@ -839,7 +832,7 @@ mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
@@ -1491,17 +1484,20 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 21000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 21000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx_type: tx.tx_type(),
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
@@ -1636,17 +1632,20 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 21000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 21000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx_type: tx.tx_type(),
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
@@ -1672,17 +1671,20 @@ mod tests {
         // Commit first transaction (21000 gas)
         let tx1 = create_legacy_tx();
         let output1 = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 21000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 21000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx1.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx_type: tx1.tx_type(),
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
@@ -1692,17 +1694,20 @@ mod tests {
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
         let output2 = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 50000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 50000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx2.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx_type: tx2.tx_type(),
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
@@ -1730,17 +1735,20 @@ mod tests {
         // Manually set state to simulate a committed transaction (no state gas)
         executor
             .commit_transaction(TempoTxResult {
-                inner: TxResultWithState {
-                    result: TxResult {
-                        status: true,
-                        total_gas_spent: 21000,
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult {
+                            status: true,
+                            total_gas_spent: 21000,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
+                    TempoTxType::Legacy,
+                    0,
+                ),
                 next_section: BlockSection::NonShared,
                 is_payment: false,
-                tx_type: TempoTxType::Legacy,
                 tx: None,
                 block_gas_used: 21000,
                 validator_fee: U256::ZERO,
@@ -1767,17 +1775,20 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 50_000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 50_000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx_type: tx.tx_type(),
             tx: None,
             block_gas_used: 50_000,
             validator_fee: U256::ZERO,
@@ -1809,18 +1820,21 @@ mod tests {
         // tx_gas_used = max(300k - 0_refund, 0) = 300k
         let tx = create_legacy_tx();
         let output = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 300_000,
-                    state_gas_spent: 100_000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 300_000,
+                        state_gas_spent: 100_000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::NonShared,
             is_payment: false,
-            tx_type: tx.tx_type(),
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
@@ -1855,18 +1869,21 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
-            inner: TxResultWithState {
-                result: TxResult {
-                    status: true,
-                    total_gas_spent: 300_000,
-                    state_gas_spent: 100_000,
+            inner: EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult {
+                        status: true,
+                        total_gas_spent: 300_000,
+                        state_gas_spent: 100_000,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
+                tx.tx_type(),
+                0,
+            ),
             next_section: BlockSection::GasIncentive,
             is_payment: false,
-            tx_type: tx.tx_type(),
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
@@ -1973,7 +1990,7 @@ mod tests {
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         let addr = Address::with_last_byte(0xff);
-        executor.deploy_precompile_at_boundary(addr).unwrap();
+        executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
 
         // Verify code was deployed.
         let info = executor
@@ -2043,51 +2060,53 @@ mod tests {
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = State::builder().with_bundle_update().build();
+        let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<HashedPostState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .evm_mut()
-            .db_mut()
-            .set_state_hook(Some(Box::new(move |state: EvmState| {
-                hook_calls_clone.lock().unwrap().push(state);
-            })));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
-        drop(executor);
 
-        let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
+        let factory = executor
+            .evm()
+            .state()
+            .overlay_db()
+            .account_info(&ZONE_FACTORY_ADDRESS)
+            .unwrap();
         assert_eq!(
-            factory
-                .account_info()
-                .unwrap()
-                .code
-                .unwrap()
+            executor.evm().state().overlay_db().cache.contracts[&factory.code_hash]
                 .original_bytes(),
             Bytes::from_static(&[0xef])
         );
         let expected_factory_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
-            factory.storage_slot(U256::ZERO),
-            Some(expected_factory_config)
+            executor.evm().state().overlay_db().cache.storage[&ZONE_FACTORY_ADDRESS].slots
+                [&U256::ZERO],
+            expected_factory_config
         );
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
-        assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
+        assert!(
+            calls[0]
+                .accounts
+                .contains_key(&alloy_primitives::keccak256(ZONE_FACTORY_ADDRESS))
+        );
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                !calls[0].contains_key(&address),
+                !calls[0]
+                    .accounts
+                    .contains_key(&alloy_primitives::keccak256(address)),
                 "shared runtimes are installed through the factory, not the T9 state hook"
             );
         }
@@ -2119,19 +2138,22 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
-                inner: TxResultWithState {
-                    result: TxResult {
-                        status: true,
-                        total_gas_spent: 300_000,
-                        state_gas_spent: state_gas,
-                        refunded: 30_000,
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult {
+                            status: true,
+                            total_gas_spent: 300_000,
+                            state_gas_spent: state_gas,
+                            refunded: 30_000,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
+                    TempoTxType::Legacy,
+                    0,
+                ),
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
-                tx_type: TempoTxType::Legacy,
                 tx: None,
                 block_gas_used: regular_gas,
                 validator_fee: U256::ZERO,
@@ -2164,18 +2186,21 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
         executor
             .commit_transaction(TempoTxResult {
-                inner: TxResultWithState {
-                    result: TxResult {
-                        status: true,
-                        total_gas_spent: 300_000,
-                        state_gas_spent: 200_000,
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult {
+                            status: true,
+                            total_gas_spent: 300_000,
+                            state_gas_spent: 200_000,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
+                    TempoTxType::Legacy,
+                    0,
+                ),
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
-                tx_type: TempoTxType::Legacy,
                 tx: None,
                 block_gas_used: 100_000,
                 validator_fee: U256::ZERO,
@@ -2209,18 +2234,21 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
-                inner: TxResultWithState {
-                    result: TxResult {
-                        status: true,
-                        total_gas_spent: regular,
-                        refunded: regular - cumulative,
+                inner: EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult {
+                            status: true,
+                            total_gas_spent: regular,
+                            refunded: regular - cumulative,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
+                    TempoTxType::Legacy,
+                    0,
+                ),
                 next_section: BlockSection::StartOfBlock,
                 is_payment: false,
-                tx_type: TempoTxType::Legacy,
                 tx: None,
                 block_gas_used: cumulative,
                 validator_fee: U256::ZERO,

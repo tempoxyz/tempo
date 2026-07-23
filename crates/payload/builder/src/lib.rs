@@ -879,7 +879,10 @@ where
             let mut subblock_tx_count = 0f64;
 
             for tx in subblock.into_recovered_iter() {
-                if let Err(err) = executor.execute_transaction(TempoTxEnv::from(tx.clone())) {
+                if let Err(err) = executor.execute_transaction((
+                    Recovered::new_unchecked(TempoTxEnv::from(tx.clone()), tx.signer()),
+                    tx.clone(),
+                )) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         ..
                     }) = &err
@@ -932,7 +935,13 @@ where
             debug_span!(target: "payload_builder", "execute_system_txs").entered();
         for system_tx in system_txs {
             executor
-                .execute_transaction(TempoTxEnv::from(system_tx.clone()))
+                .execute_transaction((
+                    Recovered::new_unchecked(
+                        TempoTxEnv::from(system_tx.clone()),
+                        system_tx.signer(),
+                    ),
+                    system_tx.clone(),
+                ))
                 .map_err(PayloadBuilderError::evm)?;
             let _ = roots_tx.send((
                 BuilderTx::Owned(Box::new(system_tx)),
@@ -970,14 +979,14 @@ where
         let execution_result = &execution_output.result;
         let execution_state = execution_output.state.inner();
 
-        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
+        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .and_then(|handle| handle.try_take_hashed_state_rx())
             .map(|rx| rx.recv())
         {
             hashed_state
         } else {
-            finish_provider.hashed_post_state(execution_state)
+            Arc::new(finish_provider.hashed_post_state(execution_state))
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -989,7 +998,7 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = state_root_handle {
+            } else if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {

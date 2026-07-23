@@ -15,6 +15,7 @@ pub mod error;
 pub mod evm;
 mod handler;
 mod instructions;
+mod pool;
 #[cfg(test)]
 mod test_utils;
 mod transaction;
@@ -30,18 +31,19 @@ pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::{FeePaymentError, TempoEvmError, TempoInvalidTransaction};
 pub use evm::{TempoEvm, TempoEvmFactory};
 pub use handler::{
-    ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector,
-    TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt, build_tempo_evm,
-    tempo_execution_config, tempo_tx_registry,
+    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig,
+    TempoConfigSelector, TempoEvmExt, TempoEvmTypes, TempoFeeManager, TempoTxResultExt,
+    build_tempo_evm, tempo_execution_config, tempo_tx_registry,
 };
-pub use transaction::{TempoAaTx, TempoEvmTx, TempoTxEnv};
+pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
+pub use transaction::{RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_eips::eip7840::BlobParams;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use alloy_rlp::Decodable;
 use core::num::NonZeroU64;
-use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase, version::GasId};
+use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnvFor, evm::DynDatabase, version::GasId};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
     BlockExecutorFactory, ConfigureEvm, EvmEnv, EvmEnvFor, EvmTransactionValidationGasRules,
@@ -50,10 +52,14 @@ use reth_evm::{
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use std::{borrow::Cow, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_precompiles::TempoPrecompiles;
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
+use tempo_precompiles::{TempoPrecompiles, error::Result as TempoResult, storage::StorageActions};
 use tempo_primitives::{
-    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, subblock::PartialValidatorKey,
+    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
 };
 
 #[cfg(feature = "engine")]
@@ -93,11 +99,11 @@ impl EvmEnv for TempoEvmEnv {
         self.version.chain_id
     }
 
-    fn block_env(&self) -> &BlockEnv<TempoEvmTypes> {
+    fn block_env(&self) -> &BlockEnvFor<TempoEvmTypes> {
         &self.block
     }
 
-    fn block_env_mut(&mut self) -> &mut BlockEnv<TempoEvmTypes> {
+    fn block_env_mut(&mut self) -> &mut BlockEnvFor<TempoEvmTypes> {
         &mut self.block
     }
 
@@ -253,7 +259,7 @@ impl TempoEvmConfig {
     fn resolved_env(
         &self,
         tempo_spec: tempo_chainspec::hardfork::TempoHardfork,
-        block: BlockEnv<TempoEvmTypes>,
+        block: BlockEnvFor<TempoEvmTypes>,
         blob_params: Option<BlobParams>,
     ) -> TempoEvmEnv {
         let config = tempo_execution_config(tempo_spec, self.chain_spec.chain().id());
@@ -275,11 +281,10 @@ impl TempoEvmConfig {
 }
 
 impl BlockExecutorFactory for TempoEvmConfig {
-    type Primitives = TempoPrimitives;
     type EvmFactory = TempoEvmFactory;
     type EvmTypes = TempoEvmTypes;
-    type EvmTransaction = TempoTxEnv;
-    type Transaction = TempoTxEnv;
+    type Transaction = TempoTxEnvelope;
+    type Receipt = TempoReceipt;
     type Evm<'a> = TempoEvm<'a>;
     type EvmEnv = TempoEvmEnv;
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;

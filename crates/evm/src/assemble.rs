@@ -1,7 +1,13 @@
-use crate::{TempoEvmConfig, context::TempoBlockExecutionCtx};
+use crate::{
+    TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
+};
 use alloy_primitives::{B256, Bloom};
-use reth_evm::{BlockAssembler, BlockAssemblerInput, BlockExecutionError};
-use reth_evm_ethereum::EthBlockAssembler;
+use reth_evm::{
+    BlockExecutionError, EvmEnv,
+    execute::{BlockAssembler, BlockAssemblerInput},
+};
+use reth_evm_ethereum::{EthBlockAssembler, EthBlockExecutorFactory, EthEvmEnv};
+use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
 use tempo_primitives::TempoHeader;
@@ -40,22 +46,36 @@ impl TempoBlockAssembler {
             parent,
             transactions,
             output,
+            execution_state,
+            state_provider,
             state_root,
             block_access_list_hash,
             ..
         } = input;
 
-        let timestamp_millis_part = evm_env.block.ext.timestamp_millis_part;
+        let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
+
+        let timestamp_millis_part = evm_env.block_env().ext.timestamp_millis_part;
 
         // Delegate block building to the inner assembler
-        let block = self.inner.assemble_block::<TempoEvmConfig>(
-            evm_env,
-            inner,
-            parent,
-            transactions,
-            output,
-            state_root,
-            block_access_list_hash,
+        let block = self.inner.assemble_block(
+            BlockAssemblerInput::<
+                EthBlockExecutorFactory<
+                    TempoReceiptBuilder,
+                    reth_chainspec::ChainSpec,
+                    TempoEvmFactory,
+                >,
+            >::new(
+                EthEvmEnv::new_with_version(evm_env.tempo_spec, evm_env.block, evm_env.version),
+                inner,
+                &parent,
+                transactions,
+                output,
+                execution_state,
+                state_provider,
+                state_root,
+                block_access_list_hash,
+            ),
             transactions_root,
             receipts_root,
             receipts_bloom,
@@ -85,11 +105,12 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Header, Signed, TxLegacy};
+    use crate::TempoEvmEnv;
+    use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
-    use evm2::evm::BlockStateAccumulator;
+    use evm2::env::BlockEnvWithExt;
     use reth_chainspec::EthChainSpec;
-    use reth_evm::{BlockAssembler, ConfigureEvm};
+    use reth_evm::{EvmState, execute::BlockAssembler};
     use reth_evm_ethereum::EthBlockExecutionCtx;
     use reth_execution_types::BlockExecutionResult;
     use reth_primitives_traits::SealedHeader;
@@ -134,20 +155,21 @@ mod tests {
         let general_gas_limit = 10_000_000u64;
         let shared_gas_limit = 10_000_000u64;
 
-        let evm_env = TempoEvmConfig::new(chainspec.clone())
-            .evm_env(&TempoHeader {
-                inner: Header {
-                    number: block_number,
-                    timestamp,
-                    beneficiary: Address::repeat_byte(0x01),
-                    base_fee_per_gas: Some(1),
-                    gas_limit,
+        let evm_env = TempoEvmEnv {
+            block: BlockEnvWithExt {
+                number: U256::from(block_number),
+                timestamp: U256::from(timestamp),
+                beneficiary: Address::repeat_byte(0x01),
+                basefee: U256::from(1),
+                gas_limit: U256::from(gas_limit),
+                ext: tempo_primitives::TempoBlockExt {
+                    timestamp_millis_part,
                     ..Default::default()
                 },
-                timestamp_millis_part,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+            ..Default::default()
+        };
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -191,7 +213,7 @@ mod tests {
             blob_gas_used: 0,
         };
 
-        let block_state = BlockStateAccumulator::new();
+        let bundle_state = EvmState::default();
         let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
         let state_root = B256::ZERO;
 
@@ -201,7 +223,7 @@ mod tests {
             &parent,
             transactions,
             &output,
-            &block_state,
+            &bundle_state,
             &state_provider,
             state_root,
             None,
@@ -247,19 +269,17 @@ mod tests {
             parent_view: 4,
         };
 
-        let evm_env = TempoEvmConfig::new(chainspec.clone())
-            .evm_env(&TempoHeader {
-                inner: Header {
-                    number: 1,
-                    timestamp: 1000,
-                    beneficiary: Address::repeat_byte(0x01),
-                    base_fee_per_gas: Some(1),
-                    gas_limit,
-                    ..Default::default()
-                },
+        let evm_env = TempoEvmEnv {
+            block: BlockEnvWithExt {
+                number: U256::from(1),
+                timestamp: U256::from(1000),
+                beneficiary: Address::repeat_byte(0x01),
+                basefee: U256::from(1),
+                gas_limit: U256::from(gas_limit),
                 ..Default::default()
-            })
-            .unwrap();
+            },
+            ..Default::default()
+        };
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -297,7 +317,7 @@ mod tests {
             blob_gas_used: 0,
         };
 
-        let block_state = BlockStateAccumulator::new();
+        let bundle_state = EvmState::default();
         let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
 
         let input = BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
@@ -306,7 +326,7 @@ mod tests {
             &parent,
             transactions,
             &output,
-            &block_state,
+            &bundle_state,
             &state_provider,
             B256::ZERO,
             None,
@@ -327,19 +347,17 @@ mod tests {
         let general_gas_limit = 10_000_000u64;
         let shared_gas_limit = 10_000_000u64;
 
-        let evm_env = TempoEvmConfig::new(chainspec.clone())
-            .evm_env(&TempoHeader {
-                inner: Header {
-                    number: 1,
-                    timestamp: 1000,
-                    beneficiary: Address::repeat_byte(0x01),
-                    base_fee_per_gas: Some(1),
-                    gas_limit,
-                    ..Default::default()
-                },
+        let evm_env = TempoEvmEnv {
+            block: BlockEnvWithExt {
+                number: U256::from(1),
+                timestamp: U256::from(1000),
+                beneficiary: Address::repeat_byte(0x01),
+                basefee: U256::from(1),
+                gas_limit: U256::from(gas_limit),
                 ..Default::default()
-            })
-            .unwrap();
+            },
+            ..Default::default()
+        };
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -377,7 +395,7 @@ mod tests {
             blob_gas_used: 0,
         };
 
-        let block_state = BlockStateAccumulator::new();
+        let bundle_state = EvmState::default();
         let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
         let input = BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
             evm_env,
@@ -385,7 +403,7 @@ mod tests {
             &parent,
             transactions,
             &output,
-            &block_state,
+            &bundle_state,
             &state_provider,
             B256::ZERO,
             Some(B256::repeat_byte(0x42)),

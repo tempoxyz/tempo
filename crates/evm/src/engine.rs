@@ -97,14 +97,15 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
     }
 }
 
-impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
+impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBlock {
     type Recovered = Self;
 
-    fn into_parts(self) -> (TempoTxEnv, Self::Recovered) {
-        let recovered = Recovered::new_unchecked(self.tx().clone(), *self.signer());
+    fn into_parts(self) -> (Recovered<TempoTxEnv>, Self::Recovered) {
+        let signer = *self.signer();
+        let recovered = Recovered::new_unchecked(self.tx().clone(), signer);
         let mut tx_env = TempoTxEnv::from(recovered);
         tx_env.set_expiring_nonce_idx(self.expiring_nonce_idx);
-        (tx_env, self)
+        (Recovered::new_unchecked(tx_env, signer), self)
     }
 }
 

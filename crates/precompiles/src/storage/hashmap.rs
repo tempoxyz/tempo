@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, Bytes, LogData, U256};
+use alloy::primitives::{Address, B256, Bytes, LogData, U256};
 use evm2::{
     SpecId,
     bytecode::Bytecode,

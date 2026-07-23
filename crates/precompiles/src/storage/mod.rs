@@ -22,6 +22,7 @@ pub use types::mapping as slots;
 
 use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
 use evm2::{
+    bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint},
     interpreter::gas::{KECCAK256, KECCAK256WORD},
 };
@@ -69,7 +70,7 @@ pub trait PrecompileStorageProvider {
         if code.is_empty() {
             return Ok(None);
         }
-        self.set_code(destination, code)?;
+        self.set_code(destination, code.original_bytes())?;
         Ok(Some(code_hash))
     }
 

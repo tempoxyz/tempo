@@ -5,9 +5,9 @@ use crate::{
 };
 use alloy::primitives::{Address, Bytes, Log, LogData, U256};
 use evm2::{
-    EvmFeatures, EvmTypesHost,
+    Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{EvmInternals, SLoad, SStore},
+    evm::{SLoad, SStore, State},
     interpreter::{GasTracker, gas},
     version::GasId,
 };
@@ -22,8 +22,10 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 /// Production [`PrecompileStorageProvider`] backed by EVM2's live transaction state.
 ///
 /// Wraps [`State`] and tracks gas consumption for storage operations.
-pub struct EvmPrecompileStorageProvider<'state, 'gas, 'db, T: EvmTypesHost> {
-    internals: EvmInternals<'state, 'db, T>,
+pub struct EvmPrecompileStorageProvider<'state, 'gas, 'db> {
+    state: &'state mut State<'db>,
+    version: Version,
+    block: TempoBlockEnv,
     gas_tracker: GasTrackerStorage<'gas>,
     spec: TempoHardfork,
     is_static: bool,
@@ -34,19 +36,23 @@ pub struct EvmPrecompileStorageProvider<'state, 'gas, 'db, T: EvmTypesHost> {
     actions: StorageActions,
 }
 
-impl<'state, 'gas, 'db, T> EvmPrecompileStorageProvider<'state, 'gas, 'db, T>
-where
-    T: EvmTypesHost<BlockEnvExt = TempoBlockExt>,
-{
+impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
     /// Creates a storage provider over EVM2's live state and gas tracker.
-    pub fn new(
-        internals: EvmInternals<'state, 'db, T>,
+    pub fn new<T>(
+        evm: &'state mut Evm<'db, T>,
         gas_tracker: &'gas mut GasTracker,
         spec: TempoHardfork,
         is_static: bool,
-    ) -> Self {
+    ) -> Self
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    {
+        let version = *evm.version();
+        let block = *evm.block();
         Self::with_gas_tracker(
-            internals,
+            evm.state_mut(),
+            version,
+            block,
             GasTrackerStorage::Borrowed(gas_tracker),
             spec,
             is_static,
@@ -54,9 +60,16 @@ where
     }
 
     /// Creates a non-static storage provider with the maximum gas limit.
-    pub fn new_max_gas(internals: EvmInternals<'state, 'db, T>, spec: TempoHardfork) -> Self {
+    pub fn new_max_gas<T>(evm: &'state mut Evm<'db, T>, spec: TempoHardfork) -> Self
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    {
+        let version = *evm.version();
+        let block = *evm.block();
         Self::with_gas_tracker(
-            internals,
+            evm.state_mut(),
+            version,
+            block,
             GasTrackerStorage::Owned(GasTracker::new(u64::MAX)),
             spec,
             false,
@@ -64,13 +77,17 @@ where
     }
 
     fn with_gas_tracker(
-        internals: EvmInternals<'state, 'db, T>,
+        state: &'state mut State<'db>,
+        version: Version,
+        block: TempoBlockEnv,
         gas_tracker: GasTrackerStorage<'gas>,
         spec: TempoHardfork,
         is_static: bool,
     ) -> Self {
         Self {
-            internals,
+            state,
+            version,
+            block,
             gas_tracker,
             spec,
             is_static,
@@ -119,11 +136,10 @@ where
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
         let mut slot = self
-            .internals
             .state
             .storage(&address)
             .into_slot(key, skip_cold_load)?;
-        let is_cold = self.internals.version.feature(EvmFeatures::EIP2929) && slot.warm();
+        let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
         Ok(SLoad {
             value: slot.current(),
             is_cold,
@@ -141,11 +157,10 @@ where
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
         let mut slot = self
-            .internals
             .state
             .storage(&address)
             .into_slot(key, skip_cold_load)?;
-        let is_cold = self.internals.version.feature(EvmFeatures::EIP2929) && slot.warm();
+        let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
         let (original_value, present_value) = slot.write(value);
         Ok(SStore {
             original_value,
@@ -165,8 +180,7 @@ where
         record: bool,
     ) -> Result<U256, TempoPrecompileError> {
         let additional_cost = u64::from(
-            self.internals
-                .version
+            self.version
                 .gas_params
                 .get(GasId::ColdStorageAdditionalCost),
         );
@@ -174,10 +188,7 @@ where
         // T4+: pre-charge static gas to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
             self.deduct_gas(u64::from(
-                self.internals
-                    .version
-                    .gas_params
-                    .get(GasId::WarmStorageReadCost),
+                self.version.gas_params.get(GasId::WarmStorageReadCost),
             ))?;
             self.gas_tracker.remaining() < additional_cost
         } else {
@@ -192,10 +203,7 @@ where
 
         if !self.spec.is_t4() {
             self.deduct_gas(u64::from(
-                self.internals
-                    .version
-                    .gas_params
-                    .get(GasId::WarmStorageReadCost),
+                self.version.gas_params.get(GasId::WarmStorageReadCost),
             ))?;
         }
 
@@ -218,13 +226,10 @@ where
     ) -> Result<(), TempoPrecompileError> {
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(u64::from(
-                self.internals.version.gas_params.get(GasId::SstoreStatic),
-            ))?;
+            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
             self.gas_tracker.remaining()
                 < u64::from(
-                    self.internals
-                        .version
+                    self.version
                         .gas_params
                         .get(GasId::ColdStorageAdditionalCost),
                 )
@@ -236,9 +241,7 @@ where
         self.actions.record(action(&result));
 
         if !self.spec.is_t4() {
-            self.deduct_gas(u64::from(
-                self.internals.version.gas_params.get(GasId::SstoreStatic),
-            ))?;
+            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
         }
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
@@ -248,63 +251,15 @@ where
         }
 
         // dynamic gas
-        self.deduct_gas(
-            self.internals
-                .version
-                .gas_params
-                .sstore_dynamic_gas(true, &result),
-        )?;
+        self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
 
         // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.internals.version.gas_params.sstore_state_gas(&result))?;
+        self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
 
         // refund gas.
-        self.refund_gas(
-            self.internals
-                .version
-                .gas_params
-                .sstore_refund(true, &result),
-        );
+        self.refund_gas(self.version.gas_params.sstore_refund(true, &result));
 
         Ok(())
-    }
-
-    #[inline]
-    fn with_loaded_account<R>(
-        &mut self,
-        address: Address,
-        f: impl FnOnce(bool, &AccountInfo) -> R,
-    ) -> Result<R, TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_account_additional_cost();
-
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
-        };
-
-        let mut account = self
-            .internals
-            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
-
-        if !self.spec.is_t4() {
-            deduct_gas(
-                &mut self.gas_tracker,
-                self.gas_params.warm_storage_read_cost(),
-            )?;
-        }
-
-        // Dynamic gas.
-        if account.is_cold {
-            deduct_gas(&mut self.gas_tracker, additional_cost)?;
-        }
-
-        let exists = !account.data.account().is_loaded_as_not_existing();
-        account.load_code()?;
-
-        Ok(f(exists, &account.data.account().info))
     }
 }
 
@@ -342,15 +297,12 @@ impl DerefMut for GasTrackerStorage<'_> {
     }
 }
 
-impl<T> StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_, T>
-where
-    T: EvmTypesHost<BlockEnvExt = TempoBlockExt>,
-{
+impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_> {
     type Error = TempoPrecompileError;
 
     #[inline]
     fn gas_params(&self) -> &evm2::version::GasParams {
-        &self.internals.version.gas_params
+        &self.version.gas_params
     }
 
     #[inline]
@@ -391,12 +343,12 @@ where
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> U256 {
-        self.internals.state.tload(&address, &key)
+        self.state.tload(&address, &key)
     }
 
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
-        self.internals.state.tstore(&address, &key, &value);
+        self.state.tstore(&address, &key, &value);
     }
 
     #[inline]
@@ -412,16 +364,13 @@ where
     }
 }
 
-impl<T> PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_, T>
-where
-    T: EvmTypesHost<BlockEnvExt = TempoBlockExt>,
-{
+impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
     fn chain_id(&self) -> u64 {
-        self.internals.version.chain_id
+        self.version.chain_id
     }
 
     fn block_env(&self) -> &TempoBlockEnv {
-        &self.internals.block
+        &self.block
     }
 
     #[inline]
@@ -429,39 +378,26 @@ where
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
         self.deduct_gas(
-            u64::from(
-                self.internals
-                    .version
-                    .gas_params
-                    .get(GasId::CodeDepositCost),
-            )
-            .saturating_mul(code_len as u64),
+            u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
+                .saturating_mul(code_len as u64),
         )?;
 
         // Track state gas for code deposit
-        self.deduct_state_gas(
-            self.internals
-                .version
-                .gas_params
-                .code_deposit_state_gas(code_len),
-        )?;
+        self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
 
         let was_empty = {
-            let mut account = self.internals.state.account(&address, false)?;
+            let mut account = self.state.account(&address, false)?;
             let was_empty = account.get().is_none_or(evm2::evm::AccountInfo::is_empty);
             account.set_code_slow(code);
             was_empty
         };
 
         // TIP-1016: charge TIP20 deployments as CREATE.
-        if self.internals.version.feature(EvmFeatures::EIP8037) && was_empty {
-            self.deduct_gas(u64::from(
-                self.internals.version.gas_params.get(GasId::Create),
-            ))?;
-            self.deduct_state_gas(self.internals.version.gas_params.create_state_gas())?;
+        if self.version.feature(EvmFeatures::EIP8037) && was_empty {
+            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
+            self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
             self.deduct_gas(
-                self.internals
-                    .version
+                self.version
                     .gas_params
                     .keccak256_word_cost(code_len.div_ceil(32)),
             )?;
@@ -476,19 +412,11 @@ where
         address: Address,
         f: &mut dyn FnMut(&evm2::evm::AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let additional_cost = self
-            .internals
-            .version
-            .gas_params
-            .cold_account_additional_cost();
+        let additional_cost = self.version.gas_params.cold_account_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
-        let warm_storage_read_cost = u64::from(
-            self.internals
-                .version
-                .gas_params
-                .get(GasId::WarmStorageReadCost),
-        );
+        let warm_storage_read_cost =
+            u64::from(self.version.gas_params.get(GasId::WarmStorageReadCost));
         let insufficient_gas_for_cold_load = if self.spec.is_t4() {
             self.deduct_gas(warm_storage_read_cost)?;
             self.gas_tracker.remaining() < additional_cost
@@ -497,10 +425,9 @@ where
         };
 
         let mut account = self
-            .internals
             .state
             .account(&address, insufficient_gas_for_cold_load)?;
-        let is_cold = self.internals.version.feature(EvmFeatures::EIP2929) && account.warm();
+        let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
 
         if !self.spec.is_t4() {
             self.gas_tracker
@@ -519,6 +446,21 @@ where
         let info = account.get().cloned().unwrap_or_default();
         f(&info);
         Ok(())
+    }
+
+    #[inline]
+    fn account_code(
+        &mut self,
+        address: Address,
+    ) -> Result<(alloy_primitives::B256, Bytecode), TempoPrecompileError> {
+        let mut result = None;
+        self.with_account_info(address, &mut |info| {
+            result = Some((
+                info.code_hash,
+                info.code.clone().unwrap_or_else(Bytecode::default),
+            ));
+        })?;
+        Ok(result.expect("account info callback is always invoked"))
     }
 
     #[inline]
@@ -591,12 +533,9 @@ where
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(u64::from(
-            self.internals
-                .version
-                .gas_params
-                .get(GasId::WarmStorageReadCost),
+            self.version.gas_params.get(GasId::WarmStorageReadCost),
         ))?;
-        self.internals.state.tstore(&address, &key, &value);
+        self.state.tstore(&address, &key, &value);
         Ok(())
     }
 
@@ -604,14 +543,13 @@ where
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(
             u64::from(gas::LOG).saturating_add(
-                self.internals
-                    .version
+                self.version
                     .gas_params
                     .log_cost(event.topics().len() as u8, event.data.len()),
             ),
         )?;
 
-        self.internals.state.log(Log {
+        self.state.log(Log {
             address,
             data: event,
         });
@@ -626,12 +564,9 @@ where
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         self.deduct_gas(u64::from(
-            self.internals
-                .version
-                .gas_params
-                .get(GasId::WarmStorageReadCost),
+            self.version.gas_params.get(GasId::WarmStorageReadCost),
         ))?;
-        Ok(self.internals.state.tload(&address, &key))
+        Ok(self.state.tload(&address, &key))
     }
 
     #[inline]
@@ -684,7 +619,7 @@ where
 
     #[inline]
     fn amsterdam_eip8037_enabled(&self) -> bool {
-        self.internals.version.feature(EvmFeatures::EIP8037)
+        self.version.feature(EvmFeatures::EIP8037)
     }
 
     #[inline]
@@ -694,7 +629,7 @@ where
 
     #[inline]
     fn checkpoint(&mut self) -> evm2::evm::StateCheckpoint {
-        self.internals.state.checkpoint()
+        self.state.checkpoint()
     }
 
     #[inline]
@@ -702,9 +637,7 @@ where
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
-        self.internals
-            .state
-            .rollback(checkpoint, self.internals.version.features);
+        self.state.rollback(checkpoint, self.version.features);
     }
 
     #[inline]
@@ -720,7 +653,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::EvmPrecompileStorageProvider;
+    use super::{EvmPrecompileStorageProvider, GasTrackerStorage};
     use crate::{
         STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
@@ -731,28 +664,13 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
-        BaseEvmConfigSelector, Evm, EvmTypesHost, SpecId, Version,
-        evm::{EvmInternals, InMemoryDB, State},
+        SpecId, Version,
+        evm::{InMemoryDB, State},
         interpreter::GasTracker,
         version::{GasId, GasParams},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
-
-    struct TestTypes;
-
-    impl EvmTypesHost for TestTypes {
-        type ConfigSelector = BaseEvmConfigSelector;
-        type SpecId = SpecId;
-        type Tx = ();
-        type EvmExt = ();
-        type MessageExt = ();
-        type MessageResultExt = ();
-        type TxEnvExt = ();
-        type TxResultExt = ();
-        type BlockEnvExt = TempoBlockExt;
-        type Host<'a> = Evm<'a, Self>;
-    }
+    use tempo_primitives::TempoBlockEnv;
 
     struct TestEvm {
         state: State<'static>,
@@ -804,15 +722,13 @@ mod tests {
             &mut self,
             gas_limit: u64,
             reservoir: u64,
-        ) -> EvmPrecompileStorageProvider<'_, '_, 'static, TestTypes> {
+        ) -> EvmPrecompileStorageProvider<'_, '_, 'static> {
             self.gas_tracker = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
-            EvmPrecompileStorageProvider::new(
-                EvmInternals {
-                    state: &mut self.state,
-                    version: self.version,
-                    block: self.block_env,
-                },
-                &mut self.gas_tracker,
+            EvmPrecompileStorageProvider::with_gas_tracker(
+                &mut self.state,
+                self.version,
+                self.block_env,
+                GasTrackerStorage::Borrowed(&mut self.gas_tracker),
                 self.spec,
                 false,
             )
@@ -821,18 +737,18 @@ mod tests {
         fn provider_with_reservoir(
             &mut self,
             reservoir: u64,
-        ) -> EvmPrecompileStorageProvider<'_, '_, 'static, TestTypes> {
+        ) -> EvmPrecompileStorageProvider<'_, '_, 'static> {
             self.provider_with_gas_limit(u64::MAX, reservoir)
         }
 
-        fn provider_max_gas(&mut self) -> EvmPrecompileStorageProvider<'_, '_, 'static, TestTypes> {
-            EvmPrecompileStorageProvider::new_max_gas(
-                EvmInternals {
-                    state: &mut self.state,
-                    version: self.version,
-                    block: self.block_env,
-                },
+        fn provider_max_gas(&mut self) -> EvmPrecompileStorageProvider<'_, '_, 'static> {
+            EvmPrecompileStorageProvider::with_gas_tracker(
+                &mut self.state,
+                self.version,
+                self.block_env,
+                GasTrackerStorage::Owned(GasTracker::new(u64::MAX)),
                 self.spec,
+                false,
             )
         }
 

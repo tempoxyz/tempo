@@ -4,13 +4,13 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_consensus::{constants::KECCAK_EMPTY, transaction::Recovered};
 use alloy_primitives::{Address, B256};
 use evm2::registry::HandlerError;
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{
-    BlockExecutorFactory, ConfigureEvm, Database, EvmEnv as _, EvmEnvFor,
+    BlockExecutorFactory, ConfigureEvm, Database, EvmEnv as _, EvmFor,
     database::StateProviderDatabase,
 };
 use reth_primitives_traits::{
@@ -33,7 +33,10 @@ use std::{
     },
 };
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::{FeePaymentError, TempoEvmConfig, TempoInvalidTransaction, TempoStateAccess};
+use tempo_evm::{
+    FeePaymentError, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction,
+    TempoPoolValidationError, TempoPoolValidationEvm, TempoStateAccess,
+};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
     storage::StorageActions,
@@ -96,7 +99,7 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
-    cached_evm_env: RwLock<EvmEnvFor<TempoEvmConfig>>,
+    cached_evm_env: RwLock<TempoEvmEnv>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
@@ -339,10 +342,8 @@ where
 
     /// Validates a batch of transactions against the same state snapshot.
     ///
-    /// All transactions share one throwaway pool-validation EVM (journaled writes are discarded
-    /// after each transaction while loaded state stays warm) and the validator's tip-scoped
-    /// [`StateCache`], so repeated state reads are served from memory across transactions
-    /// and across concurrent validation calls.
+    /// All transactions share the validator's tip-scoped [`StateCache`], so repeated state reads
+    /// are served from memory across transactions and across concurrent validation calls.
     fn validate_batch<P: StateProvider>(
         &self,
         state_provider: P,
@@ -398,7 +399,7 @@ where
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
         db: &mut DB,
-        evm_env: EvmEnvFor<TempoEvmConfig>,
+        evm_env: TempoEvmEnv,
     ) -> TransactionValidationOutcome<TempoPooledTransaction>
     where
         DB: Database<Error = ProviderError>,
@@ -464,27 +465,23 @@ where
         // EVM2 owns transaction validation as part of the typed handler. Execute against a
         // borrowed database and discard the transaction state so validation cannot mutate the
         // pool's tip snapshot.
-        let mut evm = self.inner.evm_config().evm_with_database(&mut *db, evm_env);
-        evm.ext_mut().skip_valid_after_check = true;
-        evm.ext_mut().skip_liquidity_check = true;
-        if let Err(err) = evm.transact(&tx_env).map(|executed| executed.discard()) {
-            if let evm2::registry::HandlerError::Fatal(code) = err {
-                return TransactionValidationOutcome::Error(
-                    *transaction.hash(),
-                    Box::new(evm.error(code)),
+        let tx_env = Recovered::new_unchecked(tx_env, transaction.sender());
+        let (fee_token, key_expiry) = match self
+            .inner
+            .evm_config()
+            .validate_pool_transaction(&mut *db, evm_env, &tx_env)
+        {
+            Ok(context) => context,
+            Err(TempoPoolValidationError::Fatal(err)) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+            Err(TempoPoolValidationError::Invalid(err)) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err)),
                 );
             }
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err)),
-            );
-        }
-        let fee_token = evm
-            .ext()
-            .resolved_fee_token
-            .expect("successful Tempo handler resolves a fee token");
-        let key_expiry = evm.ext().key_expiry;
-        drop(evm);
+        };
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
@@ -798,18 +795,18 @@ where
 pub trait ConfigureTempoPoolEvm:
     ConfigureEvm<
         Primitives = TempoPrimitives,
-        BlockExecutorFactory: BlockExecutorFactory<
-            EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
-        >,
+        BlockExecutorFactory: BlockExecutorFactory<EvmTypes = TempoEvmTypes, EvmEnv = TempoEvmEnv>,
     > + 'static
 {
-    fn pool_evm<'a>(
+    /// Validates `tx` using the configured EVM and Tempo transaction-pool semantics.
+    fn validate_pool_transaction<DB>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
-        evm_env: EvmEnvFor<Self>,
-    ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
-    > + 'a;
+        db: &mut DB,
+        evm_env: TempoEvmEnv,
+        tx: &Recovered<tempo_evm::TempoTxEnv>,
+    ) -> Result<(Address, Option<u64>), TempoPoolValidationError>
+    where
+        DB: Database;
 }
 
 impl<T> ConfigureTempoPoolEvm for T
@@ -817,22 +814,23 @@ where
     T: ConfigureEvm<
             Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
-                EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
+                EvmTypes = TempoEvmTypes,
+                EvmEnv = TempoEvmEnv,
             >,
         > + 'static,
-    for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
-        TempoPoolValidationEvm,
+    for<'a> EvmFor<'a, T>: TempoPoolValidationEvm,
 {
-    fn pool_evm<'a>(
+    fn validate_pool_transaction<DB>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
-        evm_env: EvmEnvFor<Self>,
-    ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
-    > + 'a {
-        let mut evm = self.evm_with_env(db, evm_env);
-        evm.configure_for_pool();
-        evm
+        db: &mut DB,
+        evm_env: TempoEvmEnv,
+        tx: &Recovered<tempo_evm::TempoTxEnv>,
+    ) -> Result<(Address, Option<u64>), TempoPoolValidationError>
+    where
+        DB: Database,
+    {
+        let mut evm = self.evm_with_env(&mut *db, evm_env);
+        TempoPoolValidationEvm::validate_pool_transaction(&mut evm, tx)
     }
 }
 

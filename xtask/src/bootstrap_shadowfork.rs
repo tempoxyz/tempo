@@ -21,7 +21,10 @@ use commonware_math::algebra::Random as _;
 use commonware_runtime::{Metrics as _, Runner as _};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::{NZU32, ordered};
-use evm2::evm::{AccountInfo, StateCheckpoint};
+use evm2::{
+    bytecode::Bytecode,
+    evm::{AccountInfo, StateCheckpoint},
+};
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use rand_08::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};

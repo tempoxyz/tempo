@@ -181,6 +181,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             StorageCredits::new().call(calldata, caller)
         } else if address == CURRENT_COMMITTEE_ADDRESS {
             CurrentCommittee::new().call(calldata, caller)
+        } else if address == ZONE_FACTORY_ADDRESS {
+            ZoneFactory::new().call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }
@@ -196,13 +198,7 @@ where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
 {
     fn addresses(&self) -> Vec<Address> {
-        let mut addresses = self.base.addresses();
-        addresses.extend(
-            SYSTEM_PRECOMPILES
-                .iter()
-                .filter_map(|(address, activation)| (self.spec >= *activation).then_some(*address)),
-        );
-        addresses
+        self.base.addresses()
     }
 
     fn contains(&self, address: &Address) -> bool {
@@ -228,10 +224,9 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        let mut storage =
-            EvmPrecompileStorageProvider::new(evm.internals(), gas, self.spec, is_static)
-                .with_actions(self.actions.clone())
-                .with_non_creditable_slots(self.non_creditable_slots.clone());
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
+            .with_actions(self.actions.clone())
+            .with_non_creditable_slots(self.non_creditable_slots.clone());
         Some(StorageCtx::enter(&mut storage, || {
             self.call_tempo(message.code_address, &message.input, message.caller)
         }))
@@ -577,7 +572,7 @@ mod tests {
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm.internals(), spec);
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
@@ -613,7 +608,7 @@ mod tests {
         //    since we pre-fund recipient): state gas used must be less than gas used
         {
             // Pre-fund recipient so the transfer is warm SSTORE (nonzero->nonzero)
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm.internals(), spec);
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_mint(recipient, U256::from(1))
@@ -661,7 +656,7 @@ mod tests {
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm.internals(), spec);
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
@@ -868,23 +863,19 @@ mod tests {
 
     #[test]
     fn test_zone_factory_registered_at_t9_only() {
-        let mut pre_t9 = CfgEnv::<TempoHardfork>::default();
-        pre_t9.set_spec_and_mainnet_gas_params(TempoHardfork::T8);
+        let pre_t9 = test_tempo_precompiles(TempoHardfork::T8);
         assert!(
-            test_tempo_precompiles(&pre_t9)
-                .get(&ZONE_FACTORY_ADDRESS)
-                .is_none()
+            !pre_t9.contains(&ZONE_FACTORY_ADDRESS),
+            "ZoneFactory should not be registered before T9"
         );
 
-        let mut t9 = CfgEnv::<TempoHardfork>::default();
-        t9.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
-        let precompiles = test_tempo_precompiles(&t9);
+        let precompiles = test_tempo_precompiles(TempoHardfork::T9);
         assert!(
-            precompiles.get(&ZONE_FACTORY_ADDRESS).is_some(),
+            precompiles.contains(&ZONE_FACTORY_ADDRESS),
             "ZoneFactory should be registered at T9"
         );
         assert!(
-            precompiles.get(&zone_factory::portal_address(1)).is_none(),
+            !precompiles.contains(&zone_factory::portal_address(1)),
             "ZonePortal storage handles must not be registered as precompiles"
         );
     }

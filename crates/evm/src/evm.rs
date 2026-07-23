@@ -31,6 +31,43 @@ impl TempoEvmFactory {
     }
 }
 
+impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
+    type Types = TempoEvmTypes;
+    type SpecId = tempo_chainspec::hardfork::TempoHardfork;
+
+    fn spec_id(&self, spec: evm2::SpecId) -> Self::SpecId {
+        spec.into()
+    }
+
+    fn execution_config(
+        &self,
+        spec: Self::SpecId,
+        version: evm2::Version,
+    ) -> evm2::ExecutionConfig<Self::Types> {
+        evm2::ExecutionConfig::for_spec_and_version(spec, version)
+    }
+
+    fn tx_registry(
+        &self,
+        spec: Self::SpecId,
+    ) -> evm2::registry::TxRegistry<Self::Types, evm2::TxResult<Self::Types>> {
+        crate::tempo_tx_registry(spec.into())
+    }
+
+    fn configure_evm(&self, evm: &mut TempoEvm<'_>) {
+        let spec = evm.config_spec_id();
+        let mut ext = core::mem::take(evm.ext_mut());
+        ext.fee_manager = self.fee_manager.clone();
+        let precompiles = tempo_precompiles::TempoPrecompiles::new(
+            spec,
+            ext.actions.clone(),
+            ext.non_creditable_slots.clone(),
+        );
+        *evm.ext_mut() = ext;
+        evm.set_precompiles(precompiles);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{TempoBlockEnv, TempoEvmExt, TempoEvmTypes, tempo_tx_registry};
@@ -42,7 +79,10 @@ mod tests {
     use evm2::{
         Evm, EvmFeatures, ExecutionConfig, Inspector, SpecId,
         bytecode::Bytecode,
-        evm::{AccountInfo, InMemoryDB, StateChanges, SystemTx},
+        evm::{
+            AccountInfo, InMemoryDB, PendingState, StateChangeSink, StateChangeSource,
+            StorageChange, SystemTx,
+        },
         interpreter::{InstrStop, Interpreter, Message, MessageResult, op as opcode},
     };
     use indexmap::IndexMap;
@@ -54,10 +94,14 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-    use tempo_contracts::precompiles::IStorageCredits::{self, Mode};
+    use tempo_contracts::precompiles::{
+        IStorageCredits::{self, Mode},
+        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    };
     use tempo_precompiles::{
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        error::TempoPrecompileError,
         nonce::NonceManager,
         storage::{
             ContractStorage, FromWord, Handler, StorageAction, StorageActions, StorageCtx,
@@ -155,14 +199,20 @@ mod tests {
             &mut self,
             tx: TempoTxEnv,
         ) -> evm2::registry::HandlerResult<evm2::TxResult<TempoEvmTypes>> {
-            Ok(self.transact(&tx)?.commit())
+            let signer = tx.evm_tx().signer();
+            Ok(self
+                .transact(&Recovered::new_unchecked(tx, signer))?
+                .commit())
         }
 
         fn transact_detach(
             &mut self,
             tx: TempoTxEnv,
         ) -> evm2::registry::HandlerResult<evm2::evm::TxResultWithState<TempoEvmTypes>> {
-            Ok(self.transact(&tx)?.detach())
+            let signer = tx.evm_tx().signer();
+            Ok(self
+                .transact(&Recovered::new_unchecked(tx, signer))?
+                .detach())
         }
     }
 
@@ -273,7 +323,6 @@ mod tests {
         version.chain_id = 1;
         version.features.remove(EvmFeatures::BALANCE_CHECK);
         version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-        version.features.remove(EvmFeatures::FEE_CHARGE);
         Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(spec, version),
             spec,
@@ -287,6 +336,15 @@ mod tests {
             precompiles,
             ext,
         )
+    }
+
+    fn initialize_zone_factory(db: &mut InMemoryDB, owner: Address) {
+        db.insert_account_info(
+            &ZONE_FACTORY_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
+        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        db.insert_account_storage(&ZONE_FACTORY_ADDRESS, &U256::ZERO, &factory_config);
     }
 
     fn create_evm() -> TempoEvm<'static> {
@@ -354,6 +412,10 @@ mod tests {
     /// TIP-1016 state-gas split disabled to match production.
     fn create_funded_evm_t7(address: Address) -> TempoEvm<'static> {
         let mut evm = configured_evm(TempoHardfork::T7, 0, false, InMemoryDB::default());
+        evm.overlay_db_mut().insert_account_info(
+            &STORAGE_CREDITS_ADDRESS,
+            AccountInfo::default().with_nonce(1),
+        );
         fund_account(&mut evm, address);
         evm
     }
@@ -361,6 +423,10 @@ mod tests {
     /// Create an EVM with T7 hardfork, a specific timestamp, and a funded account.
     fn create_funded_evm_t7_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<'static> {
         let mut evm = configured_evm(TempoHardfork::T7, timestamp, false, InMemoryDB::default());
+        evm.overlay_db_mut().insert_account_info(
+            &STORAGE_CREDITS_ADDRESS,
+            AccountInfo::default().with_nonce(1),
+        );
         fund_account(&mut evm, address);
         evm
     }
@@ -718,7 +784,7 @@ mod tests {
 
     fn assert_storage_actions_reconstruct_evm_state(
         actions: &[StorageAction],
-        state: &StateChanges,
+        state: &PendingState,
         hardfork: TempoHardfork,
     ) {
         let mut storage_state = StorageState::default();
@@ -795,29 +861,58 @@ mod tests {
             }
         }
 
-        for (address, account) in &state.accounts {
-            for (slot, storage_slot) in &account.storage {
-                let key = (*address, *slot);
-                let original_value = storage_state.first_loads.get(&key).unwrap_or_else(|| {
+        #[derive(Default)]
+        struct StorageChanges(Vec<StorageChange>);
+
+        impl StateChangeSink for StorageChanges {
+            type Error = core::convert::Infallible;
+
+            fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+                self.0.push(change);
+                Ok(())
+            }
+
+            fn storage_read(
+                &mut self,
+                address: Address,
+                key: U256,
+                value: U256,
+            ) -> Result<(), Self::Error> {
+                self.0.push(StorageChange {
+                    address,
+                    key,
+                    original: value,
+                    current: value,
+                });
+                Ok(())
+            }
+        }
+
+        let mut state_changes = StorageChanges::default();
+        state.visit(&mut state_changes).unwrap();
+        for storage_slot in state_changes.0 {
+            let address = storage_slot.address;
+            let slot = storage_slot.key;
+            let key = (address, slot);
+            let original_value = storage_state.first_loads.get(&key).unwrap_or_else(|| {
                     panic!(
                         "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
                     )
                 });
-                assert_eq!(
-                    *original_value, storage_slot.original,
-                    "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
-                );
+            assert_eq!(
+                *original_value, storage_slot.original,
+                "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
+            );
 
-                let reconstructed_value = storage_state.reconstructed.get(&key).unwrap_or_else(|| {
+            let reconstructed_value = storage_state.reconstructed.get(&key).unwrap_or_else(|| {
                     panic!(
                         "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
                     )
                 });
-                assert_eq!(
-                    *reconstructed_value, storage_slot.current,
-                    "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
-                );
-            }
+            assert_eq!(
+                *reconstructed_value, storage_slot.current,
+                "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
+            );
         }
     }
 
@@ -993,11 +1088,13 @@ mod tests {
                 actions.clone(),
                 ext.non_creditable_slots.clone(),
             );
-            let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, *hardfork, false);
+            let mut version = evm2::Version::new(SpecId::OSAKA);
             version.chain_id = 1;
+            if hardfork.is_t7() {
+                version.gas_params[evm2::version::GasId::MaxRefundQuotient] = 1;
+            }
             version.features.remove(EvmFeatures::BALANCE_CHECK);
             version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-            version.features.remove(EvmFeatures::FEE_CHARGE);
             let mut evm = Evm::new_with_execution_config_and_ext(
                 ExecutionConfig::for_spec_and_version(*hardfork, version),
                 *hardfork,
@@ -1201,17 +1298,19 @@ mod tests {
                     )
                     .into()
                 };
-                let result = evm.transact(&tx)?.detach();
+                let result = evm
+                    .transact(&Recovered::new_unchecked(tx, caller))?
+                    .detach();
                 assert!(result.result.status, "hardfork: {hardfork:?}");
                 let actions = actions
                     .take()
                     .expect("storage action recording should be enabled");
                 assert_storage_actions_reconstruct_evm_state(
                     &actions,
-                    &result.state_changes,
+                    &result.pending_state,
                     *hardfork,
                 );
-                evm.commit_source(&result.state_changes);
+                evm.commit_source(&result.pending_state);
                 Ok(snapshot_storage_actions(&actions, &labels))
             };
 
@@ -1371,7 +1470,7 @@ mod tests {
         tempo_evm.set_block(block);
 
         let spec = tempo_evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(tempo_evm.internals(), spec);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut tempo_evm, spec);
         _ = StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(Address::ZERO).apply())?;
         drop(storage);
 
@@ -1475,9 +1574,7 @@ mod tests {
         // Set up TIP20 using the storage context pattern
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 TIP20Setup::path_usd(caller)
                     .with_issuer(caller)
@@ -1603,8 +1700,7 @@ mod tests {
 
         // Set up TIP20 first (required for fee token validation)
         let spec = evm.config_spec_id();
-        let internals = evm.internals();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         StorageCtx::enter(&mut provider, || {
             TIP20Setup::path_usd(caller)
@@ -1627,8 +1723,7 @@ mod tests {
         let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
 
         let spec = evm.config_spec_id();
-        let internals = evm.internals();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         let slot = StorageCtx::enter(&mut provider, || {
             TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -1642,8 +1737,7 @@ mod tests {
         assert_eq!(result1.tx_gas_used(), 28_671);
 
         let spec = evm.config_spec_id();
-        let internals = evm.internals();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         let slot = StorageCtx::enter(&mut provider, || {
             TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -1670,8 +1764,7 @@ mod tests {
         assert_eq!(result2.tx_gas_used(), 31_286);
 
         let spec = evm.config_spec_id();
-        let internals = evm.internals();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
         let slot = StorageCtx::enter(&mut provider, || {
             TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -1845,8 +1938,7 @@ mod tests {
         // Set up TIP20 for fee payment.
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
@@ -1895,8 +1987,7 @@ mod tests {
         let mut evm = create_funded_evm_t3(caller);
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
@@ -2552,8 +2643,10 @@ mod tests {
     /// each transaction with `setMode`.
     fn seed_storage_credit_balance(evm: &mut TempoEvm<'static>, owner: Address, balance: u64) {
         // The storage credits contract account must exist before we can write storage to it.
-        evm.overlay_db_mut()
-            .insert_account_info(&STORAGE_CREDITS_ADDRESS, AccountInfo::default());
+        evm.overlay_db_mut().insert_account_info(
+            &STORAGE_CREDITS_ADDRESS,
+            AccountInfo::default().with_nonce(1),
+        );
         let slot = StorageCredits::slot(owner);
         evm.overlay_db_mut().insert_account_storage(
             &STORAGE_CREDITS_ADDRESS,
@@ -3464,12 +3557,6 @@ mod tests {
                     .count()
             })
             .unwrap_or(0);
-        eprintln!(
-            "tx#2 success/gas: {}/{}  slots: {slots}  bal: {balance}",
-            call.is_success(),
-            call.tx_gas_used()
-        );
-
         // Each Preserve recreation costs the full 245k creditable portion, so the churn loop
         // exhausts gas and reverts before any churned credit can subsidize a Direct create.
         assert!(!call.is_success());
@@ -4628,8 +4715,7 @@ mod tests {
 
     // ==================== End TIP-1000 Tests ====================
 
-    /// Test system call functions and inspector management.
-    /// Tests `system_call_one_with_caller`, `inspect_one_system_call_with_caller`, and `set_inspector`.
+    /// Test that system calls preserve but do not invoke an installed inspector.
     #[test]
     fn test_system_call_and_inspector() -> eyre::Result<()> {
         let caller = Address::repeat_byte(0x01);
@@ -4656,7 +4742,7 @@ mod tests {
             assert!(result.is_success());
         }
 
-        // Test set_inspector and inspect_one_system_call_with_caller
+        // Test set_inspector and system call inspector preservation
         {
             let mut evm = create_evm_with_inspector(CountInspector::new());
             evm.overlay_db_mut().insert_account_info(
@@ -4667,20 +4753,19 @@ mod tests {
                 },
             );
 
-            // Test inspect_one_system_call_with_caller
             let result = evm
                 .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
                 .commit();
             assert!(result.is_success());
 
-            // Verify inspector was called
-            assert!(
+            // Verify the inspector was preserved but not called.
+            assert_eq!(
                 evm.inspector()
                     .unwrap()
                     .downcast_ref::<CountInspector>()
                     .unwrap()
-                    .call_count()
-                    > 0,
+                    .call_count(),
+                0,
             );
 
             // Test set_inspector - replace with a fresh CountInspector
@@ -4696,18 +4781,18 @@ mod tests {
                 0,
             );
 
-            // Run another system call and verify new inspector records it
+            // Run another system call and verify the new inspector remains untouched.
             let result = evm
                 .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))?
                 .commit();
             assert!(result.is_success());
-            assert!(
+            assert_eq!(
                 evm.inspector()
                     .unwrap()
                     .downcast_ref::<CountInspector>()
                     .unwrap()
-                    .call_count()
-                    > 0
+                    .call_count(),
+                0
             );
         }
 
@@ -4736,8 +4821,7 @@ mod tests {
         // Set up TIP20 for fee payment
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
@@ -4759,8 +4843,7 @@ mod tests {
         // Verify key does NOT exist before the transaction
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
             let key_exists = StorageCtx::enter(&mut provider, || {
                 let keychain = AccountKeychain::default();
@@ -4818,8 +4901,7 @@ mod tests {
         // This tests that storage changes are properly reverted on failure
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
             let key_after_fail = StorageCtx::enter(&mut provider, || {
                 let keychain = AccountKeychain::default();
@@ -4864,8 +4946,7 @@ mod tests {
         // Verify the key was authorized
         {
             let spec = evm.config_spec_id();
-            let internals = evm.internals();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
 
             let key_after_success = StorageCtx::enter(&mut provider, || {
                 let keychain = AccountKeychain::default();
@@ -4913,11 +4994,10 @@ mod tests {
             fund_account(&mut evm, caller);
             {
                 let spec = evm.config_spec_id();
-                let internals = evm.internals();
                 // Use default cfg for TIP20 setup — the test infrastructure's
                 // `is_initialized` check uses an unsafe `as_hashmap()` cast that
                 // only works with default gas params.
-                let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+                let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
                 StorageCtx::enter(&mut provider, || {
                     TIP20Setup::path_usd(caller)
                         .with_issuer(caller)
@@ -4953,8 +5033,7 @@ mod tests {
 
             let key_expiry = {
                 let spec = evm.config_spec_id();
-                let internals = evm.internals();
-                let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+                let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
                 let key = StorageCtx::enter(&mut provider, || {
                     AccountKeychain::default().keys[caller][access_key.address].read()
                 })?;
@@ -5014,8 +5093,7 @@ mod tests {
             fund_account(&mut evm, caller);
             {
                 let spec = evm.config_spec_id();
-                let internals = evm.internals();
-                let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, spec);
+                let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
                 StorageCtx::enter(&mut provider, || {
                     TIP20Setup::path_usd(caller)
                         .with_issuer(caller)
@@ -5239,6 +5317,115 @@ mod tests {
 
         let result = result.unwrap().discard();
         assert!(result.is_success());
+    }
+
+    #[test]
+    fn zone_factory_created_portal_executes_deployed_runtime() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
+        let logic_runtime = Bytecode::new_raw(Bytes::from_static(&[
+            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+        ]));
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo::default().with_code(logic_runtime),
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = configured_evm(TempoHardfork::T9, 0, false, db);
+
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(admin).apply()).unwrap();
+        drop(storage);
+
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_FACTORY_ADDRESS,
+                    IZoneFactory::createZoneCall {
+                        params: IZoneFactory::CreateZoneParams {
+                            initialToken: PATH_USD_ADDRESS,
+                            accessMode: true,
+                            gatewayMode: true,
+                            allowedAccounts: vec![admin],
+                            zoneGateways: vec![Address::repeat_byte(0x44)],
+                            admin,
+                            sequencers: vec![sequencer],
+                            threshold: 1,
+                            rpcUrl: "https://zone.example".to_string(),
+                        },
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(owner),
+            )
+            .unwrap()
+            .commit();
+        assert!(result.is_success(), "createZone failed: {result:?}");
+        assert!(result.tx_gas_used() >= ZONE_CREATION_GAS);
+        assert!(result.regular_gas_spent() >= ZONE_CREATION_GAS);
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&result.output).unwrap();
+
+        let result = evm
+            .system_call(SystemTx::new(created.portal, Bytes::new()).with_caller(Address::ZERO))
+            .unwrap()
+            .discard();
+        assert!(result.is_success(), "portal call failed: {result:?}");
+        assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_factory_creation_oog_below_minimum_reverts_state() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let mut db = InMemoryDB::default();
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = configured_evm(TempoHardfork::T9, 0, false, db);
+
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(admin).apply()).unwrap();
+        drop(storage);
+
+        let input = IZoneFactory::createZoneCall {
+            params: IZoneFactory::CreateZoneParams {
+                initialToken: PATH_USD_ADDRESS,
+                accessMode: true,
+                gatewayMode: true,
+                allowedAccounts: vec![admin],
+                zoneGateways: vec![Address::repeat_byte(0x44)],
+                admin,
+                sequencers: vec![sequencer],
+                threshold: 1,
+                rpcUrl: "https://zone.example".to_string(),
+            },
+        }
+        .abi_encode();
+
+        let result = evm
+            .transact_commit(legacy_tx_env(
+                owner,
+                0,
+                TxKind::Call(ZONE_FACTORY_ADDRESS),
+                input.into(),
+                ZONE_CREATION_GAS - 1,
+            ))
+            .unwrap();
+        assert!(!result.is_success());
+        assert_eq!(result.tx_gas_used(), ZONE_CREATION_GAS - 1);
+
+        StorageCtx::enter_evm(&mut evm, || {
+            let factory = ZoneFactory::new();
+            assert_eq!(factory.next_zone_id()?, 1);
+            assert!(!factory.is_zone_portal(portal_address(1))?);
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .unwrap();
     }
 
     /// Test that TempoEvm applies custom gas params via `tempo_gas_params()`.
