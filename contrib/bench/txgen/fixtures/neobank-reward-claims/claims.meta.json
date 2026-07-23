@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "merkle_root": "0xd5e22956036f00808b0b02c3ef5f41d8b308e8ff4683429f7ca239e900a4ac72",
+  "wrapper_token": "0x878e9282ca9a0fadd5832c2bf933c197f60e4165",
+  "cumulative_amount": "43860",
+  "total_claim_funding": "89825280",
+  "claim_function": "claim(address[],address[],uint256[],bytes32[][])",
+  "account_pool": "reward_claimants",
+  "mnemonic_derivation_path": "m/44'/60'/0'/0/{index}",
+  "account_start": 0,
+  "account_end": 2048,
+  "padding_account_end": 2048,
+  "claim_count": 2048,
+  "tree_leaf_count": 2048,
+  "dummy_leaf_count": 0,
+  "proof_depth": 11,
+  "calldata_bytes_per_record": 772,
+  "records_bytes": 3312556
+}
