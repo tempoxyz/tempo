@@ -14,7 +14,8 @@ use crate::{
 use alloy::primitives::{Address, IntoLogData};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
+    ZoneAccessMode, ZoneFactoryError, ZoneFactoryEvent, ZoneGatewayMode, ZoneInfo, ZonePortalEvent,
+    ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -45,6 +46,8 @@ pub struct ZoneFactory {
 struct ZoneInfoStorage {
     zone_id: u32,
     portal: Address,
+    access_mode: u8,
+    gateway_mode: u8,
     admin: Address,
     sequencers: Vec<Address>,
     threshold: u8,
@@ -57,6 +60,16 @@ impl From<ZoneInfoStorage> for ZoneInfo {
         Self {
             zoneId: value.zone_id,
             portal: value.portal,
+            accessMode: if value.access_mode == ZoneAccessMode::Closed as u8 {
+                ZoneAccessMode::Closed
+            } else {
+                ZoneAccessMode::Open
+            },
+            gatewayMode: if value.gateway_mode == ZoneGatewayMode::Enforced as u8 {
+                ZoneGatewayMode::Enforced
+            } else {
+                ZoneGatewayMode::Open
+            },
             admin: value.admin,
             sequencers: value.sequencers,
             threshold: value.threshold,
@@ -220,6 +233,8 @@ impl ZoneFactory {
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
             portal,
+            access_mode: call.params.accessMode as u8,
+            gateway_mode: call.params.gatewayMode as u8,
             admin: call.params.admin,
             sequencers: call.params.sequencers.clone(),
             threshold: call.params.threshold,
@@ -233,6 +248,15 @@ impl ZoneFactory {
                 0,
                 call.params.threshold,
                 call.params.sequencers.clone(),
+            )
+            .into_log_data(),
+        )?;
+
+        self.storage.emit_event(
+            portal,
+            ZonePortalEvent::enforcement_modes_updated(
+                call.params.accessMode,
+                call.params.gatewayMode,
             )
             .into_log_data(),
         )?;
@@ -276,6 +300,8 @@ impl ZoneFactory {
             zone_id,
             portal,
             call.params.initialToken,
+            call.params.accessMode,
+            call.params.gatewayMode,
             call.params.admin,
             call.params.sequencers.clone(),
             call.params.threshold,
@@ -312,9 +338,7 @@ fn validate_closed_loop_config(
     allowed_accounts: &[Address],
     zone_gateways: &[Address],
 ) -> Result<()> {
-    if allowed_accounts.is_empty()
-        || zone_gateways.is_empty()
-        || allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS)
+    if allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS)
         || zone_gateways
             .iter()
             .any(|gateway| allowed_accounts.contains(gateway))
@@ -362,7 +386,9 @@ mod tests {
         primitives::{B256, Bytes, U256, address, keccak256},
         sol_types::SolValue,
     };
-    use portal::PortalTokenConfig;
+    use portal::{
+        ACCOUNT_ALLOWLIST_ENFORCED_FLAG, GATEWAY_ALLOWLIST_ENFORCED_FLAG, PortalTokenConfig,
+    };
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -376,6 +402,8 @@ mod tests {
     fn create_params(initial_token: Address) -> IZoneFactory::CreateZoneParams {
         IZoneFactory::CreateZoneParams {
             initialToken: initial_token,
+            accessMode: ZoneAccessMode::Closed,
+            gatewayMode: ZoneGatewayMode::Enforced,
             allowedAccounts: vec![ALLOWED_ACCOUNT],
             zoneGateways: vec![ZONE_GATEWAY],
             admin: ADMIN,
@@ -429,6 +457,8 @@ mod tests {
                 ZoneInfo {
                     zoneId: 1,
                     portal: created.portal,
+                    accessMode: ZoneAccessMode::Closed,
+                    gatewayMode: ZoneGatewayMode::Enforced,
                     admin: ADMIN,
                     sequencers: vec![SEQUENCER_A, SEQUENCER_B],
                     threshold: 2,
@@ -474,6 +504,10 @@ mod tests {
                 portal.role[ZONE_GATEWAY].read()?,
                 ZonePortalRole::CallbackGateway as u8
             );
+            assert_eq!(
+                portal.enforcement_flags.read()?,
+                ACCOUNT_ALLOWLIST_ENFORCED_FLAG | GATEWAY_ALLOWLIST_ENFORCED_FLAG
+            );
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -496,6 +530,51 @@ mod tests {
                 StorageCtx.sload(created.portal, role_slot)?,
                 U256::from(ZonePortalRole::Account as u8)
             );
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(21))?,
+                U256::from(ACCOUNT_ALLOWLIST_ENFORCED_FLAG | GATEWAY_ALLOWLIST_ENFORCED_FLAG)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_allows_empty_role_sets_and_open_modes() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.allowedAccounts.clear();
+            params.zoneGateways.clear();
+            let closed = factory.create_zone(
+                OWNER,
+                IZoneFactory::createZoneCall {
+                    params: params.clone(),
+                },
+            )?;
+            assert_eq!(
+                ZonePortalStorage::new(closed.portal)
+                    .enforcement_flags
+                    .read()?,
+                ACCOUNT_ALLOWLIST_ENFORCED_FLAG | GATEWAY_ALLOWLIST_ENFORCED_FLAG
+            );
+
+            params.accessMode = ZoneAccessMode::Open;
+            params.gatewayMode = ZoneGatewayMode::Open;
+            let open = factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+            assert_eq!(
+                ZonePortalStorage::new(open.portal)
+                    .enforcement_flags
+                    .read()?,
+                0
+            );
+            assert_eq!(factory.zone(open.zoneId)?.accessMode, ZoneAccessMode::Open);
+            assert_eq!(
+                factory.zone(open.zoneId)?.gatewayMode,
+                ZoneGatewayMode::Open
+            );
             Ok(())
         })
     }
@@ -508,8 +587,6 @@ mod tests {
             let mut factory = factory_with_owner(OWNER)?;
 
             for (allowed_accounts, zone_gateways) in [
-                (vec![], vec![ZONE_GATEWAY]),
-                (vec![ALLOWED_ACCOUNT], vec![]),
                 (vec![ZONE_MESSENGER_ADDRESS], vec![ZONE_GATEWAY]),
                 (vec![ALLOWED_ACCOUNT], vec![ALLOWED_ACCOUNT]),
             ] {
