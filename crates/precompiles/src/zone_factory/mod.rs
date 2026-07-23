@@ -1,7 +1,7 @@
 //! Native ZoneFactory precompile for TIP-1091.
 
 pub mod dispatch;
-mod portal;
+pub mod portal;
 
 use crate::{
     ZONE_FACTORY_ADDRESS,
