@@ -90,4 +90,10 @@ allow-git = [
   "https://github.com/commonwarexyz/monorepo",
   "https://github.com/paradigmxyz/reth",
   "https://github.com/sigp/discv5",
+  # revm 42 integration: unreleased bumps patched in from the downstream repos.
+  # Drop these together with the matching `[patch.crates-io]` entries in the
+  # workspace Cargo.toml once the crates are published.
+  "https://github.com/alloy-rs/evm",
+  "https://github.com/paradigmxyz/reth-core",
+  "https://github.com/paradigmxyz/revm-inspectors",
 ]
