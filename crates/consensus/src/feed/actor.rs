@@ -9,9 +9,10 @@
 //! to become available, avoiding a race where the block hasn't been stored yet
 //! when the activity arrives.
 //!
-//! The actor always polls the oldest (lowest-round) pending subscription so
-//! that events are emitted in order. Notarizations are dropped when a finalization
-//!  at a higher-or-equal round is pending, since the finalization supersedes them.
+//! The actor prefers the oldest (lowest-round) pending subscription so events
+//! are normally emitted in order. When the delivery heartbeat expires, the
+//! unresolved oldest subscription is discarded and the actor may advance to a
+//! newer resolved finalization. Advancing also discards all older pending activity.
 
 use alloy_primitives::hex;
 use commonware_codec::Encode;
@@ -21,19 +22,19 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
-use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Handle, Spawner, spawn_cell};
 use commonware_utils::channel::oneshot;
 use eyre::eyre;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, future::BoxFuture};
 use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
-use tracing::{debug, error, info_span, instrument, warn, warn_span};
+use tracing::{debug, error, info, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
 use crate::{
@@ -47,6 +48,10 @@ pub(super) type FeedActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
 /// Receiver for activity messages.
 pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FeedActivity>;
+
+/// How long to prefer ordered marshal delivery before discarding the unresolved
+/// oldest subscription and looking for a newer resolved finalization.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A pending block subscription paired with its originating activity.
 ///
@@ -91,9 +96,10 @@ pub(crate) struct Actor<TContext> {
     state: FeedStateHandle,
     /// Marshal mailbox for block lookups.
     marshal: marshal::Mailbox,
-    /// Pending block subscriptions keyed by round. Since finalizations
-    /// must be delivered, pending subscriptions are bound by the marshal.
+    /// Best-effort block subscriptions keyed by round.
     pending: BTreeMap<Round, PendingSubscription>,
+    /// Timer that bounds how long the oldest best-effort subscription remains pending.
+    heartbeat: OptionFuture<BoxFuture<'static, ()>>,
 }
 
 impl<TContext: Spawner> Actor<TContext> {
@@ -114,20 +120,22 @@ impl<TContext: Spawner> Actor<TContext> {
             state,
             marshal,
             pending: BTreeMap::new(),
+            heartbeat: OptionFuture::none(),
         }
     }
+}
 
+impl<TContext: Clock + Spawner> Actor<TContext> {
     /// Start the actor, returning a handle to the spawned task.
     pub(crate) fn start(mut self) -> Handle<()> {
         spawn_cell!(self.context, self.run())
     }
 
     /// Run the actor's main loop.
-    ///
-    /// The loop races the oldest pending block subscription
-    /// against incoming activity so events are emitted in order.
     async fn run(mut self) {
         let reason = loop {
+            self.update_heartbeat();
+
             // We need a mutable reference to poll pending subscription. Thus if a new activity arrives,
             // we also need to re-insert this popped subscription.
             let mut oldest = OptionFuture::from(self.pending.pop_first().map(|(_, p)| p));
@@ -140,6 +148,16 @@ impl<TContext: Spawner> Actor<TContext> {
                             warn!(%error, "did not get pending block")
                         ),
                     }
+                    self.heartbeat = OptionFuture::none();
+                },
+
+                _ = (&mut self.heartbeat).fuse() => {
+                    // Let the unresolved oldest subscription expire.
+                    if let Some(pending) = oldest.as_ref() {
+                        warn!(%pending.round, "feed block subscription expired");
+                    }
+
+                    self.handle_heartbeat().await;
                 },
 
                 activity = self.receiver.next() => {
@@ -147,6 +165,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         break eyre!("mailbox closed");
                     };
 
+                    // Follow-up activity must not displace the ordered head.
                     if let Some(p) = oldest.take() {
                         self.pending.insert(p.round, p);
                     }
@@ -158,6 +177,66 @@ impl<TContext: Spawner> Actor<TContext> {
         info_span!("feed_actor").in_scope(|| error!(%reason, "shutting down"));
     }
 
+    fn update_heartbeat(&mut self) {
+        if self.pending.is_empty() {
+            self.heartbeat = OptionFuture::none();
+        } else if self.heartbeat.is_none() {
+            self.heartbeat
+                .replace(self.context.sleep(HEARTBEAT_INTERVAL).boxed());
+        }
+    }
+
+    /// After the unresolved oldest subscription expires, flush finalizations
+    /// whose blocks are now available from marshal's buffer or finalized
+    /// storage. Each delivered finalization advances the best-effort feed floor.
+    #[instrument(skip_all, fields(pending = self.pending.len()))]
+    async fn handle_heartbeat(&mut self) {
+        let finalizations = self
+            .pending
+            .iter()
+            .filter_map(|(&r, p)| match p.activity.as_ref() {
+                Some(Activity::Finalization(f)) => Some((r, f.proposal.payload)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let pending_finalizations = finalizations.len();
+        for (round, digest) in finalizations {
+            let Some(block) = self.marshal.get_block(&digest).await else {
+                debug!(%round, %digest, "finalized block unavailable");
+                continue;
+            };
+
+            let height = block.block().inner.number;
+            let mut pending = self
+                .pending
+                .remove(&round)
+                .expect("pending finalization exists");
+
+            let activity = pending.activity.take().expect("activity is present");
+            self.handle_activity(activity, block);
+
+            debug!(%round, %digest, height, "delivered finalized block");
+        }
+
+        let latest_finalized_round = self
+            .state
+            .read()
+            .latest_finalized
+            .as_ref()
+            .map(|block| Round::new(Epoch::new(block.epoch), View::new(block.view)));
+
+        if let Some(round) = latest_finalized_round {
+            self.pending
+                .retain(|&pending_round, _| pending_round > round);
+        }
+
+        debug!(
+            remaining_subscriptions = self.pending.len(),
+            "feed heartbeat"
+        );
+    }
+
     async fn subscribe(&mut self, activity: FeedActivity) {
         let (round, payload) = match &activity {
             Activity::Notarization(n) => (n.proposal.round, n.proposal.payload),
@@ -166,7 +245,7 @@ impl<TContext: Spawner> Actor<TContext> {
         };
 
         // Prune & filter incoming activity.
-        // - Incoming Finalization. Prune older subscriptions as we only care about latest information
+        // - Incoming Finalization. Prune older notarizations
         // - Incoming Notarization. Only accept if ahead of the latest Finalization.
         match &activity {
             Activity::Finalization(_) => self.pending.retain(|&r, p| {
