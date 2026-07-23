@@ -4,16 +4,19 @@ use alloy::{
     providers::{Provider, ProviderBuilder, WsConnect},
 };
 use clap::Parser;
-use eyre::{Context, Result};
+use eyre::{Context, Result, eyre};
 use futures::StreamExt;
 use metrics::{describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    future::Future,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tempo_alloy::{TempoNetwork, primitives::TempoHeader};
-use tokio::signal;
-use tracing::{debug, error, warn};
+use tokio::{signal, task::JoinHandle};
+use tracing::{debug, warn};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -174,11 +177,7 @@ impl TxLatencyArgs {
             Duration::from_secs(self.max_pending_age_secs),
         );
 
-        let monitor_handle = tokio::spawn(async move {
-            if let Err(err) = monitor.watch_transactions().await {
-                error!(err = %err, "tx latency monitor exited with error");
-            }
-        });
+        let monitor_handle = tokio::spawn(async move { monitor.watch_transactions().await });
 
         let server = Server::new(TcpListener::bind(addr));
         let server_handle = tokio::spawn(async move { server.run(app).await });
@@ -188,15 +187,130 @@ impl TxLatencyArgs {
         let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
             .context("failed to install SIGINT handler")?;
 
-        tokio::select! {
-            _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down gracefully"),
-            _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down gracefully"),
-        }
+        let shutdown = async move {
+            tokio::select! {
+                _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down gracefully"),
+                _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down gracefully"),
+            }
+        };
 
-        monitor_handle.abort();
+        let result = wait_for_shutdown_or_monitor_failure(monitor_handle, shutdown).await;
+
         server_handle.abort();
 
         tracing::info!("Shutdown complete");
-        Ok(())
+        result
+    }
+}
+
+/// Waits for either a graceful shutdown signal or the transaction latency monitor task ending.
+///
+/// The monitor task is expected to run indefinitely; it only completes when it hits an
+/// unrecoverable error (or panics), so any completion of `monitor_handle` before `shutdown`
+/// resolves is treated as fatal and its error is propagated so the process exits non-zero.
+async fn wait_for_shutdown_or_monitor_failure(
+    monitor_handle: JoinHandle<Result<()>>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
+    tokio::pin!(monitor_handle);
+
+    tokio::select! {
+        _ = shutdown => {
+            monitor_handle.abort();
+            Ok(())
+        }
+        result = &mut monitor_handle => match result {
+            Ok(Ok(())) => Err(eyre!("tx latency monitor task exited unexpectedly")),
+            Ok(Err(err)) => Err(err).context("tx latency monitor failed"),
+            Err(join_err) => Err(eyre::Report::new(join_err)).context("tx latency monitor task panicked"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::Once, time::Duration};
+
+    /// Installs the process-level rustls crypto provider exactly once.
+    ///
+    /// `main()` normally does this before any TLS-capable transport is built; tests bypass
+    /// `main()`, so `watch_transactions` needs it installed explicitly before it can construct a
+    /// websocket provider.
+    fn ensure_crypto_provider() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    /// Regression test for https://github.com/tempoxyz/tempo/issues/6898: an unrecoverable
+    /// monitor failure must surface as an `Err`, matching the issue's own repro
+    /// (`--rpc-url ws://127.0.0.1:9`), rather than being silently swallowed.
+    #[tokio::test]
+    async fn watch_transactions_errors_on_unreachable_endpoint() {
+        ensure_crypto_provider();
+
+        let rpc_url: Url = "ws://127.0.0.1:9".parse().expect("valid url");
+        let mut monitor = TransactionLatencyMonitor::new(rpc_url, Duration::from_secs(600));
+
+        let result = tokio::time::timeout(Duration::from_secs(10), monitor.watch_transactions())
+            .await
+            .expect("watch_transactions should fail fast on a refused connection, not hang");
+
+        let err = result.expect_err("an unreachable websocket endpoint must produce an Err");
+        assert!(
+            err.to_string()
+                .contains("failed to connect websocket provider"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A monitor task that ends (here, with an error) before shutdown is requested must cause
+    /// `wait_for_shutdown_or_monitor_failure` to return that error, so the caller's process exits
+    /// non-zero instead of idling until a signal arrives.
+    #[tokio::test]
+    async fn monitor_failure_is_propagated_before_shutdown() {
+        let monitor_handle =
+            tokio::spawn(async { Err(eyre!("failed to connect websocket provider")) });
+        let shutdown = std::future::pending::<()>();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_shutdown_or_monitor_failure(monitor_handle, shutdown),
+        )
+        .await
+        .expect("a failed monitor task must not make wait_for_shutdown_or_monitor_failure hang");
+
+        let err = result.expect_err("a failed monitor task must produce an Err");
+        assert!(
+            err.chain().any(|cause| cause
+                .to_string()
+                .contains("failed to connect websocket provider")),
+            "unexpected error chain: {err:#}"
+        );
+    }
+
+    /// Graceful shutdown must still return `Ok`, and must abort the monitor task rather than
+    /// leaking it.
+    #[tokio::test]
+    async fn shutdown_signal_returns_ok_and_stops_monitor() {
+        let monitor_handle = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let shutdown = async {};
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_shutdown_or_monitor_failure(monitor_handle, shutdown),
+        )
+        .await
+        .expect("shutdown must not make wait_for_shutdown_or_monitor_failure hang");
+
+        assert!(
+            result.is_ok(),
+            "graceful shutdown must return Ok: {result:?}"
+        );
     }
 }
