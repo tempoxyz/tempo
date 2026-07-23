@@ -730,10 +730,9 @@ async fn build_subblock(
                     continue;
                 }
 
-                if let Err(err) = evm
-                    .transact(&TempoTxEnv::from(tx.as_ref().clone()))
-                    .map(|executed| executed.commit())
-                {
+                let tx_env =
+                    Recovered::new_unchecked(TempoTxEnv::from(tx.as_ref().clone()), tx.signer());
+                if let Err(err) = evm.transact(&tx_env).map(|executed| executed.commit()) {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
                     to_remove.push(tx_hash);
                     continue;
@@ -877,10 +876,8 @@ async fn validate_subblock(
 
     // Ensure all transactions can be committed
     for tx in subblock.transactions_recovered() {
-        if let Err(err) = evm
-            .transact(&TempoTxEnv::from(tx.cloned()))
-            .map(|executed| executed.commit())
-        {
+        let tx_env = Recovered::new_unchecked(TempoTxEnv::from(tx.cloned()), tx.signer());
+        if let Err(err) = evm.transact(&tx_env).map(|executed| executed.commit()) {
             return Err(eyre::eyre!("transaction failed to execute: {err:?}"));
         }
     }

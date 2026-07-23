@@ -1,12 +1,13 @@
 //! EVM2 transaction envelope and conversion helpers.
 
 use alloy_consensus::{
-    Transaction, TxEip1559, TxEip2930, TxLegacy, Typed2718,
-    transaction::{Either, Recovered, TxHashRef},
+    Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
+    transaction::{Either, Recovered, SignerRecoverable, TxHashRef},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind};
-use evm2::ethereum::LazyTxEip7702;
-use reth_evm::FromTxWithEncoded;
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
+pub use evm2::ethereum::RecoveredTxEnvelope;
+use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
+use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
 use std::{borrow::Borrow, boxed::Box, ops::Deref};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
@@ -266,29 +267,122 @@ pub struct TempoTxEnv {
 }
 
 impl TempoTxEnv {
+    /// Creates an RPC simulation environment from Reth's normalized Ethereum transaction.
+    pub fn from_recovered_eth(transaction: RecoveredTxEnvelope) -> Option<Self> {
+        let (transaction, signer) = transaction.into_parts();
+        let (evm_tx, recovered) = match transaction {
+            EthTxEnvelope::Legacy(transaction) => {
+                let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    transaction.clone(),
+                    Signature::test_signature(),
+                ));
+                (
+                    TempoEvmTx::Legacy {
+                        transaction: Recovered::new_unchecked(transaction, signer),
+                        is_system: false,
+                    },
+                    Recovered::new_unchecked(envelope, signer),
+                )
+            }
+            EthTxEnvelope::Eip2930(transaction) => {
+                let envelope = TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+                    transaction.clone(),
+                    Signature::test_signature(),
+                ));
+                (
+                    TempoEvmTx::Eip2930(Recovered::new_unchecked(transaction, signer)),
+                    Recovered::new_unchecked(envelope, signer),
+                )
+            }
+            EthTxEnvelope::Eip1559(transaction) => {
+                let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+                    transaction.clone(),
+                    Signature::test_signature(),
+                ));
+                (
+                    TempoEvmTx::Eip1559(Recovered::new_unchecked(transaction, signer)),
+                    Recovered::new_unchecked(envelope, signer),
+                )
+            }
+            EthTxEnvelope::Eip4844(_) => return None,
+            EthTxEnvelope::Eip7702(transaction) => {
+                let transaction_env = &transaction;
+                let envelope = TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+                    TxEip7702 {
+                        chain_id: transaction_env.chain_id,
+                        nonce: transaction_env.nonce,
+                        gas_limit: transaction_env.gas_limit,
+                        max_fee_per_gas: transaction_env.max_fee_per_gas,
+                        max_priority_fee_per_gas: transaction_env.max_priority_fee_per_gas,
+                        to: transaction_env.to,
+                        value: transaction_env.value,
+                        access_list: transaction_env.access_list.clone(),
+                        authorization_list: transaction_env
+                            .authorization_list
+                            .iter()
+                            .map(|authorization| {
+                                authorization.as_signed().cloned().unwrap_or_else(|| {
+                                    authorization
+                                        .inner()
+                                        .clone()
+                                        .into_signed(Signature::test_signature())
+                                })
+                            })
+                            .collect(),
+                        input: transaction_env.input.clone(),
+                    },
+                    Signature::test_signature(),
+                ));
+                (
+                    TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
+                    Recovered::new_unchecked(envelope, signer),
+                )
+            }
+        };
+
+        Some(Self {
+            evm_tx,
+            recovered,
+            unique_tx_identifier_override: None,
+            fee_payer_override: None,
+        })
+    }
+
     /// Returns the transaction consumed by EVM2.
     pub const fn evm_tx(&self) -> &TempoEvmTx {
         &self.evm_tx
     }
 
     /// Returns the contained legacy transaction, if this is legacy.
-    pub const fn as_legacy(&self) -> Option<&Recovered<TxLegacy>> {
-        self.evm_tx.as_legacy()
+    pub const fn as_legacy(&self) -> Option<&TxLegacy> {
+        match self.evm_tx.as_legacy() {
+            Some(transaction) => Some(transaction.inner()),
+            None => None,
+        }
     }
 
     /// Returns the contained EIP-2930 transaction, if this is EIP-2930.
-    pub const fn as_eip2930(&self) -> Option<&Recovered<TxEip2930>> {
-        self.evm_tx.as_eip2930()
+    pub const fn as_eip2930(&self) -> Option<&TxEip2930> {
+        match self.evm_tx.as_eip2930() {
+            Some(transaction) => Some(transaction.inner()),
+            None => None,
+        }
     }
 
     /// Returns the contained EIP-1559 transaction, if this is EIP-1559.
-    pub const fn as_eip1559(&self) -> Option<&Recovered<TxEip1559>> {
-        self.evm_tx.as_eip1559()
+    pub const fn as_eip1559(&self) -> Option<&TxEip1559> {
+        match self.evm_tx.as_eip1559() {
+            Some(transaction) => Some(transaction.inner()),
+            None => None,
+        }
     }
 
     /// Returns the contained EIP-7702 transaction, if this is EIP-7702.
-    pub const fn as_eip7702(&self) -> Option<&Recovered<LazyTxEip7702>> {
-        self.evm_tx.as_eip7702()
+    pub const fn as_eip7702(&self) -> Option<&LazyTxEip7702> {
+        match self.evm_tx.as_eip7702() {
+            Some(transaction) => Some(transaction.inner()),
+            None => None,
+        }
     }
 
     /// Returns the contained Tempo AA transaction, if this is Tempo AA.
@@ -367,6 +461,85 @@ impl Typed2718 for TempoTxEnv {
     }
 }
 
+impl Transaction for TempoTxEnv {
+    fn chain_id(&self) -> Option<u64> {
+        self.transaction().chain_id()
+    }
+
+    fn nonce(&self) -> u64 {
+        self.transaction().nonce()
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.transaction().gas_limit()
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        self.transaction().gas_price()
+    }
+
+    fn max_fee_per_gas(&self) -> u128 {
+        self.transaction().max_fee_per_gas()
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        self.transaction().max_priority_fee_per_gas()
+    }
+
+    fn max_fee_per_blob_gas(&self) -> Option<u128> {
+        self.transaction().max_fee_per_blob_gas()
+    }
+
+    fn priority_fee_or_price(&self) -> u128 {
+        self.transaction().priority_fee_or_price()
+    }
+
+    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
+        self.transaction().effective_gas_price(base_fee)
+    }
+
+    fn is_dynamic_fee(&self) -> bool {
+        self.transaction().is_dynamic_fee()
+    }
+
+    fn kind(&self) -> TxKind {
+        self.transaction().kind()
+    }
+
+    fn is_create(&self) -> bool {
+        self.transaction().is_create()
+    }
+
+    fn value(&self) -> alloy_primitives::U256 {
+        self.transaction().value()
+    }
+
+    fn input(&self) -> &Bytes {
+        self.transaction().input()
+    }
+
+    fn access_list(&self) -> Option<&alloy_eips::eip2930::AccessList> {
+        self.transaction().access_list()
+    }
+
+    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
+        self.transaction().blob_versioned_hashes()
+    }
+
+    fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
+        self.transaction().authorization_list()
+    }
+}
+
+impl From<TempoTxEnvelope> for TempoTxEnv {
+    fn from(transaction: TempoTxEnvelope) -> Self {
+        transaction
+            .try_into_recovered()
+            .expect("consensus transaction must have a recoverable signer")
+            .into()
+    }
+}
+
 impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     fn from(recovered: Recovered<TempoTxEnvelope>) -> Self {
         Self {
@@ -375,6 +548,12 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
             unique_tx_identifier_override: None,
             fee_payer_override: None,
         }
+    }
+}
+
+impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
+    fn from_recovered_tx(tx: Recovered<TempoTxEnvelope>) -> Self {
+        tx.into()
     }
 }
 

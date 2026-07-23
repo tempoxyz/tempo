@@ -203,8 +203,12 @@ where
             tx.inner().is_aa(),
             "execution bench expects Tempo AA transactions"
         );
+        let signer = tx.signer();
         let output = executor
-            .execute_transaction_without_commit(TempoTxEnv::from(tx.clone()))
+            .execute_transaction_without_commit((
+                Recovered::new_unchecked(TempoTxEnv::from(tx.clone()), signer),
+                tx.clone(),
+            ))
             .expect("transaction execution failed");
         assert!(
             output.result().status,

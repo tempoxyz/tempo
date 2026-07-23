@@ -178,7 +178,10 @@ mod tests {
             caller,
         ));
 
-        let result = evm.transact(&tx).unwrap().commit();
+        let result = evm
+            .transact(&Recovered::new_unchecked(tx, caller))
+            .unwrap()
+            .commit();
         assert!(result.status);
         assert_eq!(
             evm.sload(&STORAGE_CREDITS_ADDRESS, &credit_slot, false)

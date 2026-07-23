@@ -158,6 +158,7 @@ reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
 reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "b636d5af0c0c8afcca3f589ef5cdad23afc25eb1" }
@@ -401,6 +402,8 @@ reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
 [patch."https://github.com/alloy-rs/evm2"]
 evm2 = { path = "../evm2/crates/evm2" }
+evm2-inspectors = { path = "../evm2/crates/inspectors" }
+evm2-jit = { path = "../evm2/crates/jit" }
 evm2-macros = { path = "../evm2/crates/macros" }
 
 [patch.crates-io]

@@ -1,10 +1,11 @@
 use crate::{TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use evm2::{
     Evm,
+    bytecode::Bytecode,
     evm::{AccountInfo, Database, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
@@ -449,10 +450,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FeeTokenResolver, TempoFeeManager};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{B256, Signature, address, uint};
     use evm2::bytecode::Bytecode;
     use std::{collections::HashMap, convert::Infallible};
+    use tempo_contracts::precompiles::{
+        DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         tip_fee_manager::TipFeeManager,
@@ -543,7 +548,8 @@ mod tests {
         );
 
         let mut db = TestDatabase::default();
-        let token = db.get_fee_token(
+        let token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -565,7 +571,8 @@ mod tests {
         );
 
         let mut db = TestDatabase::default();
-        let result_token = db.get_fee_token(
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -589,7 +596,8 @@ mod tests {
         );
 
         let tx = legacy_env(caller, TxKind::Call(Address::ZERO), Bytes::new());
-        let result_token = db.get_fee_token(
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -611,7 +619,8 @@ mod tests {
         );
 
         let mut db = TestDatabase::default();
-        let result_token = db.get_fee_token(
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -627,7 +636,8 @@ mod tests {
         let tx = legacy_env(caller, TxKind::Call(Address::ZERO), Bytes::new());
 
         let mut db = TestDatabase::default();
-        let result_token = db.get_fee_token(
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -659,7 +669,8 @@ mod tests {
             TxKind::Call(STABLECOIN_DEX_ADDRESS),
             call.abi_encode().into(),
         );
-        let token = db.get_fee_token(
+        let token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,
@@ -681,7 +692,8 @@ mod tests {
             call.abi_encode().into(),
         );
 
-        let token = db.get_fee_token(
+        let token = TempoFeeManager.resolve_fee_token(
+            &mut db,
             &tx,
             caller,
             TempoHardfork::Genesis,

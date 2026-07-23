@@ -49,7 +49,6 @@ use reth_rpc_eth_api::{
         estimate::EstimateCall,
         pending_block::{BuildPendingEnv, PendingEnvBuilder},
         spec::SignersForRpc,
-        subscriptions::EthSubscriptions,
     },
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
@@ -58,7 +57,7 @@ use reth_rpc_eth_types::{
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
-use tempo_evm::{TempoEvmEnv, TempoEvmTypes, TempoStateAccess, TempoTxEnv};
+use tempo_evm::{FeeTokenResolver, TempoEvmEnv, TempoEvmTypes, TempoStateAccess};
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -90,8 +89,7 @@ pub trait TempoEthApiBounds:
             Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
                 EvmTypes = TempoEvmTypes,
-                EvmTransaction = TempoTxEnv,
-                Transaction = TempoTxEnv,
+                Transaction = TempoTxEnvelope,
                 EvmEnv = TempoEvmEnv,
             >,
         > + FeeTokenResolver,
@@ -107,8 +105,7 @@ impl<N> TempoEthApiBounds for N where
                 Primitives = TempoPrimitives,
                 BlockExecutorFactory: BlockExecutorFactory<
                     EvmTypes = TempoEvmTypes,
-                    EvmTransaction = TempoTxEnv,
-                    Transaction = TempoTxEnv,
+                    Transaction = TempoTxEnvelope,
                     EvmEnv = TempoEvmEnv,
                 >,
             > + FeeTokenResolver,
@@ -367,8 +364,6 @@ impl<N> EthCall for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> GetBlockAccessList for TempoEthApi<N> where N: TempoEthApiBounds {}
 
-impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
-
 impl<N> Call for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
@@ -409,19 +404,14 @@ where
             .evm_config()
             .resolve_fee_token(
                 &mut db,
-                tx_env,
+                tx_env.inner(),
                 fee_payer,
                 evm_env.tempo_spec,
-                StorageActions::disabled(),
+                actions.clone(),
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(
-                fee_token,
-                fee_payer,
-                evm_env.tempo_spec,
-                StorageActions::disabled(),
-            )
+            .get_token_balance(fee_token, fee_payer, evm_env.tempo_spec, actions)
             .map_err(ProviderError::other)?;
         let gas_price = tx_env
             .evm_tx()
@@ -458,6 +448,16 @@ where
                     .saturating_to()
             };
             request.nonce = Some(nonce);
+        }
+
+        if request.nonce.is_none() {
+            request.nonce = Some(
+                db.get_account(&request.from.unwrap_or_default())
+                    .map_err(Into::into)
+                    .map_err(Self::Error::from_eth_err)?
+                    .map(|account| account.nonce)
+                    .unwrap_or_default(),
+            );
         }
 
         Ok(self.converter().tx_env(request, evm_env)?)

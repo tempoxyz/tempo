@@ -1,9 +1,9 @@
 use crate::{
-    TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvm, TempoEvmConfig,
-    TempoEvmEnv, TempoEvmTypes, block::BlockSection,
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvm,
+    TempoEvmConfig, TempoEvmEnv, block::BlockSection,
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
-use evm2::{EvmFeatures, SpecId, env::BlockEnv, evm::DynDatabase};
+use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
 use reth_evm::BlockExecutorFactory;
 use reth_evm_ethereum::EthBlockExecutionCtx;
@@ -129,13 +129,12 @@ impl TestExecutorBuilder {
         version.chain_id = chainspec.chain().id();
         version.features.remove(EvmFeatures::BALANCE_CHECK);
         version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-        version.features.remove(EvmFeatures::FEE_CHARGE);
         TempoEvmConfig::new(chainspec.clone()).evm_with_env(
             database,
             TempoEvmEnv {
                 tempo_spec: self.spec,
                 version,
-                block: BlockEnv::<TempoEvmTypes> {
+                block: TempoBlockEnv {
                     number: U256::from(self.block_number),
                     gas_limit: U256::from(30_000_000),
                     basefee: U256::ONE,

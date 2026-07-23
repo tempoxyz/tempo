@@ -311,8 +311,8 @@ impl TempoPooledTransaction {
     }
 
     /// Returns the transaction environment consumed by the EVM2 block executor.
-    pub fn executable(&self) -> TempoTxEnv {
-        self.tx_env().clone()
+    pub fn executable(&self) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
+        self.clone_into_with_tx_env()
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -320,9 +320,11 @@ impl TempoPooledTransaction {
     ///
     /// This avoids cloning the full pooled transaction when the caller only
     /// needs an owned executable transaction.
-    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn clone_into_with_tx_env(
+        &self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
         WithTxEnv {
-            tx_env: self.clone_tx_env(),
+            tx_env: Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
             tx: Arc::new(self.inner.transaction.clone()),
         }
     }
@@ -331,10 +333,13 @@ impl TempoPooledTransaction {
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
-    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn into_with_tx_env(
+        mut self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
+        let signer = self.sender();
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
         WithTxEnv {
-            tx_env,
+            tx_env: Recovered::new_unchecked(tx_env, signer),
             tx: Arc::new(self.inner.transaction),
         }
     }

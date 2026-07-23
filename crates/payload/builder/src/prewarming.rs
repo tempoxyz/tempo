@@ -4,6 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
@@ -189,6 +190,7 @@ impl BestTransactionsPrewarming {
 
             let mut tx_env = tx.transaction.clone_tx_env();
             tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
+            let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
             let result = match evm.transact(&tx_env) {
                 Ok(executed) => executed.detach(),

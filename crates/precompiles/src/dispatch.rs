@@ -127,7 +127,7 @@ pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<Pr
     None
 }
 
-/// Decodes calldata via `decode`, then dispatches to `f`.
+/// Decodes and classifies precompile calldata without executing the `decoded` call.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
 /// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
@@ -147,11 +147,11 @@ pub fn decode_call<T>(
                 error::TempoPrecompileError::UnknownFunctionSelector(*selector),
             ))
         }
-        Err(_) => Err(Ok(StorageCtx::default().revert_output(Bytes::new()))),
+        Err(_) => Err(Err(PrecompileError::Revert(Bytes::new()))),
     }
 }
 
-/// Decodes calldata via [`decode_call`] and dispatches to `f`.
+/// Decodes calldata via [`decode_call`], then dispatches to `f`.
 #[inline]
 pub fn dispatch_call<T>(
     calldata: &[u8],
@@ -337,8 +337,9 @@ mod tests {
 
     #[test]
     fn tempo_error_behavior_is_preserved_through_extension_trait() -> eyre::Result<()> {
-        let error =
-            CustomError::Tempo(TempoPrecompileError::OutOfGas).into_precompile_result().unwrap_err();
+        let error = CustomError::Tempo(TempoPrecompileError::OutOfGas)
+            .into_precompile_result()
+            .unwrap_err();
         assert!(matches!(
             error,
             PrecompileError::Halt(PrecompileHalt::OutOfGas)
