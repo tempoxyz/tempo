@@ -605,6 +605,12 @@ impl ShareState {
             Self::Plaintext(share) => share,
         }
     }
+
+    pub(super) fn is_present(&self) -> bool {
+        match self {
+            Self::Plaintext(share) => share.is_some(),
+        }
+    }
 }
 
 impl EncodeSize for ShareState {
