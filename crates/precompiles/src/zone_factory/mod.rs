@@ -15,8 +15,7 @@ use alloy::primitives::{Address, IntoLogData};
 use std::collections::HashMap;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    ZoneAccessMode, ZoneFactoryError, ZoneFactoryEvent, ZoneGatewayMode, ZoneInfo, ZonePortalEvent,
-    ZonePortalRole,
+    ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -378,9 +377,7 @@ mod tests {
         primitives::{B256, Bytes, U256, address, keccak256},
         sol_types::SolValue,
     };
-    use portal::{
-        ACCOUNT_ALLOWLIST_ENFORCED_FLAG, GATEWAY_ALLOWLIST_ENFORCED_FLAG, PortalTokenConfig,
-    };
+    use portal::PortalTokenConfig;
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 

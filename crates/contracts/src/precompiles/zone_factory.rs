@@ -22,20 +22,6 @@ pub const ZONE_VERIFIER_ADDRESS: Address = address!("0x5A56000000000000000000000
 pub const ZONE_MESSENGER_ADDRESS: Address = address!("0x5A4D000000000000000000000000000000000000");
 
 crate::sol! {
-    /// Account allowlist enforcement mode selected for a zone.
-    #[derive(Debug, PartialEq, Eq)]
-    enum ZoneAccessMode {
-        Closed,
-        Open
-    }
-
-    /// Callback gateway enforcement mode selected for a zone.
-    #[derive(Debug, PartialEq, Eq)]
-    enum ZoneGatewayMode {
-        Enforced,
-        Open
-    }
-
     /// Zone metadata recorded by the native factory.
     #[derive(Debug, PartialEq, Eq)]
     struct ZoneInfo {
