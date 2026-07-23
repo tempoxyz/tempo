@@ -732,15 +732,14 @@ impl StablecoinDEX {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
-        let t9_liquidity = self
-            .storage
-            .spec()
-            .is_t9()
-            .then(|| self.compute_tick_liquidity(level.head))
-            .transpose()?;
-        if let Some(liquidity) = t9_liquidity {
+        if self.storage.spec().is_t9() {
             // Preserve the placement-time overflow guard before making any linked-list writes.
-            liquidity
+            self.compute_tick_liquidity(level.head)?
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        } else {
+            level.total_liquidity = level
+                .total_liquidity
                 .checked_add(order.remaining())
                 .ok_or(TempoPrecompileError::under_overflow())?;
         }
@@ -776,13 +775,6 @@ impl StablecoinDEX {
             // Set current order's prev pointer
             order.prev = prev_tail;
             level.tail = order.order_id();
-        }
-
-        if !self.storage.spec().is_t9() {
-            level.total_liquidity = level
-                .total_liquidity
-                .checked_add(order.remaining())
-                .ok_or(TempoPrecompileError::under_overflow())?;
         }
 
         self.books[order.book_key()]
@@ -1062,6 +1054,7 @@ impl StablecoinDEX {
         let amount_out = taker_output(fill_amount, order.tick(), order.is_bid())
             .ok_or(TempoPrecompileError::under_overflow())?;
 
+        // Update price level total liquidity
         if !self.storage.spec().is_t9() {
             level.total_liquidity = level
                 .total_liquidity
@@ -1385,6 +1378,7 @@ impl StablecoinDEX {
             level.tail = order.prev();
         }
 
+        // Update level liquidity
         if !self.storage.spec().is_t9() {
             level.total_liquidity = level
                 .total_liquidity

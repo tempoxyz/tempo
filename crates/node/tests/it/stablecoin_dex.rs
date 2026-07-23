@@ -79,7 +79,6 @@ async fn test_bids() -> eyre::Result<()> {
 
     let num_orders = account_data.len() as u128;
     // Place bid orders for each account
-    let mut pending_orders = vec![];
     let tick = 10;
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
@@ -88,11 +87,8 @@ async fn test_bids() -> eyre::Result<()> {
         let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, account_provider);
 
         let call = exchange.place(*base.address(), order_amount, true, tick);
-
-        let order_tx = call.send().await?;
-        pending_orders.push(order_tx);
+        call.send().await?.get_receipt().await?;
     }
-    await_receipts(&mut pending_orders).await?;
 
     for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
@@ -224,7 +220,6 @@ async fn test_asks() -> eyre::Result<()> {
 
     let num_orders = account_data.len() as u128;
     // Place ask orders for each account
-    let mut pending_orders = vec![];
     let tick = 10;
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
@@ -394,10 +389,8 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, account_provider);
 
         let call = exchange.place(*base.address(), order_amount, true, tick);
-        let order_tx = call.send().await?;
-        pending_orders.push(order_tx);
+        call.send().await?.get_receipt().await?;
     }
-    await_receipts(&mut pending_orders).await?;
 
     // Verify orders were created correctly
     for order_id in 1..=num_orders {
