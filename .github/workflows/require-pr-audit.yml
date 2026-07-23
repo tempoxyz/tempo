@@ -3,6 +3,7 @@ name: Require pull request audit
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize]
+  # Without this, PRs get stuck in the merge queue waiting for this status.
   merge_group:
 
 permissions: {}
