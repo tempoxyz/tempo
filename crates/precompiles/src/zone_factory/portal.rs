@@ -11,8 +11,7 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, U256, hex};
 use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
-    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneAccessMode, ZoneGatewayMode,
-    ZonePortalRole,
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -20,9 +19,6 @@ use tempo_precompiles_macros::{Storable, contract};
 pub const ZONE_PORTAL_PROXY_RUNTIME: [u8; 45] = hex!(
     "363d3d373d3d3d363d735ad10000000000000000000000000000000000005af43d82803e903d91602b57fd5bf3"
 );
-
-pub(super) const ACCOUNT_ALLOWLIST_ENFORCED_FLAG: u8 = 1 << 0;
-pub(super) const GATEWAY_ALLOWLIST_ENFORCED_FLAG: u8 = 1 << 1;
 
 /// Packed `TokenConfig` stored in the portal token registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
@@ -81,7 +77,8 @@ pub struct ZonePortalStorage {
     sequencers: Vec<Address>,
     is_sequencer: Mapping<Address, bool>,
     role: Mapping<Address, u8>,
-    enforcement_flags: u8,
+    is_access_enforced: bool,
+    is_gateway_enforced: bool,
 }
 
 impl ZonePortalStorage {
@@ -115,10 +112,8 @@ impl ZonePortalStorage {
         for sequencer in &params.sequencers {
             self.is_sequencer[*sequencer].write(true)?;
         }
-        self.enforcement_flags.write(encode_enforcement_flags(
-            params.accessMode,
-            params.gatewayMode,
-        ))?;
+        self.is_access_enforced.write(params.accessMode)?;
+        self.is_gateway_enforced.write(params.gatewayMode)?;
         for gateway in &params.zoneGateways {
             self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
         }
@@ -127,15 +122,4 @@ impl ZonePortalStorage {
         }
         Ok(())
     }
-}
-
-fn encode_enforcement_flags(access_mode: ZoneAccessMode, gateway_mode: ZoneGatewayMode) -> u8 {
-    let mut flags = 0;
-    if access_mode == ZoneAccessMode::Closed {
-        flags |= ACCOUNT_ALLOWLIST_ENFORCED_FLAG;
-    }
-    if gateway_mode == ZoneGatewayMode::Enforced {
-        flags |= GATEWAY_ALLOWLIST_ENFORCED_FLAG;
-    }
-    flags
 }

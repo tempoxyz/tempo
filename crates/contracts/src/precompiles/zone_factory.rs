@@ -22,27 +22,13 @@ pub const ZONE_VERIFIER_ADDRESS: Address = address!("0x5A56000000000000000000000
 pub const ZONE_MESSENGER_ADDRESS: Address = address!("0x5A4D000000000000000000000000000000000000");
 
 crate::sol! {
-    /// Account allowlist enforcement mode selected for a zone.
-    #[derive(Debug, PartialEq, Eq)]
-    enum ZoneAccessMode {
-        Closed,
-        Open
-    }
-
-    /// Callback gateway enforcement mode selected for a zone.
-    #[derive(Debug, PartialEq, Eq)]
-    enum ZoneGatewayMode {
-        Enforced,
-        Open
-    }
-
     /// Zone metadata recorded by the native factory.
     #[derive(Debug, PartialEq, Eq)]
     struct ZoneInfo {
         uint32 zoneId;
         address portal;
-        ZoneAccessMode accessMode;
-        ZoneGatewayMode gatewayMode;
+        bool accessMode;
+        bool gatewayMode;
         address admin;
         address[] sequencers;
         uint8 threshold;
@@ -56,8 +42,8 @@ crate::sol! {
     interface IZoneFactory {
         struct CreateZoneParams {
             address initialToken;
-            ZoneAccessMode accessMode;
-            ZoneGatewayMode gatewayMode;
+            bool accessMode;
+            bool gatewayMode;
             address[] allowedAccounts;
             address[] zoneGateways;
             address admin;
@@ -76,8 +62,8 @@ crate::sol! {
             uint32 indexed zoneId,
             address indexed portal,
             address initialToken,
-            ZoneAccessMode accessMode,
-            ZoneGatewayMode gatewayMode,
+            bool accessMode,
+            bool gatewayMode,
             address admin,
             address[] sequencers,
             uint8 threshold,
@@ -123,6 +109,6 @@ crate::sol! {
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
         event RoleUpdated(address indexed account, Role prev, Role next);
-        event EnforcementModesUpdated(ZoneAccessMode accessMode, ZoneGatewayMode gatewayMode);
+        event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
     }
 }

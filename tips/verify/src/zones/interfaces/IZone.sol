@@ -1,22 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-enum ZoneAccessMode {
-    Closed,
-    Open
-}
-
-enum ZoneGatewayMode {
-    Enforced,
-    Open
-}
-
 /// @notice Zone metadata recorded by the native factory.
 struct ZoneInfo {
     uint32 zoneId;
     address portal;
-    ZoneAccessMode accessMode;
-    ZoneGatewayMode gatewayMode;
+    bool accessMode;
+    bool gatewayMode;
     address admin;
     address[] sequencers;
     uint8 threshold;
@@ -30,8 +20,8 @@ interface IZonePortalInitializer {
     function initialize(
         uint32 zoneId,
         address initialToken,
-        ZoneAccessMode accessMode,
-        ZoneGatewayMode gatewayMode,
+        bool accessMode,
+        bool gatewayMode,
         address[] calldata allowedAccounts,
         address[] calldata zoneGateways,
         address messenger,
@@ -51,8 +41,8 @@ interface IZoneFactory {
 
     struct CreateZoneParams {
         address initialToken;
-        ZoneAccessMode accessMode;
-        ZoneGatewayMode gatewayMode;
+        bool accessMode;
+        bool gatewayMode;
         address[] allowedAccounts;
         address[] zoneGateways;
         address admin;
@@ -73,8 +63,8 @@ interface IZoneFactory {
         uint32 indexed zoneId,
         address indexed portal,
         address initialToken,
-        ZoneAccessMode accessMode,
-        ZoneGatewayMode gatewayMode,
+        bool accessMode,
+        bool gatewayMode,
         address admin,
         address[] sequencers,
         uint8 threshold,

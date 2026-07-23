@@ -14,8 +14,7 @@ use crate::{
 use alloy::primitives::{Address, IntoLogData};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    ZoneAccessMode, ZoneFactoryError, ZoneFactoryEvent, ZoneGatewayMode, ZoneInfo, ZonePortalEvent,
-    ZonePortalRole,
+    ZoneFactoryError, ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -46,8 +45,8 @@ pub struct ZoneFactory {
 struct ZoneInfoStorage {
     zone_id: u32,
     portal: Address,
-    access_mode: u8,
-    gateway_mode: u8,
+    access_mode: bool,
+    gateway_mode: bool,
     admin: Address,
     sequencers: Vec<Address>,
     threshold: u8,
@@ -60,16 +59,8 @@ impl From<ZoneInfoStorage> for ZoneInfo {
         Self {
             zoneId: value.zone_id,
             portal: value.portal,
-            accessMode: if value.access_mode == ZoneAccessMode::Closed as u8 {
-                ZoneAccessMode::Closed
-            } else {
-                ZoneAccessMode::Open
-            },
-            gatewayMode: if value.gateway_mode == ZoneGatewayMode::Enforced as u8 {
-                ZoneGatewayMode::Enforced
-            } else {
-                ZoneGatewayMode::Open
-            },
+            accessMode: value.access_mode,
+            gatewayMode: value.gateway_mode,
             admin: value.admin,
             sequencers: value.sequencers,
             threshold: value.threshold,
@@ -233,8 +224,8 @@ impl ZoneFactory {
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
             portal,
-            access_mode: call.params.accessMode as u8,
-            gateway_mode: call.params.gatewayMode as u8,
+            access_mode: call.params.accessMode,
+            gateway_mode: call.params.gatewayMode,
             admin: call.params.admin,
             sequencers: call.params.sequencers.clone(),
             threshold: call.params.threshold,
@@ -386,9 +377,7 @@ mod tests {
         primitives::{B256, Bytes, U256, address, keccak256},
         sol_types::SolValue,
     };
-    use portal::{
-        ACCOUNT_ALLOWLIST_ENFORCED_FLAG, GATEWAY_ALLOWLIST_ENFORCED_FLAG, PortalTokenConfig,
-    };
+    use portal::PortalTokenConfig;
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -402,8 +391,8 @@ mod tests {
     fn create_params(initial_token: Address) -> IZoneFactory::CreateZoneParams {
         IZoneFactory::CreateZoneParams {
             initialToken: initial_token,
-            accessMode: ZoneAccessMode::Closed,
-            gatewayMode: ZoneGatewayMode::Enforced,
+            accessMode: true,
+            gatewayMode: true,
             allowedAccounts: vec![ALLOWED_ACCOUNT],
             zoneGateways: vec![ZONE_GATEWAY],
             admin: ADMIN,
@@ -457,8 +446,8 @@ mod tests {
                 ZoneInfo {
                     zoneId: 1,
                     portal: created.portal,
-                    accessMode: ZoneAccessMode::Closed,
-                    gatewayMode: ZoneGatewayMode::Enforced,
+                    accessMode: true,
+                    gatewayMode: true,
                     admin: ADMIN,
                     sequencers: vec![SEQUENCER_A, SEQUENCER_B],
                     threshold: 2,
@@ -504,10 +493,8 @@ mod tests {
                 portal.role[ZONE_GATEWAY].read()?,
                 ZonePortalRole::CallbackGateway as u8
             );
-            assert_eq!(
-                portal.enforcement_flags.read()?,
-                ACCOUNT_ALLOWLIST_ENFORCED_FLAG | GATEWAY_ALLOWLIST_ENFORCED_FLAG
-            );
+            assert!(portal.is_access_enforced.read()?);
+            assert!(portal.is_gateway_enforced.read()?);
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -532,7 +519,7 @@ mod tests {
             );
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(21))?,
-                U256::from(ACCOUNT_ALLOWLIST_ENFORCED_FLAG | GATEWAY_ALLOWLIST_ENFORCED_FLAG)
+                U256::from(0x0101)
             );
             Ok(())
         })
@@ -554,27 +541,18 @@ mod tests {
                     params: params.clone(),
                 },
             )?;
-            assert_eq!(
-                ZonePortalStorage::new(closed.portal)
-                    .enforcement_flags
-                    .read()?,
-                ACCOUNT_ALLOWLIST_ENFORCED_FLAG | GATEWAY_ALLOWLIST_ENFORCED_FLAG
-            );
+            let closed_portal = ZonePortalStorage::new(closed.portal);
+            assert!(closed_portal.is_access_enforced.read()?);
+            assert!(closed_portal.is_gateway_enforced.read()?);
 
-            params.accessMode = ZoneAccessMode::Open;
-            params.gatewayMode = ZoneGatewayMode::Open;
+            params.accessMode = false;
+            params.gatewayMode = false;
             let open = factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
-            assert_eq!(
-                ZonePortalStorage::new(open.portal)
-                    .enforcement_flags
-                    .read()?,
-                0
-            );
-            assert_eq!(factory.zone(open.zoneId)?.accessMode, ZoneAccessMode::Open);
-            assert_eq!(
-                factory.zone(open.zoneId)?.gatewayMode,
-                ZoneGatewayMode::Open
-            );
+            let open_portal = ZonePortalStorage::new(open.portal);
+            assert!(!open_portal.is_access_enforced.read()?);
+            assert!(!open_portal.is_gateway_enforced.read()?);
+            assert!(!factory.zone(open.zoneId)?.accessMode);
+            assert!(!factory.zone(open.zoneId)?.gatewayMode);
             Ok(())
         })
     }

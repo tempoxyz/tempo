@@ -358,9 +358,7 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IZoneFactory, ZONE_FACTORY_ADDRESS, ZoneAccessMode, ZoneGatewayMode,
-    };
+    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS};
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -607,8 +605,8 @@ mod tests {
                 IZoneFactory::createZoneCall {
                     params: IZoneFactory::CreateZoneParams {
                         initialToken: PATH_USD_ADDRESS,
-                        accessMode: ZoneAccessMode::Closed,
-                        gatewayMode: ZoneGatewayMode::Enforced,
+                        accessMode: true,
+                        gatewayMode: true,
                         allowedAccounts: vec![admin],
                         zoneGateways: vec![Address::repeat_byte(0x44)],
                         admin,
@@ -672,8 +670,8 @@ mod tests {
         let input = IZoneFactory::createZoneCall {
             params: IZoneFactory::CreateZoneParams {
                 initialToken: PATH_USD_ADDRESS,
-                accessMode: ZoneAccessMode::Closed,
-                gatewayMode: ZoneGatewayMode::Enforced,
+                accessMode: true,
+                gatewayMode: true,
                 allowedAccounts: vec![admin],
                 zoneGateways: vec![Address::repeat_byte(0x44)],
                 admin,
