@@ -500,11 +500,27 @@ impl StablecoinDEX {
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
         let book_key = compute_book_key(base, quote);
-        if is_bid {
-            self.books[book_key].bids[tick].read()
+        let mut level = if is_bid {
+            self.books[book_key].bids[tick].read()?
         } else {
-            self.books[book_key].asks[tick].read()
+            self.books[book_key].asks[tick].read()?
+        };
+
+        if self.storage.spec().is_t9() {
+            // Sum the remaining amount of every order reachable from the tick's head.
+            let mut order_id = level.head;
+            level.total_liquidity = 0;
+            while order_id != 0 {
+                let order = self.orders[order_id].read()?;
+                level.total_liquidity = level
+                    .total_liquidity
+                    .checked_add(order.remaining())
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                order_id = order.next();
+            }
         }
+
+        Ok(level)
     }
 
     /// Returns the [`Orderbook`] for a given pair key.
@@ -713,6 +729,12 @@ impl StablecoinDEX {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
@@ -746,12 +768,6 @@ impl StablecoinDEX {
             order.prev = prev_tail;
             level.tail = order.order_id();
         }
-
-        let new_liquidity = level
-            .total_liquidity
-            .checked_add(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
 
         self.books[order.book_key()]
             .tick_level_handler_mut(order.tick(), order.is_bid())
@@ -1031,15 +1047,16 @@ impl StablecoinDEX {
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Update price level total liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(fill_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_sub(fill_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
 
-        self.books[order.book_key()]
-            .tick_level_handler_mut(order.tick(), order.is_bid())
-            .write(*level)?;
+            self.books[order.book_key()]
+                .tick_level_handler_mut(order.tick(), order.is_bid())
+                .write(*level)?;
+        }
 
         // Emit OrderFilled event for partial fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
@@ -1169,11 +1186,12 @@ impl StablecoinDEX {
                 self.orders[order.next()].prev()?.delete()
             })?;
 
-            let new_liquidity = level
-                .total_liquidity
-                .checked_sub(fill_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            level.total_liquidity = new_liquidity;
+            if !self.storage.spec().is_t9() {
+                level.total_liquidity = level
+                    .total_liquidity
+                    .checked_sub(fill_amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+            }
 
             self.books[book_key]
                 .tick_level_handler_mut(order.tick(), order.is_bid())
@@ -1353,11 +1371,12 @@ impl StablecoinDEX {
         }
 
         // Update level liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_sub(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+        }
 
         // If this was the last order at this tick, clear the bitmap bit
         if level.head == 0 {
@@ -1917,6 +1936,65 @@ mod tests {
             assert_eq!(exchange.book_key_index(book_key)?, Some(0));
 
             Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_price_level_preserves_pre_t9_liquidity_across_fork() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let maker = Address::random();
+        let admin = Address::random();
+        let tick = 10;
+        let amount = MIN_ORDER_AMOUNT;
+
+        let (base, book_key, first_order) = StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+            let (base, _) = setup_test_tokens(admin, maker, exchange.address, amount * 3)?;
+            let book_key = exchange.create_pair(base)?;
+            let first_order = exchange.place(maker, base, amount, true, tick)?;
+            exchange.place(maker, base, amount, true, tick)?;
+
+            let stored = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(stored.total_liquidity, amount * 2);
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 2,
+                "pre-T9 must return the maintained aggregate"
+            );
+
+            Ok::<_, eyre::Report>((base, book_key, first_order))
+        })?;
+
+        let mut storage = storage.with_spec(TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 2,
+                "T9 must derive the same liquidity at the fork boundary"
+            );
+
+            exchange.cancel(maker, first_order)?;
+
+            let stored = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T9 must leave the legacy aggregate stale"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount,
+                "T9 must derive liquidity from the remaining order"
+            );
+
+            Ok::<_, eyre::Report>(())
         })
     }
 
@@ -6689,7 +6767,13 @@ mod tests {
                 .read()?;
             assert_eq!(level.head, order_2);
             assert_eq!(level.tail, order_2);
-            assert_eq!(level.total_liquidity, size_2 - 1);
+            assert_eq!(level.total_liquidity, 0, "stored T9 aggregate stays unused");
+            assert_eq!(
+                exchange
+                    .get_price_level(base_token, tick, true)?
+                    .total_liquidity,
+                size_2 - 1
+            );
 
             let new_events = &exchange.emitted_events()[events_before..];
             let fill_events: Vec<_> = new_events
@@ -6999,7 +7083,16 @@ mod tests {
                 .read()?;
             assert_eq!(bid_level_after.head, next_order);
             assert_eq!(bid_level_after.tail, next_order);
-            assert_eq!(bid_level_after.total_liquidity, amount + 6);
+            assert_eq!(
+                bid_level_after.total_liquidity, 0,
+                "stored T9 aggregate stays unused"
+            );
+            assert_eq!(
+                exchange
+                    .get_price_level(base_token, tick, true)?
+                    .total_liquidity,
+                amount + 6
+            );
 
             Ok(())
         })
