@@ -1,12 +1,13 @@
 use crate::{
-    TempoBlockEnv, TempoStateAccess, TempoTx, TempoTxEnv, common::is_tip20_fee_inference_call,
+    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
+    common::is_tip20_fee_inference_call,
 };
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolCall;
 use core::fmt::Debug;
 use revm::{
     Database,
-    context::{CfgEnv, Journal},
+    context::{CfgEnv, Journal, result::EVMError},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -76,6 +77,28 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         actions: StorageActions,
     ) -> TempoResult<Address> {
         TempoFeeManager::new().resolve_fee_token(journal, tx, fee_payer, spec, actions)
+    }
+
+    /// Validates whether a TIP-20 can be used to pay fees.
+    ///
+    /// The handler checks the TIP-20 prefix first. Implementations define which tokens are valid.
+    /// `journal` is mutable because validation reads can warm accounts and storage, but
+    /// implementations must not stage state changes here.
+    ///
+    /// This hook runs before nonce and replay state are consumed. Do not return
+    /// `CollectFeePreTx`, `FeeTokenPaused`, or `LackOfFundForMaxFee`; subblock handling treats
+    /// those as post-nonce fee collection failures.
+    ///
+    /// Implementations charging non-zero fees in non-USD tokens must normalize them to the fee
+    /// unit used by admission, ordering, charging, and settlement.
+    fn validate_fee_token(
+        &self,
+        journal: &mut Journal<DB>,
+        fee_token: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        journal.ensure_tip20_usd(spec, fee_token, actions)
     }
 
     /// Resolves the validator token used to receive protocol fees.
