@@ -40,7 +40,7 @@ pub struct FaucetArgs {
         long = "faucet.address",
         requires = "faucet.enabled",
         required_if_eq("faucet.enabled", "true"),
-        num_args(0..)
+        num_args(1..)
     )]
     pub token_addresses: Option<Vec<Address>>,
 
@@ -99,5 +99,72 @@ mod tests {
     #[test]
     fn faucet_args_default_sanity_test() {
         assert!(CommandParser::try_parse_from(["tempo"]).is_ok());
+    }
+
+    #[test]
+    fn enabled_faucet_rejects_empty_token_address_list() {
+        let result = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn enabled_faucet_accepts_single_token_address() {
+        let parsed = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+            "0x0000000000000000000000000000000000000001",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            parsed.args.token_addresses,
+            Some(vec![
+                "0x0000000000000000000000000000000000000001"
+                    .parse()
+                    .unwrap()
+            ])
+        );
+    }
+
+    #[test]
+    fn enabled_faucet_accepts_multiple_token_addresses() {
+        let parsed = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            parsed.args.token_addresses,
+            Some(vec![
+                "0x0000000000000000000000000000000000000001"
+                    .parse()
+                    .unwrap(),
+                "0x0000000000000000000000000000000000000002"
+                    .parse()
+                    .unwrap(),
+            ])
+        );
     }
 }
