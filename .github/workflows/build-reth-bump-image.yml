@@ -153,7 +153,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: steps.branch-head.outputs.current == 'true'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -161,7 +161,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.branch-head.outputs.current == 'true'
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Resolve and verify immutable image
         if: steps.branch-head.outputs.current == 'true'

@@ -31,7 +31,7 @@ jobs:
 
       - name: Docker metadata for tempo-profiling
         id: meta-tempo
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/tempo
           bake-target: tempo
@@ -40,7 +40,7 @@ jobs:
             type=sha,prefix=${{ github.event.inputs.tag }}-sha-
 
       - name: Log in to Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
