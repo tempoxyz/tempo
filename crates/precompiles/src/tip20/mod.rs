@@ -920,14 +920,14 @@ impl TIP20Token {
     /// endpoint must be the canonical channel reserve. The reserve checks the logical payer-payee
     /// path before funding and capture, and derives refunds from authenticated channel state.
     ///
-    /// `receive_policy_originator` is the sender presented to TIP-1028. It may differ from the
-    /// physical balance owner when reserve custody pays a channel's payee.
+    /// `originator` is the sender presented to TIP-1028. It may differ from the physical balance
+    /// owner when reserve custody pays a channel's payee.
     pub(crate) fn channel_reserve_transfer(
         &mut self,
         from: Address,
         to: Address,
         amount: U256,
-        receive_policy_originator: Address,
+        originator: Address,
     ) -> Result<bool> {
         if from != TIP20_CHANNEL_RESERVE_ADDRESS && to != TIP20_CHANNEL_RESERVE_ADDRESS {
             return Err(TIP20Error::unauthorized().into());
@@ -938,14 +938,7 @@ impl TIP20Token {
         to.validate()?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_inbound_or_block(
-            receive_policy_originator,
-            from,
-            &to,
-            amount,
-            None,
-            B256::ZERO,
-        )? {
+        if self.validate_inbound_or_block(originator, from, &to, amount, None, B256::ZERO)? {
             return Ok(true);
         }
 
