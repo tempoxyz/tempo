@@ -7,6 +7,9 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title TIP20ChannelReserve
 /// @notice Reference contract for the TIP-1034 channel model.
+/// @dev TIP-1095's policy-aware custody movement is native-only and cannot be reproduced through
+/// the public TIP-20 ABI used by this informative Solidity reference. The precompile applies
+/// TIP-403 to the logical payer-payee path and bypasses TIP-403 only for descriptor-bound refunds.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();
@@ -88,7 +91,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         );
 
         // The reference contract keeps ERC-20-style allowance flow for local verification.
-        // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
+        // The enshrined precompile uses native movement and, after TIP-1095, applies TIP-403 to
+        // msg.sender -> payee instead of this physical msg.sender -> reserve custody edge.
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
 
@@ -134,6 +138,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         channel.settled = cumulativeAmount;
         channelStates[channelId] = _encodeChannelState(channel);
 
+        // TIP-1095 applies TIP-403 to descriptor.payer -> descriptor.payee. This public-ABI
+        // approximation still applies the token's ordinary physical reserve -> payee policy.
         bool success = ITIP20(descriptor.token).transfer(descriptor.payee, delta);
         if (!success) revert TransferFailed();
 
@@ -154,7 +160,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             channel.deposit += additionalDeposit;
 
             // The reference contract keeps ERC-20-style allowance flow for local verification.
-            // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
+            // The enshrined precompile uses TIP-1095 logical payer -> payee authorization.
             bool success =
                 ITIP20(descriptor.token).transferFrom(msg.sender, address(this), additionalDeposit);
             if (!success) revert TransferFailed();
@@ -229,6 +235,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         }
 
         if (refund > 0) {
+            // TIP-1095 bypasses TIP-403 for this descriptor-bound refund while retaining pause and
+            // address-level receive-policy handling. The public ABI cannot model that bypass.
             bool payerTransferSucceeded =
                 ITIP20(descriptor.token).transfer(descriptor.payer, refund);
             if (!payerTransferSucceeded) revert TransferFailed();
@@ -253,6 +261,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         delete channelStates[channelId];
 
         if (refund > 0) {
+            // TIP-1095 bypasses TIP-403 only for this payer-only, state-derived refund.
             bool success = ITIP20(descriptor.token).transfer(descriptor.payer, refund);
             if (!success) revert TransferFailed();
         }
