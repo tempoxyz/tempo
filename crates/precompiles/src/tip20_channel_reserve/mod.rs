@@ -1016,7 +1016,7 @@ mod tests {
         let payee = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::path_usd(payer)
+            let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
@@ -1289,7 +1289,7 @@ mod tests {
         let stranger = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::path_usd(payer)
+            let mut token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
@@ -1467,14 +1467,24 @@ mod tests {
                 },
             )?;
 
-            assert_eq!(token.get_balance(payer)?, U256::from(900u128));
-            assert_eq!(token.get_balance(payee)?, U256::ZERO);
             assert_eq!(
-                token.get_balance(TIP20_CHANNEL_RESERVE_ADDRESS)?,
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                U256::from(900u128)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payee })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: TIP20_CHANNEL_RESERVE_ADDRESS,
+                })?,
                 U256::from(60u128)
             );
             assert_eq!(
-                token.get_balance(crate::RECEIVE_POLICY_GUARD_ADDRESS)?,
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: crate::RECEIVE_POLICY_GUARD_ADDRESS,
+                })?,
                 U256::from(40u128)
             );
 
