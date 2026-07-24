@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-chainspec@1.11.0`
+
+### Minor Changes
+
+- Implemented TIP-1091 with a native permissioned ZoneFactory, deterministic ZonePortal proxy accounts, and owner-managed runtimes copied from verified source deployments. (by @DerekCofausper, [#6958](https://github.com/tempoxyz/tempo/pull/6958))
+
 ## `tempo-chainspec@1.10.1`
 
 
