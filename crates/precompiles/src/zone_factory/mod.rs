@@ -99,8 +99,6 @@ impl ZoneFactory {
         msg_sender: Address,
         call: IZoneFactory::createZoneCall,
     ) -> Result<IZoneFactory::createZoneReturn> {
-        self.storage.deduct_gas(ZONE_CREATION_GAS)?;
-
         if msg_sender != self.owner()? {
             return Err(ZoneFactoryError::not_owner().into());
         }
@@ -130,11 +128,16 @@ impl ZoneFactory {
         let token_symbol = token.symbol()?;
         let token_currency = token.currency()?;
 
-        self.next_zone_id.write(
-            zone_id
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        let next_zone_id = zone_id
+            .checked_add(1)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        // Only charge the fixed creation cost after all fallible read-only validation has passed.
+        // This remains before the first mutation, so an out-of-gas error cannot partially create
+        // a zone.
+        self.storage.deduct_gas(ZONE_CREATION_GAS)?;
+
+        self.next_zone_id.write(next_zone_id)?;
         // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
         // prefix makes pre-existing state computationally infeasible to target with CREATE2.
         ZonePortalStorage::new(portal).initialize(zone_id, &call.params)?;
@@ -625,12 +628,17 @@ mod tests {
     }
 
     #[test]
-    fn owner_and_input_validation_revert_before_mutation() -> eyre::Result<()> {
+    fn create_zone_validates_before_charging_creation_gas() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = factory_with_owner(OWNER)?;
+            factory_with_owner(OWNER)?;
+            Ok(())
+        })?;
+        let gas_before_create = storage.deducted_gas();
 
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut factory = ZoneFactory::new();
             let err = factory
                 .create_zone(
                     ADMIN,
@@ -645,7 +653,34 @@ mod tests {
             );
             assert_eq!(factory.next_zone_id()?, 1);
 
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.threshold = 0;
+            let err = factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::invalid_sequencer_set())
+            );
+            assert_eq!(factory.next_zone_id()?, 1);
             Ok(())
-        })
+        })?;
+        assert_eq!(storage.deducted_gas(), gas_before_create);
+
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut factory = ZoneFactory::new();
+            factory.create_zone(
+                OWNER,
+                IZoneFactory::createZoneCall {
+                    params: create_params(PATH_USD_ADDRESS),
+                },
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(
+            storage.deducted_gas(),
+            gas_before_create + ZONE_CREATION_GAS
+        );
+        Ok(())
     }
 }

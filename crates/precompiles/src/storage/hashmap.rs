@@ -30,6 +30,7 @@ pub struct HashMapStorageProvider {
     is_static: bool,
     gas_params: GasParams,
     gas_tracker: GasTracker,
+    deducted_gas: u64,
     tip1060_storage_credits_enabled: bool,
     counter_sload: u64,
     counter_sstore: u64,
@@ -83,6 +84,7 @@ impl HashMapStorageProvider {
             is_static: false,
             gas_params: GasParams::new_spec(spec.into()),
             gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
+            deducted_gas: 0,
             tip1060_storage_credits_enabled: spec.is_t7(),
             counter_sload: 0,
             counter_sstore: 0,
@@ -103,6 +105,11 @@ impl HashMapStorageProvider {
         self.amsterdam_eip8037_enabled = enabled;
         self.gas_params = GasParams::new_spec(self.spec.into());
         self
+    }
+
+    /// Returns gas explicitly deducted through [`PrecompileStorageProvider::deduct_gas`].
+    pub fn deducted_gas(&self) -> u64 {
+        self.deducted_gas
     }
 }
 
@@ -204,7 +211,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             .unwrap_or(U256::ZERO))
     }
 
-    fn deduct_gas(&mut self, _gas: u64) -> Result<(), TempoPrecompileError> {
+    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        self.deducted_gas = self
+            .deducted_gas
+            .checked_add(gas)
+            .ok_or(TempoPrecompileError::OutOfGas)?;
         Ok(())
     }
 
