@@ -845,7 +845,7 @@ mod tests {
             TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
             register_virtual_master,
         },
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, TIP403Registry},
     };
     use alloy::{
         primitives::{Bytes, Signature},
@@ -1016,7 +1016,7 @@ mod tests {
         let payee = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::path_usd(payer)
+            let mut token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
@@ -1289,7 +1289,7 @@ mod tests {
         let stranger = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::path_usd(payer)
+            let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
@@ -1386,6 +1386,97 @@ mod tests {
                 ),
             );
             assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t9_capture_applies_payee_receive_policy_to_logical_payer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let payer_signer = PrivateKeySigner::random();
+        let payer = payer_signer.address();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let channel_id = reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            // The payee rejects only the logical payer. The physical reserve sender remains
+            // authorized, so this distinguishes the two identities during capture.
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let sender_policy = registry.create_policy(
+                payee,
+                ITIP403Registry::createPolicyCall {
+                    admin: payee,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            set_blacklisted(&mut registry, payee, sender_policy, payer, true)?;
+            registry.set_receive_policy(
+                payee,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: sender_policy,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            let cumulative = U96::from(40);
+            let digest =
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: cumulative,
+                })?;
+            let signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            reserve.settle(
+                payee,
+                ITIP20ChannelReserve::settleCall {
+                    descriptor,
+                    cumulativeAmount: cumulative,
+                    signature,
+                },
+            )?;
+
+            assert_eq!(token.get_balance(payer)?, U256::from(900u128));
+            assert_eq!(token.get_balance(payee)?, U256::ZERO);
+            assert_eq!(
+                token.get_balance(TIP20_CHANNEL_RESERVE_ADDRESS)?,
+                U256::from(60u128)
+            );
+            assert_eq!(
+                token.get_balance(crate::RECEIVE_POLICY_GUARD_ADDRESS)?,
+                U256::from(40u128)
+            );
 
             Ok(())
         })
