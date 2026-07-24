@@ -247,9 +247,6 @@ impl TIP20ChannelReserve {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
-        state.settled = cumulative;
-        self.channel_states[channel_id].write(state)?;
-
         if self.storage.spec().is_t9() {
             token.channel_reserve_transfer(
                 self.address,
@@ -270,6 +267,9 @@ impl TIP20ChannelReserve {
                 },
             )?;
         }
+
+        state.settled = cumulative;
+        self.channel_states[channel_id].write(state)?;
 
         self.emit_event(TIP20ChannelReserveEvent::Settled(
             ITIP20ChannelReserve::Settled {
