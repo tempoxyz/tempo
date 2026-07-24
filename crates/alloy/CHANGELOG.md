@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-alloy@1.11.0`
+
+
 ## `tempo-alloy@1.10.1`
 
 ### Patch Changes
