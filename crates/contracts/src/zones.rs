@@ -3,6 +3,9 @@
 use alloy_primitives::{Bytes, bytes};
 
 /// Canonical ZonePortal implementation deployed runtime.
+///
+/// Built from the Zones revision pinned in `../ZONES_REVISION`. Run
+/// `scripts/verify-zone-portal-bytecode.sh` to reproduce and verify it.
 pub const ZONE_PORTAL_RUNTIME: Bytes = bytes!(
     "0x60c0806040526004361015610012575f80fd5b5f60a0525f3560e01c9081625d97ef1461339857508062ebfdb41461330357806309a0a23414612fd45780630e18b68114612f395780630e86bbdc1461"
     "2eb25780630f3804b814612e3c57806310cea85714612df4578063129c824014612dbd5780631950dd1114612d985780631b32199b14612d725780632678224714612d4857806327c71b5014612cb757"
