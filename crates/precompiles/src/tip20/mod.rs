@@ -48,6 +48,18 @@ use tracing::trace;
 /// u128::MAX as U256
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
+/// TIP-403 subjects used for a physical TIP-20 balance movement.
+///
+/// Most transfers enforce policy against the physical balance owner and recipient. Protocol
+/// custody may instead enforce a logical payment path, or bypass TIP-403 for a descriptor-bound
+/// refund while retaining all other transfer validation.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TransferPolicyCheck {
+    Physical,
+    Logical { from: Address, to: Address },
+    Bypass,
+}
+
 /// Validates that the given token's currency is `"USD"`.
 ///
 /// # Errors
@@ -914,6 +926,41 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// Moves channel-reserve custody while applying policy to the logical payment path.
+    ///
+    /// This is an internal TIP-1034 integration, not an ABI entrypoint. At least one physical
+    /// endpoint must be the canonical channel reserve. `Bypass` is valid only for reserve-originated
+    /// refunds; the reserve derives their recipient and amount from authenticated channel state.
+    pub(crate) fn channel_reserve_transfer(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+        policy_check: TransferPolicyCheck,
+    ) -> Result<bool> {
+        if from != TIP20_CHANNEL_RESERVE_ADDRESS && to != TIP20_CHANNEL_RESERVE_ADDRESS {
+            return Err(TIP20Error::unauthorized().into());
+        }
+        if matches!(policy_check, TransferPolicyCheck::Bypass)
+            && from != TIP20_CHANNEL_RESERVE_ADDRESS
+        {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
+        let Some(to) =
+            self.validate_transfer_with_policy(None, from, to, amount, B256::ZERO, policy_check)?
+        else {
+            return Ok(true);
+        };
+
+        self._transfer(from, &to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
+
+        Ok(true)
+    }
+
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
@@ -1080,10 +1127,36 @@ impl TIP20Token {
         amount: U256,
         memo: B256,
     ) -> Result<Option<Recipient>> {
+        self.validate_transfer_with_policy(
+            spender,
+            from,
+            to,
+            amount,
+            memo,
+            TransferPolicyCheck::Physical,
+        )
+    }
+
+    /// Validates a physical balance movement with an explicit TIP-403 policy path.
+    fn validate_transfer_with_policy(
+        &mut self,
+        spender: Option<Address>,
+        from: Address,
+        to: Address,
+        amount: U256,
+        memo: B256,
+        policy_check: TransferPolicyCheck,
+    ) -> Result<Option<Recipient>> {
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
-        self.ensure_transfer_authorized(from, to.target)?;
+        match policy_check {
+            TransferPolicyCheck::Physical => self.ensure_transfer_authorized(from, to.target)?,
+            TransferPolicyCheck::Logical { from, to } => {
+                self.ensure_transfer_authorized(from, to)?
+            }
+            TransferPolicyCheck::Bypass => {}
+        }
 
         if let Some(spender) = spender {
             self.consume_allowance(from, spender, amount)?;
