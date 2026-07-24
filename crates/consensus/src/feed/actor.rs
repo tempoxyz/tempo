@@ -34,7 +34,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
-use tracing::{debug, error, info, info_span, instrument, warn, warn_span};
+use tracing::{debug, error, info_span, instrument, warn, warn_span};
 
 use super::state::FeedStateHandle;
 use crate::{
@@ -200,7 +200,6 @@ impl<TContext: Clock + Spawner> Actor<TContext> {
             })
             .collect::<Vec<_>>();
 
-        let pending_finalizations = finalizations.len();
         for (round, digest) in finalizations {
             let Some(block) = self.marshal.get_block(&digest).await else {
                 debug!(%round, %digest, "finalized block unavailable");
