@@ -411,6 +411,7 @@ mod tests {
             );
             assert!(portal.is_access_enforced.read()?);
             assert!(portal.is_gateway_enforced.read()?);
+            assert_eq!(portal.max_tempo_gas_rate.read()?, 0);
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -437,6 +438,7 @@ mod tests {
                 StorageCtx.sload(created.portal, U256::from(21))?,
                 U256::from(0x0101)
             );
+            assert_eq!(portal.max_tempo_gas_rate.slot(), U256::from(22));
             Ok(())
         })
     }

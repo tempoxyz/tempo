@@ -8,7 +8,7 @@ use crate::{
     error::Result,
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256, Bytes, U256, hex};
+use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
 use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZonePortalRole,
@@ -79,6 +79,10 @@ pub struct ZonePortalStorage {
     role: Mapping<Address, u8>,
     is_access_enforced: bool,
     is_gateway_enforced: bool,
+    /// Reserved remainder of the enforcement modes slot.
+    _reserved: FixedBytes<30>,
+    /// Maximum Tempo gas rate, stored in `PORTAL_MAX_TEMPO_GAS_RATE_SLOT`.
+    max_tempo_gas_rate: u128,
 }
 
 impl ZonePortalStorage {
