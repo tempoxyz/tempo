@@ -13516,6 +13516,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-tip1092-migration"
+version = "1.10.2"
+dependencies = [
+ "alloy",
+ "clap",
+ "eyre",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempo-alloy",
+ "tokio",
+]
+
+[[package]]
 name = "tempo-transaction-pool"
 version = "1.11.0"
 dependencies = [

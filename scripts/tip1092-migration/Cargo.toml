@@ -1,0 +1,37 @@
+[package]
+name = "tempo-tip1092-migration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-alloy.workspace = true
+
+alloy = { workspace = true, features = [
+  "providers",
+  "reqwest",
+  "rpc-client",
+  "rpc-types-eth",
+  "signers",
+  "signer-local",
+  "sol-types",
+  "transport-http",
+] }
+clap.workspace = true
+eyre.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "tip1092-migrate"
+path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "tip1092-verify"
+path = "src/bin/verify.rs"
