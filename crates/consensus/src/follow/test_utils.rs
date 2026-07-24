@@ -17,7 +17,7 @@ use commonware_codec::Encode as _;
 use commonware_consensus::{
     simplex::{
         scheme::bls12381_threshold::vrf::Scheme,
-        types::{Finalization, Finalize, Proposal},
+        types::{Activity, Finalization, Finalize, Proposal},
     },
     types::{Epoch, Height, Round, View},
 };
@@ -36,17 +36,19 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{ConsensusActivity, ExecutionProvider, Marshal};
+use super::driver::{ExecutionProvider, Marshal};
 use crate::consensus::{Block, Digest};
 
-pub(super) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
+type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(super) struct DkgFixture {
-    pub(super) outcome: OnchainDkgOutcome,
-    pub(super) schemes: Vec<Scheme<PublicKey, MinSig>>,
+pub(crate) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
+
+pub(crate) struct DkgFixture {
+    pub(crate) outcome: OnchainDkgOutcome,
+    pub(crate) schemes: Vec<Scheme<PublicKey, MinSig>>,
 }
 
-pub(super) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture {
+pub(crate) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture {
     let player_keys = repeat_with(|| PrivateKey::random(&mut *rng))
         .take(4)
         .collect::<Vec<_>>();
@@ -83,10 +85,27 @@ pub(super) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture 
     DkgFixture { outcome, schemes }
 }
 
-pub(super) fn make_block(height: u64, outcome: Option<&OnchainDkgOutcome>) -> Block {
+pub(crate) fn make_block(height: u64, outcome: Option<&OnchainDkgOutcome>) -> Block {
+    make_block_with_parent(height, Default::default(), outcome)
+}
+
+pub(crate) fn make_child_block(
+    parent: &Block,
+    height: u64,
+    outcome: Option<&OnchainDkgOutcome>,
+) -> Block {
+    make_block_with_parent(height, parent.block_hash(), outcome)
+}
+
+fn make_block_with_parent(
+    height: u64,
+    parent_hash: alloy_primitives::B256,
+    outcome: Option<&OnchainDkgOutcome>,
+) -> Block {
     let header = TempoHeader {
         inner: Header {
             number: height,
+            parent_hash,
             extra_data: outcome.map_or_else(Bytes::new, |outcome| outcome.encode().into()),
             ..Default::default()
         },
@@ -101,7 +120,7 @@ pub(super) fn make_block(height: u64, outcome: Option<&OnchainDkgOutcome>) -> Bl
         .expect("test block should not contain BAL side data")
 }
 
-pub(super) fn make_finalization(
+pub(crate) fn make_finalization(
     block: &Block,
     epoch: Epoch,
     schemes: &[Scheme<PublicKey, MinSig>],
@@ -120,7 +139,7 @@ pub(super) fn make_finalization(
         .expect("all test signers form a quorum")
 }
 
-pub(super) fn make_certified_block(
+pub(crate) fn make_certified_block(
     block: Block,
     finalization: &Finalization<Scheme<PublicKey, MinSig>, Digest>,
 ) -> CertifiedBlock {
