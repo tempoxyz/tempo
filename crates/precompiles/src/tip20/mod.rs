@@ -1150,6 +1150,10 @@ impl TIP20Token {
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
+        let inbound_originator = match policy_check {
+            TransferPolicyCheck::Logical { from, .. } => from,
+            TransferPolicyCheck::Physical | TransferPolicyCheck::Bypass => from,
+        };
         match policy_check {
             TransferPolicyCheck::Physical => self.ensure_transfer_authorized(from, to.target)?,
             TransferPolicyCheck::Logical { from, to } => {
@@ -1164,7 +1168,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block(inbound_originator, from, &to, amount, None, memo)? {
             return Ok(None);
         }
 
@@ -1202,7 +1206,14 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.validate_inbound_or_block(
+            msg_sender,
+            msg_sender,
+            &to,
+            amount,
+            Some(total_supply),
+            memo,
+        )? {
             return Ok(None);
         }
 
@@ -1304,12 +1315,14 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
-    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
-    /// authorized and the caller should proceed with the normal transfer or mint.
+    /// Validates the receive policy of `to.target` against `originator`. If blocked, moves funds
+    /// from `transfer_from` into the guard account and stores a claim receipt attributed to
+    /// `originator`; returns `true`. Returns `false` when the inbound is authorized and the caller
+    /// should proceed with the normal transfer or mint.
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
+        transfer_from: Address,
         to: &Recipient,
         amount: U256,
         mint_total_supply: Option<U256>,
@@ -1335,7 +1348,7 @@ impl TIP20Token {
             self.emit_event(TIP20Event::mint(guard.target, amount))?;
             InboundKind::MINT
         } else {
-            self._transfer(originator, &guard, amount)?;
+            self._transfer(transfer_from, &guard, amount)?;
             InboundKind::TRANSFER
         };
         ReceivePolicyGuard::new()
