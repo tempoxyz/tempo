@@ -12,7 +12,7 @@ use crate::{
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
     storage_credits::StorageCredits,
-    tip20::{ITIP20, Recipient, TIP20Token, TransferPolicyCheck, is_tip20_prefix},
+    tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
 };
 use alloy::{
@@ -162,14 +162,12 @@ impl TIP20ChannelReserve {
         }
 
         if self.storage.spec().is_t9() {
+            token.ensure_transfer_authorized(msg_sender, Recipient::resolve(call.payee)?.target)?;
             token.channel_reserve_transfer(
                 msg_sender,
                 self.address,
                 U256::from(call.deposit),
-                TransferPolicyCheck::Logical {
-                    from: msg_sender,
-                    to: Recipient::resolve(call.payee)?.target,
-                },
+                msg_sender,
             )?;
         } else {
             token.ensure_authorized_as(&[(
@@ -243,14 +241,15 @@ impl TIP20ChannelReserve {
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
         if self.storage.spec().is_t9() {
+            token.ensure_transfer_authorized(
+                call.descriptor.payer,
+                Recipient::resolve(call.descriptor.payee)?.target,
+            )?;
             token.channel_reserve_transfer(
                 self.address,
                 call.descriptor.payee,
                 U256::from(delta),
-                TransferPolicyCheck::Logical {
-                    from: call.descriptor.payer,
-                    to: Recipient::resolve(call.descriptor.payee)?.target,
-                },
+                call.descriptor.payer,
             )?;
         } else {
             token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
@@ -311,14 +310,15 @@ impl TIP20ChannelReserve {
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
             if self.storage.spec().is_t9() {
+                token.ensure_transfer_authorized(
+                    msg_sender,
+                    Recipient::resolve(call.descriptor.payee)?.target,
+                )?;
                 token.channel_reserve_transfer(
                     msg_sender,
                     self.address,
                     U256::from(call.additionalDeposit),
-                    TransferPolicyCheck::Logical {
-                        from: msg_sender,
-                        to: Recipient::resolve(call.descriptor.payee)?.target,
-                    },
+                    msg_sender,
                 )?;
             } else {
                 token.ensure_authorized_as(&[(
@@ -441,14 +441,15 @@ impl TIP20ChannelReserve {
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
             if self.storage.spec().is_t9() {
+                token.ensure_transfer_authorized(
+                    call.descriptor.payer,
+                    Recipient::resolve(call.descriptor.payee)?.target,
+                )?;
                 token.channel_reserve_transfer(
                     self.address,
                     call.descriptor.payee,
                     U256::from(delta),
-                    TransferPolicyCheck::Logical {
-                        from: call.descriptor.payer,
-                        to: Recipient::resolve(call.descriptor.payee)?.target,
-                    },
+                    call.descriptor.payer,
                 )?;
             } else {
                 token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
@@ -467,7 +468,7 @@ impl TIP20ChannelReserve {
                     self.address,
                     call.descriptor.payer,
                     U256::from(refund),
-                    TransferPolicyCheck::Bypass,
+                    self.address,
                 )?;
             } else {
                 token.transfer(
@@ -526,7 +527,7 @@ impl TIP20ChannelReserve {
                     self.address,
                     call.descriptor.payer,
                     U256::from(refund),
-                    TransferPolicyCheck::Bypass,
+                    self.address,
                 )?;
             } else {
                 token.transfer(
