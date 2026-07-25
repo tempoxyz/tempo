@@ -513,17 +513,18 @@ impl TempoAccountsWallet {
         )
     }
 
-    /// Fill wallet metadata and resolve a pending access-key authorization.
+    /// Select and pin an access key, fill its request metadata, and resolve a
+    /// pending authorization.
     ///
     /// Call this before external gas estimation or fee-payer signing when the
-    /// request is prepared outside an Alloy provider filler stack. Key
-    /// selection remains lazy and uses the request's account, chain, pinned
-    /// key, and calls.
+    /// request is prepared outside an Alloy provider filler stack. The returned
+    /// key owns the exact resolved signing state, so a caller can retain it
+    /// through gas estimation and final signing.
     pub async fn prepare_request<P>(
         &self,
         provider: &P,
         request: &mut TempoTransactionRequest,
-    ) -> TransportResult<()>
+    ) -> TransportResult<TempoAccessKey>
     where
         P: Provider<TempoNetwork>,
     {
@@ -531,7 +532,8 @@ impl TempoAccountsWallet {
         request.key_authorization = selected.key_authorization.as_deref().cloned();
         selected
             .fill_request(request)
-            .map_err(alloy_json_rpc::RpcError::local_usage)
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        Ok(selected)
     }
 
     fn fill_metadata(
