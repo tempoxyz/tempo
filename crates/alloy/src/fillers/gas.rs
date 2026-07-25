@@ -1,0 +1,214 @@
+//! Tempo gas estimation with access-key authorization resolution.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use alloy_json_rpc::RpcError;
+use alloy_network::TransactionBuilder;
+use alloy_primitives::Address;
+use alloy_provider::{
+    Provider, SendableTx,
+    fillers::{FillerControlFlow, GasFillable, GasFiller, TxFiller},
+};
+use alloy_transport::TransportResult;
+use tempo_primitives::transaction::SignedKeyAuthorization;
+
+use crate::{TempoNetwork, provider::TempoProviderExt, rpc::TempoTransactionRequest};
+
+/// Gas estimation for Tempo transactions.
+///
+/// When an access-key request carries a persisted one-time authorization, this
+/// filler checks the Account Keychain before estimating gas. Published keys
+/// omit the authorization; missing keys retain it for authorize-and-use.
+#[derive(Clone, Debug, Default)]
+pub struct TempoGasFiller {
+    inner: GasFiller,
+}
+
+/// Values prepared by [`TempoGasFiller`].
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct TempoGasFillable {
+    gas: GasFillable,
+    key_authorization: Option<Option<SignedKeyAuthorization>>,
+}
+
+impl TxFiller<TempoNetwork> for TempoGasFiller {
+    type Fillable = TempoGasFillable;
+
+    fn status(&self, request: &TempoTransactionRequest) -> FillerControlFlow {
+        <GasFiller as TxFiller<TempoNetwork>>::status(&self.inner, request)
+    }
+
+    fn fill_sync(&self, tx: &mut SendableTx<TempoNetwork>) {
+        <GasFiller as TxFiller<TempoNetwork>>::fill_sync(&self.inner, tx);
+    }
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        request: &TempoTransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: Provider<TempoNetwork>,
+    {
+        let mut estimate_request = request.clone();
+        let key_authorization = resolve_key_authorization(provider, request).await?;
+        if let Some(resolved) = &key_authorization {
+            estimate_request.key_authorization = resolved.clone();
+        }
+        let gas = <GasFiller as TxFiller<TempoNetwork>>::prepare(
+            &self.inner,
+            provider,
+            &estimate_request,
+        )
+        .await?;
+        Ok(TempoGasFillable {
+            gas,
+            key_authorization,
+        })
+    }
+
+    async fn fill(
+        &self,
+        fillable: Self::Fillable,
+        tx: SendableTx<TempoNetwork>,
+    ) -> TransportResult<SendableTx<TempoNetwork>> {
+        let mut tx =
+            <GasFiller as TxFiller<TempoNetwork>>::fill(&self.inner, fillable.gas, tx).await?;
+        if let Some(request) = tx.as_mut_builder()
+            && let Some(key_authorization) = fillable.key_authorization
+        {
+            request.key_authorization = key_authorization;
+        }
+        Ok(tx)
+    }
+}
+
+/// Resolve a persisted one-time authorization against the Account Keychain.
+///
+/// The outer `Option` is `None` when the request did not contain an
+/// authorization and therefore needs no mutation. `Some(None)` removes an
+/// authorization for an already-published key.
+pub(crate) async fn resolve_key_authorization<P>(
+    provider: &P,
+    request: &TempoTransactionRequest,
+) -> TransportResult<Option<Option<SignedKeyAuthorization>>>
+where
+    P: Provider<TempoNetwork>,
+{
+    let Some(authorization) = request.key_authorization.as_ref() else {
+        return Ok(None);
+    };
+    let account = request
+        .from()
+        .ok_or_else(|| RpcError::local_usage(KeyAuthorizationError::MissingAccount))?;
+    let key_id = request
+        .key_id
+        .ok_or_else(|| RpcError::local_usage(KeyAuthorizationError::MissingKeyId))?;
+    validate_authorization(request, account, key_id, authorization)
+        .map_err(RpcError::local_usage)?;
+
+    let key = provider
+        .get_keychain_key(account, key_id)
+        .await
+        .map_err(RpcError::local_usage)?;
+    if key.isRevoked {
+        return Err(RpcError::local_usage(KeyAuthorizationError::Revoked {
+            account,
+            key_id,
+        }));
+    }
+    if key.keyId == Address::ZERO {
+        return Ok(Some(Some(authorization.clone())));
+    }
+    if key.keyId != key_id {
+        return Err(RpcError::local_usage(
+            KeyAuthorizationError::UnexpectedOnchainKey {
+                expected: key_id,
+                actual: key.keyId,
+            },
+        ));
+    }
+    if key.expiry <= unix_now() {
+        return Err(RpcError::local_usage(KeyAuthorizationError::Expired {
+            account,
+            key_id,
+        }));
+    }
+
+    Ok(Some(None))
+}
+
+fn validate_authorization(
+    request: &TempoTransactionRequest,
+    account: Address,
+    key_id: Address,
+    signed: &SignedKeyAuthorization,
+) -> Result<(), KeyAuthorizationError> {
+    let authorization = &signed.authorization;
+    if authorization.key_id != key_id {
+        return Err(KeyAuthorizationError::AuthorizationKeyMismatch {
+            expected: key_id,
+            actual: authorization.key_id,
+        });
+    }
+    if let Some(chain_id) = request.chain_id()
+        && authorization.chain_id != chain_id
+    {
+        return Err(KeyAuthorizationError::AuthorizationChainMismatch {
+            expected: chain_id,
+            actual: authorization.chain_id,
+        });
+    }
+    if let Some(key_type) = request.key_type
+        && authorization.key_type != key_type
+    {
+        return Err(KeyAuthorizationError::AuthorizationTypeMismatch);
+    }
+    if let Some(authorized_account) = authorization.account
+        && authorized_account != account
+    {
+        return Err(KeyAuthorizationError::AuthorizationAccountMismatch {
+            expected: account,
+            actual: authorized_account,
+        });
+    }
+    if authorization
+        .expiry
+        .is_some_and(|expiry| expiry.get() <= unix_now())
+    {
+        return Err(KeyAuthorizationError::AuthorizationExpired);
+    }
+    Ok(())
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[derive(Debug, thiserror::Error)]
+enum KeyAuthorizationError {
+    #[error("Tempo access-key authorization requires a transaction sender")]
+    MissingAccount,
+    #[error("Tempo access-key authorization requires a key ID")]
+    MissingKeyId,
+    #[error("Tempo key authorization is expired")]
+    AuthorizationExpired,
+    #[error("Tempo key authorization is for {actual}, expected {expected}")]
+    AuthorizationKeyMismatch { expected: Address, actual: Address },
+    #[error("Tempo key authorization chain is {actual}, expected {expected}")]
+    AuthorizationChainMismatch { expected: u64, actual: u64 },
+    #[error("Tempo key authorization signature type does not match the selected signer")]
+    AuthorizationTypeMismatch,
+    #[error("Tempo key authorization account is {actual}, expected {expected}")]
+    AuthorizationAccountMismatch { expected: Address, actual: Address },
+    #[error("Account Keychain returned key {actual}, expected {expected}")]
+    UnexpectedOnchainKey { expected: Address, actual: Address },
+    #[error("Tempo access key {key_id} for {account} has been revoked")]
+    Revoked { account: Address, key_id: Address },
+    #[error("Tempo access key {key_id} for {account} has expired")]
+    Expired { account: Address, key_id: Address },
+}
