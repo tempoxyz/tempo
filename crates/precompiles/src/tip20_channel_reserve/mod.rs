@@ -251,8 +251,17 @@ impl TIP20ChannelReserve {
                 U256::from(delta),
                 call.descriptor.payer,
             )?;
+
+            state.settled = cumulative;
+            self.channel_states[channel_id].write(state)?;
         } else {
             token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
+
+            // Preserve the pre-T9 fallible-operation order. Although a later transfer failure
+            // reverts this write, moving it changes consensus-visible gas on legacy forks.
+            state.settled = cumulative;
+            self.channel_states[channel_id].write(state)?;
+
             token.transfer(
                 self.address,
                 ITIP20::transferCall {
@@ -261,9 +270,6 @@ impl TIP20ChannelReserve {
                 },
             )?;
         }
-
-        state.settled = cumulative;
-        self.channel_states[channel_id].write(state)?;
 
         self.emit_event(TIP20ChannelReserveEvent::Settled(
             ITIP20ChannelReserve::Settled {
@@ -436,11 +442,9 @@ impl TIP20ChannelReserve {
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
-        self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
-
-        let mut token = TIP20Token::from_address(call.descriptor.token)?;
-        if !delta.is_zero() {
-            if self.storage.spec().is_t9() {
+        if self.storage.spec().is_t9() {
+            let mut token = TIP20Token::from_address(call.descriptor.token)?;
+            if !delta.is_zero() {
                 token.ensure_transfer_authorized(
                     call.descriptor.payer,
                     Recipient::resolve(call.descriptor.payee)?.target,
@@ -451,7 +455,25 @@ impl TIP20ChannelReserve {
                     U256::from(delta),
                     call.descriptor.payer,
                 )?;
-            } else {
+            }
+            if !refund.is_zero() {
+                token.channel_reserve_transfer(
+                    self.address,
+                    call.descriptor.payer,
+                    U256::from(refund),
+                    self.address,
+                )?;
+            }
+
+            // Commit terminal channel state only after both deliveries succeed. TIP-1028
+            // rejections therefore leave the channel available for retry.
+            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+        } else {
+            // Preserve the pre-T9 fallible-operation order and gas behavior.
+            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+            let mut token = TIP20Token::from_address(call.descriptor.token)?;
+
+            if !delta.is_zero() {
                 token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
                 token.transfer(
                     self.address,
@@ -461,16 +483,7 @@ impl TIP20ChannelReserve {
                     },
                 )?;
             }
-        }
-        if !refund.is_zero() {
-            if self.storage.spec().is_t9() {
-                token.channel_reserve_transfer(
-                    self.address,
-                    call.descriptor.payer,
-                    U256::from(refund),
-                    self.address,
-                )?;
-            } else {
+            if !refund.is_zero() {
                 token.transfer(
                     self.address,
                     ITIP20::transferCall {
@@ -519,18 +532,24 @@ impl TIP20ChannelReserve {
             .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
-        self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
-        if !refund.is_zero() {
-            let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            if self.storage.spec().is_t9() {
+        if self.storage.spec().is_t9() {
+            if !refund.is_zero() {
+                let mut token = TIP20Token::from_address(call.descriptor.token)?;
                 token.channel_reserve_transfer(
                     self.address,
                     call.descriptor.payer,
                     U256::from(refund),
                     self.address,
                 )?;
-            } else {
-                token.transfer(
+            }
+            // Commit terminal state only after a nonzero refund succeeds. A zero-refund
+            // withdrawal has no fallible token delivery to wait for.
+            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+        } else {
+            // Preserve the pre-T9 fallible-operation order and gas behavior.
+            self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
+            if !refund.is_zero() {
+                TIP20Token::from_address(call.descriptor.token)?.transfer(
                     self.address,
                     ITIP20::transferCall {
                         to: call.descriptor.payer,
@@ -1323,6 +1342,14 @@ mod tests {
                 expiring_nonce_hash,
             );
 
+            reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor: descriptor.clone(),
+                    additionalDeposit: U96::from(20),
+                },
+            )?;
+
             let digest =
                 reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
                     channelId: channel_id,
@@ -1338,23 +1365,32 @@ mod tests {
                     signature,
                 },
             )?;
+
+            // Exercise a positive capture delta and a refund in the same close.
+            let close_digest =
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: U96::from(60),
+                })?;
+            let close_signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
             reserve.close(
                 payee,
                 ITIP20ChannelReserve::closeCall {
                     descriptor,
-                    cumulativeAmount: U96::from(40),
-                    captureAmount: U96::from(40),
-                    signature: Bytes::new(),
+                    cumulativeAmount: U96::from(60),
+                    captureAmount: U96::from(60),
+                    signature: close_signature,
                 },
             )?;
 
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
-                U256::from(960u128)
+                U256::from(940u128)
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payee })?,
-                U256::from(40u128)
+                U256::from(60u128)
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
@@ -1393,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t9_capture_applies_payee_receive_policy_to_logical_payer() -> eyre::Result<()> {
+    fn test_t9_blocked_capture_reverts_and_remains_retryable() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
@@ -1459,14 +1495,15 @@ mod tests {
                 })?;
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
-            reserve.settle(
+            let result = reserve.settle(
                 payee,
                 ITIP20ChannelReserve::settleCall {
-                    descriptor,
+                    descriptor: descriptor.clone(),
                     cumulativeAmount: cumulative,
-                    signature,
+                    signature: signature.clone(),
                 },
-            )?;
+            );
+            assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
 
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
@@ -1480,13 +1517,63 @@ mod tests {
                 token.balance_of(ITIP20::balanceOfCall {
                     account: TIP20_CHANNEL_RESERVE_ADDRESS,
                 })?,
-                U256::from(60u128)
+                U256::from(100u128)
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
                     account: crate::RECEIVE_POLICY_GUARD_ADDRESS,
                 })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                reserve
+                    .get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
+                        channelId: channel_id
+                    })?
+                    .settled,
+                U96::ZERO
+            );
+
+            let close_result = reserve.close(
+                payee,
+                ITIP20ChannelReserve::closeCall {
+                    descriptor: descriptor.clone(),
+                    cumulativeAmount: cumulative,
+                    captureAmount: cumulative,
+                    signature: signature.clone(),
+                },
+            );
+            assert_eq!(
+                close_result.unwrap_err(),
+                TIP20Error::policy_forbids().into()
+            );
+            let state = reserve.get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
+                channelId: channel_id,
+            })?;
+            assert_eq!(state.deposit, U96::from(100));
+            assert_eq!(state.settled, U96::ZERO);
+
+            // Once the payee accepts the logical payer, the same voucher can settle.
+            set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
+            reserve.settle(
+                payee,
+                ITIP20ChannelReserve::settleCall {
+                    descriptor,
+                    cumulativeAmount: cumulative,
+                    signature,
+                },
+            )?;
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payee })?,
                 U256::from(40u128)
+            );
+            assert_eq!(
+                reserve
+                    .get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
+                        channelId: channel_id
+                    })?
+                    .settled,
+                cumulative
             );
 
             Ok(())
@@ -1558,6 +1645,145 @@ mod tests {
     }
 
     #[test]
+    fn test_t9_blocked_refund_reverts_and_remains_retryable() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let payer = Address::random();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            reserve.storage.set_timestamp(U256::from(1_000u64));
+
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let channel_id = reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            reserve.request_close(
+                payer,
+                ITIP20ChannelReserve::requestCloseCall {
+                    descriptor: descriptor.clone(),
+                },
+            )?;
+            reserve
+                .storage
+                .set_timestamp(U256::from(1_000u64 + CLOSE_GRACE_PERIOD));
+
+            // Originator recovery would make a guarded reserve-originated refund unclaimable.
+            // Channel refunds reject the policy instead and leave channel state intact.
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let sender_policy = registry.create_policy(
+                payer,
+                ITIP403Registry::createPolicyCall {
+                    admin: payer,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            set_blacklisted(
+                &mut registry,
+                payer,
+                sender_policy,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                true,
+            )?;
+            registry.set_receive_policy(
+                payer,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: sender_policy,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            let close_result = reserve.close(
+                payee,
+                ITIP20ChannelReserve::closeCall {
+                    descriptor: descriptor.clone(),
+                    cumulativeAmount: U96::ZERO,
+                    captureAmount: U96::ZERO,
+                    signature: Bytes::new(),
+                },
+            );
+            assert_eq!(
+                close_result.unwrap_err(),
+                TIP20Error::policy_forbids().into()
+            );
+
+            let result = reserve.withdraw(
+                payer,
+                ITIP20ChannelReserve::withdrawCall {
+                    descriptor: descriptor.clone(),
+                },
+            );
+            assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
+            assert_eq!(
+                reserve
+                    .get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
+                        channelId: channel_id
+                    })?
+                    .deposit,
+                U96::from(100)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                U256::from(900u128)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: crate::RECEIVE_POLICY_GUARD_ADDRESS,
+                })?,
+                U256::ZERO
+            );
+
+            set_blacklisted(
+                &mut registry,
+                payer,
+                sender_policy,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                false,
+            )?;
+            reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                U256::from(1_000u128)
+            );
+            assert!(
+                reserve
+                    .get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
+                        channelId: channel_id
+                    })?
+                    .deposit
+                    .is_zero()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_pre_t9_recipient_restricted_token_cannot_fund_reserve() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let payer = Address::random();
@@ -1585,6 +1811,78 @@ mod tests {
                 ),
             );
             assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pre_t9_settle_preserves_state_write_before_transfer_failure() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let payer_signer = PrivateKeySigner::random();
+        let payer = payer_signer.address();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_role(payer, TIP20Token::pause_role())
+                .with_mint(payer, U256::from(100u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let channel_id = reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            let cumulative = U96::from(40);
+            let digest =
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: cumulative,
+                })?;
+            let signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+
+            token.pause(payer, ITIP20::pauseCall {})?;
+            let result = reserve.settle(
+                payee,
+                ITIP20ChannelReserve::settleCall {
+                    descriptor,
+                    cumulativeAmount: cumulative,
+                    signature,
+                },
+            );
+            assert_eq!(result.unwrap_err(), TIP20Error::contract_paused().into());
+
+            // Direct unit calls do not apply EVM rollback, exposing the intermediate write and
+            // pinning its position before the failing transfer. On-chain the whole call reverts.
+            assert_eq!(
+                reserve
+                    .get_channel_state(ITIP20ChannelReserve::getChannelStateCall {
+                        channelId: channel_id
+                    })?
+                    .settled,
+                cumulative
+            );
             Ok(())
         })
     }
