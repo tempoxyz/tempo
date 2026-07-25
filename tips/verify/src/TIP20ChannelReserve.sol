@@ -9,7 +9,8 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @notice Reference contract for the TIP-1034 channel model.
 /// @dev TIP-1095's policy-aware custody movement is native-only and cannot be reproduced through
 /// the public TIP-20 ABI used by this informative Solidity reference. The precompile applies
-/// TIP-403 to the logical payer-payee path and bypasses TIP-403 only for descriptor-bound refunds.
+/// TIP-403 to the logical payer-payee path, bypasses TIP-403 only for descriptor-bound refunds,
+/// and reverts TIP-1028-rejected channel movements instead of creating guarded receipts.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();
@@ -138,8 +139,9 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         channel.settled = cumulativeAmount;
         channelStates[channelId] = _encodeChannelState(channel);
 
-        // TIP-1095 applies TIP-403 to descriptor.payer -> descriptor.payee. This public-ABI
-        // approximation still applies the token's ordinary physical reserve -> payee policy.
+        // TIP-1095 applies TIP-403 and TIP-1028 to descriptor.payer -> descriptor.payee and reverts
+        // rejected delivery. This public-ABI approximation still uses ordinary physical transfer
+        // behavior, including ReceivePolicyGuard redirection.
         bool success = ITIP20(descriptor.token).transfer(descriptor.payee, delta);
         if (!success) revert TransferFailed();
 
@@ -235,8 +237,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         }
 
         if (refund > 0) {
-            // TIP-1095 bypasses TIP-403 for this descriptor-bound refund while retaining pause and
-            // address-level receive-policy handling. The public ABI cannot model that bypass.
+            // TIP-1095 bypasses TIP-403 for this descriptor-bound refund but reverts when the
+            // payer's TIP-1028 policy rejects the reserve. The public ABI cannot model that path.
             bool payerTransferSucceeded =
                 ITIP20(descriptor.token).transfer(descriptor.payer, refund);
             if (!payerTransferSucceeded) revert TransferFailed();
@@ -261,7 +263,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         delete channelStates[channelId];
 
         if (refund > 0) {
-            // TIP-1095 bypasses TIP-403 only for this payer-only, state-derived refund.
+            // TIP-1095 bypasses TIP-403 only for this payer-only, state-derived refund and reverts
+            // TIP-1028 rejection without deleting native channel state.
             bool success = ITIP20(descriptor.token).transfer(descriptor.payer, refund);
             if (!success) revert TransferFailed();
         }

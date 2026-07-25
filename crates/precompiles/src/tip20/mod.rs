@@ -929,14 +929,16 @@ impl TIP20Token {
     /// endpoint must be the canonical channel reserve. The reserve checks the logical payer-payee
     /// path before funding and capture, and derives refunds from authenticated channel state.
     ///
-    /// `originator` is the sender presented to TIP-1028. It may differ from the physical balance
-    /// owner when reserve custody pays a channel's payee.
+    /// `receive_policy_sender` is the sender presented to TIP-1028. It may differ from the physical
+    /// balance owner when reserve custody pays a channel's payee. Unlike ordinary TIP-20 transfers,
+    /// channel custody movements revert when TIP-1028 rejects delivery because channel accounting
+    /// cannot represent a pending guarded payment.
     pub(crate) fn channel_reserve_transfer(
         &mut self,
         from: Address,
         to: Address,
         amount: U256,
-        originator: Address,
+        receive_policy_sender: Address,
     ) -> Result<bool> {
         if from != TIP20_CHANNEL_RESERVE_ADDRESS && to != TIP20_CHANNEL_RESERVE_ADDRESS {
             return Err(TIP20Error::unauthorized().into());
@@ -947,8 +949,16 @@ impl TIP20Token {
         to.validate()?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_inbound_or_block(originator, from, &to, amount, None, B256::ZERO)? {
-            return Ok(true);
+        if self.storage.spec().is_t6() {
+            if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+                return Err(ReceivePolicyGuardError::address_reserved().into());
+            }
+            if TIP403Registry::new()
+                .validate_receive_policy(self.address, receive_policy_sender, to.target)?
+                .is_some()
+            {
+                return Err(TIP20Error::policy_forbids().into());
+            }
         }
 
         self._transfer(from, &to, amount)?;
@@ -1136,7 +1146,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
             return Ok(None);
         }
 
@@ -1174,14 +1184,7 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(
-            msg_sender,
-            msg_sender,
-            &to,
-            amount,
-            Some(total_supply),
-            memo,
-        )? {
+        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
             return Ok(None);
         }
 
@@ -1283,14 +1286,12 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates the receive policy of `to.target` against `originator`. If blocked, moves funds
-    /// from `transfer_from` into the guard account and stores a claim receipt attributed to
-    /// `originator`; returns `true`. Returns `false` when the inbound is authorized and the caller
-    /// should proceed with the normal transfer or mint.
+    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
+    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
+    /// authorized and the caller should proceed with the normal transfer or mint.
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
-        transfer_from: Address,
         to: &Recipient,
         amount: U256,
         mint_total_supply: Option<U256>,
@@ -1316,7 +1317,7 @@ impl TIP20Token {
             self.emit_event(TIP20Event::mint(guard.target, amount))?;
             InboundKind::MINT
         } else {
-            self._transfer(transfer_from, &guard, amount)?;
+            self._transfer(originator, &guard, amount)?;
             InboundKind::TRANSFER
         };
         ReceivePolicyGuard::new()
