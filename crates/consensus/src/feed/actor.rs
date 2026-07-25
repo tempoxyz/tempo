@@ -45,26 +45,32 @@ pub(super) type FeedActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 /// Receiver for activity messages.
 pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FeedActivity>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum PendingKind {
     Notarization,
     Finalization,
 }
 
 struct PendingEntry {
-    id: u64,
+    generation: u64,
     kind: PendingKind,
-    _aborter: Aborter,
+    /// Dropping this handle cancels the corresponding in-flight block resolution.
+    _cancel_on_drop: Aborter,
 }
 
-type Resolution<A, B> = (u64, Round, A, eyre::Result<B>);
+struct Resolution<A, B> {
+    generation: u64,
+    round: Round,
+    activity: A,
+    block: eyre::Result<B>,
+}
 
 /// Concurrent block subscriptions indexed by their consensus round.
 ///
 /// The index owns abort handles so superseded subscriptions can be cancelled
 /// while the pool yields whichever block resolution completes first.
 struct PendingSubscriptions<A, B> {
-    next_id: u64,
+    next_generation: u64,
     entries: BTreeMap<Round, PendingEntry>,
     resolutions: AbortablePool<Resolution<A, B>>,
 }
@@ -76,7 +82,7 @@ where
 {
     fn default() -> Self {
         Self {
-            next_id: 0,
+            next_generation: 0,
             entries: BTreeMap::new(),
             resolutions: AbortablePool::default(),
         }
@@ -95,23 +101,28 @@ where
         activity: A,
         resolution: impl Future<Output = eyre::Result<B>> + Send + 'static,
     ) {
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
+        let generation = self.next_generation;
+        self.next_generation = self
+            .next_generation
             .checked_add(1)
-            .expect("subscription id overflow");
+            .expect("subscription generation overflow");
 
         let aborter = self.resolutions.push(async move {
-            let result = resolution.await;
-            (id, round, activity, result)
+            let block = resolution.await;
+            Resolution {
+                generation,
+                round,
+                activity,
+                block,
+            }
         });
 
         self.entries.insert(
             round,
             PendingEntry {
-                id,
+                generation,
                 kind,
-                _aborter: aborter,
+                _cancel_on_drop: aborter,
             },
         );
     }
@@ -121,16 +132,20 @@ where
     /// Completions from cancelled or replaced subscriptions are ignored.
     async fn next_completed(&mut self) -> (Round, A, eyre::Result<B>) {
         loop {
-            let Ok((id, round, activity, result)) = self.resolutions.next_completed().await else {
+            let Ok(resolution) = self.resolutions.next_completed().await else {
                 continue;
             };
 
-            if self.entries.get(&round).is_none_or(|entry| entry.id != id) {
+            if self
+                .entries
+                .get(&resolution.round)
+                .is_none_or(|entry| entry.generation != resolution.generation)
+            {
                 continue;
             }
 
-            self.entries.remove(&round);
-            return (round, activity, result);
+            self.entries.remove(&resolution.round);
+            return (resolution.round, resolution.activity, resolution.block);
         }
     }
 
