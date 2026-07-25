@@ -4,19 +4,13 @@ use std::fmt;
 
 use alloy_primitives::{Address, B256, ChainId};
 use alloy_signer::{Signer, SignerSync};
-use alloy_signer_local::PrivateKeySigner;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
 use serde::{Deserialize, Deserializer, de};
 use sha2::{Digest, Sha256};
-use tempo_primitives::{
-    SignatureType,
-    transaction::{
-        PrimitiveSignature, derive_p256_address, tt_signature::P256SignatureWithPreHash,
-    },
+use tempo_primitives::transaction::{
+    PrimitiveSignature, derive_p256_address, tt_signature::P256SignatureWithPreHash,
 };
-
-use super::keychain::TempoSigner;
 
 /// An extractable P-256 JSON Web Key as persisted by Tempo Accounts.
 ///
@@ -24,7 +18,7 @@ use super::keychain::TempoSigner;
 /// in-memory representation contains only fixed-size curve coordinates and a
 /// private scalar.
 #[derive(Clone)]
-pub struct P256Jwk {
+pub(super) struct P256Jwk {
     x: [u8; 32],
     y: [u8; 32],
     d: [u8; 32],
@@ -68,7 +62,7 @@ impl<'de> Deserialize<'de> for P256Jwk {
 
 /// Errors returned while materializing a Tempo Accounts P-256 access key.
 #[derive(Debug, thiserror::Error)]
-pub enum P256SignerError {
+pub(super) enum P256SignerError {
     /// The JWK does not describe a P-256 elliptic-curve key.
     #[error("expected an EC P-256 JWK")]
     UnsupportedJwk,
@@ -99,96 +93,13 @@ pub enum P256SignerError {
 /// This uses Alloy's generic [`Signer`] and [`SignerSync`] traits with
 /// [`PrimitiveSignature`] as the signature type.
 #[derive(Clone)]
-pub struct TempoP256Signer {
+pub(super) struct TempoP256Signer {
     signing_key: SigningKey,
     pub_key_x: B256,
     pub_key_y: B256,
     address: Address,
     chain_id: Option<ChainId>,
     pre_hash: bool,
-}
-
-/// A locally signable Tempo primitive key.
-///
-/// The enum lets one wallet support both ordinary secp256k1 keys and P-256
-/// keys persisted by Tempo Accounts without introducing a parallel signing
-/// interface.
-#[derive(Clone, Debug)]
-pub enum TempoPrimitiveSigner {
-    /// Standard EVM secp256k1 key.
-    Secp256k1(PrivateKeySigner),
-    /// Native Tempo P-256 key.
-    P256(TempoP256Signer),
-}
-
-impl From<PrivateKeySigner> for TempoPrimitiveSigner {
-    fn from(value: PrivateKeySigner) -> Self {
-        Self::Secp256k1(value)
-    }
-}
-
-impl From<TempoP256Signer> for TempoPrimitiveSigner {
-    fn from(value: TempoP256Signer) -> Self {
-        Self::P256(value)
-    }
-}
-
-#[async_trait::async_trait]
-impl Signer<PrimitiveSignature> for TempoPrimitiveSigner {
-    async fn sign_hash(&self, hash: &B256) -> alloy_signer::Result<PrimitiveSignature> {
-        match self {
-            Self::Secp256k1(signer) => signer
-                .sign_hash(hash)
-                .await
-                .map(PrimitiveSignature::Secp256k1),
-            Self::P256(signer) => signer.sign_hash(hash).await,
-        }
-    }
-
-    fn address(&self) -> Address {
-        match self {
-            Self::Secp256k1(signer) => signer.address(),
-            Self::P256(signer) => signer.address(),
-        }
-    }
-
-    fn chain_id(&self) -> Option<ChainId> {
-        match self {
-            Self::Secp256k1(signer) => signer.chain_id(),
-            Self::P256(signer) => signer.chain_id(),
-        }
-    }
-
-    fn set_chain_id(&mut self, chain_id: Option<ChainId>) {
-        match self {
-            Self::Secp256k1(signer) => signer.set_chain_id(chain_id),
-            Self::P256(signer) => signer.set_chain_id(chain_id),
-        }
-    }
-}
-
-impl SignerSync<PrimitiveSignature> for TempoPrimitiveSigner {
-    fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<PrimitiveSignature> {
-        match self {
-            Self::Secp256k1(signer) => signer
-                .sign_hash_sync(hash)
-                .map(PrimitiveSignature::Secp256k1),
-            Self::P256(signer) => signer.sign_hash_sync(hash),
-        }
-    }
-
-    fn chain_id_sync(&self) -> Option<ChainId> {
-        self.chain_id()
-    }
-}
-
-impl TempoSigner for TempoPrimitiveSigner {
-    fn signature_type(&self) -> SignatureType {
-        match self {
-            Self::Secp256k1(_) => SignatureType::Secp256k1,
-            Self::P256(_) => SignatureType::P256,
-        }
-    }
 }
 
 impl fmt::Debug for TempoP256Signer {
@@ -206,7 +117,7 @@ impl TempoP256Signer {
     ///
     /// The resulting signatures cover the supplied digest directly, matching
     /// `TempoAccount.fromP256`.
-    pub fn from_slice(private_key: &[u8]) -> Result<Self, P256SignerError> {
+    pub(super) fn from_slice(private_key: &[u8]) -> Result<Self, P256SignerError> {
         Self::from_slice_with_pre_hash(private_key, false)
     }
 
@@ -214,7 +125,7 @@ impl TempoP256Signer {
     ///
     /// WebCrypto ECDSA applies SHA-256 internally, so signatures produced from
     /// this key set the Tempo `preHash` flag and sign `SHA-256(digest)`.
-    pub fn from_webcrypto_jwk(jwk: &P256Jwk) -> Result<Self, P256SignerError> {
+    pub(super) fn from_webcrypto_jwk(jwk: &P256Jwk) -> Result<Self, P256SignerError> {
         let signer = Self::from_slice_with_pre_hash(&jwk.d, true)?;
 
         if signer.pub_key_x.as_slice() != jwk.x || signer.pub_key_y.as_slice() != jwk.y {
@@ -247,7 +158,8 @@ impl TempoP256Signer {
     }
 
     /// Return whether this signer applies SHA-256 before ECDSA.
-    pub const fn pre_hash(&self) -> bool {
+    #[cfg(test)]
+    const fn pre_hash(&self) -> bool {
         self.pre_hash
     }
 
@@ -276,7 +188,7 @@ impl TempoP256Signer {
 
 impl P256Jwk {
     /// Decode and validate an extractable WebCrypto P-256 JWK.
-    pub fn from_base64url(
+    fn from_base64url(
         key_type: &str,
         curve: &str,
         x: &str,
@@ -320,12 +232,6 @@ impl SignerSync<PrimitiveSignature> for TempoP256Signer {
 
     fn chain_id_sync(&self) -> Option<ChainId> {
         self.chain_id
-    }
-}
-
-impl TempoSigner for TempoP256Signer {
-    fn signature_type(&self) -> SignatureType {
-        SignatureType::P256
     }
 }
 

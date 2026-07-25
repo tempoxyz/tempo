@@ -25,16 +25,78 @@ use serde::{
 use tempo_primitives::{
     SignatureType, TempoTxEnvelope,
     transaction::{
-        Call, CallScope, KeyAuthorization, PrimitiveSignature, SelectorRule,
-        SignedKeyAuthorization, TempoTypedTransaction, TokenLimit,
+        Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
+        SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
 
-use super::{
-    P256Jwk, P256SignerError, TempoP256Signer, TempoPrimitiveSigner, TempoSigner, TempoWallet,
-};
+use super::p256::{P256Jwk, P256SignerError, TempoP256Signer};
 use crate::{TempoNetwork, fillers::gas::resolve_key_authorization, rpc::TempoTransactionRequest};
+
+#[derive(Clone, Debug)]
+enum AccountsSigner {
+    Secp256k1(PrivateKeySigner),
+    P256(TempoP256Signer),
+}
+
+impl AccountsSigner {
+    const fn signature_type(&self) -> SignatureType {
+        match self {
+            Self::Secp256k1(_) => SignatureType::Secp256k1,
+            Self::P256(_) => SignatureType::P256,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Signer<PrimitiveSignature> for AccountsSigner {
+    async fn sign_hash(&self, hash: &B256) -> alloy_signer::Result<PrimitiveSignature> {
+        match self {
+            Self::Secp256k1(signer) => signer
+                .sign_hash(hash)
+                .await
+                .map(PrimitiveSignature::Secp256k1),
+            Self::P256(signer) => signer.sign_hash(hash).await,
+        }
+    }
+
+    fn address(&self) -> Address {
+        match self {
+            Self::Secp256k1(signer) => signer.address(),
+            Self::P256(signer) => signer.address(),
+        }
+    }
+
+    fn chain_id(&self) -> Option<u64> {
+        match self {
+            Self::Secp256k1(signer) => signer.chain_id(),
+            Self::P256(signer) => signer.chain_id(),
+        }
+    }
+
+    fn set_chain_id(&mut self, chain_id: Option<u64>) {
+        match self {
+            Self::Secp256k1(signer) => signer.set_chain_id(chain_id),
+            Self::P256(signer) => signer.set_chain_id(chain_id),
+        }
+    }
+}
+
+impl SignerSync<PrimitiveSignature> for AccountsSigner {
+    fn sign_hash_sync(&self, hash: &B256) -> alloy_signer::Result<PrimitiveSignature> {
+        match self {
+            Self::Secp256k1(signer) => signer
+                .sign_hash_sync(hash)
+                .map(PrimitiveSignature::Secp256k1),
+            Self::P256(signer) => signer.sign_hash_sync(hash),
+        }
+    }
+
+    fn chain_id_sync(&self) -> Option<u64> {
+        self.chain_id()
+    }
+}
 
 /// A locally signable access key selected from a Tempo Accounts store.
 #[derive(Clone, Debug)]
@@ -42,7 +104,7 @@ pub struct TempoAccessKey {
     account: Address,
     address: Address,
     chain_id: u64,
-    signer: TempoPrimitiveSigner,
+    signer: AccountsSigner,
     key_authorization: Option<Box<SignedKeyAuthorization>>,
 }
 
@@ -67,13 +129,90 @@ impl TempoAccessKey {
         self.key_authorization.as_deref()
     }
 
-    /// Convert this selected key into an Alloy network wallet.
-    pub fn into_wallet(self) -> TempoWallet<TempoPrimitiveSigner> {
-        let mut wallet = TempoWallet::for_account(self.account, self.signer);
-        if let Some(authorization) = self.key_authorization {
-            wallet = wallet.with_key_authorization(*authorization);
+    /// Fill access-key metadata and resolve a pending authorization before
+    /// external gas estimation or fee-payer signing.
+    pub async fn prepare_request<P>(
+        &self,
+        provider: &P,
+        request: &mut TempoTransactionRequest,
+    ) -> TransportResult<()>
+    where
+        P: Provider<TempoNetwork>,
+    {
+        self.fill_request(request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        if let Some(key_authorization) = resolve_key_authorization(provider, request).await? {
+            request.key_authorization = key_authorization;
         }
-        wallet
+        Ok(())
+    }
+
+    fn fill_request(&self, request: &mut TempoTransactionRequest) -> alloy_signer::Result<()> {
+        if let Some(from) = request.from()
+            && from != self.account
+        {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::SenderMismatch {
+                    expected: self.account,
+                    actual: from,
+                },
+            ));
+        }
+        request.set_from(self.account);
+
+        if let Some(key_id) = request.key_id
+            && key_id != self.address
+        {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::KeyMismatch {
+                    expected: self.address,
+                    actual: key_id,
+                },
+            ));
+        }
+        request.key_id = Some(self.address);
+
+        let signature_type = self.signer.signature_type();
+        if let Some(key_type) = request.key_type
+            && key_type != signature_type
+        {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::SignatureTypeMismatch {
+                    expected: signature_type,
+                    actual: key_type,
+                },
+            ));
+        }
+        request.key_type = Some(signature_type);
+
+        if request.key_authorization.is_none() {
+            request.key_authorization = self.key_authorization.as_deref().cloned();
+        }
+
+        Ok(())
+    }
+
+    async fn sign_aa(
+        &self,
+        sender: Address,
+        mut tx: tempo_primitives::transaction::TempoTransaction,
+    ) -> alloy_signer::Result<TempoTxEnvelope> {
+        if sender != self.account {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::SenderMismatch {
+                    expected: self.account,
+                    actual: sender,
+                },
+            ));
+        }
+
+        if tx.key_authorization.is_none() {
+            tx.key_authorization = self.key_authorization.as_deref().cloned();
+        }
+        let signing_hash = KeychainSignature::signing_hash(tx.signature_hash(), self.account);
+        let primitive = self.signer.sign_hash(&signing_hash).await?;
+        let keychain = KeychainSignature::new(self.account, primitive);
+        Ok(tx.into_signed(TempoSignature::Keychain(keychain)).into())
     }
 }
 
@@ -109,10 +248,127 @@ impl SignerSync<PrimitiveSignature> for TempoAccessKey {
     }
 }
 
-impl TempoSigner for TempoAccessKey {
-    fn signature_type(&self) -> SignatureType {
-        self.signer.signature_type()
+impl NetworkWallet<TempoNetwork> for TempoAccessKey {
+    fn default_signer_address(&self) -> Address {
+        self.account
     }
+
+    fn has_signer_for(&self, address: &Address) -> bool {
+        *address == self.account
+    }
+
+    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
+        std::iter::once(self.account)
+    }
+
+    async fn sign_transaction_from(
+        &self,
+        sender: Address,
+        tx: TempoTypedTransaction,
+    ) -> alloy_signer::Result<TempoTxEnvelope> {
+        match tx {
+            TempoTypedTransaction::AA(tx) => self.sign_aa(sender, tx).await,
+            _ => Err(alloy_signer::Error::other(
+                TempoAccessKeyError::UnsupportedTransactionType,
+            )),
+        }
+    }
+
+    async fn sign_request(
+        &self,
+        mut request: TempoTransactionRequest,
+    ) -> alloy_signer::Result<TempoTxEnvelope> {
+        self.fill_request(&mut request)?;
+        let sender = request.from().unwrap_or(self.account);
+        let tx = request
+            .build_unsigned()
+            .map_err(alloy_signer::Error::other)?;
+        self.sign_transaction_from(sender, tx).await
+    }
+}
+
+impl TxFiller<TempoNetwork> for TempoAccessKey {
+    type Fillable = Option<SignedKeyAuthorization>;
+
+    fn status(&self, request: &TempoTransactionRequest) -> FillerControlFlow {
+        if request.from().is_none() || request.key_id.is_none() || request.key_type.is_none() {
+            return FillerControlFlow::Ready;
+        }
+
+        match request.complete_preferred() {
+            Ok(_) => FillerControlFlow::Ready,
+            Err(error) => FillerControlFlow::Missing(vec![("TempoAccessKey", error)]),
+        }
+    }
+
+    fn fill_sync(&self, tx: &mut SendableTx<TempoNetwork>) {
+        if let Some(request) = tx.as_mut_builder() {
+            let _ = self.fill_request(request);
+        }
+    }
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        request: &TempoTransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: Provider<TempoNetwork>,
+    {
+        let mut request = request.clone();
+        self.fill_request(&mut request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        Ok(resolve_key_authorization(provider, &request)
+            .await?
+            .unwrap_or(request.key_authorization))
+    }
+
+    async fn fill(
+        &self,
+        key_authorization: Self::Fillable,
+        tx: SendableTx<TempoNetwork>,
+    ) -> TransportResult<SendableTx<TempoNetwork>> {
+        let mut request = match tx {
+            SendableTx::Builder(request) => request,
+            _ => return Ok(tx),
+        };
+        request.key_authorization = key_authorization.clone();
+
+        let mut selected = self.clone();
+        selected.key_authorization = key_authorization.map(Box::new);
+        selected
+            .fill_request(&mut request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        let envelope = request
+            .build(&selected)
+            .await
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        Ok(SendableTx::Envelope(envelope))
+    }
+
+    fn prepare_call_sync(&self, request: &mut TempoTransactionRequest) -> TransportResult<()> {
+        self.fill_request(request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)
+    }
+
+    async fn prepare_call(&self, request: &mut TempoTransactionRequest) -> TransportResult<()> {
+        self.prepare_call_sync(request)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TempoAccessKeyError {
+    #[error("Tempo access keys sign only AA transactions")]
+    UnsupportedTransactionType,
+    #[error("Tempo access-key sender mismatch: expected {expected}, got {actual}")]
+    SenderMismatch { expected: Address, actual: Address },
+    #[error("Tempo access-key mismatch: expected {expected}, got {actual}")]
+    KeyMismatch { expected: Address, actual: Address },
+    #[error("Tempo signature type mismatch: expected {expected:?}, got {actual:?}")]
+    SignatureTypeMismatch {
+        expected: SignatureType,
+        actual: SignatureType,
+    },
 }
 
 /// Errors returned while reading or selecting from a Tempo Accounts store.
@@ -274,7 +530,6 @@ impl TempoAccountsWallet {
         let selected = self.prepare_selected(provider, request).await?;
         request.key_authorization = selected.key_authorization.as_deref().cloned();
         selected
-            .into_wallet()
             .fill_request(request)
             .map_err(alloy_json_rpc::RpcError::local_usage)
     }
@@ -288,8 +543,6 @@ impl TempoAccountsWallet {
             request.set_chain_id(selected.chain_id);
         }
         selected
-            .clone()
-            .into_wallet()
             .fill_request(request)
             .map_err(TempoAccountsError::InvalidMetadata)?;
         Ok(selected)
@@ -328,8 +581,6 @@ impl TempoAccountsWallet {
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         let mut resolved_request = request.clone();
         selected
-            .clone()
-            .into_wallet()
             .fill_request(&mut resolved_request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         if let Some(key_authorization) =
@@ -378,10 +629,7 @@ impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
         let selected = self
             .select_unsigned(sender, &tx)
             .map_err(alloy_signer::Error::other)?;
-        selected
-            .into_wallet()
-            .sign_transaction_from(sender, tx)
-            .await
+        selected.sign_transaction_from(sender, tx).await
     }
 
     async fn sign_request(
@@ -391,7 +639,7 @@ impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
         let selected = self
             .fill_metadata(&mut request)
             .map_err(alloy_signer::Error::other)?;
-        selected.into_wallet().sign_request(request).await
+        selected.sign_request(request).await
     }
 }
 
@@ -439,12 +687,11 @@ impl TxFiller<TempoNetwork> for TempoAccountsWallet {
             _ => return Ok(tx),
         };
         request.key_authorization = selected.key_authorization.as_deref().cloned();
-        let wallet = selected.into_wallet();
-        wallet
+        selected
             .fill_request(&mut request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         let envelope = request
-            .build(&wallet)
+            .build(&selected)
             .await
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         Ok(SendableTx::Envelope(envelope))
@@ -1137,7 +1384,7 @@ fn persisted_scopes_to_call_scopes(
         .collect())
 }
 
-fn hydrate_access_key(key: &PersistedAccessKey) -> Result<TempoPrimitiveSigner, PersistedKeyError> {
+fn hydrate_access_key(key: &PersistedAccessKey) -> Result<AccountsSigner, PersistedKeyError> {
     if let Some(private_key) = key.private_key {
         return hydrate_private_key(key.key_type, private_key);
     }
@@ -1166,7 +1413,7 @@ fn hydrate_access_key(key: &PersistedAccessKey) -> Result<TempoPrimitiveSigner, 
             TempoP256Signer::from_webcrypto_jwk(
                 handle.jwk.as_ref().ok_or(PersistedKeyError::MissingJwk)?,
             )
-            .map(TempoPrimitiveSigner::from)
+            .map(AccountsSigner::P256)
             .map_err(Into::into)
         }
         PersistedHandleKind::Secp256k1
@@ -1178,15 +1425,15 @@ fn hydrate_access_key(key: &PersistedAccessKey) -> Result<TempoPrimitiveSigner, 
 fn hydrate_private_key(
     key_type: PersistedKeyType,
     private_key: PersistedPrivateKey,
-) -> Result<TempoPrimitiveSigner, PersistedKeyError> {
+) -> Result<AccountsSigner, PersistedKeyError> {
     match key_type {
         PersistedKeyType::P256 | PersistedKeyType::WebCrypto => {
             TempoP256Signer::from_slice(private_key.0.as_slice())
-                .map(TempoPrimitiveSigner::from)
+                .map(AccountsSigner::P256)
                 .map_err(Into::into)
         }
         PersistedKeyType::Secp256k1 => PrivateKeySigner::from_bytes(&private_key.0)
-            .map(TempoPrimitiveSigner::from)
+            .map(AccountsSigner::Secp256k1)
             .map_err(|_| PersistedKeyError::InvalidPrivateKey),
         PersistedKeyType::WebAuthn | PersistedKeyType::Unsupported => {
             Err(PersistedKeyError::UnsupportedKeyType)

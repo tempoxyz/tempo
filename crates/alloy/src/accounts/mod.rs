@@ -7,14 +7,9 @@
 
 mod keychain;
 mod p256;
-mod secp256k1;
 mod store;
-mod wallet;
 
-pub use keychain::{TempoKeychainWallet, TempoSigner};
-pub use p256::{P256Jwk, P256SignerError, TempoP256Signer, TempoPrimitiveSigner};
-pub use secp256k1::TempoSecp256k1Signer;
+pub use keychain::TempoKeychainWallet;
 pub use store::{
     TempoAccessKey, TempoAccountsError, TempoAccountsWallet, default_accounts_store_path,
 };
-pub use wallet::{TempoWallet, TempoWalletFillable};

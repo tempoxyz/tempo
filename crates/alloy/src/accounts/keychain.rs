@@ -1,9 +1,7 @@
-//! Alloy wallet support for Tempo keychain access keys.
-
-use std::fmt::Debug;
+//! Alloy wallet support for Tempo secp256k1 access keys.
 
 use alloy_network::{NetworkTransactionBuilder, NetworkWallet, TransactionBuilder};
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Signature};
 use alloy_provider::{
     Provider, SendableTx,
     fillers::{FillerControlFlow, TxFiller},
@@ -20,26 +18,12 @@ use tempo_primitives::{
 
 use crate::{TempoNetwork, fillers::gas::resolve_key_authorization, rpc::TempoTransactionRequest};
 
-/// A signer that can expose the Tempo signature metadata needed before signing.
-///
-/// Alloy's generic [`Signer`] trait remains the signing interface. This small
-/// extension supplies only the signature type and optional estimation data
-/// that a Tempo node needs while filling gas.
-pub trait TempoSigner: Signer<PrimitiveSignature> + Clone + Debug + Send + Sync + 'static {
-    /// Signature verification scheme used by this key.
-    fn signature_type(&self) -> SignatureType;
-
-    /// Key-specific data needed for gas estimation.
-    ///
-    /// P-256 and secp256k1 keys do not need extra data. WebAuthn signers can
-    /// return their authenticator payload here.
-    fn key_data(&self) -> Option<Bytes> {
-        None
-    }
-}
-
 /// An Alloy network wallet that signs Tempo AA transactions through an access
 /// key authorized for a root account.
+///
+/// `S` is an ordinary Alloy secp256k1 signer. Store-backed Tempo Accounts,
+/// including P-256 keys, use [`TempoAccountsWallet`](super::TempoAccountsWallet)
+/// instead.
 #[derive(Clone, Debug)]
 pub struct TempoKeychainWallet<S> {
     account: Address,
@@ -50,7 +34,7 @@ pub struct TempoKeychainWallet<S> {
 
 impl<S> TempoKeychainWallet<S>
 where
-    S: TempoSigner,
+    S: Signer<Signature> + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     /// Create a keychain wallet using the current V2 account-bound signature.
     pub fn new(account: Address, signer: S) -> Self {
@@ -91,10 +75,6 @@ where
     /// Access-key signer.
     pub const fn signer(&self) -> &S {
         &self.signer
-    }
-
-    pub(crate) const fn signer_mut(&mut self) -> &mut S {
-        &mut self.signer
     }
 
     /// On-chain access-key identifier.
@@ -161,7 +141,7 @@ where
         }
         request.key_id = Some(signer_address);
 
-        let signature_type = self.signer.signature_type();
+        let signature_type = SignatureType::Secp256k1;
         if let Some(key_type) = request.key_type
             && key_type != signature_type
         {
@@ -174,9 +154,6 @@ where
         }
         request.key_type = Some(signature_type);
 
-        if request.key_data.is_none() {
-            request.key_data = self.signer.key_data();
-        }
         if request.key_authorization.is_none() {
             request.key_authorization = self.key_authorization.as_deref().cloned();
         }
@@ -206,7 +183,7 @@ where
             KeychainVersion::V1 => signature_hash,
             KeychainVersion::V2 => KeychainSignature::signing_hash(signature_hash, self.account),
         };
-        let primitive = self.signer.sign_hash(&signing_hash).await?;
+        let primitive = PrimitiveSignature::Secp256k1(self.signer.sign_hash(&signing_hash).await?);
         let keychain = match self.version {
             KeychainVersion::V1 => KeychainSignature::new_v1(self.account, primitive),
             KeychainVersion::V2 => KeychainSignature::new(self.account, primitive),
@@ -218,7 +195,7 @@ where
 
 impl<S> TxFiller<TempoNetwork> for TempoKeychainWallet<S>
 where
-    S: TempoSigner,
+    S: Signer<Signature> + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     type Fillable = Option<SignedKeyAuthorization>;
 
@@ -292,7 +269,7 @@ where
 
 impl<S> NetworkWallet<TempoNetwork> for TempoKeychainWallet<S>
 where
-    S: TempoSigner,
+    S: Signer<Signature> + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     fn default_signer_address(&self) -> Address {
         self.account
