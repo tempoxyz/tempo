@@ -257,6 +257,28 @@ impl TempoAccountsWallet {
         )
     }
 
+    /// Fill wallet metadata and resolve a pending access-key authorization.
+    ///
+    /// Call this before external gas estimation or fee-payer signing when the
+    /// request is prepared outside an Alloy provider filler stack. Key
+    /// selection remains lazy and uses the request's account, chain, pinned
+    /// key, and calls.
+    pub async fn prepare_request<P>(
+        &self,
+        provider: &P,
+        request: &mut TempoTransactionRequest,
+    ) -> TransportResult<()>
+    where
+        P: Provider<TempoNetwork>,
+    {
+        let selected = self.prepare_selected(provider, request).await?;
+        request.key_authorization = selected.key_authorization.as_deref().cloned();
+        selected
+            .into_wallet()
+            .fill_request(request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)
+    }
+
     fn fill_metadata(
         &self,
         request: &mut TempoTransactionRequest,
@@ -291,6 +313,31 @@ impl TempoAccountsWallet {
             calls.as_deref(),
             unix_now(),
         )
+    }
+
+    async fn prepare_selected<P>(
+        &self,
+        provider: &P,
+        request: &TempoTransactionRequest,
+    ) -> TransportResult<TempoAccessKey>
+    where
+        P: Provider<TempoNetwork>,
+    {
+        let mut selected = self
+            .select_for_request(request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        let mut resolved_request = request.clone();
+        selected
+            .clone()
+            .into_wallet()
+            .fill_request(&mut resolved_request)
+            .map_err(alloy_json_rpc::RpcError::local_usage)?;
+        if let Some(key_authorization) =
+            resolve_key_authorization(provider, &resolved_request).await?
+        {
+            selected.key_authorization = key_authorization.map(Box::new);
+        }
+        Ok(selected)
     }
 }
 
@@ -379,21 +426,7 @@ impl TxFiller<TempoNetwork> for TempoAccountsWallet {
     where
         P: Provider<TempoNetwork>,
     {
-        let mut selected = self
-            .select_for_request(request)
-            .map_err(alloy_json_rpc::RpcError::local_usage)?;
-        let mut resolved_request = request.clone();
-        selected
-            .clone()
-            .into_wallet()
-            .fill_request(&mut resolved_request)
-            .map_err(alloy_json_rpc::RpcError::local_usage)?;
-        if let Some(key_authorization) =
-            resolve_key_authorization(provider, &resolved_request).await?
-        {
-            selected.key_authorization = key_authorization.map(Box::new);
-        }
-        Ok(selected)
+        self.prepare_selected(provider, request).await
     }
 
     async fn fill(
@@ -1173,7 +1206,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use alloy_network::{NetworkWallet, TransactionBuilder};
-    use alloy_provider::{SendableTx, fillers::TxFiller};
+    use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
     use tempo_primitives::{TempoTxEnvelope, transaction::TempoSignature};
 
@@ -1289,6 +1322,41 @@ mod tests {
             wallet.select_for_request(&request),
             Err(TempoAccountsError::MissingAccessKey { .. })
         ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_request_selects_from_the_store_lazily() {
+        let first_key = format!("0x{}", "01".repeat(32));
+        let second_key = format!("0x{}", "02".repeat(32));
+        let first =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&first_key).unwrap())
+                .unwrap();
+        let second =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&second_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([key_json(first.address(), first_key)]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+
+        let mut first_request = TempoTransactionRequest::default();
+        wallet
+            .prepare_request(&provider, &mut first_request)
+            .await
+            .unwrap();
+        assert_eq!(first_request.key_id, Some(first.address()));
+
+        overwrite_store(
+            &path,
+            serde_json::json!([key_json(second.address(), second_key)]),
+        );
+        let mut second_request = TempoTransactionRequest::default();
+        wallet
+            .prepare_request(&provider, &mut second_request)
+            .await
+            .unwrap();
+        assert_eq!(second_request.key_id, Some(second.address()));
         fs::remove_file(path).unwrap();
     }
 
