@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
@@ -14,6 +14,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_FACTORY_ADDRESS,
+    error::TempoPrecompileError,
     stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, RoundingDirection, base_to_quote},
     tip20::ISSUER_ROLE,
 };
@@ -34,6 +35,13 @@ struct DexGasRow {
 struct DexGasOutcome {
     gas: u64,
     status: bool,
+}
+
+fn under_overflow_revert() -> Bytes {
+    TempoPrecompileError::under_overflow()
+        .into_precompile_result(0, 0)
+        .unwrap()
+        .bytes
 }
 
 fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
@@ -480,6 +488,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
     Ok(())
 }
 
+#[test_case(TempoHardfork::T2 ; "t2_before_route_pause_checks")]
 #[test_case(TempoHardfork::T3 ; "t3_before_state_gas_accounting")]
 #[test_case(TempoHardfork::T4 ; "t4_with_state_gas_accounting")]
 #[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
@@ -554,6 +563,13 @@ async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> ey
             .await?;
         assert!(receipt.status(), "overflow ask setup failed");
     }
+    let err = exchange(3)
+        .swapExactAmountOut(PATH_USD_ADDRESS, *ask_base.address(), u128::MAX, u128::MAX)
+        .call()
+        .await
+        .expect_err("overflow swap call unexpectedly succeeded");
+    assert_eq!(err.as_revert_data(), Some(under_overflow_revert()));
+
     let receipt = exchange(3)
         .swapExactAmountOut(PATH_USD_ADDRESS, *ask_base.address(), u128::MAX, u128::MAX)
         .gas(10_000_000)
