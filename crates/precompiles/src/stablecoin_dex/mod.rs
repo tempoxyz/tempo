@@ -14,8 +14,9 @@ pub use order::Order;
 use order::OrderMapping;
 use orderbook::BookId;
 pub use orderbook::{
-    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
-    quote_to_base, tick_to_price, validate_tick_spacing,
+    MAX_TICK, MIN_TICK, OrderStep, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel,
+    base_to_quote, quote_to_base, step_exact_in, step_exact_out, taker_output, tick_to_price,
+    validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
@@ -23,7 +24,9 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 use crate::{
     STABLECOIN_DEX_ADDRESS,
     error::{Result, TempoPrecompileError},
-    stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
+    stablecoin_dex::orderbook::{
+        Fill, MAX_PRICE, MIN_PRICE, compute_book_key, walk_resting_orders,
+    },
     storage::{Handler, Mapping},
     storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
@@ -1023,12 +1026,9 @@ impl StablecoinDEX {
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
-        // Taker output: bid→quote, ask→base (zero-sum with maker)
-        let amount_out = if order.is_bid() {
-            quote_amount
-        } else {
-            fill_amount
-        };
+        // Taker output: bid→quote (rounded down), ask→base (zero-sum with maker).
+        let amount_out = taker_output(fill_amount, order.tick(), order.is_bid())
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Update price level total liquidity
         let new_liquidity = level
@@ -1065,23 +1065,19 @@ impl StablecoinDEX {
         let orderbook = self.books[book_key].read()?;
         let fill_amount = order.remaining();
 
-        // Settlement: bid rounds DOWN (taker receives less), ask rounds UP (maker receives more)
-        let amount_out = if order.is_bid() {
-            // Bid maker receives base tokens (exact amount)
+        // Maker settlement: bid maker receives base (exact), ask maker receives quote
+        // rounded UP to favor the maker.
+        if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
-            // Taker receives quote tokens - round DOWN
-            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?
         } else {
-            // Ask maker receives quote tokens - round UP to favor maker
             let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
+        }
 
-            // Taker receives base tokens (exact amount)
-            fill_amount
-        };
+        // Taker output: bid→quote (rounded down), ask→base (zero-sum with maker).
+        let amount_out = taker_output(fill_amount, order.tick(), order.is_bid())
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Emit OrderFilled event for complete fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
@@ -1197,80 +1193,17 @@ impl StablecoinDEX {
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
-        bid: bool,
-        mut amount_out: u128,
+        is_bid: bool,
+        amount_out: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read_in_book(book_key)?;
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
+        let order = self.orders[level.head].read_in_book(book_key)?;
 
-        let mut total_amount_in: u128 = 0;
-
-        while amount_out > 0 {
-            let tick = order.tick();
-
-            let (fill_amount, amount_in) = if bid {
-                // For bids: amount_out is quote, amount_in is base
-                // Round UP baseNeeded to ensure we collect enough base to cover exact output
-                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                let fill_amount = base_needed.min(order.remaining());
-                (fill_amount, fill_amount)
-            } else {
-                // For asks: amount_out is base, amount_in is quote
-                // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
-                let fill_amount = amount_out.min(order.remaining());
-                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                (fill_amount, amount_in)
-            };
-
-            if fill_amount < order.remaining() {
-                self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
-                total_amount_in = total_amount_in
-                    .checked_add(amount_in)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                break;
-            } else {
-                let (amount_out_received, next_order_info) =
-                    self.fill_order(storage_credits, book_key, &mut order, level, taker)?;
-                total_amount_in = total_amount_in
-                    .checked_add(amount_in)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-
-                // Update remaining amount_out
-                if bid {
-                    // Round UP baseNeeded to match the initial calculation
-                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    if base_needed > order.remaining() {
-                        amount_out = amount_out
-                            .checked_sub(amount_out_received)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_out = 0;
-                    }
-                } else if amount_out > order.remaining() {
-                    amount_out = amount_out
-                        .checked_sub(amount_out_received)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                } else {
-                    amount_out = 0;
-                }
-
-                if let Some((new_level, new_order)) = next_order_info {
-                    level = new_level;
-                    order = new_order;
-                } else {
-                    if amount_out > 0 {
-                        return Err(StablecoinDEXError::insufficient_liquidity().into());
-                    }
-                    break;
-                }
-            }
-        }
-
-        Ok(total_amount_in)
+        // Returns the total input spent to receive `amount_out`.
+        walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
+            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+        })
     }
 
     /// Fill orders with exact amount in
@@ -1278,86 +1211,52 @@ impl StablecoinDEX {
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
-        bid: bool,
-        mut amount_in: u128,
+        is_bid: bool,
+        amount_in: u128,
         taker: Address,
     ) -> Result<u128> {
-        let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read_in_book(book_key)?;
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
+        let order = self.orders[level.head].read_in_book(book_key)?;
 
-        let mut total_amount_out: u128 = 0;
+        // Returns the total output received for spending `amount_in`.
+        walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
+            self.settle_fill(storage_credits, book_key, taker, &mut level, order, fill)
+        })
+    }
 
-        while amount_in > 0 {
-            let tick = order.tick();
-
-            let fill_amount = if bid {
-                // For bids: amount_in is base, fill in base
-                amount_in.min(order.remaining())
-            } else {
-                // For asks: amount_in is quote, convert to base
-                // Round down base_out (user receives less base, favors protocol)
-                let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                base_out.min(order.remaining())
-            };
-
-            if fill_amount < order.remaining() {
-                let amount_out =
-                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
-                total_amount_out = total_amount_out
-                    .checked_add(amount_out)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                break;
-            } else {
-                let (amount_out, next_order_info) =
-                    self.fill_order(storage_credits, book_key, &mut order, level, taker)?;
-                total_amount_out = total_amount_out
-                    .checked_add(amount_out)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-
-                // Set to 0 to avoid rounding errors
-                if bid {
-                    if amount_in > order.remaining() {
-                        amount_in = amount_in
-                            .checked_sub(order.remaining())
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_in = 0;
+    /// Applies one order fill during swap execution and returns the next order to
+    /// fill, or `None` when this order terminates the trade. Shared by the
+    /// exact-in and exact-out swap walks so their settlement cannot diverge.
+    fn settle_fill(
+        &mut self,
+        storage_credits: &mut StorageCreditDeltas,
+        book_key: B256,
+        taker: Address,
+        level: &mut TickLevel,
+        mut order: Order,
+        fill: Fill,
+    ) -> Result<Option<Order>> {
+        match fill {
+            Fill::Partial(fill_amount) => {
+                self.partial_fill_order(&mut order, level, fill_amount, taker)?;
+                Ok(None)
+            }
+            Fill::Full => {
+                let (_out, next) =
+                    self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
+                match next {
+                    Some((new_level, new_order)) => {
+                        *level = new_level;
+                        Ok(Some(new_order))
                     }
-                } else {
-                    // For asks: taker pays quote, maker receives quote
-                    let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    if base_out > order.remaining() {
-                        // Quote consumed = what maker receives - round UP (zero-sum with maker)
-                        let quote_needed =
-                            base_to_quote(order.remaining(), tick, RoundingDirection::Up)
-                                .ok_or(TempoPrecompileError::under_overflow())?;
-                        amount_in = amount_in
-                            .checked_sub(quote_needed)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_in = 0;
-                    }
-                }
-
-                if let Some((new_level, new_order)) = next_order_info {
-                    level = new_level;
-                    order = new_order;
-                } else {
-                    if amount_in > 0 {
-                        return Err(StablecoinDEXError::insufficient_liquidity().into());
-                    }
-                    break;
+                    None => Ok(None),
                 }
             }
         }
-
-        Ok(total_amount_out)
     }
 
     /// Helper function to get best tick from orderbook
-    fn get_best_price_level(&mut self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
+    fn get_best_price_level(&self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
         let orderbook = self.books[book_key].read()?;
 
         let current_tick = if is_bid {
@@ -1375,6 +1274,35 @@ impl StablecoinDEX {
         self.books[book_key]
             .tick_level_handler(current_tick, is_bid)
             .read()
+    }
+
+    /// Read-only traversal to the order that execution would fill after fully
+    /// consuming `order`, mirroring the advancement inside [`Self::fill_order`]:
+    /// stay on the same tick while more orders are linked, otherwise jump to the
+    /// next initialized tick. Returns `None` when no further liquidity exists.
+    ///
+    /// Used by the per-order quote paths so quotes walk the book exactly like a
+    /// swap does. Uses the order's in-memory `next`/`tick` (unchanged by a fill).
+    fn next_order_after(
+        &self,
+        book_key: B256,
+        order: &Order,
+        is_bid: bool,
+    ) -> Result<Option<Order>> {
+        if order.next() != 0 {
+            return Ok(Some(self.orders[order.next()].read()?));
+        }
+
+        let (next_tick, has_liquidity) =
+            self.books[book_key].next_initialized_tick(order.tick(), is_bid)?;
+        if !has_liquidity {
+            return Ok(None);
+        }
+
+        let next_level = self.books[book_key]
+            .tick_level_handler(next_tick, is_bid)
+            .read()?;
+        Ok(Some(self.orders[next_level.head].read()?))
     }
 
     /// Cancels an active order and refunds escrowed tokens to the maker.
@@ -1549,8 +1477,51 @@ impl StablecoinDEX {
         Ok(())
     }
 
-    /// Quote exact output amount without executing trades
+    /// Quotes the input required for exactly `amount_out` over a single book.
+    ///
+    /// On T9+ the quote walks the book order-by-order (via the same [`step_exact_out`]
+    /// arithmetic the swap uses) so the quoted input equals what a swap would
+    /// actually charge. The legacy per-tick quote rounds once per tick and can
+    /// under-estimate the input across fragmented levels; it is kept for pre-T9
+    /// historical determinism.
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
+        if self.storage.spec().is_t9() {
+            self.quote_per_order(book_key, amount_out, is_bid, step_exact_out)
+        } else {
+            self.quote_exact_out_per_tick(book_key, amount_out, is_bid)
+        }
+    }
+
+    /// Per-order quote that walks the book like swap execution but without
+    /// mutating state, sharing the same `step` arithmetic so quoted amounts equal
+    /// executed amounts.
+    fn quote_per_order(
+        &self,
+        book_key: B256,
+        amount: u128,
+        is_bid: bool,
+        step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
+    ) -> Result<u128> {
+        let level = self.get_best_price_level(book_key, is_bid)?;
+        let order = self.orders[level.head].read()?;
+
+        // Read-only walk: advance the cursor without settling, so the quote uses
+        // the same per-order arithmetic and traversal as execution.
+        walk_resting_orders(order, amount, is_bid, step, |order, fill| match fill {
+            Fill::Partial(_) => Ok(None),
+            Fill::Full => self.next_order_after(book_key, &order, is_bid),
+        })
+    }
+
+    /// Legacy pre-T9 exact-output quote. It walks by tick-level aggregate
+    /// liquidity and rounds once per tick, so it is intentionally unused after T9
+    /// where quotes must match order-by-order execution.
+    fn quote_exact_out_per_tick(
+        &self,
+        book_key: B256,
+        amount_out: u128,
+        is_bid: bool,
+    ) -> Result<u128> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
         let orderbook = self.books[book_key].read()?;
@@ -1767,8 +1738,31 @@ impl StablecoinDEX {
         Ok(path)
     }
 
-    /// Quote exact input amount without executing trades
+    /// Quotes the output for `amount_in` over a single book.
+    ///
+    /// On T9+ the quote walks the book order-by-order (via the same [`step_exact_in`]
+    /// arithmetic the swap uses) so the quoted output equals what a swap would
+    /// actually execute. The legacy per-tick quote aggregates `total_liquidity` and
+    /// rounds once per tick, which over-estimates the output because summing
+    /// per-order floors is `<=` the floor of the sum; it is kept for pre-T9
+    /// historical determinism.
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
+        if self.storage.spec().is_t9() {
+            self.quote_per_order(book_key, amount_in, is_bid, step_exact_in)
+        } else {
+            self.quote_exact_in_per_tick(book_key, amount_in, is_bid)
+        }
+    }
+
+    /// Legacy pre-T9 exact-input quote. It walks by tick-level aggregate
+    /// liquidity and rounds once per tick, so it is intentionally unused after T9
+    /// where quotes must match order-by-order execution.
+    fn quote_exact_in_per_tick(
+        &self,
+        book_key: B256,
+        amount_in: u128,
+        is_bid: bool,
+    ) -> Result<u128> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
         let orderbook = self.books[book_key].read()?;
@@ -1877,6 +1871,7 @@ mod tests {
 
     use super::*;
     use crate::STABLECOIN_DEX_ADDRESS;
+    use proptest::prelude::*;
 
     fn setup_test_tokens(
         admin: Address,
@@ -6429,6 +6424,720 @@ mod tests {
                 Ok::<_, eyre::Report>(())
             })?;
         }
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------------
+    // Per-order quote vs swap parity (T9+)
+    // ----------------------------------------------------------------------
+
+    fn fund_and_approve(
+        mut setup: TIP20Setup,
+        actors: impl IntoIterator<Item = Address>,
+        spender: Address,
+        amount: U256,
+    ) -> TIP20Setup {
+        for actor in actors {
+            setup = setup
+                .with_mint(actor, amount)
+                .with_approval(actor, spender, U256::MAX);
+        }
+        setup
+    }
+
+    /// Runs `body` against a freshly initialized exchange at `spec`, seeded with a
+    /// fragmented book of one resting order per `(size, tick)` in `book` on the
+    /// given side (each order from a fresh maker, all funded with both tokens).
+    /// `body` receives `(exchange, base, quote, taker)`.
+    fn with_fragmented_book<R>(
+        spec: TempoHardfork,
+        book: &[(u128, i16)],
+        maker_is_bid: bool,
+        body: impl FnOnce(&mut StablecoinDEX, Address, Address, Address) -> eyre::Result<R>,
+    ) -> eyre::Result<R> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+            let admin = Address::random();
+            let taker = Address::random();
+            let makers: Vec<(Address, u128, i16)> = book
+                .iter()
+                .map(|(size, tick)| (Address::random(), *size, *tick))
+                .collect();
+
+            let fund = U256::from(1_000_000_000_000_000_000u128);
+            let actors = makers.iter().map(|(maker, _, _)| *maker).chain([taker]);
+
+            // Base token (uses pathUSD as its quote token).
+            let base_setup = fund_and_approve(
+                TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin),
+                actors.clone(),
+                exchange.address,
+                fund,
+            );
+            let base = base_setup.apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            fund_and_approve(
+                TIP20Setup::path_usd(admin).with_issuer(admin),
+                actors,
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+
+            exchange.create_pair(base_token)?;
+            for (m, size, tick) in &makers {
+                exchange.place(*m, base_token, *size, maker_is_bid, *tick)?;
+            }
+
+            body(&mut exchange, base_token, quote_token, taker)
+        })
+    }
+
+    /// Runs `body` against a T9 two-hop route TOKEN_A -> pathUSD -> TOKEN_B with both
+    /// books fragmented at non-zero ticks.
+    fn with_fragmented_two_hop_books<R>(
+        body: impl FnOnce(&mut StablecoinDEX, Address, Address, Address) -> eyre::Result<R>,
+    ) -> eyre::Result<R> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let taker = Address::random();
+            let makers = [
+                Address::random(),
+                Address::random(),
+                Address::random(),
+                Address::random(),
+            ];
+            let fund = U256::from(1_000_000_000_000_000_000u128);
+            let actors = makers.iter().copied().chain([taker]);
+
+            let path_usd = fund_and_approve(
+                TIP20Setup::path_usd(admin).with_issuer(admin),
+                actors.clone(),
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+
+            let token_a = fund_and_approve(
+                TIP20Setup::create("TOKEN_A", "TOKEN_A", admin).with_issuer(admin),
+                actors.clone(),
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+
+            let token_b = fund_and_approve(
+                TIP20Setup::create("TOKEN_B", "TOKEN_B", admin).with_issuer(admin),
+                actors,
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+
+            exchange.create_pair(token_a.address())?;
+            exchange.create_pair(token_b.address())?;
+
+            // TOKEN_A -> pathUSD consumes bids on TOKEN_A.
+            exchange.place(makers[0], token_a.address(), 100_006_000, true, 10)?;
+            exchange.place(makers[1], token_a.address(), 100_006_000, true, 10)?;
+
+            // pathUSD -> TOKEN_B consumes asks on TOKEN_B.
+            exchange.place(makers[2], token_b.address(), 100_000_003, false, 20)?;
+            exchange.place(makers[3], token_b.address(), 150_000_009, false, 20)?;
+
+            let result = body(&mut exchange, token_a.address(), token_b.address(), taker)?;
+            assert_eq!(path_usd.address(), PATH_USD_ADDRESS);
+            Ok(result)
+        })
+    }
+
+    /// Two fragmented bid orders at the same tick: selling base across both makes
+    /// the per-order execution round down twice (once per order) while the legacy
+    /// per-tick quote rounds once over the aggregate. Numbers are hand-computed so
+    /// the gap is exactly one unit.
+    ///
+    /// tick 10 -> price 100_010. base_to_quote(100_006_000) = 100_016_000 (per
+    /// order, x2 = 200_032_000). Aggregate base_to_quote(200_012_000) = 200_032_001,
+    /// so the legacy per-tick quote over-estimates the executed output by 1.
+    #[test]
+    fn test_quote_vs_swap_exact_in_fragmented() -> eyre::Result<()> {
+        // Two bids of 100_006_000 base at tick 10; sell all 200_012_000 base.
+        let run = |spec| {
+            with_fragmented_book(
+                spec,
+                &[(100_006_000, 10), (100_006_000, 10)],
+                true,
+                |dex, base, quote, taker| {
+                    let quoted = dex.quote_swap_exact_amount_in(base, quote, 200_012_000)?;
+                    let executed = dex.swap_exact_amount_in(taker, base, quote, 200_012_000, 0)?;
+                    Ok((quoted, executed))
+                },
+            )
+        };
+
+        // Pre-T9: the per-tick quote over-estimates the executed output by 1.
+        let (quote, executed) = run(TempoHardfork::T7)?;
+        assert_eq!(quote, 200_032_001);
+        assert_eq!(executed, 200_032_000);
+        assert!(
+            quote > executed,
+            "pre-T9 quote over-estimates executed output"
+        );
+
+        // T9: the per-order quote equals the executed output.
+        let (quote, executed) = run(TempoHardfork::T9)?;
+        assert_eq!(executed, 200_032_000);
+        assert_eq!(quote, executed, "T9 quote must equal executed output");
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_matches_swap_t9_multi_hop_fragmented() -> eyre::Result<()> {
+        with_fragmented_two_hop_books(|dex, token_a, token_b, taker| {
+            let amount_in = 200_012_000;
+            let quoted = dex.quote_swap_exact_amount_in(token_a, token_b, amount_in)?;
+            let executed = dex.swap_exact_amount_in(taker, token_a, token_b, amount_in, quoted)?;
+            assert_eq!(quoted, executed, "multi-hop exact-in quote/swap parity");
+            Ok(())
+        })?;
+
+        with_fragmented_two_hop_books(|dex, token_a, token_b, taker| {
+            let amount_out = 150_000_000;
+            let quoted = dex.quote_swap_exact_amount_out(token_a, token_b, amount_out)?;
+            let executed =
+                dex.swap_exact_amount_out(taker, token_a, token_b, amount_out, quoted)?;
+            assert_eq!(quoted, executed, "multi-hop exact-out quote/swap parity");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_quote_matches_swap_t9_state_side_effects() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let maker_1 = Address::random();
+            let maker_2 = Address::random();
+            let taker = Address::random();
+            let tick = 10;
+            let size_1 = 100_000_005;
+            let size_2 = 100_000_007;
+            let amount_in = size_1 + 1;
+            let fund = U256::from(1_000_000_000_000_000_000u128);
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(taker, fund)
+                .with_approval(taker, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(maker_1, fund)
+                .with_mint(maker_2, fund)
+                .with_approval(maker_1, exchange.address, U256::MAX)
+                .with_approval(maker_2, exchange.address, U256::MAX)
+                .apply()?;
+
+            let book_key = exchange.create_pair(base_token)?;
+            let order_1 = exchange.place(maker_1, base_token, size_1, true, tick)?;
+            let order_2 = exchange.place(maker_2, base_token, size_2, true, tick)?;
+
+            let quoted = exchange.quote_swap_exact_amount_in(base_token, quote_token, amount_in)?;
+            let expected_out = base_to_quote(size_1, tick, RoundingDirection::Down)
+                .unwrap()
+                .checked_add(base_to_quote(1, tick, RoundingDirection::Down).unwrap())
+                .unwrap();
+            assert_eq!(
+                quoted, expected_out,
+                "test setup should cross one order boundary"
+            );
+
+            let events_before = exchange.emitted_events().len();
+            let executed =
+                exchange.swap_exact_amount_in(taker, base_token, quote_token, amount_in, quoted)?;
+            assert_eq!(executed, quoted);
+
+            assert_eq!(exchange.balance_of(maker_1, base_token)?, size_1);
+            assert_eq!(exchange.balance_of(maker_2, base_token)?, 1);
+            assert!(
+                exchange.get_order(order_1).is_err(),
+                "fully filled order deleted"
+            );
+
+            let residual = exchange.get_order(order_2)?;
+            assert_eq!(residual.remaining(), size_2 - 1);
+            assert_eq!(residual.maker(), maker_2);
+
+            let book = exchange.books[book_key].read()?;
+            assert_eq!(book.best_bid_tick, tick);
+            let level = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(level.head, order_2);
+            assert_eq!(level.tail, order_2);
+            assert_eq!(level.total_liquidity, size_2 - 1);
+
+            let new_events = &exchange.emitted_events()[events_before..];
+            let fill_events: Vec<_> = new_events
+                .iter()
+                .filter(|event| event.topics()[0] == IStablecoinDEX::OrderFilled::SIGNATURE_HASH)
+                .collect();
+            assert_eq!(fill_events.len(), 2, "expected full fill then partial fill");
+
+            let expected_full =
+                StablecoinDEXEvents::order_filled(order_1, maker_1, taker, size_1, false)
+                    .into_log_data();
+            let expected_partial =
+                StablecoinDEXEvents::order_filled(order_2, maker_2, taker, 1, true).into_log_data();
+            assert_eq!(fill_events[0], &expected_full);
+            assert_eq!(fill_events[1], &expected_partial);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_quote_matches_swap_t9_zero_amount_with_liquidity() -> eyre::Result<()> {
+        let book = &[(100_000_005, 10), (100_000_007, 10)];
+
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            assert_eq!(dex.quote_swap_exact_amount_in(base, quote, 0)?, 0);
+            assert_eq!(dex.swap_exact_amount_in(taker, base, quote, 0, 0)?, 0);
+            assert_eq!(dex.quote_swap_exact_amount_out(base, quote, 0)?, 0);
+            assert_eq!(dex.swap_exact_amount_out(taker, base, quote, 0, 0)?, 0);
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            assert_eq!(dex.quote_swap_exact_amount_in(quote, base, 0)?, 0);
+            assert_eq!(dex.swap_exact_amount_in(taker, quote, base, 0, 0)?, 0);
+            assert_eq!(dex.quote_swap_exact_amount_out(quote, base, 0)?, 0);
+            assert_eq!(dex.swap_exact_amount_out(taker, quote, base, 0, 0)?, 0);
+            Ok(())
+        })
+    }
+
+    /// Quote-vs-swap parity across fragmented book configs and all four per-order
+    /// branches (bid/ask × exact-in/exact-out) under T9. The last config spans
+    /// multiple ticks to exercise the tick-advancement path in `next_order_after`.
+    #[test]
+    fn test_quote_matches_swap_t9_parity() -> eyre::Result<()> {
+        // Each config is a fragmented book of (size, tick) orders.
+        let books: &[&[(u128, i16)]] = &[
+            &[(100_000_005, 10), (100_000_007, 10)],
+            &[(100_000_003, 20), (100_000_009, 20), (100_000_001, 20)],
+            &[(123_456_789, 30), (100_000_000, 30)],
+            &[(100_000_001, -10), (100_000_001, -10), (100_000_001, -10)],
+            // Multi-tick: crosses two tick levels (exercises next_order_after).
+            &[
+                (100_000_005, 10),
+                (100_000_007, 10),
+                (100_000_003, -10),
+                (100_000_009, -10),
+            ],
+        ];
+
+        for (i, book) in books.iter().enumerate() {
+            let total_base: u128 = book.iter().map(|(s, _)| *s).sum();
+            let partial = book[0].0 + book.get(1).map(|(s, _)| *s).unwrap_or(0) / 2;
+
+            // bids: taker SELLS base (quote_per_order, bid)
+            for amount_in in [total_base, partial] {
+                with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+                    let q = dex.quote_swap_exact_amount_in(base, quote, amount_in)?;
+                    let ex = dex.swap_exact_amount_in(taker, base, quote, amount_in, 0)?;
+                    assert_eq!(
+                        q, ex,
+                        "bid exact-in parity (book={i}, amount_in={amount_in})"
+                    );
+                    Ok(())
+                })?;
+            }
+
+            // asks: taker BUYS base exact-out (quote_per_order, ask)
+            for amount_out in [total_base, partial] {
+                with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+                    let q = dex.quote_swap_exact_amount_out(quote, base, amount_out)?;
+                    let ex =
+                        dex.swap_exact_amount_out(taker, quote, base, amount_out, u128::MAX)?;
+                    assert_eq!(
+                        q, ex,
+                        "ask exact-out parity (book={i}, amount_out={amount_out})"
+                    );
+                    Ok(())
+                })?;
+            }
+
+            // asks: taker BUYS base exact-in (quote_per_order, ask)
+            with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+                // Quote (T9-exact) the input needed to buy all base, then spend it.
+                let amount_in = dex.quote_swap_exact_amount_out(quote, base, total_base)?;
+                let q = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
+                let ex = dex.swap_exact_amount_in(taker, quote, base, amount_in, 0)?;
+                assert_eq!(q, ex, "ask exact-in parity (book={i})");
+                Ok(())
+            })?;
+
+            // bids: taker SELLS base exact-out for quote (quote_per_order, bid)
+            with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+                // Target a quote output achievable with roughly half the base liquidity.
+                let amount_out = dex.quote_swap_exact_amount_in(base, quote, total_base / 2)?;
+                let q = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
+                let ex = dex.swap_exact_amount_out(taker, base, quote, amount_out, u128::MAX)?;
+                assert_eq!(q, ex, "bid exact-out parity (book={i})");
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_matches_swap_t9_boundary_ticks() -> eyre::Result<()> {
+        let boundary_books = [
+            vec![
+                (100_000_005, MAX_TICK),
+                (100_000_007, 1280),
+                (100_000_003, 1270),
+            ],
+            vec![
+                (100_000_005, MIN_TICK),
+                (100_000_007, -1280),
+                (100_000_003, -1270),
+            ],
+        ];
+
+        for book in boundary_books {
+            for maker_is_bid in [true, false] {
+                for exact_in in [true, false] {
+                    check_quote_matches_swap_t9_property_case(
+                        book.clone(),
+                        maker_is_bid,
+                        exact_in,
+                        1_000,
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_matches_swap_t9_tight_slippage_bounds() -> eyre::Result<()> {
+        let book = &[(100_000_005, 10), (100_000_007, 10)];
+        let target_base = 100_000_006;
+
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            let quoted = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
+            assert_eq!(
+                dex.swap_exact_amount_in(taker, base, quote, target_base, quoted)?,
+                quoted
+            );
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            let quoted = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
+            let err = dex
+                .swap_exact_amount_in(taker, base, quote, target_base, quoted + 1)
+                .unwrap_err();
+            assert_eq!(err, StablecoinDEXError::insufficient_output().into());
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            let amount_out = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
+            let quoted = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
+            assert_eq!(
+                dex.swap_exact_amount_out(taker, base, quote, amount_out, quoted)?,
+                quoted
+            );
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            let amount_out = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
+            let quoted = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
+            let err = dex
+                .swap_exact_amount_out(taker, base, quote, amount_out, quoted - 1)
+                .unwrap_err();
+            assert_eq!(err, StablecoinDEXError::max_input_exceeded().into());
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            let amount_in = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
+            let quoted = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
+            assert_eq!(
+                dex.swap_exact_amount_in(taker, quote, base, amount_in, quoted)?,
+                quoted
+            );
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            let amount_in = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
+            let quoted = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
+            let err = dex
+                .swap_exact_amount_in(taker, quote, base, amount_in, quoted + 1)
+                .unwrap_err();
+            assert_eq!(err, StablecoinDEXError::insufficient_output().into());
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            let quoted = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
+            assert_eq!(
+                dex.swap_exact_amount_out(taker, quote, base, target_base, quoted)?,
+                quoted
+            );
+            Ok(())
+        })?;
+
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            let quoted = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
+            let err = dex
+                .swap_exact_amount_out(taker, quote, base, target_base, quoted - 1)
+                .unwrap_err();
+            assert_eq!(err, StablecoinDEXError::max_input_exceeded().into());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_quote_matches_swap_t9_flip_order_read_only_advance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let maker_flip = Address::random();
+            let maker_next = Address::random();
+            let taker = Address::random();
+            let tick = 10;
+            let flip_tick = 20;
+            let amount = MIN_ORDER_AMOUNT;
+            let fund = U256::from(1_000_000_000_000_000_000u128);
+            let actors = [maker_flip, maker_next, taker];
+
+            let base = fund_and_approve(
+                TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin),
+                actors,
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            fund_and_approve(
+                TIP20Setup::path_usd(admin).with_issuer(admin),
+                actors,
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+
+            let book_key = exchange.create_pair(base_token)?;
+            let flip_order = exchange
+                .place_flip(maker_flip, base_token, amount, true, tick, flip_tick, false)?;
+            let next_order = exchange.place(maker_next, base_token, amount + 7, true, tick)?;
+
+            let bid_level_before = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(bid_level_before.head, flip_order);
+            assert_eq!(bid_level_before.tail, next_order);
+
+            let amount_in = amount + 1;
+            let quoted = exchange.quote_swap_exact_amount_in(base_token, quote_token, amount_in)?;
+            let expected = base_to_quote(amount, tick, RoundingDirection::Down)
+                .unwrap()
+                .checked_add(base_to_quote(1, tick, RoundingDirection::Down).unwrap())
+                .unwrap();
+            assert_eq!(quoted, expected);
+
+            let flip_after_quote = exchange.get_order(flip_order)?;
+            assert!(flip_after_quote.is_bid());
+            assert_eq!(flip_after_quote.tick(), tick);
+            assert_eq!(flip_after_quote.next(), next_order);
+            assert_eq!(
+                exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?,
+                bid_level_before
+            );
+
+            let executed =
+                exchange.swap_exact_amount_in(taker, base_token, quote_token, amount_in, quoted)?;
+            assert_eq!(executed, quoted);
+
+            let flipped = exchange.get_order(flip_order)?;
+            assert!(flipped.is_ask());
+            assert_eq!(flipped.tick(), flip_tick);
+            assert_eq!(flipped.remaining(), amount);
+
+            let residual = exchange.get_order(next_order)?;
+            assert_eq!(residual.remaining(), amount + 6);
+            let bid_level_after = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(bid_level_after.head, next_order);
+            assert_eq!(bid_level_after.tail, next_order);
+            assert_eq!(bid_level_after.total_liquidity, amount + 6);
+
+            Ok(())
+        })
+    }
+
+    fn check_quote_matches_swap_t9_property_case(
+        book: Vec<(u128, i16)>,
+        maker_is_bid: bool,
+        exact_in: bool,
+        target_ppm: u16,
+    ) -> eyre::Result<()> {
+        let total_base = book.iter().map(|(size, _)| *size).sum::<u128>();
+        let target_base = (total_base * u128::from(target_ppm) / 1_000).clamp(1, total_base);
+
+        with_fragmented_book(
+            TempoHardfork::T9,
+            &book,
+            maker_is_bid,
+            |dex, base, quote, taker| {
+                match (maker_is_bid, exact_in) {
+                    (true, true) => {
+                        let quoted = dex.quote_swap_exact_amount_in(base, quote, target_base)?;
+                        let executed =
+                            dex.swap_exact_amount_in(taker, base, quote, target_base, quoted)?;
+                        assert_eq!(quoted, executed);
+                    }
+                    (true, false) => {
+                        let amount_out =
+                            dex.quote_swap_exact_amount_in(base, quote, target_base)?;
+                        let quoted = dex.quote_swap_exact_amount_out(base, quote, amount_out)?;
+                        let executed =
+                            dex.swap_exact_amount_out(taker, base, quote, amount_out, quoted)?;
+                        assert_eq!(quoted, executed);
+                    }
+                    (false, true) => {
+                        let amount_in =
+                            dex.quote_swap_exact_amount_out(quote, base, target_base)?;
+                        let quoted = dex.quote_swap_exact_amount_in(quote, base, amount_in)?;
+                        let executed =
+                            dex.swap_exact_amount_in(taker, quote, base, amount_in, quoted)?;
+                        assert_eq!(quoted, executed);
+                    }
+                    (false, false) => {
+                        let quoted = dex.quote_swap_exact_amount_out(quote, base, target_base)?;
+                        let executed =
+                            dex.swap_exact_amount_out(taker, quote, base, target_base, quoted)?;
+                        assert_eq!(quoted, executed);
+                    }
+                }
+                Ok(())
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        #[test]
+        fn proptest_quote_matches_swap_t9_fragmented_books(
+            book in prop::collection::vec(
+                (
+                    MIN_ORDER_AMOUNT..=MIN_ORDER_AMOUNT * 5,
+                    (-20i16..=20).prop_map(|n| n * TICK_SPACING),
+                ),
+                1..=5,
+            ),
+            maker_is_bid in any::<bool>(),
+            exact_in in any::<bool>(),
+            target_ppm in 1u16..=1_000,
+        ) {
+            let result = check_quote_matches_swap_t9_property_case(
+                book.clone(),
+                maker_is_bid,
+                exact_in,
+                target_ppm,
+            );
+
+            prop_assert!(
+                result.is_ok(),
+                "quote/swap parity failed for book={book:?}, maker_is_bid={maker_is_bid}, exact_in={exact_in}, target_ppm={target_ppm}: {result:?}",
+            );
+        }
+    }
+
+    /// Liquidity-exhaustion parity (T9): a quote for more than the book holds and
+    /// the matching swap MUST both fail with `InsufficientLiquidity`, at the same
+    /// boundary. Exercises exact-in (bid) and exact-out (ask) over a fragmented
+    /// book, one unit past the total resting liquidity.
+    #[test]
+    fn test_quote_matches_swap_t9_exhaustion() -> eyre::Result<()> {
+        let book: &[(u128, i16)] = &[(100_000_005, 10), (100_000_007, 10)];
+        let total_base: u128 = book.iter().map(|(s, _)| *s).sum();
+        let expected: TempoPrecompileError = StablecoinDEXError::insufficient_liquidity().into();
+
+        // bids: taker SELLS more base than the book can absorb.
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            let over = total_base + 1;
+            let q = dex.quote_swap_exact_amount_in(base, quote, over);
+            let ex = dex.swap_exact_amount_in(taker, base, quote, over, 0);
+            assert_eq!(q.unwrap_err(), expected, "quote error parity");
+            assert_eq!(ex.unwrap_err(), expected, "swap error parity");
+            Ok(())
+        })?;
+
+        // bids: taker asks for one unit more quote than the bids can pay out.
+        with_fragmented_book(TempoHardfork::T9, book, true, |dex, base, quote, taker| {
+            let max_quote_out = book
+                .iter()
+                .map(|(size, tick)| base_to_quote(*size, *tick, RoundingDirection::Down).unwrap())
+                .sum::<u128>();
+            let q = dex.quote_swap_exact_amount_out(base, quote, max_quote_out + 1);
+            let ex = dex.swap_exact_amount_out(taker, base, quote, max_quote_out + 1, u128::MAX);
+            assert_eq!(q.unwrap_err(), expected, "quote error parity");
+            assert_eq!(ex.unwrap_err(), expected, "swap error parity");
+            Ok(())
+        })?;
+
+        // asks: taker spends enough quote to demand one unit more base than the asks hold.
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            let over_quote = base_to_quote(total_base * 2, book[0].1, RoundingDirection::Up)
+                .expect("over-liquidity quote should fit");
+            let q = dex.quote_swap_exact_amount_in(quote, base, over_quote);
+            let ex = dex.swap_exact_amount_in(taker, quote, base, over_quote, 0);
+            assert_eq!(q.unwrap_err(), expected, "quote error parity");
+            assert_eq!(ex.unwrap_err(), expected, "swap error parity");
+            Ok(())
+        })?;
+
+        // asks: taker BUYS more base (exact-out) than the book can supply.
+        with_fragmented_book(TempoHardfork::T9, book, false, |dex, base, quote, taker| {
+            let over = total_base + 1;
+            let q = dex.quote_swap_exact_amount_out(quote, base, over);
+            let ex = dex.swap_exact_amount_out(taker, quote, base, over, u128::MAX);
+            assert_eq!(q.unwrap_err(), expected, "quote error parity");
+            assert_eq!(ex.unwrap_err(), expected, "swap error parity");
+            Ok(())
+        })?;
+
         Ok(())
     }
 }
