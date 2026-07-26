@@ -2,12 +2,13 @@
 
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fmt, fs,
     io::Write,
     num::NonZeroU64,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,14 +20,16 @@ use alloy_provider::{
 };
 use alloy_signer::{Signer, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
+use alloy_sol_types::SolCall;
 use alloy_transport::TransportResult;
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{self, Visitor},
 };
 use serde_json::value::RawValue;
+use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
-    SignatureType, TempoTxEnvelope,
+    SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
         Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
         SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
@@ -101,6 +104,30 @@ impl SignerSync<PrimitiveSignature> for AccountsSigner {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct AuthorizationReservations(Arc<Mutex<BTreeSet<(Address, Address)>>>);
+
+impl AuthorizationReservations {
+    fn reserve(&self, account: Address, key_id: Address) -> Result<(), TempoAccessKeyError> {
+        let mut reservations = self
+            .0
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        if !reservations.insert((account, key_id)) {
+            return Err(TempoAccessKeyError::AuthorizationInFlight { account, key_id });
+        }
+        Ok(())
+    }
+
+    fn release(&self, account: Address, key_id: Address) -> Result<(), TempoAccessKeyError> {
+        self.0
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?
+            .remove(&(account, key_id));
+        Ok(())
+    }
+}
+
 /// A locally signable access key selected from a Tempo Accounts store.
 #[derive(Clone, Debug)]
 pub struct TempoAccessKey {
@@ -109,6 +136,7 @@ pub struct TempoAccessKey {
     chain_id: u64,
     signer: AccountsSigner,
     key_authorization: Option<Box<SignedKeyAuthorization>>,
+    authorization_reservations: AuthorizationReservations,
 }
 
 impl TempoAccessKey {
@@ -121,6 +149,7 @@ impl TempoAccessKey {
             chain_id,
             signer: AccountsSigner::Secp256k1(signer),
             key_authorization: None,
+            authorization_reservations: AuthorizationReservations::default(),
         }
     }
 
@@ -236,8 +265,17 @@ impl TempoAccessKey {
         }
         request.key_type = Some(signature_type);
 
-        if request.key_authorization.is_none() {
-            request.key_authorization = self.key_authorization.as_deref().cloned();
+        if let Some(expected) = self.key_authorization.as_deref() {
+            if request
+                .key_authorization
+                .as_ref()
+                .is_some_and(|actual| actual != expected)
+            {
+                return Err(alloy_signer::Error::other(
+                    TempoAccessKeyError::AuthorizationMismatch,
+                ));
+            }
+            request.key_authorization = Some(expected.clone());
         }
 
         Ok(())
@@ -270,11 +308,29 @@ impl TempoAccessKey {
             ));
         }
 
-        if tx.key_authorization.is_none() {
-            tx.key_authorization = self.key_authorization.as_deref().cloned();
+        if let Some(expected) = self.key_authorization.as_deref() {
+            if tx
+                .key_authorization
+                .as_ref()
+                .is_some_and(|actual| actual != expected)
+            {
+                return Err(alloy_signer::Error::other(
+                    TempoAccessKeyError::AuthorizationMismatch,
+                ));
+            }
+            tx.key_authorization = Some(expected.clone());
         }
         let signing_hash = KeychainSignature::signing_hash(tx.signature_hash(), self.account);
         let primitive = self.signer.sign_hash(&signing_hash).await?;
+        if let Some(authorization) = tx.key_authorization.as_ref() {
+            self.authorization_reservations
+                .reserve(self.account, authorization.key_id)
+                .map_err(alloy_signer::Error::other)?;
+        } else {
+            self.authorization_reservations
+                .release(self.account, self.address)
+                .map_err(alloy_signer::Error::other)?;
+        }
         let keychain = KeychainSignature::new(self.account, primitive);
         Ok(tx.into_signed(TempoSignature::Keychain(keychain)).into())
     }
@@ -411,8 +467,10 @@ impl TxFiller<TempoNetwork> for TempoAccessKey {
     }
 
     fn prepare_call_sync(&self, request: &mut TempoTransactionRequest) -> TransportResult<()> {
-        self.fill_request(request)
-            .map_err(alloy_json_rpc::RpcError::local_usage)
+        if request.from().is_none() {
+            request.set_from(self.account);
+        }
+        Ok(())
     }
 
     async fn prepare_call(&self, request: &mut TempoTransactionRequest) -> TransportResult<()> {
@@ -437,6 +495,12 @@ enum TempoAccessKeyError {
         expected: SignatureType,
         actual: SignatureType,
     },
+    #[error("request key authorization does not match the selected Tempo Accounts key")]
+    AuthorizationMismatch,
+    #[error("Tempo key authorization for {key_id} on account {account} is already in flight")]
+    AuthorizationInFlight { account: Address, key_id: Address },
+    #[error("Tempo key-authorization reservation state is unavailable")]
+    ReservationStateUnavailable,
 }
 
 /// Errors returned while reading or selecting from a Tempo Accounts store.
@@ -713,6 +777,7 @@ enum AccountsSource {
 pub struct TempoAccountsWallet {
     source: AccountsSource,
     chain_id: Option<u64>,
+    authorization_reservations: AuthorizationReservations,
 }
 
 impl fmt::Debug for TempoAccountsWallet {
@@ -756,6 +821,7 @@ impl TempoAccountsWallet {
                 fallback_account,
             },
             chain_id: None,
+            authorization_reservations: AuthorizationReservations::default(),
         })
     }
 
@@ -791,12 +857,14 @@ impl TempoAccountsWallet {
                 key_authorization: key_authorization.map(Box::new),
             },
             chain_id: None,
+            authorization_reservations: AuthorizationReservations::default(),
         }
     }
 
     fn from_selected(selected: TempoAccessKey) -> Self {
         Self {
             chain_id: Some(selected.chain_id),
+            authorization_reservations: selected.authorization_reservations,
             source: AccountsSource::Local {
                 account: selected.account,
                 signer: selected.signer,
@@ -881,7 +949,15 @@ impl TempoAccountsWallet {
                 let state = load_state(path)?;
                 let account = active_account(&state)?;
                 let chain_id = self.chain_id.unwrap_or(state.chain_id);
-                select_access_key(&state, account, chain_id, None, None, unix_now())
+                select_access_key(
+                    &state,
+                    account,
+                    chain_id,
+                    None,
+                    None,
+                    unix_now(),
+                    &self.authorization_reservations,
+                )
             }
             AccountsSource::Local {
                 account,
@@ -898,6 +974,7 @@ impl TempoAccountsWallet {
                     chain_id,
                     signer: signer.clone(),
                     key_authorization: key_authorization.clone(),
+                    authorization_reservations: self.authorization_reservations.clone(),
                 })
             }
         }
@@ -914,7 +991,7 @@ impl TempoAccountsWallet {
                 let chain_id = request
                     .chain_id()
                     .or(self.chain_id)
-                    .unwrap_or(state.chain_id);
+                    .ok_or(TempoAccountsError::MissingChainId)?;
                 let calls = request_calls(request);
                 select_access_key(
                     &state,
@@ -923,6 +1000,7 @@ impl TempoAccountsWallet {
                     request.key_id,
                     calls.as_deref(),
                     unix_now(),
+                    &self.authorization_reservations,
                 )
             }
             AccountsSource::Local {
@@ -941,6 +1019,7 @@ impl TempoAccountsWallet {
                     chain_id,
                     signer: signer.clone(),
                     key_authorization: key_authorization.clone(),
+                    authorization_reservations: self.authorization_reservations.clone(),
                 })
             }
         }
@@ -965,6 +1044,7 @@ impl TempoAccountsWallet {
                     Some(access_key),
                     None,
                     unix_now(),
+                    &self.authorization_reservations,
                 )
             }
             AccountsSource::Local {
@@ -978,6 +1058,7 @@ impl TempoAccountsWallet {
                     chain_id,
                     signer: signer.clone(),
                     key_authorization: key_authorization.clone(),
+                    authorization_reservations: self.authorization_reservations.clone(),
                 })
             }
             AccountsSource::Local { .. } => {
@@ -1001,6 +1082,13 @@ impl TempoAccountsWallet {
     where
         P: Provider<TempoNetwork>,
     {
+        if request.chain_id().is_none() {
+            let chain_id = match self.chain_id {
+                Some(chain_id) => chain_id,
+                None => provider.get_chain_id().await?,
+            };
+            request.set_chain_id(chain_id);
+        }
         let selected = self.prepare_selected(provider, request).await?;
         request.key_authorization = selected.key_authorization.as_deref().cloned();
         selected
@@ -1013,10 +1101,10 @@ impl TempoAccountsWallet {
         &self,
         request: &mut TempoTransactionRequest,
     ) -> Result<TempoAccessKey, TempoAccountsError> {
-        let selected = self.select_for_request(request)?;
         if request.chain_id().is_none() {
-            request.set_chain_id(selected.chain_id);
+            request.set_chain_id(self.chain_id.ok_or(TempoAccountsError::MissingChainId)?);
         }
+        let selected = self.select_for_request(request)?;
         selected
             .fill_request(request)
             .map_err(TempoAccountsError::InvalidMetadata)?;
@@ -1042,6 +1130,7 @@ impl TempoAccountsWallet {
                     None,
                     calls.as_deref(),
                     unix_now(),
+                    &self.authorization_reservations,
                 )
             }
             AccountsSource::Local {
@@ -1054,6 +1143,7 @@ impl TempoAccountsWallet {
                 chain_id: tx.chain_id,
                 signer: signer.clone(),
                 key_authorization: key_authorization.clone(),
+                authorization_reservations: self.authorization_reservations.clone(),
             }),
             AccountsSource::Local { .. } => Err(TempoAccountsError::MissingAccessKey {
                 account,
@@ -1136,6 +1226,9 @@ impl TxFiller<TempoNetwork> for TempoAccountsWallet {
     type Fillable = TempoAccessKey;
 
     fn status(&self, request: &TempoTransactionRequest) -> FillerControlFlow {
+        if request.chain_id().is_none() && self.chain_id.is_none() {
+            return FillerControlFlow::missing("TempoAccountsWallet", vec!["chain_id"]);
+        }
         if request.from().is_none() || request.key_id.is_none() || request.key_type.is_none() {
             return FillerControlFlow::Ready;
         }
@@ -1187,9 +1280,13 @@ impl TxFiller<TempoNetwork> for TempoAccountsWallet {
     }
 
     fn prepare_call_sync(&self, request: &mut TempoTransactionRequest) -> TransportResult<()> {
-        self.fill_metadata(request)
-            .map(|_| ())
-            .map_err(alloy_json_rpc::RpcError::local_usage)
+        if request.from().is_none() {
+            request.set_from(
+                self.active_account()
+                    .map_err(alloy_json_rpc::RpcError::local_usage)?,
+            );
+        }
+        Ok(())
     }
 
     async fn prepare_call(&self, request: &mut TempoTransactionRequest) -> TransportResult<()> {
@@ -1205,14 +1302,6 @@ pub fn default_accounts_store_path() -> Result<PathBuf, TempoAccountsError> {
     dirs_next::home_dir()
         .map(|directory| directory.join(".tempo/wallet/store.json"))
         .ok_or(TempoAccountsError::HomeUnavailable)
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(untagged)]
-enum PersistedStoreFile {
-    TempoCli(TempoCliStore),
-    Envelope(PersistedStoreEnvelope),
-    State(PersistedAccountsState),
 }
 
 #[derive(Clone, Deserialize)]
@@ -1258,7 +1347,7 @@ struct PersistedAccessKey {
     #[serde(default)]
     expiry: Option<u64>,
     #[serde(default)]
-    handle: Option<PersistedKeyHandle>,
+    handle: Option<Box<RawValue>>,
     #[serde(default)]
     private_key: Option<PersistedPrivateKey>,
     #[serde(default)]
@@ -1296,14 +1385,22 @@ impl PersistedKeyType {
     }
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PersistedKeyHandle {
+#[derive(Deserialize)]
+struct PersistedKeyHandleKind {
     kind: PersistedHandleKind,
-    #[serde(default)]
-    jwk: Option<P256Jwk>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedPrivateKeyHandle {
     #[serde(default)]
     private_key: Option<PersistedPrivateKey>,
+}
+
+#[derive(Deserialize)]
+struct PersistedWebCryptoHandle {
+    #[serde(default)]
+    jwk: Option<P256Jwk>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1551,31 +1648,47 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
     type Error = PersistedKeyError;
 
     fn try_from(value: PersistedSignedKeyAuthorization) -> Result<Self, Self::Error> {
-        let expiry = value
-            .expiry
+        let PersistedSignedKeyAuthorization {
+            address,
+            chain_id,
+            expiry,
+            limits,
+            scopes,
+            witness,
+            is_admin,
+            account,
+            key_type,
+            signature,
+        } = value;
+        let expiry = expiry
             .map(|expiry| {
                 NonZeroU64::new(expiry.0).ok_or(PersistedKeyError::ZeroAuthorizationExpiry)
             })
             .transpose()?;
-        let limits = value
-            .limits
-            .map(|limits| limits.into_iter().map(Into::into).collect());
-        let allowed_calls = value
-            .scopes
-            .map(persisted_scopes_to_call_scopes)
-            .transpose()?;
+        let has_scopes = scopes.is_some();
+        let has_tip1053_fields = witness.is_some() || is_admin || account.is_some();
+        let limits = match limits {
+            Some(limits) => Some(limits.into_iter().map(Into::into).collect()),
+            // Ox 0.14 uses an empty RLP list as the positional limits
+            // placeholder when scopes follow it. Preserve that exact signed
+            // wire shape. Newer TIP-1053 fields switched skipped fields to the
+            // canonical optional null placeholder.
+            None if has_scopes && !has_tip1053_fields => Some(Vec::new()),
+            None => None,
+        };
+        let allowed_calls = scopes.map(persisted_scopes_to_call_scopes).transpose()?;
         let authorization = KeyAuthorization {
-            chain_id: value.chain_id.0,
-            key_type: value.key_type.signature_type()?,
-            key_id: value.address,
+            chain_id: chain_id.0,
+            key_type: key_type.signature_type()?,
+            key_id: address,
             expiry,
             limits,
             allowed_calls,
-            witness: value.witness,
-            is_admin: value.is_admin,
-            account: value.account,
+            witness,
+            is_admin,
+            account,
         };
-        Ok(Self::new(authorization, value.signature.try_into()?))
+        Ok(Self::new(authorization, signature.try_into()?))
     }
 }
 
@@ -1795,6 +1908,8 @@ enum PersistedKeyError {
     MissingCredential,
     #[error("invalid local private key")]
     InvalidPrivateKey,
+    #[error("invalid built-in access-key handle")]
+    InvalidHandle,
     #[error("WebCrypto P-256 handle is missing its JWK")]
     MissingJwk,
     #[error("WebCrypto P-256 handle is missing its public key")]
@@ -1811,6 +1926,12 @@ enum PersistedKeyError {
     ZeroAuthorizationExpiry,
     #[error("scope recipients require an explicit selector")]
     RecipientsWithoutSelector,
+    #[error("call-scope metadata disagrees with the signed authorization")]
+    AuthorizationScopesMismatch,
+    #[error("call-scope targets and selectors must be unique and nonzero")]
+    InvalidCallScope,
+    #[error("recipient constraints require a TIP-20 transfer or approve selector")]
+    InvalidRecipientConstraint,
     #[error("invalid secp256k1 y parity")]
     InvalidYParity,
     #[error("P-256 public key prefix must be uncompressed (4)")]
@@ -1856,20 +1977,13 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
         });
     }
 
-    let allowed_calls = key
-        .scopes
-        .clone()
-        .map(persisted_scopes_to_call_scopes)
-        .transpose()
-        .map_err(|error| TempoAccountsError::InvalidAccessKey {
-            address: key.address,
-            reason: error.to_string(),
-        })?
-        .or_else(|| {
-            key_authorization
-                .as_ref()
-                .and_then(|authorization| authorization.allowed_calls.clone())
-        });
+    let allowed_calls =
+        effective_allowed_calls(key, key_authorization.as_ref()).map_err(|error| {
+            TempoAccountsError::InvalidAccessKey {
+                address: key.address,
+                reason: error.to_string(),
+            }
+        })?;
     let limits = if key.limits.is_empty() {
         key_authorization
             .as_ref()
@@ -1878,12 +1992,14 @@ fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, T
     } else {
         key.limits.clone().into_iter().map(Into::into).collect()
     };
-    let expiry = key.expiry.or_else(|| {
-        key_authorization
-            .as_ref()
-            .and_then(|authorization| authorization.expiry)
-            .map(NonZeroU64::get)
-    });
+    let authorization_expiry = key_authorization
+        .as_ref()
+        .and_then(|authorization| authorization.expiry)
+        .map(NonZeroU64::get);
+    let expiry = match (key.expiry, authorization_expiry) {
+        (Some(stored), Some(signed)) => Some(stored.min(signed)),
+        (stored, signed) => stored.or(signed),
+    };
 
     Ok(TempoStoredAccessKey {
         account: key.access,
@@ -2430,15 +2546,15 @@ fn load_state(path: &Path) -> Result<PersistedAccountsState, TempoAccountsError>
         path: path.to_owned(),
         source,
     })?;
-    let file: PersistedStoreFile =
-        serde_json::from_slice(&bytes).map_err(|source| TempoAccountsError::Decode {
-            path: path.to_owned(),
-            source,
-        })?;
-    Ok(match file {
-        PersistedStoreFile::TempoCli(root) => root.store.state,
-        PersistedStoreFile::Envelope(envelope) => envelope.state,
-        PersistedStoreFile::State(state) => state,
+    if let Ok(root) = serde_json::from_slice::<TempoCliStore>(&bytes) {
+        return Ok(root.store.state);
+    }
+    if let Ok(envelope) = serde_json::from_slice::<PersistedStoreEnvelope>(&bytes) {
+        return Ok(envelope.state);
+    }
+    serde_json::from_slice(&bytes).map_err(|source| TempoAccountsError::Decode {
+        path: path.to_owned(),
+        source,
     })
 }
 
@@ -2465,6 +2581,7 @@ fn select_access_key(
     preferred: Option<Address>,
     calls: Option<&[IntentCall<'_>]>,
     now: u64,
+    authorization_reservations: &AuthorizationReservations,
 ) -> Result<TempoAccessKey, TempoAccountsError> {
     for key in state
         .access_keys
@@ -2472,9 +2589,6 @@ fn select_access_key(
         .filter(|key| key.chain_id == chain_id && key.access == account)
         .filter(|key| preferred.is_none_or(|preferred| key.address == preferred))
         .filter(|key| key.expiry.is_none_or(|expiry| expiry > now))
-        .filter(|key| {
-            (preferred.is_some() && calls.is_none()) || scopes_match(key.scopes.as_deref(), calls)
-        })
     {
         let Ok(mut signer) = hydrate_access_key(key) else {
             continue;
@@ -2497,9 +2611,24 @@ fn select_access_key(
                 || authorization.chain_id != chain_id
                 || authorization.key_type != signer.signature_type()
                 || authorization
+                    .expiry
+                    .is_some_and(|expiry| expiry.get() <= now)
+                || authorization
                     .account
                     .is_some_and(|authorized_account| authorized_account != account)
         }) {
+            continue;
+        }
+        if key_authorization.as_ref().is_some_and(|authorization| {
+            authorization.account.is_none() && authorization.recover_signer().ok() != Some(account)
+        }) {
+            continue;
+        }
+        let Ok(allowed_calls) = effective_allowed_calls(key, key_authorization.as_ref()) else {
+            continue;
+        };
+        let should_match_scopes = preferred.is_none() || calls.is_some();
+        if should_match_scopes && !scopes_match(allowed_calls.as_deref(), calls) {
             continue;
         }
 
@@ -2509,10 +2638,34 @@ fn select_access_key(
             chain_id,
             signer,
             key_authorization: key_authorization.map(Box::new),
+            authorization_reservations: authorization_reservations.clone(),
         });
     }
 
     Err(TempoAccountsError::MissingAccessKey { account, chain_id })
+}
+
+fn effective_allowed_calls(
+    key: &PersistedAccessKey,
+    authorization: Option<&SignedKeyAuthorization>,
+) -> Result<Option<Vec<CallScope>>, PersistedKeyError> {
+    let persisted = key
+        .scopes
+        .clone()
+        .map(persisted_scopes_to_call_scopes)
+        .transpose()?;
+    let Some(authorization) = authorization else {
+        return Ok(persisted);
+    };
+
+    match (persisted, authorization.allowed_calls.as_ref()) {
+        (Some(persisted), Some(signed)) if &persisted != signed => {
+            Err(PersistedKeyError::AuthorizationScopesMismatch)
+        }
+        (Some(_), None) => Err(PersistedKeyError::AuthorizationScopesMismatch),
+        (Some(persisted), Some(_)) => Ok(Some(persisted)),
+        (None, signed) => Ok(signed.cloned()),
+    }
 }
 
 fn request_calls(request: &TempoTransactionRequest) -> Option<Vec<IntentCall<'_>>> {
@@ -2549,7 +2702,7 @@ fn call_address(kind: &TxKind) -> Option<Address> {
     }
 }
 
-fn scopes_match(scopes: Option<&[PersistedScope]>, calls: Option<&[IntentCall<'_>]>) -> bool {
+fn scopes_match(scopes: Option<&[CallScope]>, calls: Option<&[IntentCall<'_>]>) -> bool {
     let Some(scopes) = scopes else {
         return true;
     };
@@ -2562,28 +2715,27 @@ fn scopes_match(scopes: Option<&[PersistedScope]>, calls: Option<&[IntentCall<'_
             return false;
         };
         scopes.iter().any(|scope| {
-            if scope.address != to {
+            if scope.target != to {
                 return false;
             }
-            let Some(selector) = scope.selector else {
-                return scope
-                    .recipients
-                    .as_ref()
-                    .is_none_or(|recipients| recipients.is_empty());
-            };
-            if call.input.get(..4) != Some(selector.0.as_slice()) {
-                return false;
-            }
-            let Some(recipients) = scope.recipients.as_deref() else {
-                return true;
-            };
-            if recipients.is_empty() {
+            if scope.selector_rules.is_empty() {
                 return true;
             }
-            let Some(word) = call.input.get(4..36) else {
-                return false;
-            };
-            recipients.contains(&Address::from_word(B256::from_slice(word)))
+            scope.selector_rules.iter().any(|rule| {
+                if call.input.get(..4) != Some(rule.selector.as_slice()) {
+                    return false;
+                }
+                if rule.recipients.is_empty() {
+                    return true;
+                }
+                let Some(word) = call.input.get(4..36) else {
+                    return false;
+                };
+                if word[..12].iter().any(|byte| *byte != 0) {
+                    return false;
+                }
+                rule.recipients.contains(&Address::from_slice(&word[12..]))
+            })
         })
     })
 }
@@ -2591,9 +2743,12 @@ fn scopes_match(scopes: Option<&[PersistedScope]>, calls: Option<&[IntentCall<'_
 fn persisted_scopes_to_call_scopes(
     scopes: Vec<PersistedScope>,
 ) -> Result<Vec<CallScope>, PersistedKeyError> {
-    let mut grouped: Vec<(Address, Option<Vec<SelectorRule>>)> = Vec::new();
+    let mut grouped: Vec<CallScope> = Vec::new();
 
     for scope in scopes {
+        if scope.address.is_zero() {
+            return Err(PersistedKeyError::InvalidCallScope);
+        }
         if scope.selector.is_none()
             && scope
                 .recipients
@@ -2603,34 +2758,55 @@ fn persisted_scopes_to_call_scopes(
             return Err(PersistedKeyError::RecipientsWithoutSelector);
         }
 
-        let entry = grouped
-            .iter_mut()
-            .find(|(target, _)| *target == scope.address);
-        match (entry, scope.selector) {
-            (Some((_, rules)), None) => *rules = None,
-            (Some((_, Some(rules))), Some(selector)) => rules.push(SelectorRule {
-                selector: selector.0,
-                recipients: scope.recipients.unwrap_or_default(),
-            }),
-            (Some((_, None)), Some(_)) => {}
-            (None, None) => grouped.push((scope.address, None)),
-            (None, Some(selector)) => grouped.push((
-                scope.address,
-                Some(vec![SelectorRule {
-                    selector: selector.0,
-                    recipients: scope.recipients.unwrap_or_default(),
-                }]),
-            )),
+        let index = match grouped
+            .iter()
+            .position(|candidate| candidate.target == scope.address)
+        {
+            Some(index) => index,
+            None => {
+                grouped.push(CallScope {
+                    target: scope.address,
+                    selector_rules: Vec::new(),
+                });
+                grouped.len() - 1
+            }
+        };
+        let entry = &mut grouped[index];
+        let Some(selector) = scope.selector else {
+            continue;
+        };
+        if entry
+            .selector_rules
+            .iter()
+            .any(|rule| rule.selector == selector.0)
+        {
+            return Err(PersistedKeyError::InvalidCallScope);
         }
+        let recipients = scope.recipients.unwrap_or_default();
+        if !recipients.is_empty() {
+            let valid_selector = matches!(
+                selector.0,
+                ITIP20::transferCall::SELECTOR
+                    | ITIP20::approveCall::SELECTOR
+                    | ITIP20::transferWithMemoCall::SELECTOR
+            );
+            let mut unique = BTreeSet::new();
+            if !scope.address.is_tip20()
+                || !valid_selector
+                || recipients
+                    .iter()
+                    .any(|recipient| recipient.is_zero() || !unique.insert(*recipient))
+            {
+                return Err(PersistedKeyError::InvalidRecipientConstraint);
+            }
+        }
+        entry.selector_rules.push(SelectorRule {
+            selector: selector.0,
+            recipients,
+        });
     }
 
-    Ok(grouped
-        .into_iter()
-        .map(|(target, selector_rules)| CallScope {
-            target,
-            selector_rules: selector_rules.unwrap_or_default(),
-        })
-        .collect())
+    Ok(grouped)
 }
 
 fn hydrate_access_key(key: &PersistedAccessKey) -> Result<AccountsSigner, PersistedKeyError> {
@@ -2642,20 +2818,29 @@ fn hydrate_access_key(key: &PersistedAccessKey) -> Result<AccountsSigner, Persis
         .handle
         .as_ref()
         .ok_or(PersistedKeyError::MissingCredential)?;
-    if let Some(private_key) = handle.private_key {
-        return match handle.kind {
-            PersistedHandleKind::Secp256k1 => {
-                hydrate_private_key(PersistedKeyType::Secp256k1, private_key)
-            }
-            PersistedHandleKind::P256 => hydrate_private_key(PersistedKeyType::P256, private_key),
-            PersistedHandleKind::WebCryptoP256 | PersistedHandleKind::Unsupported => {
-                Err(PersistedKeyError::UnsupportedKeyType)
-            }
-        };
-    }
-
-    match handle.kind {
+    let kind = serde_json::from_str::<PersistedKeyHandleKind>(handle.get())
+        .map_err(|_| PersistedKeyError::InvalidHandle)?
+        .kind;
+    match kind {
+        PersistedHandleKind::Secp256k1 => {
+            let handle = serde_json::from_str::<PersistedPrivateKeyHandle>(handle.get())
+                .map_err(|_| PersistedKeyError::InvalidHandle)?;
+            let private_key = handle
+                .private_key
+                .ok_or(PersistedKeyError::MissingCredential)?;
+            hydrate_private_key(PersistedKeyType::Secp256k1, private_key)
+        }
+        PersistedHandleKind::P256 => {
+            let handle = serde_json::from_str::<PersistedPrivateKeyHandle>(handle.get())
+                .map_err(|_| PersistedKeyError::InvalidHandle)?;
+            let private_key = handle
+                .private_key
+                .ok_or(PersistedKeyError::MissingCredential)?;
+            hydrate_private_key(PersistedKeyType::P256, private_key)
+        }
         PersistedHandleKind::WebCryptoP256 => {
+            let handle = serde_json::from_str::<PersistedWebCryptoHandle>(handle.get())
+                .map_err(|_| PersistedKeyError::InvalidHandle)?;
             if key.public_key.is_none() {
                 return Err(PersistedKeyError::MissingPublicKey);
             }
@@ -2665,9 +2850,7 @@ fn hydrate_access_key(key: &PersistedAccessKey) -> Result<AccountsSigner, Persis
             .map(AccountsSigner::P256)
             .map_err(Into::into)
         }
-        PersistedHandleKind::Secp256k1
-        | PersistedHandleKind::P256
-        | PersistedHandleKind::Unsupported => Err(PersistedKeyError::MissingCredential),
+        PersistedHandleKind::Unsupported => Err(PersistedKeyError::UnsupportedKeyType),
     }
 }
 
@@ -2702,7 +2885,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use alloy_network::{NetworkWallet, TransactionBuilder};
-    use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller};
+    use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller, mock::Asserter};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
     use tempo_primitives::{TempoTxEnvelope, transaction::TempoSignature};
 
@@ -2844,7 +3027,7 @@ mod tests {
                 period: 86_400,
             }]),
             allowed_calls: Some(vec![CallScope {
-                target: TARGET.parse().unwrap(),
+                target: tempo_contracts::precompiles::PATH_USD_ADDRESS,
                 selector_rules: vec![SelectorRule {
                     selector: [0xa9, 0x05, 0x9c, 0xbb],
                     recipients: vec![Address::repeat_byte(0x44)],
@@ -2956,7 +3139,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_scoped_key_metadata_before_async_prepare() {
+    fn waits_for_the_endpoint_chain_before_selecting_a_scoped_key() {
         let first_key = format!("0x{}", "01".repeat(32));
         let selected_key = format!("0x{}", "02".repeat(32));
         let first =
@@ -2996,6 +3179,14 @@ mod tests {
 
         wallet.fill_sync(&mut sendable);
 
+        let request = sendable.as_mut_builder().unwrap();
+        assert_eq!(request.from(), None);
+        assert_eq!(request.chain_id(), None);
+        assert_eq!(request.key_id, None);
+        request.set_chain_id(4217);
+
+        wallet.fill_sync(&mut sendable);
+
         let request = sendable.as_builder().unwrap();
         assert_eq!(request.from(), Some(ROOT.parse().unwrap()));
         assert_eq!(request.chain_id(), Some(4217));
@@ -3015,7 +3206,9 @@ mod tests {
             TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&second_key).unwrap())
                 .unwrap();
         let path = write_store(serde_json::json!([key_json(first.address(), first_key)]));
-        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
         let mut request = TempoTransactionRequest::default();
         wallet.fill_metadata(&mut request).unwrap();
         assert_eq!(request.key_id, Some(first.address()));
@@ -3045,7 +3238,9 @@ mod tests {
             "privateKey": private_key,
             "scopes": [{"address": TARGET, "selector": "0xaabbccdd"}],
         }]));
-        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 to: Some(TARGET.parse::<Address>().unwrap().into()),
@@ -3077,7 +3272,9 @@ mod tests {
             "privateKey": private_key,
             "scopes": [{"address": TARGET, "selector": "0xaabbccdd"}],
         }]));
-        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 to: Some(Address::repeat_byte(0x33).into()),
@@ -3154,10 +3351,12 @@ mod tests {
                 .unwrap();
         let path = write_store(serde_json::json!([key_json(first.address(), first_key)]));
         let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let asserter = Asserter::new();
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_mocked_client(Default::default());
+            .connect_mocked_client(asserter.clone());
 
         let mut first_request = TempoTransactionRequest::default();
+        asserter.push_success(&alloy_primitives::U64::from(4217));
         wallet
             .prepare_request(&provider, &mut first_request)
             .await
@@ -3169,6 +3368,7 @@ mod tests {
             serde_json::json!([key_json(second.address(), second_key)]),
         );
         let mut second_request = TempoTransactionRequest::default();
+        asserter.push_success(&alloy_primitives::U64::from(4217));
         wallet
             .prepare_request(&provider, &mut second_request)
             .await
@@ -3218,6 +3418,7 @@ mod tests {
                 gas: Some(100_000),
                 max_fee_per_gas: Some(1),
                 max_priority_fee_per_gas: Some(1),
+                chain_id: Some(4217),
                 ..Default::default()
             },
             ..Default::default()
@@ -3294,6 +3495,280 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("cannot use CREATE"));
+    }
+
+    #[test]
+    fn opaque_unsupported_handles_do_not_hide_other_accounts_keys() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([
+            {
+                "access": ROOT,
+                "address": Address::repeat_byte(0x55),
+                "chainId": 4217,
+                "keyType": "secp256k1",
+                "handle": {
+                    "kind": "future-hardware-key",
+                    "jwk": {"vendorSpecific": true},
+                    "privateKey": {"opaque": ["not", "a", "key"]},
+                },
+            },
+            key_json(signer.address(), private_key),
+        ]));
+
+        let store = TempoAccountsStore::open(&path).unwrap();
+        let keys = store.access_keys().unwrap();
+        assert_eq!(keys.len(), 2);
+        assert!(!keys[0].is_locally_signable());
+
+        let selected = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217)
+            .active_access_key()
+            .unwrap();
+        assert_eq!(selected.address(), signer.address());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn signed_scopes_are_authoritative_and_preserve_the_ox_placeholder() {
+        let root = PrivateKeySigner::random();
+        let access_key = PrivateKeySigner::random();
+        let target = TARGET.parse::<Address>().unwrap();
+        let selector = [0xaa, 0xbb, 0xcc, 0xdd];
+        let authorization = KeyAuthorization {
+            chain_id: 4217,
+            key_type: SignatureType::Secp256k1,
+            key_id: access_key.address(),
+            expiry: None,
+            // Ox 0.14 emits an empty-list positional placeholder here when
+            // scopes follow an omitted limits field.
+            limits: Some(Vec::new()),
+            allowed_calls: Some(vec![CallScope {
+                target,
+                selector_rules: vec![SelectorRule {
+                    selector,
+                    recipients: Vec::new(),
+                }],
+            }]),
+            witness: None,
+            is_admin: false,
+            account: None,
+        };
+        let signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let record = serde_json::json!({
+            "access": root.address(),
+            "address": access_key.address(),
+            "chainId": 4217,
+            "keyType": "secp256k1",
+            "privateKey": alloy_primitives::hex::encode_prefixed(access_key.to_bytes()),
+            "keyAuthorization": {
+                "address": access_key.address(),
+                "chainId": 4217,
+                "scopes": [{"address": target, "selector": "0xaabbccdd"}],
+                "type": "secp256k1",
+                "signature": {
+                    "type": "secp256k1",
+                    "signature": {
+                        "r": writable_bigint(signature.r()),
+                        "s": writable_bigint(signature.s()),
+                        "yParity": u8::from(signature.v()),
+                    },
+                },
+            },
+        });
+        let path = write_store(serde_json::json!([record]));
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(root.address()),
+                to: Some(target.into()),
+                input: TransactionInput::new(Bytes::copy_from_slice(&selector)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let selected = wallet.select_for_request(&request).unwrap();
+        let stored = selected.key_authorization().unwrap();
+        assert_eq!(stored.limits.as_deref(), Some([].as_slice()));
+        assert_eq!(stored.recover_signer().unwrap(), root.address());
+
+        let mut disallowed = request.clone();
+        disallowed.inner.input =
+            TransactionInput::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]));
+        assert!(matches!(
+            wallet.select_for_request(&disallowed),
+            Err(TempoAccountsError::MissingAccessKey { .. })
+        ));
+
+        let mut drifted = record;
+        drifted["scopes"] = serde_json::json!([{"address": target, "selector": "0xdeadbeef"}]);
+        let drifted_path = write_store(serde_json::json!([drifted]));
+        let drifted_wallet = TempoAccountsWallet::from_store(&drifted_path)
+            .unwrap()
+            .with_chain_id(4217);
+        assert!(matches!(
+            drifted_wallet.select_for_request(&request),
+            Err(TempoAccountsError::MissingAccessKey { .. })
+        ));
+
+        fs::remove_file(path).unwrap();
+        fs::remove_file(drifted_path).unwrap();
+    }
+
+    #[test]
+    fn tip1053_scoped_authorization_preserves_the_null_limits_placeholder() {
+        let root = PrivateKeySigner::random();
+        let access_key = PrivateKeySigner::random();
+        let target = TARGET.parse::<Address>().unwrap();
+        let authorization = KeyAuthorization {
+            chain_id: 4217,
+            key_type: SignatureType::Secp256k1,
+            key_id: access_key.address(),
+            expiry: None,
+            limits: None,
+            allowed_calls: Some(vec![CallScope {
+                target,
+                selector_rules: Vec::new(),
+            }]),
+            witness: None,
+            is_admin: false,
+            account: Some(root.address()),
+        };
+        let signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let persisted: PersistedSignedKeyAuthorization =
+            serde_json::from_value(serde_json::json!({
+                "address": access_key.address(),
+                "chainId": 4217,
+                "scopes": [{"address": target}],
+                "account": root.address(),
+                "type": "secp256k1",
+                "signature": {
+                    "type": "secp256k1",
+                    "signature": {
+                        "r": writable_bigint(signature.r()),
+                        "s": writable_bigint(signature.s()),
+                        "yParity": u8::from(signature.v()),
+                    },
+                },
+            }))
+            .unwrap();
+
+        let decoded = SignedKeyAuthorization::try_from(persisted).unwrap();
+
+        assert_eq!(decoded.limits, None);
+        assert_eq!(decoded.recover_signer().unwrap(), root.address());
+    }
+
+    #[test]
+    fn recipient_scope_matching_rejects_noncanonical_abi_addresses() {
+        let token = tempo_contracts::precompiles::PATH_USD_ADDRESS;
+        let recipient = Address::repeat_byte(0x44);
+        let selector = ITIP20::transferCall::SELECTOR;
+        let scopes = [CallScope {
+            target: token,
+            selector_rules: vec![SelectorRule {
+                selector,
+                recipients: vec![recipient],
+            }],
+        }];
+        let mut input = selector.to_vec();
+        input.extend_from_slice(&[0_u8; 12]);
+        input.extend_from_slice(recipient.as_slice());
+        let calls = [IntentCall {
+            to: Some(token),
+            input: &input,
+        }];
+        assert!(scopes_match(Some(&scopes), Some(&calls)));
+
+        input[4] = 1;
+        let calls = [IntentCall {
+            to: Some(token),
+            input: &input,
+        }];
+        assert!(!scopes_match(Some(&scopes), Some(&calls)));
+    }
+
+    #[test]
+    fn read_call_preparation_only_supplies_the_sender() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([key_json(signer.address(), private_key)]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let mut request = TempoTransactionRequest::default();
+
+        wallet.prepare_call_sync(&mut request).unwrap();
+
+        assert_eq!(request.from(), Some(ROOT.parse().unwrap()));
+        assert_eq!(request.chain_id(), None);
+        assert_eq!(request.key_id, None);
+        assert_eq!(request.key_type, None);
+        assert_eq!(request.key_authorization, None);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_key_rejects_a_different_pending_authorization() {
+        let account = ROOT.parse::<Address>().unwrap();
+        let signer = PrivateKeySigner::random();
+        let expected =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let different = expected
+            .authorization
+            .clone()
+            .with_expiry(4_000_000_000)
+            .into_signed(expected.signature.clone());
+        let key =
+            TempoAccessKey::from_secp256k1(account, 4217, signer).with_key_authorization(expected);
+        let mut request = TempoTransactionRequest {
+            key_authorization: Some(different),
+            ..Default::default()
+        };
+
+        let error = key.fill_request(&mut request).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match the selected Tempo Accounts key")
+        );
+    }
+
+    #[tokio::test]
+    async fn one_time_authorization_can_only_be_signed_once_per_wallet() {
+        let account = ROOT.parse::<Address>().unwrap();
+        let signer = PrivateKeySigner::random();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let wallet = TempoAccountsWallet::from_secp256k1(account, signer, Some(authorization))
+            .with_chain_id(4217);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TARGET.parse::<Address>().unwrap().into()),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        wallet.sign_request(request.clone()).await.unwrap();
+        let error = wallet.sign_request(request).await.unwrap_err();
+        assert!(error.to_string().contains("already in flight"));
     }
 
     fn key_json(address: Address, private_key: String) -> serde_json::Value {

@@ -36,6 +36,15 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
     type Fillable = TempoGasFillable;
 
     fn status(&self, request: &TempoTransactionRequest) -> FillerControlFlow {
+        if request.gas_price().is_some() {
+            return FillerControlFlow::Ready;
+        }
+        if request.chain_id().is_none() {
+            return FillerControlFlow::missing("TempoGasFiller", vec!["chain_id"]);
+        }
+        if request.from().is_none() {
+            return FillerControlFlow::missing("TempoGasFiller", vec!["from"]);
+        }
         <GasFiller as TxFiller<TempoNetwork>>::status(&self.inner, request)
     }
 
@@ -51,6 +60,11 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
     where
         P: Provider<TempoNetwork>,
     {
+        if request.gas_price().is_some() {
+            return Err(RpcError::local_usage(
+                KeyAuthorizationError::LegacyGasPriceUnsupported,
+            ));
+        }
         let mut estimate_request = request.clone();
         let key_authorization = resolve_key_authorization(provider, request).await?;
         if let Some(resolved) = &key_authorization {
@@ -102,11 +116,20 @@ where
     let account = request
         .from()
         .ok_or_else(|| RpcError::local_usage(KeyAuthorizationError::MissingAccount))?;
-    let key_id = request
+    validate_authorization(request, account, authorization).map_err(RpcError::local_usage)?;
+    let Some(key_id) = request
         .key_id
-        .ok_or_else(|| RpcError::local_usage(KeyAuthorizationError::MissingKeyId))?;
-    validate_authorization(request, account, key_id, authorization)
-        .map_err(RpcError::local_usage)?;
+        .filter(|key_id| *key_id == authorization.key_id)
+    else {
+        return Ok(Some(Some(authorization.clone())));
+    };
+    if let Some(key_type) = request.key_type
+        && authorization.key_type != key_type
+    {
+        return Err(RpcError::local_usage(
+            KeyAuthorizationError::AuthorizationTypeMismatch,
+        ));
+    }
 
     let key = provider
         .get_keychain_key(account, key_id)
@@ -142,16 +165,9 @@ where
 fn validate_authorization(
     request: &TempoTransactionRequest,
     account: Address,
-    key_id: Address,
     signed: &SignedKeyAuthorization,
 ) -> Result<(), KeyAuthorizationError> {
     let authorization = &signed.authorization;
-    if authorization.key_id != key_id {
-        return Err(KeyAuthorizationError::AuthorizationKeyMismatch {
-            expected: key_id,
-            actual: authorization.key_id,
-        });
-    }
     if let Some(chain_id) = request.chain_id()
         && authorization.chain_id != chain_id
     {
@@ -159,11 +175,6 @@ fn validate_authorization(
             expected: chain_id,
             actual: authorization.chain_id,
         });
-    }
-    if let Some(key_type) = request.key_type
-        && authorization.key_type != key_type
-    {
-        return Err(KeyAuthorizationError::AuthorizationTypeMismatch);
     }
     if let Some(authorized_account) = authorization.account
         && authorized_account != account
@@ -193,12 +204,10 @@ fn unix_now() -> u64 {
 enum KeyAuthorizationError {
     #[error("Tempo access-key authorization requires a transaction sender")]
     MissingAccount,
-    #[error("Tempo access-key authorization requires a key ID")]
-    MissingKeyId,
+    #[error("Tempo AA transactions require EIP-1559 fees; gas_price is unsupported")]
+    LegacyGasPriceUnsupported,
     #[error("Tempo key authorization is expired")]
     AuthorizationExpired,
-    #[error("Tempo key authorization is for {actual}, expected {expected}")]
-    AuthorizationKeyMismatch { expected: Address, actual: Address },
     #[error("Tempo key authorization chain is {actual}, expected {expected}")]
     AuthorizationChainMismatch { expected: u64, actual: u64 },
     #[error("Tempo key authorization signature type does not match the selected signer")]
@@ -211,4 +220,114 @@ enum KeyAuthorizationError {
     Revoked { account: Address, key_id: Address },
     #[error("Tempo access key {key_id} for {account} has expired")]
     Expired { account: Address, key_id: Address },
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::Signature;
+    use alloy_provider::{ProviderBuilder, fillers::TxFiller};
+    use alloy_rpc_types_eth::TransactionRequest;
+    use tempo_primitives::{
+        SignatureType,
+        transaction::{KeyAuthorization, PrimitiveSignature},
+    };
+
+    use super::*;
+
+    #[test]
+    fn waits_for_the_endpoint_chain_and_sender_before_estimation() {
+        let filler = TempoGasFiller::default();
+        let mut request = TempoTransactionRequest::default();
+
+        assert!(matches!(
+            filler.status(&request),
+            FillerControlFlow::Missing(_)
+        ));
+
+        request.set_chain_id(4217);
+        assert!(matches!(
+            filler.status(&request),
+            FillerControlFlow::Missing(_)
+        ));
+
+        request.set_from(Address::repeat_byte(0x11));
+        assert!(matches!(filler.status(&request), FillerControlFlow::Ready));
+    }
+
+    #[tokio::test]
+    async fn rejects_legacy_gas_price_without_an_rpc() {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                gas_price: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = TempoGasFiller::default()
+            .prepare(&provider, &request)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("require EIP-1559 fees"));
+    }
+
+    #[tokio::test]
+    async fn preserves_root_provisioning_authorization_without_an_rpc() {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+        let account = Address::repeat_byte(0x11);
+        let authorization = KeyAuthorization::unrestricted(
+            4217,
+            SignatureType::Secp256k1,
+            Address::repeat_byte(0x22),
+        )
+        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_authorization: Some(authorization.clone()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_key_authorization(&provider, &request)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, Some(Some(authorization)));
+    }
+
+    #[tokio::test]
+    async fn preserves_cross_key_provisioning_authorization_without_an_rpc() {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+        let account = Address::repeat_byte(0x11);
+        let authorization = KeyAuthorization::unrestricted(
+            4217,
+            SignatureType::Secp256k1,
+            Address::repeat_byte(0x22),
+        )
+        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_id: Some(Address::repeat_byte(0x33)),
+            key_authorization: Some(authorization.clone()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_key_authorization(&provider, &request)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, Some(Some(authorization)));
+    }
 }
