@@ -508,10 +508,10 @@ impl StablecoinDEX {
 
         if self.storage.spec().is_t9() {
             // Sum the remaining amount of every order reachable from the tick's head.
-            let mut order_id = level.head;
+            let mut order_id = level.links.head;
             level.total_liquidity = 0;
             while order_id != 0 {
-                let order = self.orders[order_id].read()?;
+                let order = self.orders[order_id].read_in_book(book_key)?;
                 level.total_liquidity = level
                     .total_liquidity
                     .checked_add(order.remaining())
@@ -729,17 +729,11 @@ impl StablecoinDEX {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
-        if !self.storage.spec().is_t9() {
-            level.total_liquidity = level
-                .total_liquidity
-                .checked_add(order.remaining())
-                .ok_or(TempoPrecompileError::under_overflow())?;
-        }
 
-        let prev_tail = level.tail;
+        let prev_tail = level.links.tail;
         if prev_tail == 0 {
-            level.head = order.order_id();
-            level.tail = order.order_id();
+            level.links.head = order.order_id();
+            level.links.tail = order.order_id();
 
             self.books[order.book_key()].set_tick_bit(order.tick(), order.is_bid())?;
 
@@ -766,7 +760,14 @@ impl StablecoinDEX {
 
             // Set current order's prev pointer
             order.prev = prev_tail;
-            level.tail = order.order_id();
+            level.links.tail = order.order_id();
+        }
+
+        if !self.storage.spec().is_t9() {
+            level.total_liquidity = level
+                .total_liquidity
+                .checked_add(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
         }
 
         self.books[order.book_key()]
@@ -1012,7 +1013,7 @@ impl StablecoinDEX {
         level: &mut TickLevel,
         fill_amount: u128,
         taker: Address,
-    ) -> Result<u128> {
+    ) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
 
         // Update order remaining amount
@@ -1022,29 +1023,15 @@ impl StablecoinDEX {
             .write(new_remaining)?;
         order.remaining = new_remaining;
 
-        // Calculate quote amount for this fill (used by both maker settlement and taker output)
-        let quote_amount = base_to_quote(
-            fill_amount,
-            order.tick(),
-            if order.is_bid() {
-                RoundingDirection::Down // Bid: taker receives quote, round DOWN
-            } else {
-                RoundingDirection::Up // Ask: maker receives quote, round UP to favor maker
-            },
-        )
-        .ok_or(TempoPrecompileError::under_overflow())?;
-
         if order.is_bid() {
-            // Bid order maker receives base tokens (exact amount)
+            // Bid order maker receives base tokens (exact amount).
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
-            // Ask order maker receives quote tokens
+            // Ask order maker receives quote tokens, rounded up to favor the maker.
+            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
-
-        // Taker output: bid→quote (rounded down), ask→base (zero-sum with maker).
-        let amount_out = taker_output(fill_amount, order.tick(), order.is_bid())
-            .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Update price level total liquidity
         if !self.storage.spec().is_t9() {
@@ -1061,7 +1048,7 @@ impl StablecoinDEX {
         // Emit OrderFilled event for partial fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
 
-        Ok(amount_out)
+        Ok(())
     }
 
     /// Fill an order and delete from storage. Returns the next best order and price level.
@@ -1076,7 +1063,7 @@ impl StablecoinDEX {
         order: &mut Order,
         mut level: TickLevel,
         taker: Address,
-    ) -> Result<(u128, Option<(TickLevel, Order)>)> {
+    ) -> Result<Option<(TickLevel, Order)>> {
         debug_assert_eq!(order.book_key(), book_key);
 
         let orderbook = self.books[book_key].read()?;
@@ -1091,10 +1078,6 @@ impl StablecoinDEX {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
-
-        // Taker output: bid→quote (rounded down), ask→base (zero-sum with maker).
-        let amount_out = taker_output(fill_amount, order.tick(), order.is_bid())
-            .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Emit OrderFilled event for complete fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
@@ -1175,13 +1158,13 @@ impl StablecoinDEX {
                 let new_level = self.books[book_key]
                     .tick_level_handler(tick, order.is_bid())
                     .read()?;
-                let new_order = self.orders[new_level.head].read_in_book(book_key)?;
+                let new_order = self.orders[new_level.links.head].read_in_book(book_key)?;
 
                 Some((new_level, new_order))
             }
         } else {
             // If there are subsequent orders at tick, advance to next order
-            level.head = order.next();
+            level.links.head = order.next();
             let (_, credits) = StorageCredits::new().track_minted_credits(self.address, || {
                 self.orders[order.next()].prev()?.delete()
             })?;
@@ -1203,7 +1186,7 @@ impl StablecoinDEX {
             Some((level, new_order))
         };
 
-        Ok((amount_out, next_tick_info))
+        Ok(next_tick_info)
     }
 
     /// Fill orders for exact output amount
@@ -1216,7 +1199,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, is_bid)?;
-        let order = self.orders[level.head].read_in_book(book_key)?;
+        let order = self.orders[level.links.head].read_in_book(book_key)?;
 
         // Returns the total input spent to receive `amount_out`.
         walk_resting_orders(order, amount_out, is_bid, step_exact_out, |order, fill| {
@@ -1234,7 +1217,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, is_bid)?;
-        let order = self.orders[level.head].read_in_book(book_key)?;
+        let order = self.orders[level.links.head].read_in_book(book_key)?;
 
         // Returns the total output received for spending `amount_in`.
         walk_resting_orders(order, amount_in, is_bid, step_exact_in, |order, fill| {
@@ -1260,8 +1243,7 @@ impl StablecoinDEX {
                 Ok(None)
             }
             Fill::Full => {
-                let (_out, next) =
-                    self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
+                let next = self.fill_order(storage_credits, book_key, &mut order, *level, taker)?;
                 match next {
                     Some((new_level, new_order)) => {
                         *level = new_level;
@@ -1308,7 +1290,7 @@ impl StablecoinDEX {
         is_bid: bool,
     ) -> Result<Option<Order>> {
         if order.next() != 0 {
-            return Ok(Some(self.orders[order.next()].read()?));
+            return Ok(Some(self.orders[order.next()].read_in_book(book_key)?));
         }
 
         let (next_tick, has_liquidity) =
@@ -1320,7 +1302,9 @@ impl StablecoinDEX {
         let next_level = self.books[book_key]
             .tick_level_handler(next_tick, is_bid)
             .read()?;
-        Ok(Some(self.orders[next_level.head].read()?))
+        self.orders[next_level.links.head]
+            .read_in_book(book_key)
+            .map(Some)
     }
 
     /// Cancels an active order and refunds escrowed tokens to the maker.
@@ -1359,7 +1343,7 @@ impl StablecoinDEX {
                 s.orders[order.prev()].next()?.write(order.next())
             })?;
         } else {
-            level.head = order.next();
+            level.links.head = order.next();
         }
 
         if order.next() != 0 {
@@ -1367,19 +1351,23 @@ impl StablecoinDEX {
                 s.orders[order.next()].prev()?.write(order.prev())
             })?;
         } else {
-            level.tail = order.prev();
+            level.links.tail = order.prev();
         }
 
-        // Update level liquidity
-        if !self.storage.spec().is_t9() {
+        let has_level_changed = if self.storage.spec().is_t9() {
+            // +T9: Only cancelling the head or tail changes tick-level storage.
+            order.prev() == 0 || order.next() == 0
+        } else {
+            // pre-T9: Every cancellation changes the maintained liquidity aggregate.
             level.total_liquidity = level
                 .total_liquidity
                 .checked_sub(order.remaining())
                 .ok_or(TempoPrecompileError::under_overflow())?;
-        }
+            true
+        };
 
         // If this was the last order at this tick, clear the bitmap bit
-        if level.head == 0 {
+        if level.links.head == 0 {
             self.books[order.book_key()].delete_tick_bit(order.tick(), order.is_bid())?;
 
             // If this was the best tick, update it
@@ -1404,9 +1392,11 @@ impl StablecoinDEX {
             }
         }
 
-        self.books[order.book_key()]
-            .tick_level_handler_mut(order.tick(), order.is_bid())
-            .write(level)?;
+        if has_level_changed {
+            self.books[order.book_key()]
+                .tick_level_handler_mut(order.tick(), order.is_bid())
+                .write(level)?;
+        }
 
         // Refund tokens to maker - must match the escrow amount
         let orderbook = self.books[order.book_key()].read()?;
@@ -1522,7 +1512,7 @@ impl StablecoinDEX {
         step: impl Fn(u128, u128, i16, bool) -> Option<OrderStep>,
     ) -> Result<u128> {
         let level = self.get_best_price_level(book_key, is_bid)?;
-        let order = self.orders[level.head].read()?;
+        let order = self.orders[level.links.head].read_in_book(book_key)?;
 
         // Read-only walk: advance the cursor without settling, so the quote uses
         // the same per-order arithmetic and traversal as execution.
@@ -1947,10 +1937,10 @@ mod tests {
         let tick = 10;
         let amount = MIN_ORDER_AMOUNT;
 
-        let (base, book_key, first_order) = StorageCtx::enter(&mut storage, || {
+        let (base, quote, book_key, first_order) = StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
-            let (base, _) = setup_test_tokens(admin, maker, exchange.address, amount * 3)?;
+            let (base, quote) = setup_test_tokens(admin, maker, exchange.address, amount * 4)?;
             let book_key = exchange.create_pair(base)?;
             let first_order = exchange.place(maker, base, amount, true, tick)?;
             exchange.place(maker, base, amount, true, tick)?;
@@ -1965,7 +1955,7 @@ mod tests {
                 "pre-T9 must return the maintained aggregate"
             );
 
-            Ok::<_, eyre::Report>((base, book_key, first_order))
+            Ok::<_, eyre::Report>((base, quote, book_key, first_order))
         })?;
 
         let mut storage = storage.with_spec(TempoHardfork::T9);
@@ -1980,9 +1970,9 @@ mod tests {
 
             exchange.cancel(maker, first_order)?;
 
-            let stored = exchange.books[book_key]
-                .tick_level_handler(tick, true)
-                .read()?;
+            let stored = Handler::<TickLevel>::read(
+                exchange.books[book_key].tick_level_handler(tick, true),
+            )?;
             assert_eq!(
                 stored.total_liquidity,
                 amount * 2,
@@ -1992,6 +1982,36 @@ mod tests {
                 exchange.get_price_level(base, tick, true)?.total_liquidity,
                 amount,
                 "T9 must derive liquidity from the remaining order"
+            );
+
+            exchange.place(maker, base, amount * 2, true, tick)?;
+            let stored = Handler::<TickLevel>::read(
+                exchange.books[book_key].tick_level_handler(tick, true),
+            )?;
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T9 placement must not write the legacy aggregate"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 3
+            );
+
+            exchange.swap_exact_amount_in(maker, base, quote, amount * 3, 0)?;
+            let stored = Handler::<TickLevel>::read(
+                exchange.books[book_key].tick_level_handler(tick, true),
+            )?;
+            assert_eq!(stored.links.head, 0);
+            assert_eq!(stored.links.tail, 0);
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T9 tick exhaustion must not clear the legacy aggregate"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                0
             );
 
             Ok::<_, eyre::Report>(())
@@ -2513,8 +2533,8 @@ mod tests {
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = &exchange.books[book_key];
             let level = book_handler.tick_level_handler(tick, true).read()?;
-            assert_eq!(level.head, order_id);
-            assert_eq!(level.tail, order_id);
+            assert_eq!(level.links.head, order_id);
+            assert_eq!(level.links.tail, order_id);
             assert_eq!(level.total_liquidity, min_order_amount);
 
             // Verify balance was reduced by the escrow amount
@@ -2573,8 +2593,8 @@ mod tests {
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = &exchange.books[book_key];
             let level = book_handler.tick_level_handler(tick, false).read()?;
-            assert_eq!(level.head, order_id);
-            assert_eq!(level.tail, order_id);
+            assert_eq!(level.links.head, order_id);
+            assert_eq!(level.links.tail, order_id);
             assert_eq!(level.total_liquidity, min_order_amount);
 
             // Verify balance was reduced by the escrow amount
@@ -2741,8 +2761,8 @@ mod tests {
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = &exchange.books[book_key];
             let level = book_handler.tick_level_handler(tick, true).read()?;
-            assert_eq!(level.head, order_id);
-            assert_eq!(level.tail, order_id);
+            assert_eq!(level.links.head, order_id);
+            assert_eq!(level.links.tail, order_id);
             assert_eq!(level.total_liquidity, min_order_amount);
 
             // Verify balance was reduced by the escrow amount
@@ -2958,15 +2978,15 @@ mod tests {
             let bid_level = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(bid_level.head, resting_bid_id);
-            assert_eq!(bid_level.tail, resting_bid_id);
+            assert_eq!(bid_level.links.head, resting_bid_id);
+            assert_eq!(bid_level.links.tail, resting_bid_id);
             assert_eq!(bid_level.total_liquidity, amount);
 
             let ask_level = exchange.books[book_key]
                 .tick_level_handler(tick, false)
                 .read()?;
-            assert_eq!(ask_level.head, new_ask_id);
-            assert_eq!(ask_level.tail, new_ask_id);
+            assert_eq!(ask_level.links.head, new_ask_id);
+            assert_eq!(ask_level.links.tail, new_ask_id);
             assert_eq!(ask_level.total_liquidity, amount);
 
             let book = exchange.books[book_key].read()?;
@@ -3008,8 +3028,8 @@ mod tests {
             let bid_level_after = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(bid_level_after.head, resting_bid_id);
-            assert_eq!(bid_level_after.tail, flipped_back_id);
+            assert_eq!(bid_level_after.links.head, resting_bid_id);
+            assert_eq!(bid_level_after.links.tail, flipped_back_id);
             assert_eq!(bid_level_after.total_liquidity, amount * 2);
 
             Ok(())
@@ -3545,8 +3565,8 @@ mod tests {
             let ask_level = exchange.books[book_key]
                 .tick_level_handler(flip_tick, false)
                 .read()?;
-            assert_eq!(ask_level.head, 0);
-            assert_eq!(ask_level.tail, 0);
+            assert_eq!(ask_level.links.head, 0);
+            assert_eq!(ask_level.links.tail, 0);
             assert_eq!(ask_level.total_liquidity, 0);
 
             Ok(())
@@ -4888,8 +4908,8 @@ mod tests {
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = &exchange.books[book_key];
             let level = book_handler.tick_level_handler(tick, true).read()?;
-            assert_eq!(level.head, order_id, "Order should be head of tick level");
-            assert_eq!(level.tail, order_id, "Order should be tail of tick level");
+            assert_eq!(level.links.head, order_id, "Order should be head of level");
+            assert_eq!(level.links.tail, order_id, "Order should be tail of level");
             assert_eq!(
                 level.total_liquidity, min_order_amount,
                 "Tick level should have order's liquidity"
@@ -4949,8 +4969,8 @@ mod tests {
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = &exchange.books[book_key];
             let level = book_handler.tick_level_handler(tick, true).read()?;
-            assert_eq!(level.head, order_id, "Order should be head of tick level");
-            assert_eq!(level.tail, order_id, "Order should be tail of tick level");
+            assert_eq!(level.links.head, order_id, "Order should be head of level");
+            assert_eq!(level.links.tail, order_id, "Order should be tail of level");
             assert_eq!(
                 level.total_liquidity, min_order_amount,
                 "Tick level should have order's liquidity"
@@ -5014,8 +5034,8 @@ mod tests {
             let level = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(level.head, order_id);
-            assert_eq!(level.tail, order_id);
+            assert_eq!(level.links.head, order_id);
+            assert_eq!(level.links.tail, order_id);
             assert_eq!(level.total_liquidity, min_order_amount);
 
             let book = exchange.books[book_key].read()?;
@@ -5977,8 +5997,8 @@ mod tests {
             let bid_level = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(bid_level.head, 0, "bid level head must be 0 after drain");
-            assert_eq!(bid_level.tail, 0, "bid level tail must be 0 after drain");
+            assert_eq!(bid_level.links.head, 0, "bid level head must be 0 on drain");
+            assert_eq!(bid_level.links.tail, 0, "bid level tail must be 0 on drain");
             assert_eq!(
                 bid_level.total_liquidity, 0,
                 "bid level liquidity must be 0 after drain"
@@ -5987,8 +6007,8 @@ mod tests {
             let ask_level = exchange.books[book_key]
                 .tick_level_handler(tick, false)
                 .read()?;
-            assert_eq!(ask_level.head, 0, "ask level head must be 0 after drain");
-            assert_eq!(ask_level.tail, 0, "ask level tail must be 0 after drain");
+            assert_eq!(ask_level.links.head, 0, "ask level head must be 0 on drain");
+            assert_eq!(ask_level.links.tail, 0, "ask level tail must be 0 on drain");
             assert_eq!(
                 ask_level.total_liquidity, 0,
                 "ask level liquidity must be 0 after drain"
@@ -6079,15 +6099,15 @@ mod tests {
             let bid_level = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(bid_level.head, 0, "bid level head must be 0");
-            assert_eq!(bid_level.tail, 0, "bid level tail must be 0");
+            assert_eq!(bid_level.links.head, 0, "bid level head must be 0");
+            assert_eq!(bid_level.links.tail, 0, "bid level tail must be 0");
             assert_eq!(bid_level.total_liquidity, 0, "bid liquidity must be 0");
 
             let ask_level = exchange.books[book_key]
                 .tick_level_handler(tick, false)
                 .read()?;
-            assert_eq!(ask_level.head, 0, "ask level head must be 0");
-            assert_eq!(ask_level.tail, 0, "ask level tail must be 0");
+            assert_eq!(ask_level.links.head, 0, "ask level head must be 0");
+            assert_eq!(ask_level.links.tail, 0, "ask level tail must be 0");
             assert_eq!(ask_level.total_liquidity, 0, "ask liquidity must be 0");
 
             // Verify swap against drained book fails
@@ -6765,8 +6785,8 @@ mod tests {
             let level = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(level.head, order_2);
-            assert_eq!(level.tail, order_2);
+            assert_eq!(level.links.head, order_2);
+            assert_eq!(level.links.tail, order_2);
             assert_eq!(level.total_liquidity, 0, "stored T9 aggregate stays unused");
             assert_eq!(
                 exchange
@@ -7045,8 +7065,8 @@ mod tests {
             let bid_level_before = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(bid_level_before.head, flip_order);
-            assert_eq!(bid_level_before.tail, next_order);
+            assert_eq!(bid_level_before.links.head, flip_order);
+            assert_eq!(bid_level_before.links.tail, next_order);
 
             let amount_in = amount + 1;
             let quoted = exchange.quote_swap_exact_amount_in(base_token, quote_token, amount_in)?;
@@ -7081,8 +7101,8 @@ mod tests {
             let bid_level_after = exchange.books[book_key]
                 .tick_level_handler(tick, true)
                 .read()?;
-            assert_eq!(bid_level_after.head, next_order);
-            assert_eq!(bid_level_after.tail, next_order);
+            assert_eq!(bid_level_after.links.head, next_order);
+            assert_eq!(bid_level_after.links.tail, next_order);
             assert_eq!(
                 bid_level_after.total_liquidity, 0,
                 "stored T9 aggregate stays unused"
