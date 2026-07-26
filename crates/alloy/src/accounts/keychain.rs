@@ -121,6 +121,12 @@ where
         &self,
         request: &mut TempoTransactionRequest,
     ) -> alloy_signer::Result<()> {
+        if super::request_uses_create(request) {
+            return Err(alloy_signer::Error::other(
+                TempoKeychainWalletError::CreateUnsupported,
+            ));
+        }
+
         let signer_address = self.signer.address();
 
         if let Some(from) = request.from()
@@ -172,6 +178,11 @@ where
         sender: Address,
         mut tx: tempo_primitives::transaction::TempoTransaction,
     ) -> alloy_signer::Result<TempoTxEnvelope> {
+        if super::transaction_uses_create(&tx) {
+            return Err(alloy_signer::Error::other(
+                TempoKeychainWalletError::CreateUnsupported,
+            ));
+        }
         if sender != self.account {
             return Err(alloy_signer::Error::other(
                 TempoKeychainWalletError::SenderMismatch {
@@ -319,6 +330,8 @@ where
 enum TempoKeychainWalletError {
     #[error("Tempo keychain wallet signs only AA transactions")]
     UnsupportedTransactionType,
+    #[error("Tempo access-key transactions cannot use CREATE")]
+    CreateUnsupported,
     #[error("Tempo keychain sender mismatch: expected {expected}, got {actual}")]
     SenderMismatch { expected: Address, actual: Address },
     #[error("Tempo access-key mismatch: expected {expected}, got {actual}")]
@@ -392,5 +405,28 @@ mod tests {
         };
         assert!(signed.tx().key_authorization.is_none());
         assert!(matches!(signed.signature(), TempoSignature::Keychain(_)));
+    }
+
+    #[tokio::test]
+    async fn access_key_wallet_rejects_create_before_rpc_preparation() {
+        let wallet =
+            TempoKeychainWallet::new(Address::repeat_byte(0x11), PrivateKeySigner::random());
+        let asserter = Asserter::new();
+        let provider =
+            ProviderBuilder::<_, _, TempoNetwork>::default().connect_mocked_client(asserter);
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(alloy_primitives::TxKind::Create),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = wallet
+            .prepare_request(&provider, &mut request)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot use CREATE"));
     }
 }

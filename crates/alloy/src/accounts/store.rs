@@ -154,6 +154,11 @@ impl TempoAccessKey {
     }
 
     fn fill_request(&self, request: &mut TempoTransactionRequest) -> alloy_signer::Result<()> {
+        if super::request_uses_create(request) {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::CreateUnsupported,
+            ));
+        }
         if let Some(chain_id) = request.chain_id()
             && chain_id != self.chain_id
         {
@@ -217,6 +222,11 @@ impl TempoAccessKey {
         sender: Address,
         mut tx: tempo_primitives::transaction::TempoTransaction,
     ) -> alloy_signer::Result<TempoTxEnvelope> {
+        if super::transaction_uses_create(&tx) {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::CreateUnsupported,
+            ));
+        }
         if tx.chain_id != self.chain_id {
             return Err(alloy_signer::Error::other(
                 TempoAccessKeyError::ChainMismatch {
@@ -388,6 +398,8 @@ impl TxFiller<TempoNetwork> for TempoAccessKey {
 enum TempoAccessKeyError {
     #[error("Tempo access keys sign only AA transactions")]
     UnsupportedTransactionType,
+    #[error("Tempo access-key transactions cannot use CREATE")]
+    CreateUnsupported,
     #[error("Tempo access-key chain mismatch: expected {expected}, got {actual}")]
     ChainMismatch { expected: u64, actual: u64 },
     #[error("Tempo access-key sender mismatch: expected {expected}, got {actual}")]
@@ -1696,6 +1708,28 @@ mod tests {
         };
 
         assert!(key.fill_request(&mut request).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_key_rejects_create() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([key_json(signer.address(), private_key)]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let key = wallet.active_access_key().unwrap();
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Create),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = key.fill_request(&mut request).unwrap_err();
+        assert!(error.to_string().contains("cannot use CREATE"));
         fs::remove_file(path).unwrap();
     }
 

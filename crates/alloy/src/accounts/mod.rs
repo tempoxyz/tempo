@@ -14,3 +14,12 @@ pub use keychain::TempoKeychainWallet;
 pub use store::{
     TempoAccessKey, TempoAccountsError, TempoAccountsWallet, default_accounts_store_path,
 };
+
+fn request_uses_create(request: &crate::rpc::TempoTransactionRequest) -> bool {
+    request.calls.iter().any(|call| call.to.is_create())
+        || request.inner.to.is_some_and(|to| to.is_create())
+}
+
+fn transaction_uses_create(transaction: &tempo_primitives::transaction::TempoTransaction) -> bool {
+    transaction.calls.iter().any(|call| call.to.is_create())
+}
