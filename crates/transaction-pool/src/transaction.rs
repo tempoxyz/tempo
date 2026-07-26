@@ -491,6 +491,29 @@ impl TempoPooledTransaction {
     }
 }
 
+/// Keychain-specific transaction pool rejection reasons.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum KeychainError {
+    /// A key authorization contains too many call scopes.
+    #[error("too many call scopes in key authorization")]
+    TooManyCallScopes,
+    /// A call scope contains too many selector rules.
+    #[error("too many selector rules in call scope")]
+    TooManySelectorRules,
+    /// A selector rule contains too many recipients.
+    #[error("too many recipients in selector rule")]
+    TooManyRecipients,
+}
+
+impl KeychainError {
+    /// Returns whether the error warrants peer penalization.
+    const fn is_bad_transaction(&self) -> bool {
+        match self {
+            Self::TooManyCallScopes | Self::TooManySelectorRules | Self::TooManyRecipients => true,
+        }
+    }
+}
+
 /// Tempo-specific transaction pool rejection reasons.
 ///
 /// These errors can be returned by RPC after transaction submission when the
@@ -536,12 +559,11 @@ pub enum TempoPoolTransactionError {
     /// A pool-only keychain authorization limit failed.
     ///
     /// Thrown during AA field-limit validation for key authorizations whose call
-    /// scopes, selector rules, or selector recipients exceed pool DoS limits. The
-    /// static string identifies the specific exceeded limit.
+    /// scopes, selector rules, or selector recipients exceed pool DoS limits.
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
-    Keychain(&'static str),
+    Keychain(#[from] KeychainError),
 
     /// A pool transaction attempted to use the subblock nonce-key prefix.
     ///
@@ -687,13 +709,13 @@ impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
             Self::Evm(err) => err.is_bad_transaction(),
+            Self::Keychain(err) => err.is_bad_transaction(),
             Self::ExceedsNonPaymentLimit
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. } => false,
             Self::SubblockNonceKey
-            | Self::Keychain(_)
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
@@ -1156,7 +1178,18 @@ mod tests {
                 },
                 false,
             ),
-            (TempoPoolTransactionError::Keychain("test error"), true),
+            (
+                TempoPoolTransactionError::Keychain(KeychainError::TooManyCallScopes),
+                true,
+            ),
+            (
+                TempoPoolTransactionError::Keychain(KeychainError::TooManySelectorRules),
+                true,
+            ),
+            (
+                TempoPoolTransactionError::Keychain(KeychainError::TooManyRecipients),
+                true,
+            ),
             (
                 TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
                     "nonce error".to_string(),

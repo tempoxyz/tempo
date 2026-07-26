@@ -1,7 +1,7 @@
 use crate::{
     amm::AmmLiquidityCache,
     state_cache::{StateCache, StateCacheDb},
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    transaction::{KeychainError, TempoPoolTransactionError, TempoPooledTransaction},
 };
 
 use alloy_consensus::constants::KECCAK_EMPTY;
@@ -306,23 +306,17 @@ where
 
             if let Some(scopes) = &key_auth.allowed_calls {
                 if scopes.len() > MAX_KEYCHAIN_CALL_SCOPES as usize {
-                    return Err(TempoPoolTransactionError::Keychain(
-                        "too many call scopes in key authorization",
-                    ));
+                    return Err(KeychainError::TooManyCallScopes.into());
                 }
 
                 for scope in scopes {
                     if scope.selector_rules.len() > MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE as usize {
-                        return Err(TempoPoolTransactionError::Keychain(
-                            "too many selector rules in call scope",
-                        ));
+                        return Err(KeychainError::TooManySelectorRules.into());
                     }
 
                     for rule in &scope.selector_rules {
                         if rule.recipients.len() > MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR as usize {
-                            return Err(TempoPoolTransactionError::Keychain(
-                                "too many recipients in selector rule",
-                            ));
+                            return Err(KeychainError::TooManyRecipients.into());
                         }
                     }
                 }
@@ -2737,23 +2731,26 @@ mod tests {
                 MAX_KEYCHAIN_CALL_SCOPES as usize + 1,
                 1,
                 0,
+                KeychainError::TooManyCallScopes,
                 "too many call scopes in key authorization",
             ),
             (
                 1,
                 MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE as usize + 1,
                 0,
+                KeychainError::TooManySelectorRules,
                 "too many selector rules in call scope",
             ),
             (
                 1,
                 1,
                 MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR as usize + 1,
+                KeychainError::TooManyRecipients,
                 "too many recipients in selector rule",
             ),
         ];
 
-        for (scope_count, rule_count, recipient_count, expected_message) in cases {
+        for (scope_count, rule_count, recipient_count, expected_error, expected_message) in cases {
             let rule = SelectorRule {
                 selector: [0; 4],
                 recipients: vec![Address::random(); recipient_count],
@@ -2774,10 +2771,11 @@ mod tests {
             let err = validator
                 .ensure_aa_field_limits(&transaction)
                 .expect_err("over-limit key authorization must be rejected");
-            assert!(
-                matches!(&err, TempoPoolTransactionError::Keychain(message) if *message == expected_message),
-                "unexpected keychain cardinality error: {err}"
-            );
+            let TempoPoolTransactionError::Keychain(keychain_error) = &err else {
+                panic!("unexpected keychain cardinality error: {err}");
+            };
+            assert_eq!(keychain_error, &expected_error);
+            assert_eq!(keychain_error.to_string(), expected_message);
             assert!(err.is_bad_transaction());
         }
     }
