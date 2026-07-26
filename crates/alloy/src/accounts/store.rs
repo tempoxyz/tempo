@@ -38,7 +38,10 @@ use tempo_primitives::{
 };
 
 use super::p256::{P256Jwk, P256SignerError, TempoP256Signer};
-use crate::{TempoNetwork, fillers::gas::resolve_key_authorization, rpc::TempoTransactionRequest};
+use crate::{
+    TempoNetwork, fillers::gas::resolve_key_authorization, provider::keychain::call_scopes_allow,
+    rpc::TempoTransactionRequest,
+};
 
 #[derive(Clone, Debug)]
 enum AccountsSigner {
@@ -2806,40 +2809,16 @@ fn call_address(kind: &TxKind) -> Option<Address> {
 }
 
 fn scopes_match(scopes: Option<&[CallScope]>, calls: Option<&[IntentCall<'_>]>) -> bool {
-    let Some(scopes) = scopes else {
+    if scopes.is_none() {
         return true;
-    };
+    }
     let Some(calls) = calls else {
         return false;
     };
 
     calls.iter().all(|call| {
-        let Some(to) = call.to else {
-            return false;
-        };
-        scopes.iter().any(|scope| {
-            if scope.target != to {
-                return false;
-            }
-            if scope.selector_rules.is_empty() {
-                return true;
-            }
-            scope.selector_rules.iter().any(|rule| {
-                if call.input.get(..4) != Some(rule.selector.as_slice()) {
-                    return false;
-                }
-                if rule.recipients.is_empty() {
-                    return true;
-                }
-                let Some(word) = call.input.get(4..36) else {
-                    return false;
-                };
-                if word[..12].iter().any(|byte| *byte != 0) {
-                    return false;
-                }
-                rule.recipients.contains(&Address::from_slice(&word[12..]))
-            })
-        })
+        call.to
+            .is_some_and(|target| call_scopes_allow(scopes, &target, call.input))
     })
 }
 
