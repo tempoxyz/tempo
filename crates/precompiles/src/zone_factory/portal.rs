@@ -8,9 +8,11 @@ use crate::{
     error::Result,
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256, Bytes, U256, hex};
+use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
 use revm::state::Bytecode;
-use tempo_contracts::precompiles::{IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS};
+use tempo_contracts::precompiles::{
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZonePortalRole,
+};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Exact ERC-1167 deployed proxy runtime installed at every ZonePortal address.
@@ -20,14 +22,14 @@ pub const ZONE_PORTAL_PROXY_RUNTIME: [u8; 45] = hex!(
 
 /// Packed `TokenConfig` stored in the portal token registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
-pub(super) struct PortalTokenConfig {
-    pub(super) enabled: bool,
-    pub(super) deposits_active: bool,
+pub struct PortalTokenConfig {
+    pub enabled: bool,
+    pub deposits_active: bool,
 }
 
 /// Historical encryption-key entry stored by ZonePortal.
 #[derive(Debug, Clone, Copy, Storable)]
-struct PortalEncryptionKeyEntry {
+pub struct PortalEncryptionKeyEntry {
     x: B256,
     y_parity: u8,
     activation_block: u64,
@@ -35,7 +37,7 @@ struct PortalEncryptionKeyEntry {
 
 /// Withdrawal queue stored by ZonePortal.
 #[derive(Debug, Clone, Storable)]
-struct PortalWithdrawalQueue {
+pub struct PortalWithdrawalQueue {
     head: U256,
     tail: U256,
     #[allow(dead_code)]
@@ -47,10 +49,8 @@ struct PortalWithdrawalQueue {
 /// The generated handlers let the native factory initialize a portal without duplicating raw
 /// slot numbers. This contract type is deliberately absent from the EVM precompile map.
 #[contract]
-pub(super) struct ZonePortalStorage {
-    sequencer: Address,
+pub struct ZonePortalStorage {
     admin: Address,
-    pending_sequencer: Address,
     zone_gas_rate: u128,
     withdrawal_batch_index: u64,
     block_hash: B256,
@@ -76,10 +76,17 @@ pub(super) struct ZonePortalStorage {
     zone_height: U256,
     sequencers: Vec<Address>,
     is_sequencer: Mapping<Address, bool>,
+    role: Mapping<Address, u8>,
+    is_access_enforced: bool,
+    is_gateway_enforced: bool,
+    /// Reserved remainder of the enforcement modes slot.
+    _reserved: FixedBytes<30>,
+    /// Maximum Tempo gas rate, stored in `PORTAL_MAX_TEMPO_GAS_RATE_SLOT`.
+    max_tempo_gas_rate: u128,
 }
 
 impl ZonePortalStorage {
-    pub(super) fn new(address: Address) -> Self {
+    pub fn new(address: Address) -> Self {
         Self::__new(address)
     }
 
@@ -93,9 +100,6 @@ impl ZonePortalStorage {
             Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),
         )?;
 
-        // Preserve the legacy getter expected by the portal storage layout. Authority comes from
-        // `is_sequencer` for versioned sets, so the first member is not a primary sequencer.
-        self.sequencer.write(params.sequencers[0])?;
         self.admin.write(params.admin)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {
             enabled: true,
@@ -107,11 +111,18 @@ impl ZonePortalStorage {
         self.messenger.write(ZONE_MESSENGER_ADDRESS)?;
         self.verifier.write(ZONE_VERIFIER_ADDRESS)?;
         self.initialized.write(true)?;
-        self.sequencer_set_version.write(1)?;
         self.sequencer_threshold.write(params.threshold)?;
         self.sequencers.write(params.sequencers.clone())?;
         for sequencer in &params.sequencers {
             self.is_sequencer[*sequencer].write(true)?;
+        }
+        self.is_access_enforced.write(params.accessMode)?;
+        self.is_gateway_enforced.write(params.gatewayMode)?;
+        for gateway in &params.zoneGateways {
+            self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
+        }
+        for account in &params.allowedAccounts {
+            self.role[*account].write(ZonePortalRole::Account as u8)?;
         }
         Ok(())
     }

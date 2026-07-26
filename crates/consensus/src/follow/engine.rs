@@ -188,6 +188,8 @@ impl<TUpstream> Config<TUpstream> {
 
         Ok(Engine {
             context: ContextCell::new(context),
+            // Keep every execution-node service alive for the lifetime of the follower engine.
+            _execution_node: self.execution_node,
             driver,
             driver_mailbox,
             resolver,
@@ -209,6 +211,7 @@ where
     TUpstreamActor:,
 {
     context: ContextCell<TContext>,
+    _execution_node: Arc<TempoFullNode>,
     driver: driver::Driver<
         TContext,
         BlockchainProvider<
@@ -256,6 +259,7 @@ where
 
     async fn run(self) -> eyre::Result<()> {
         let Self {
+            _execution_node,
             upstream,
             driver,
             driver_mailbox,
