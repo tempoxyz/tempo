@@ -94,20 +94,26 @@ where
 
     /// Fill metadata and resolve a pending authorization before estimation or
     /// fee-payer signing outside an Alloy provider filler stack.
+    ///
+    /// The returned wallet owns the resolved authorization state and must be
+    /// retained through final signing.
     pub async fn prepare_request<P>(
         &self,
         provider: &P,
         request: &mut TempoTransactionRequest,
-    ) -> TransportResult<()>
+    ) -> TransportResult<Self>
     where
         P: Provider<TempoNetwork>,
     {
-        self.fill_request(request)
+        let mut prepared = self.clone();
+        prepared
+            .fill_request(request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         if let Some(key_authorization) = resolve_key_authorization(provider, request).await? {
-            request.key_authorization = key_authorization;
+            request.key_authorization = key_authorization.clone();
+            prepared.key_authorization = key_authorization.map(Box::new);
         }
-        Ok(())
+        Ok(prepared)
     }
 
     /// Populate request metadata used by gas estimation and signing.
@@ -322,4 +328,69 @@ enum TempoKeychainWalletError {
         expected: SignatureType,
         actual: SignatureType,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_network::NetworkWallet;
+    use alloy_provider::{ProviderBuilder, mock::Asserter};
+    use alloy_rpc_types_eth::TransactionRequest;
+    use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall;
+    use tempo_contracts::precompiles::IAccountKeychain::{
+        KeyInfo, SignatureType as AbiSignatureType, getKeyCall,
+    };
+    use tempo_primitives::transaction::{KeyAuthorization, TempoSignature};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn prepared_wallet_does_not_restore_published_authorization() {
+        let signer = PrivateKeySigner::random();
+        let account = Address::repeat_byte(0x11);
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .into_signed(PrimitiveSignature::default());
+        let wallet =
+            TempoKeychainWallet::new(account, signer).with_key_authorization(authorization);
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_mocked_client(asserter.clone());
+        asserter.push_success(&alloy_primitives::Bytes::from(
+            getKeyCall::abi_encode_returns(&KeyInfo {
+                signatureType: AbiSignatureType::Secp256k1,
+                keyId: wallet.key_id(),
+                expiry: u64::MAX,
+                enforceLimits: false,
+                isRevoked: false,
+            }),
+        ));
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(Address::repeat_byte(0x22).into()),
+                chain_id: Some(4217),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let prepared = wallet
+            .prepare_request(&provider, &mut request)
+            .await
+            .unwrap();
+
+        assert!(wallet.key_authorization().is_some());
+        assert!(prepared.key_authorization().is_none());
+        assert!(request.key_authorization.is_none());
+
+        let TempoTxEnvelope::AA(signed) = prepared.sign_request(request).await.unwrap() else {
+            panic!("expected AA transaction");
+        };
+        assert!(signed.tx().key_authorization.is_none());
+        assert!(matches!(signed.signature(), TempoSignature::Keychain(_)));
+    }
 }

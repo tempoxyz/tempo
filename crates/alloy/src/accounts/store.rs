@@ -131,20 +131,26 @@ impl TempoAccessKey {
 
     /// Fill access-key metadata and resolve a pending authorization before
     /// external gas estimation or fee-payer signing.
+    ///
+    /// The returned key owns the resolved authorization state and must be
+    /// retained through final signing.
     pub async fn prepare_request<P>(
         &self,
         provider: &P,
         request: &mut TempoTransactionRequest,
-    ) -> TransportResult<()>
+    ) -> TransportResult<Self>
     where
         P: Provider<TempoNetwork>,
     {
-        self.fill_request(request)
+        let mut prepared = self.clone();
+        prepared
+            .fill_request(request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         if let Some(key_authorization) = resolve_key_authorization(provider, request).await? {
-            request.key_authorization = key_authorization;
+            request.key_authorization = key_authorization.clone();
+            prepared.key_authorization = key_authorization.map(Box::new);
         }
-        Ok(())
+        Ok(prepared)
     }
 
     fn fill_request(&self, request: &mut TempoTransactionRequest) -> alloy_signer::Result<()> {
