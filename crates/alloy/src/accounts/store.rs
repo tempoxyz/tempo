@@ -109,6 +109,24 @@ pub struct TempoAccessKey {
 }
 
 impl TempoAccessKey {
+    /// Construct a chain-bound secp256k1 access key.
+    pub fn from_secp256k1(account: Address, chain_id: u64, signer: PrivateKeySigner) -> Self {
+        let address = signer.address();
+        Self {
+            account,
+            address,
+            chain_id,
+            signer: AccountsSigner::Secp256k1(signer),
+            key_authorization: None,
+        }
+    }
+
+    /// Attach a pending one-time access-key authorization.
+    pub fn with_key_authorization(mut self, authorization: SignedKeyAuthorization) -> Self {
+        self.key_authorization = Some(Box::new(authorization));
+        self
+    }
+
     /// Root Tempo account controlled by this access key.
     pub const fn account(&self) -> Address {
         self.account
@@ -116,6 +134,11 @@ impl TempoAccessKey {
 
     /// On-chain access-key identifier.
     pub const fn address(&self) -> Address {
+        self.address
+    }
+
+    /// On-chain access-key identifier.
+    pub const fn key_id(&self) -> Address {
         self.address
     }
 
@@ -438,6 +461,9 @@ pub enum TempoAccountsError {
     /// The active account selector was missing or invalid.
     #[error("Tempo Accounts active account is missing or invalid")]
     ActiveAccount,
+    /// A locally supplied access key was used before its chain was known.
+    #[error("Tempo Accounts needs a chain ID to select the access key")]
+    MissingChainId,
     /// No matching locally signable access key was available.
     #[error(
         "Tempo Accounts has no locally signable access key for account {account} on chain {chain_id}"
@@ -456,7 +482,21 @@ pub enum TempoAccountsError {
     UnsupportedTransactionType,
 }
 
-/// A lazy Tempo Accounts wallet backed by a persisted store.
+/// The source used by a Tempo Accounts wallet.
+#[derive(Clone)]
+enum AccountsSource {
+    Store {
+        path: PathBuf,
+        fallback_account: Address,
+    },
+    Local {
+        account: Address,
+        signer: AccountsSigner,
+        key_authorization: Option<Box<SignedKeyAuthorization>>,
+    },
+}
+
+/// A Tempo Accounts wallet backed by `store.json` or one explicit local key.
 ///
 /// This type implements both [`NetworkWallet<TempoNetwork>`] and
 /// [`TxFiller<TempoNetwork>`]. Add it with `ProviderBuilder::filler(wallet)` so
@@ -464,16 +504,33 @@ pub enum TempoAccountsError {
 /// prepares its estimate. The same pinned key is then used for signing.
 #[derive(Clone)]
 pub struct TempoAccountsWallet {
-    path: PathBuf,
-    fallback_account: Address,
+    source: AccountsSource,
+    chain_id: Option<u64>,
 }
 
 impl fmt::Debug for TempoAccountsWallet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TempoAccountsWallet")
-            .field("path", &self.path)
-            .field("fallback_account", &self.fallback_account)
-            .finish()
+        let mut debug = f.debug_struct("TempoAccountsWallet");
+        match &self.source {
+            AccountsSource::Store {
+                path,
+                fallback_account,
+            } => {
+                debug
+                    .field("source", &"store")
+                    .field("path", path)
+                    .field("fallback_account", fallback_account);
+            }
+            AccountsSource::Local {
+                account, signer, ..
+            } => {
+                debug
+                    .field("source", &"local")
+                    .field("account", account)
+                    .field("key_id", &signer.address());
+            }
+        }
+        debug.field("chain_id", &self.chain_id).finish()
     }
 }
 
@@ -487,8 +544,11 @@ impl TempoAccountsWallet {
         let state = load_state(&path)?;
         let fallback_account = active_account(&state)?;
         Ok(Self {
-            path,
-            fallback_account,
+            source: AccountsSource::Store {
+                path,
+                fallback_account,
+            },
+            chain_id: None,
         })
     }
 
@@ -497,19 +557,111 @@ impl TempoAccountsWallet {
         Self::from_store(default_accounts_store_path()?)
     }
 
-    /// Path backing this wallet.
-    pub fn store_path(&self) -> &Path {
-        &self.path
+    /// Open `~/.tempo/wallet/store.json` when it exists.
+    pub fn try_from_default_store() -> Result<Option<Self>, TempoAccountsError> {
+        let path = default_accounts_store_path()?;
+        match Self::from_store(path) {
+            Ok(wallet) => Ok(Some(wallet)),
+            Err(TempoAccountsError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Construct a wallet from one explicitly supplied secp256k1 access key.
+    pub fn from_secp256k1(
+        account: Address,
+        signer: PrivateKeySigner,
+        key_authorization: Option<SignedKeyAuthorization>,
+    ) -> Self {
+        Self {
+            source: AccountsSource::Local {
+                account,
+                signer: AccountsSigner::Secp256k1(signer),
+                key_authorization: key_authorization.map(Box::new),
+            },
+            chain_id: None,
+        }
+    }
+
+    fn from_selected(selected: TempoAccessKey) -> Self {
+        Self {
+            chain_id: Some(selected.chain_id),
+            source: AccountsSource::Local {
+                account: selected.account,
+                signer: selected.signer,
+                key_authorization: selected.key_authorization,
+            },
+        }
+    }
+
+    /// Pin the chain used when a request does not already contain one.
+    pub const fn with_chain_id(mut self, chain_id: u64) -> Self {
+        self.chain_id = Some(chain_id);
+        self
+    }
+
+    /// Path backing this wallet, if it reads an Accounts store.
+    pub fn store_path(&self) -> Option<&Path> {
+        match &self.source {
+            AccountsSource::Store { path, .. } => Some(path),
+            AccountsSource::Local { .. } => None,
+        }
     }
 
     /// Active root account observed when this wallet was opened.
     pub const fn account(&self) -> Address {
-        self.fallback_account
+        match &self.source {
+            AccountsSource::Store {
+                fallback_account, ..
+            } => *fallback_account,
+            AccountsSource::Local { account, .. } => *account,
+        }
     }
 
-    /// Reload the currently active root account from the Accounts store.
+    /// Reload the currently active root account, or return the explicit root.
     pub fn active_account(&self) -> Result<Address, TempoAccountsError> {
-        active_account(&load_state(&self.path)?)
+        match &self.source {
+            AccountsSource::Store { path, .. } => active_account(&load_state(path)?),
+            AccountsSource::Local { account, .. } => Ok(*account),
+        }
+    }
+
+    /// Return whether this wallet contains the root account.
+    pub fn has_account(&self, address: Address) -> Result<bool, TempoAccountsError> {
+        match &self.source {
+            AccountsSource::Store { path, .. } => Ok(load_state(path)?
+                .accounts
+                .iter()
+                .any(|account| account.address == address)),
+            AccountsSource::Local { account, .. } => Ok(*account == address),
+        }
+    }
+
+    /// Resolve the access-key identifier used without a concrete call intent.
+    pub fn key_id(&self) -> Result<Address, TempoAccountsError> {
+        self.active_access_key().map(|key| key.address)
+    }
+
+    /// Pending authorization on an explicitly supplied or prepared key.
+    pub fn key_authorization(&self) -> Option<&SignedKeyAuthorization> {
+        match &self.source {
+            AccountsSource::Store { .. } => None,
+            AccountsSource::Local {
+                key_authorization, ..
+            } => key_authorization.as_deref(),
+        }
+    }
+
+    /// Sign a digest with the active access key.
+    pub async fn sign_hash(&self, hash: &B256) -> alloy_signer::Result<PrimitiveSignature> {
+        let key = self
+            .active_access_key()
+            .map_err(alloy_signer::Error::other)?;
+        key.sign_hash(hash).await
     }
 
     /// Load the active account's first unscoped, locally signable access key.
@@ -517,27 +669,74 @@ impl TempoAccountsWallet {
     /// This mirrors the default selection used by Tempo Accounts when no
     /// concrete call intent is supplied.
     pub fn active_access_key(&self) -> Result<TempoAccessKey, TempoAccountsError> {
-        let state = load_state(&self.path)?;
-        let account = active_account(&state)?;
-        select_access_key(&state, account, state.chain_id, None, None, unix_now())
+        match &self.source {
+            AccountsSource::Store { path, .. } => {
+                let state = load_state(path)?;
+                let account = active_account(&state)?;
+                let chain_id = self.chain_id.unwrap_or(state.chain_id);
+                select_access_key(&state, account, chain_id, None, None, unix_now())
+            }
+            AccountsSource::Local {
+                account,
+                signer,
+                key_authorization,
+            } => {
+                let chain_id = self
+                    .chain_id
+                    .or_else(|| signer.chain_id())
+                    .ok_or(TempoAccountsError::MissingChainId)?;
+                Ok(TempoAccessKey {
+                    account: *account,
+                    address: signer.address(),
+                    chain_id,
+                    signer: signer.clone(),
+                    key_authorization: key_authorization.clone(),
+                })
+            }
+        }
     }
 
     fn select_for_request(
         &self,
         request: &TempoTransactionRequest,
     ) -> Result<TempoAccessKey, TempoAccountsError> {
-        let state = load_state(&self.path)?;
-        let account = request.from().unwrap_or(active_account(&state)?);
-        let chain_id = request.chain_id().unwrap_or(state.chain_id);
-        let calls = request_calls(request);
-        select_access_key(
-            &state,
-            account,
-            chain_id,
-            request.key_id,
-            calls.as_deref(),
-            unix_now(),
-        )
+        match &self.source {
+            AccountsSource::Store { path, .. } => {
+                let state = load_state(path)?;
+                let account = request.from().unwrap_or(active_account(&state)?);
+                let chain_id = request
+                    .chain_id()
+                    .or(self.chain_id)
+                    .unwrap_or(state.chain_id);
+                let calls = request_calls(request);
+                select_access_key(
+                    &state,
+                    account,
+                    chain_id,
+                    request.key_id,
+                    calls.as_deref(),
+                    unix_now(),
+                )
+            }
+            AccountsSource::Local {
+                account,
+                signer,
+                key_authorization,
+            } => {
+                let chain_id = request
+                    .chain_id()
+                    .or(self.chain_id)
+                    .or_else(|| signer.chain_id())
+                    .ok_or(TempoAccountsError::MissingChainId)?;
+                Ok(TempoAccessKey {
+                    account: *account,
+                    address: signer.address(),
+                    chain_id,
+                    signer: signer.clone(),
+                    key_authorization: key_authorization.clone(),
+                })
+            }
+        }
     }
 
     /// Load one exact locally signable key.
@@ -549,15 +748,35 @@ impl TempoAccountsWallet {
         chain_id: u64,
         access_key: Address,
     ) -> Result<TempoAccessKey, TempoAccountsError> {
-        let state = load_state(&self.path)?;
-        select_access_key(
-            &state,
-            account,
-            chain_id,
-            Some(access_key),
-            None,
-            unix_now(),
-        )
+        match &self.source {
+            AccountsSource::Store { path, .. } => {
+                let state = load_state(path)?;
+                select_access_key(
+                    &state,
+                    account,
+                    chain_id,
+                    Some(access_key),
+                    None,
+                    unix_now(),
+                )
+            }
+            AccountsSource::Local {
+                account: local_account,
+                signer,
+                key_authorization,
+            } if *local_account == account && signer.address() == access_key => {
+                Ok(TempoAccessKey {
+                    account,
+                    address: access_key,
+                    chain_id,
+                    signer: signer.clone(),
+                    key_authorization: key_authorization.clone(),
+                })
+            }
+            AccountsSource::Local { .. } => {
+                Err(TempoAccountsError::MissingAccessKey { account, chain_id })
+            }
+        }
     }
 
     /// Select and pin an access key, fill its request metadata, and resolve a
@@ -565,13 +784,13 @@ impl TempoAccountsWallet {
     ///
     /// Call this before external gas estimation or fee-payer signing when the
     /// request is prepared outside an Alloy provider filler stack. The returned
-    /// key owns the exact resolved signing state, so a caller can retain it
+    /// wallet owns the exact resolved signing state, so a caller can retain it
     /// through gas estimation and final signing.
     pub async fn prepare_request<P>(
         &self,
         provider: &P,
         request: &mut TempoTransactionRequest,
-    ) -> TransportResult<TempoAccessKey>
+    ) -> TransportResult<Self>
     where
         P: Provider<TempoNetwork>,
     {
@@ -580,7 +799,7 @@ impl TempoAccountsWallet {
         selected
             .fill_request(request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
-        Ok(selected)
+        Ok(Self::from_selected(selected))
     }
 
     fn fill_metadata(
@@ -605,16 +824,35 @@ impl TempoAccountsWallet {
         let TempoTypedTransaction::AA(tx) = tx else {
             return Err(TempoAccountsError::UnsupportedTransactionType);
         };
-        let state = load_state(&self.path)?;
-        let calls = transaction_calls(tx);
-        select_access_key(
-            &state,
-            account,
-            tx.chain_id,
-            None,
-            calls.as_deref(),
-            unix_now(),
-        )
+        match &self.source {
+            AccountsSource::Store { path, .. } => {
+                let state = load_state(path)?;
+                let calls = transaction_calls(tx);
+                select_access_key(
+                    &state,
+                    account,
+                    tx.chain_id,
+                    None,
+                    calls.as_deref(),
+                    unix_now(),
+                )
+            }
+            AccountsSource::Local {
+                account: local_account,
+                signer,
+                key_authorization,
+            } if *local_account == account => Ok(TempoAccessKey {
+                account,
+                address: signer.address(),
+                chain_id: tx.chain_id,
+                signer: signer.clone(),
+                key_authorization: key_authorization.clone(),
+            }),
+            AccountsSource::Local { .. } => Err(TempoAccountsError::MissingAccessKey {
+                account,
+                chain_id: tx.chain_id,
+            }),
+        }
     }
 
     async fn prepare_selected<P>(
@@ -643,31 +881,26 @@ impl TempoAccountsWallet {
 
 impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
     fn default_signer_address(&self) -> Address {
-        load_state(&self.path)
-            .and_then(|state| active_account(&state))
-            .unwrap_or(self.fallback_account)
+        self.active_account().unwrap_or_else(|_| self.account())
     }
 
     fn has_signer_for(&self, address: &Address) -> bool {
-        load_state(&self.path).is_ok_and(|state| {
-            state
-                .accounts
-                .iter()
-                .any(|account| account.address == *address)
-        })
+        self.has_account(*address).unwrap_or(false)
     }
 
     fn signer_addresses(&self) -> impl Iterator<Item = Address> {
-        load_state(&self.path)
-            .map(|state| {
+        let addresses = match &self.source {
+            AccountsSource::Store { path, .. } => load_state(path).map(|state| {
                 state
                     .accounts
                     .into_iter()
                     .map(|account| account.address)
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|_| vec![self.fallback_account])
-            .into_iter()
+            }),
+            AccountsSource::Local { account, .. } => Ok(vec![*account]),
+        }
+        .unwrap_or_else(|_| vec![self.account()]);
+        addresses.into_iter()
     }
 
     async fn sign_transaction_from(
@@ -1829,6 +2062,62 @@ mod tests {
             signer.address()
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_secp256k1_key_uses_the_accounts_wallet_path() {
+        let signer = PrivateKeySigner::random();
+        let key_id = signer.address();
+        let account = ROOT.parse::<Address>().unwrap();
+        let wallet = TempoAccountsWallet::from_secp256k1(account, signer, None).with_chain_id(4217);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TARGET.parse::<Address>().unwrap().into()),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let envelope = wallet.sign_request(request).await.unwrap();
+
+        let TempoTxEnvelope::AA(signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+        let TempoSignature::Keychain(signature) = signed.signature() else {
+            panic!("expected keychain signature");
+        };
+        assert_eq!(signature.user_address, account);
+        assert!(!signature.is_legacy());
+        assert_eq!(signature.key_id(&signed.signature_hash()).unwrap(), key_id);
+    }
+
+    #[tokio::test]
+    async fn explicit_secp256k1_key_rejects_create_before_rpc_preparation() {
+        let wallet = TempoAccountsWallet::from_secp256k1(
+            ROOT.parse().unwrap(),
+            PrivateKeySigner::random(),
+            None,
+        )
+        .with_chain_id(4217);
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Create),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = wallet
+            .prepare_request(&provider, &mut request)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot use CREATE"));
     }
 
     fn key_json(address: Address, private_key: String) -> serde_json::Value {
