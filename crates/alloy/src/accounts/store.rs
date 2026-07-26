@@ -154,6 +154,20 @@ impl TempoAccessKey {
     }
 
     fn fill_request(&self, request: &mut TempoTransactionRequest) -> alloy_signer::Result<()> {
+        if let Some(chain_id) = request.chain_id()
+            && chain_id != self.chain_id
+        {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::ChainMismatch {
+                    expected: self.chain_id,
+                    actual: chain_id,
+                },
+            ));
+        }
+        if request.chain_id().is_none() {
+            request.set_chain_id(self.chain_id);
+        }
+
         if let Some(from) = request.from()
             && from != self.account
         {
@@ -203,6 +217,14 @@ impl TempoAccessKey {
         sender: Address,
         mut tx: tempo_primitives::transaction::TempoTransaction,
     ) -> alloy_signer::Result<TempoTxEnvelope> {
+        if tx.chain_id != self.chain_id {
+            return Err(alloy_signer::Error::other(
+                TempoAccessKeyError::ChainMismatch {
+                    expected: self.chain_id,
+                    actual: tx.chain_id,
+                },
+            ));
+        }
         if sender != self.account {
             return Err(alloy_signer::Error::other(
                 TempoAccessKeyError::SenderMismatch {
@@ -366,6 +388,8 @@ impl TxFiller<TempoNetwork> for TempoAccessKey {
 enum TempoAccessKeyError {
     #[error("Tempo access keys sign only AA transactions")]
     UnsupportedTransactionType,
+    #[error("Tempo access-key chain mismatch: expected {expected}, got {actual}")]
+    ChainMismatch { expected: u64, actual: u64 },
     #[error("Tempo access-key sender mismatch: expected {expected}, got {actual}")]
     SenderMismatch { expected: Address, actual: Address },
     #[error("Tempo access-key mismatch: expected {expected}, got {actual}")]
@@ -469,6 +493,11 @@ impl TempoAccountsWallet {
     /// Active root account observed when this wallet was opened.
     pub const fn account(&self) -> Address {
         self.fallback_account
+    }
+
+    /// Reload the currently active root account from the Accounts store.
+    pub fn active_account(&self) -> Result<Address, TempoAccountsError> {
+        active_account(&load_state(&self.path)?)
     }
 
     /// Load the active account's first unscoped, locally signable access key.
@@ -1232,7 +1261,9 @@ fn select_access_key(
         .filter(|key| key.chain_id == chain_id && key.access == account)
         .filter(|key| preferred.is_none_or(|preferred| key.address == preferred))
         .filter(|key| key.expiry.is_none_or(|expiry| expiry > now))
-        .filter(|key| preferred.is_some() || scopes_match(key.scopes.as_deref(), calls))
+        .filter(|key| {
+            (preferred.is_some() && calls.is_none()) || scopes_match(key.scopes.as_deref(), calls)
+        })
     {
         let Ok(mut signer) = hydrate_access_key(key) else {
             continue;
@@ -1274,15 +1305,14 @@ fn select_access_key(
 }
 
 fn request_calls(request: &TempoTransactionRequest) -> Option<Vec<IntentCall<'_>>> {
-    if !request.calls.is_empty() {
-        return Some(calls_from_tempo(&request.calls));
-    }
-    request.inner.to.as_ref().map(|to| {
-        vec![IntentCall {
+    let mut calls = calls_from_tempo(&request.calls);
+    if let Some(to) = request.inner.to.as_ref() {
+        calls.push(IntentCall {
             to: call_address(to),
             input: request.inner.input.input().map_or(&[], Bytes::as_ref),
-        }]
-    })
+        });
+    }
+    (!calls.is_empty()).then_some(calls)
 }
 
 fn transaction_calls(
@@ -1580,6 +1610,95 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
+    #[test]
+    fn a_pinned_key_still_has_to_cover_the_request() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([{
+            "access": ROOT,
+            "address": signer.address(),
+            "chainId": 4217,
+            "keyType": "p256",
+            "privateKey": private_key,
+            "scopes": [{"address": TARGET, "selector": "0xaabbccdd"}],
+        }]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TARGET.parse::<Address>().unwrap().into()),
+                input: TransactionInput::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef])),
+                ..Default::default()
+            },
+            key_id: Some(signer.address()),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            wallet.select_for_request(&request),
+            Err(TempoAccountsError::MissingAccessKey { .. })
+        ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selection_checks_calls_and_the_legacy_to_field_together() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([{
+            "access": ROOT,
+            "address": signer.address(),
+            "chainId": 4217,
+            "keyType": "p256",
+            "privateKey": private_key,
+            "scopes": [{"address": TARGET, "selector": "0xaabbccdd"}],
+        }]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(Address::repeat_byte(0x33).into()),
+                input: TransactionInput::new(Bytes::from_static(&[0x01, 0x02, 0x03, 0x04])),
+                ..Default::default()
+            },
+            calls: vec![Call {
+                to: TARGET.parse::<Address>().unwrap().into(),
+                value: U256::ZERO,
+                input: Bytes::from_static(&[0xaa, 0xbb, 0xcc, 0xdd]),
+            }],
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            wallet.select_for_request(&request),
+            Err(TempoAccountsError::MissingAccessKey { .. })
+        ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selected_key_rejects_a_different_chain() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([key_json(signer.address(), private_key)]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let key = wallet.active_access_key().unwrap();
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                chain_id: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(key.fill_request(&mut request).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
     #[tokio::test]
     async fn prepare_request_selects_from_the_store_lazily() {
         let first_key = format!("0x{}", "01".repeat(32));
@@ -1612,6 +1731,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second_request.key_id, Some(second.address()));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn active_account_is_reloaded_from_the_store() {
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        let path = write_store(serde_json::json!([key_json(signer.address(), private_key)]));
+        let wallet = TempoAccountsWallet::from_store(&path).unwrap();
+        let second = Address::repeat_byte(0x44);
+        let value = serde_json::json!({
+            "tempo-cli.store": {
+                "state": {
+                    "activeAccount": 1,
+                    "chainId": 4217,
+                    "accounts": [{"address": ROOT}, {"address": second}],
+                    "accessKeys": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        assert_eq!(wallet.account(), ROOT.parse::<Address>().unwrap());
+        assert_eq!(wallet.active_account().unwrap(), second);
         fs::remove_file(path).unwrap();
     }
 

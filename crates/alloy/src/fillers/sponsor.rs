@@ -27,7 +27,13 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for S
         }
     }
 
-    fn fill_sync(&self, _tx: &mut SendableTx<N>) {}
+    fn fill_sync(&self, tx: &mut SendableTx<N>) {
+        if let Some(builder) = tx.as_mut_builder()
+            && builder.fee_payer_signature.is_none()
+        {
+            builder.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
+        }
+    }
 
     async fn prepare<P>(&self, _provider: &P, _tx: &N::TransactionRequest) -> TransportResult<()>
     where
@@ -37,11 +43,27 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for S
     }
 
     async fn fill(&self, _fillable: (), mut tx: SendableTx<N>) -> TransportResult<SendableTx<N>> {
-        if let Some(builder) = tx.as_mut_builder()
-            && builder.fee_payer_signature.is_none()
-        {
-            builder.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
-        }
+        self.fill_sync(&mut tx);
         Ok(tx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_provider::{SendableTx, fillers::TxFiller};
+
+    use super::*;
+    use crate::TempoNetwork;
+
+    #[test]
+    fn marks_sponsorship_before_async_fillers_prepare() {
+        let mut tx = SendableTx::Builder(TempoTransactionRequest::default());
+
+        <SponsorFiller as TxFiller<TempoNetwork>>::fill_sync(&SponsorFiller, &mut tx);
+
+        assert_eq!(
+            tx.as_builder().unwrap().fee_payer_signature,
+            Some(FEE_PAYER_SIGNATURE_MARKER)
+        );
     }
 }
