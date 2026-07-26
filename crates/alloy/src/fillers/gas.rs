@@ -10,7 +10,7 @@ use alloy_provider::{
     fillers::{FillerControlFlow, GasFillable, GasFiller, TxFiller},
 };
 use alloy_transport::TransportResult;
-use tempo_primitives::transaction::SignedKeyAuthorization;
+use tempo_primitives::transaction::{FEE_PAYER_SIGNATURE_MARKER, SignedKeyAuthorization};
 
 use crate::{TempoNetwork, provider::TempoProviderExt, rpc::TempoTransactionRequest};
 
@@ -65,7 +65,7 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
                 KeyAuthorizationError::LegacyGasPriceUnsupported,
             ));
         }
-        let mut estimate_request = request.clone();
+        let mut estimate_request = request_for_gas_estimation(request);
         let key_authorization = resolve_key_authorization(provider, request).await?;
         if let Some(resolved) = &key_authorization {
             estimate_request.key_authorization = resolved.clone();
@@ -96,6 +96,14 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
         }
         Ok(tx)
     }
+}
+
+fn request_for_gas_estimation(request: &TempoTransactionRequest) -> TempoTransactionRequest {
+    let mut estimate_request = request.clone();
+    if estimate_request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER) {
+        estimate_request.fee_payer_signature = None;
+    }
+    estimate_request
 }
 
 /// Resolve a persisted one-time authorization against the Account Keychain.
@@ -252,6 +260,28 @@ mod tests {
 
         request.set_from(Address::repeat_byte(0x11));
         assert!(matches!(filler.status(&request), FillerControlFlow::Ready));
+    }
+
+    #[test]
+    fn strips_only_the_sponsor_marker_before_estimation() {
+        let mut request = TempoTransactionRequest {
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
+            ..Default::default()
+        };
+
+        let estimate_request = request_for_gas_estimation(&request);
+        assert!(estimate_request.fee_payer_signature.is_none());
+        assert_eq!(
+            request.fee_payer_signature,
+            Some(FEE_PAYER_SIGNATURE_MARKER)
+        );
+
+        let signature = Signature::test_signature();
+        request.fee_payer_signature = Some(signature);
+        assert_eq!(
+            request_for_gas_estimation(&request).fee_payer_signature,
+            Some(signature)
+        );
     }
 
     #[tokio::test]
