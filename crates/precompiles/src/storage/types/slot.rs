@@ -105,6 +105,18 @@ impl<T> Slot<T> {
         self.slot
     }
 
+    /// Returns the address whose storage this slot accesses.
+    #[inline]
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
+    /// Returns the layout context used to load and store the underlying type.
+    #[inline]
+    pub const fn ctx(&self) -> LayoutCtx {
+        self.ctx
+    }
+
     /// Returns the byte offset within the slot (for packed fields).
     ///
     /// Returns `Some(offset)` if this is a packed slot, `None` if it's a full slot.

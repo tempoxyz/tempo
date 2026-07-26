@@ -5,6 +5,7 @@ use crate::{
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
+    validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
@@ -580,8 +581,9 @@ impl Default for PendingStalenessTracker {
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
-pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
+pub async fn maintain_tempo_pool<Client, EvmConfig>(pool: TempoTransactionPool<Client, EvmConfig>)
 where
+    EvmConfig: ConfigureTempoPoolEvm,
     Client: StateProviderFactory
         + HeaderProvider<Header = TempoHeader>
         + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
