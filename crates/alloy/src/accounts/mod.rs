@@ -10,7 +10,8 @@ mod p256;
 mod store;
 
 pub use store::{
-    TempoAccessKey, TempoAccountsError, TempoAccountsWallet, default_accounts_store_path,
+    TempoAccessKey, TempoAccountsError, TempoAccountsKeyAuthorization, TempoAccountsStore,
+    TempoAccountsWallet, TempoStoredAccessKey, default_accounts_store_path,
 };
 
 fn request_uses_create(request: &crate::rpc::TempoTransactionRequest) -> bool {

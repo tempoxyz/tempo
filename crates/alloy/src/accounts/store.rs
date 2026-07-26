@@ -2,7 +2,9 @@
 
 use std::{
     borrow::Cow,
-    fmt, fs,
+    collections::BTreeMap,
+    env, fmt, fs,
+    io::Write,
     num::NonZeroU64,
     path::{Path, PathBuf},
     str::FromStr,
@@ -19,9 +21,10 @@ use alloy_signer::{Signer, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_transport::TransportResult;
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize,
     de::{self, Visitor},
 };
+use serde_json::value::RawValue;
 use tempo_primitives::{
     SignatureType, TempoTxEnvelope,
     transaction::{
@@ -458,6 +461,33 @@ pub enum TempoAccountsError {
         /// JSON error.
         source: serde_json::Error,
     },
+    /// The canonical Accounts store could not be encoded.
+    #[error("failed to encode Tempo Accounts store at {path}: {source}")]
+    Encode {
+        /// Store path.
+        path: PathBuf,
+        /// JSON error.
+        source: serde_json::Error,
+    },
+    /// The Accounts store could not be written atomically.
+    #[error("failed to write Tempo Accounts store at {path}: {source}")]
+    Write {
+        /// Store path.
+        path: PathBuf,
+        /// Filesystem error.
+        source: std::io::Error,
+    },
+    /// A stored access-key record was internally inconsistent.
+    #[error("invalid Tempo Accounts access key {address}: {reason}")]
+    InvalidAccessKey {
+        /// Stored access-key address.
+        address: Address,
+        /// Validation failure.
+        reason: String,
+    },
+    /// A supplied authorization did not describe the access key being stored.
+    #[error("invalid Tempo Accounts access-key authorization: {0}")]
+    InvalidAuthorization(&'static str),
     /// The active account selector was missing or invalid.
     #[error("Tempo Accounts active account is missing or invalid")]
     ActiveAccount,
@@ -480,6 +510,183 @@ pub enum TempoAccountsError {
     /// Only Tempo AA transactions can be signed through an access key.
     #[error("Tempo Accounts access keys sign only AA transactions")]
     UnsupportedTransactionType,
+}
+
+/// A signed key authorization in the Tempo Accounts SDK RPC representation.
+///
+/// This is the strict response type returned by the Accounts device-code flow.
+/// It converts the SDK's flat RPC signature envelope into the protocol-native
+/// [`SignedKeyAuthorization`] used by Alloy and the Accounts store.
+#[derive(Clone, Debug)]
+pub struct TempoAccountsKeyAuthorization(SignedKeyAuthorization);
+
+impl TempoAccountsKeyAuthorization {
+    /// Borrow the protocol-native signed authorization.
+    pub const fn as_signed(&self) -> &SignedKeyAuthorization {
+        &self.0
+    }
+
+    /// Consume the SDK authorization and return its protocol-native form.
+    pub fn into_signed(self) -> SignedKeyAuthorization {
+        self.0
+    }
+}
+
+impl AsRef<SignedKeyAuthorization> for TempoAccountsKeyAuthorization {
+    fn as_ref(&self) -> &SignedKeyAuthorization {
+        self.as_signed()
+    }
+}
+
+impl<'de> Deserialize<'de> for TempoAccountsKeyAuthorization {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        AccountsRpcKeyAuthorization::deserialize(deserializer)?
+            .try_into()
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+/// Non-secret metadata for one access key in a Tempo Accounts store.
+#[derive(Clone, Debug)]
+pub struct TempoStoredAccessKey {
+    account: Address,
+    address: Address,
+    chain_id: u64,
+    key_type: SignatureType,
+    expiry: Option<u64>,
+    limits: Vec<TokenLimit>,
+    allowed_calls: Option<Vec<CallScope>>,
+    key_authorization: Option<SignedKeyAuthorization>,
+    locally_signable: bool,
+}
+
+impl TempoStoredAccessKey {
+    /// Root Tempo account controlled by this key.
+    pub const fn account(&self) -> Address {
+        self.account
+    }
+
+    /// On-chain access-key identifier.
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
+    /// Chain to which this key is scoped.
+    pub const fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    /// Cryptographic signature type.
+    pub const fn key_type(&self) -> SignatureType {
+        self.key_type
+    }
+
+    /// Unix expiry timestamp, if one was configured.
+    pub const fn expiry(&self) -> Option<u64> {
+        self.expiry
+    }
+
+    /// Persisted token spending limits.
+    pub fn limits(&self) -> &[TokenLimit] {
+        &self.limits
+    }
+
+    /// Persisted call restrictions. `None` means unrestricted calls.
+    pub fn allowed_calls(&self) -> Option<&[CallScope]> {
+        self.allowed_calls.as_deref()
+    }
+
+    /// Pending one-time authorization, if the key has not yet been published.
+    pub const fn key_authorization(&self) -> Option<&SignedKeyAuthorization> {
+        self.key_authorization.as_ref()
+    }
+
+    /// Whether the store contains usable local signing material for this key.
+    pub const fn is_locally_signable(&self) -> bool {
+        self.locally_signable
+    }
+}
+
+/// A concrete handle for reading and updating one Tempo Accounts `store.json`.
+#[derive(Clone, Debug)]
+pub struct TempoAccountsStore {
+    path: PathBuf,
+}
+
+impl TempoAccountsStore {
+    /// Open and validate a Tempo Accounts store.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, TempoAccountsError> {
+        let path = path.into();
+        load_state(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Open the default Tempo Accounts store.
+    pub fn open_default() -> Result<Self, TempoAccountsError> {
+        Self::open(default_accounts_store_path()?)
+    }
+
+    /// Open the default store when it exists.
+    pub fn try_open_default() -> Result<Option<Self>, TempoAccountsError> {
+        let path = default_accounts_store_path()?;
+        match Self::open(path) {
+            Ok(store) => Ok(Some(store)),
+            Err(TempoAccountsError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Construct a store handle without requiring the file to exist yet.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Construct a default store handle without requiring the file to exist yet.
+    pub fn default_path() -> Result<Self, TempoAccountsError> {
+        Ok(Self::at(default_accounts_store_path()?))
+    }
+
+    /// Filesystem path for this store.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Currently active root account.
+    pub fn active_account(&self) -> Result<Address, TempoAccountsError> {
+        active_account(&load_state(&self.path)?)
+    }
+
+    /// Non-secret metadata for all usable stored key records.
+    pub fn access_keys(&self) -> Result<Vec<TempoStoredAccessKey>, TempoAccountsError> {
+        load_state(&self.path)?
+            .access_keys
+            .iter()
+            .map(stored_access_key)
+            .collect()
+    }
+
+    /// Atomically add or replace a locally generated secp256k1 access key.
+    ///
+    /// Existing accounts, access keys, capabilities, and unknown SDK fields are
+    /// retained byte-for-byte as raw JSON values. An existing record is
+    /// replaced only when its account, chain, and access-key address all match.
+    pub fn upsert_secp256k1_access_key(
+        &self,
+        account: Address,
+        signer: &PrivateKeySigner,
+        authorization: &SignedKeyAuthorization,
+    ) -> Result<(), TempoAccountsError> {
+        validate_stored_authorization(account, signer, authorization)?;
+        upsert_secp256k1_access_key(&self.path, account, signer, authorization)
+    }
 }
 
 /// The source used by a Tempo Accounts wallet.
@@ -992,6 +1199,9 @@ impl TxFiller<TempoNetwork> for TempoAccountsWallet {
 
 /// Return the store path shared by Tempo command-line applications.
 pub fn default_accounts_store_path() -> Result<PathBuf, TempoAccountsError> {
+    if let Some(directory) = env::var_os("TEMPO_HOME").filter(|path| !path.is_empty()) {
+        return Ok(PathBuf::from(directory).join("wallet/store.json"));
+    }
     dirs_next::home_dir()
         .map(|directory| directory.join(".tempo/wallet/store.json"))
         .ok_or(TempoAccountsError::HomeUnavailable)
@@ -1054,9 +1264,11 @@ struct PersistedAccessKey {
     #[serde(default)]
     public_key: Option<Bytes>,
     #[serde(default)]
+    limits: Vec<PersistedTokenLimit>,
+    #[serde(default)]
     scopes: Option<Vec<PersistedScope>>,
     #[serde(default)]
-    key_authorization: Option<PersistedSignedKeyAuthorization>,
+    key_authorization: Option<PersistedKeyAuthorization>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1185,6 +1397,154 @@ struct PersistedSignedKeyAuthorization {
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
     signature: PersistedPrimitiveSignature,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum PersistedKeyAuthorization {
+    Structured(Box<PersistedSignedKeyAuthorization>),
+    Rlp(String),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountsRpcKeyAuthorization {
+    address: Address,
+    chain_id: AccountsU64,
+    #[serde(default)]
+    expiry: Option<AccountsU64>,
+    key_id: Address,
+    key_type: PersistedKeyType,
+    #[serde(default)]
+    limits: Option<Vec<PersistedTokenLimit>>,
+    signature: AccountsRpcSignature,
+}
+
+impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
+    type Error = PersistedKeyError;
+
+    fn try_from(value: AccountsRpcKeyAuthorization) -> Result<Self, Self::Error> {
+        if value.address != value.key_id {
+            return Err(PersistedKeyError::AuthorizationAddressMismatch);
+        }
+        let authorization = KeyAuthorization {
+            chain_id: value.chain_id.0,
+            key_type: value.key_type.signature_type()?,
+            key_id: value.key_id,
+            expiry: value
+                .expiry
+                .map(|expiry| {
+                    NonZeroU64::new(expiry.0).ok_or(PersistedKeyError::ZeroAuthorizationExpiry)
+                })
+                .transpose()?,
+            limits: value
+                .limits
+                .map(|limits| limits.into_iter().map(Into::into).collect()),
+            allowed_calls: None,
+            witness: None,
+            is_admin: false,
+            account: None,
+        };
+        Ok(Self::new(authorization, value.signature.try_into()?))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum AccountsRpcSignature {
+    #[serde(rename = "secp256k1")]
+    Secp256k1 {
+        r: AccountsU256,
+        s: AccountsU256,
+        #[serde(rename = "yParity")]
+        y_parity: AccountsU256,
+    },
+    #[serde(rename = "p256")]
+    P256 {
+        #[serde(rename = "preHash")]
+        pre_hash: bool,
+        #[serde(rename = "pubKeyX")]
+        pub_key_x: B256,
+        #[serde(rename = "pubKeyY")]
+        pub_key_y: B256,
+        r: B256,
+        s: B256,
+    },
+    #[serde(rename = "webAuthn")]
+    WebAuthn {
+        #[serde(rename = "pubKeyX")]
+        pub_key_x: B256,
+        #[serde(rename = "pubKeyY")]
+        pub_key_y: B256,
+        r: B256,
+        s: B256,
+        #[serde(rename = "webauthnData")]
+        webauthn_data: Bytes,
+    },
+}
+
+impl TryFrom<AccountsRpcSignature> for PrimitiveSignature {
+    type Error = PersistedKeyError;
+
+    fn try_from(value: AccountsRpcSignature) -> Result<Self, Self::Error> {
+        Ok(match value {
+            AccountsRpcSignature::Secp256k1 { r, s, y_parity } => {
+                let parity = match y_parity.0 {
+                    U256::ZERO => false,
+                    U256::ONE => true,
+                    _ => return Err(PersistedKeyError::InvalidYParity),
+                };
+                Self::Secp256k1(Signature::new(r.0, s.0, parity))
+            }
+            AccountsRpcSignature::P256 {
+                pre_hash,
+                pub_key_x,
+                pub_key_y,
+                r,
+                s,
+            } => Self::P256(P256SignatureWithPreHash {
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+                pre_hash,
+            }),
+            AccountsRpcSignature::WebAuthn {
+                pub_key_x,
+                pub_key_y,
+                r,
+                s,
+                webauthn_data,
+            } => Self::WebAuthn(WebAuthnSignature {
+                r,
+                s,
+                pub_key_x,
+                pub_key_y,
+                webauthn_data,
+            }),
+        })
+    }
+}
+
+impl TryFrom<PersistedKeyAuthorization> for SignedKeyAuthorization {
+    type Error = PersistedKeyError;
+
+    fn try_from(value: PersistedKeyAuthorization) -> Result<Self, Self::Error> {
+        match value {
+            PersistedKeyAuthorization::Structured(value) => (*value).try_into(),
+            PersistedKeyAuthorization::Rlp(value) => {
+                let bytes = alloy_primitives::hex::decode(value)
+                    .map_err(|_| PersistedKeyError::InvalidAuthorizationRlp)?;
+                let mut encoded = bytes.as_slice();
+                let authorization = <Self as alloy_rlp::Decodable>::decode(&mut encoded)
+                    .map_err(|_| PersistedKeyError::InvalidAuthorizationRlp)?;
+                if !encoded.is_empty() {
+                    return Err(PersistedKeyError::InvalidAuthorizationRlp);
+                }
+                Ok(authorization)
+            }
+        }
+    }
 }
 
 impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
@@ -1443,6 +1803,10 @@ enum PersistedKeyError {
     P256(#[from] P256SignerError),
     #[error("unsupported key-authorization signature type")]
     UnsupportedAuthorizationSignature,
+    #[error("invalid RLP key authorization")]
+    InvalidAuthorizationRlp,
+    #[error("key authorization address and key ID do not match")]
+    AuthorizationAddressMismatch,
     #[error("key-authorization expiry must be non-zero")]
     ZeroAuthorizationExpiry,
     #[error("scope recipients require an explicit selector")]
@@ -1457,6 +1821,608 @@ enum PersistedKeyError {
 struct IntentCall<'a> {
     to: Option<Address>,
     input: &'a [u8],
+}
+
+fn stored_access_key(key: &PersistedAccessKey) -> Result<TempoStoredAccessKey, TempoAccountsError> {
+    let key_type =
+        key.key_type
+            .signature_type()
+            .map_err(|error| TempoAccountsError::InvalidAccessKey {
+                address: key.address,
+                reason: error.to_string(),
+            })?;
+    let key_authorization: Option<SignedKeyAuthorization> = key
+        .key_authorization
+        .clone()
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(
+            |error: PersistedKeyError| TempoAccountsError::InvalidAccessKey {
+                address: key.address,
+                reason: error.to_string(),
+            },
+        )?;
+    if key_authorization.as_ref().is_some_and(|authorization| {
+        authorization.key_id != key.address
+            || authorization.chain_id != key.chain_id
+            || authorization.key_type != key_type
+            || authorization
+                .account
+                .is_some_and(|account| account != key.access)
+    }) {
+        return Err(TempoAccountsError::InvalidAccessKey {
+            address: key.address,
+            reason: "authorization metadata does not match the stored key".into(),
+        });
+    }
+
+    let allowed_calls = key
+        .scopes
+        .clone()
+        .map(persisted_scopes_to_call_scopes)
+        .transpose()
+        .map_err(|error| TempoAccountsError::InvalidAccessKey {
+            address: key.address,
+            reason: error.to_string(),
+        })?
+        .or_else(|| {
+            key_authorization
+                .as_ref()
+                .and_then(|authorization| authorization.allowed_calls.clone())
+        });
+    let limits = if key.limits.is_empty() {
+        key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.limits.clone())
+            .unwrap_or_default()
+    } else {
+        key.limits.clone().into_iter().map(Into::into).collect()
+    };
+    let expiry = key.expiry.or_else(|| {
+        key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.expiry)
+            .map(NonZeroU64::get)
+    });
+
+    Ok(TempoStoredAccessKey {
+        account: key.access,
+        address: key.address,
+        chain_id: key.chain_id,
+        key_type,
+        expiry,
+        limits,
+        allowed_calls,
+        key_authorization,
+        locally_signable: hydrate_access_key(key)
+            .is_ok_and(|signer| signer.address() == key.address),
+    })
+}
+
+fn validate_stored_authorization(
+    account: Address,
+    signer: &PrivateKeySigner,
+    authorization: &SignedKeyAuthorization,
+) -> Result<(), TempoAccountsError> {
+    if authorization.key_type != SignatureType::Secp256k1 {
+        return Err(TempoAccountsError::InvalidAuthorization(
+            "the authorization key type is not secp256k1",
+        ));
+    }
+    if authorization.key_id != signer.address() {
+        return Err(TempoAccountsError::InvalidAuthorization(
+            "the authorization key ID does not match the local signer",
+        ));
+    }
+    if authorization
+        .account
+        .is_some_and(|authorized| authorized != account)
+    {
+        return Err(TempoAccountsError::InvalidAuthorization(
+            "the authorization targets a different account",
+        ));
+    }
+    Ok(())
+}
+
+struct EditableTempoCliStore {
+    root: BTreeMap<String, Box<RawValue>>,
+    envelope: BTreeMap<String, Box<RawValue>>,
+    state: BTreeMap<String, Box<RawValue>>,
+    active_account: Box<RawValue>,
+    chain_id: u64,
+    accounts: Vec<Box<RawValue>>,
+    access_keys: Vec<Box<RawValue>>,
+}
+
+#[derive(Deserialize)]
+struct EditableAccountIdentity {
+    address: Address,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditableAccessKeyIdentity {
+    address: Address,
+    access: Address,
+    chain_id: u64,
+}
+
+#[derive(Serialize)]
+struct WritableAccount {
+    address: Address,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WritableAccessKey {
+    address: Address,
+    access: Address,
+    chain_id: u64,
+    key_type: &'static str,
+    private_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expiry: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits: Option<Vec<WritableTokenLimit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scopes: Option<Vec<WritableScope>>,
+    key_authorization: WritableSignedKeyAuthorization,
+}
+
+#[derive(Clone, Serialize)]
+struct WritableTokenLimit {
+    token: Address,
+    limit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    period: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct WritableScope {
+    address: Address,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    recipients: Vec<Address>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WritableSignedKeyAuthorization {
+    address: Address,
+    chain_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expiry: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits: Option<Vec<WritableTokenLimit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scopes: Option<Vec<WritableScope>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    witness: Option<B256>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    is_admin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<Address>,
+    #[serde(rename = "type")]
+    key_type: &'static str,
+    signature: WritablePrimitiveSignature,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum WritablePrimitiveSignature {
+    #[serde(rename = "secp256k1")]
+    Secp256k1 { signature: WritableSecpSignature },
+    #[serde(rename = "p256")]
+    P256 {
+        signature: WritableRs,
+        #[serde(rename = "publicKey")]
+        public_key: WritablePublicKey,
+        prehash: bool,
+    },
+    #[serde(rename = "webAuthn")]
+    WebAuthn {
+        signature: WritableRs,
+        #[serde(rename = "publicKey")]
+        public_key: WritablePublicKey,
+        metadata: WritableWebAuthnMetadata,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WritableSecpSignature {
+    r: String,
+    s: String,
+    y_parity: u8,
+}
+
+#[derive(Serialize)]
+struct WritableRs {
+    r: String,
+    s: String,
+}
+
+#[derive(Serialize)]
+struct WritablePublicKey {
+    prefix: u8,
+    x: String,
+    y: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WritableWebAuthnMetadata {
+    authenticator_data: String,
+    #[serde(rename = "clientDataJSON")]
+    client_data_json: String,
+}
+
+fn writable_bigint(value: U256) -> String {
+    format!("{value}#__bigint")
+}
+
+fn writable_b256(value: B256) -> String {
+    writable_bigint(U256::from_be_bytes(value.0))
+}
+
+fn writable_signature(
+    signature: &PrimitiveSignature,
+) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
+    Ok(match signature {
+        PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
+            signature: WritableSecpSignature {
+                r: writable_bigint(signature.r()),
+                s: writable_bigint(signature.s()),
+                y_parity: u8::from(signature.v()),
+            },
+        },
+        PrimitiveSignature::P256(signature) => WritablePrimitiveSignature::P256 {
+            signature: WritableRs {
+                r: writable_b256(signature.r),
+                s: writable_b256(signature.s),
+            },
+            public_key: WritablePublicKey {
+                prefix: 4,
+                x: writable_b256(signature.pub_key_x),
+                y: writable_b256(signature.pub_key_y),
+            },
+            prehash: signature.pre_hash,
+        },
+        PrimitiveSignature::WebAuthn(signature) => {
+            if signature
+                .webauthn_data
+                .get(32)
+                .is_some_and(|flags| flags & 0xc0 != 0)
+            {
+                return Err(TempoAccountsError::InvalidAuthorization(
+                    "WebAuthn authorization uses unsupported attested or extension data",
+                ));
+            }
+            let (authenticator_data, client_data_json) = signature
+                .webauthn_data
+                .split_at_checked(37)
+                .ok_or(TempoAccountsError::InvalidAuthorization(
+                    "WebAuthn authorization data is too short",
+                ))?;
+            let client_data_json = std::str::from_utf8(client_data_json).map_err(|_| {
+                TempoAccountsError::InvalidAuthorization(
+                    "WebAuthn authorization client data is not UTF-8",
+                )
+            })?;
+            WritablePrimitiveSignature::WebAuthn {
+                signature: WritableRs {
+                    r: writable_b256(signature.r),
+                    s: writable_b256(signature.s),
+                },
+                public_key: WritablePublicKey {
+                    prefix: 4,
+                    x: writable_b256(signature.pub_key_x),
+                    y: writable_b256(signature.pub_key_y),
+                },
+                metadata: WritableWebAuthnMetadata {
+                    authenticator_data: alloy_primitives::hex::encode_prefixed(authenticator_data),
+                    client_data_json: client_data_json.to_owned(),
+                },
+            }
+        }
+    })
+}
+
+fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<WritableScope>> {
+    authorization.allowed_calls.as_ref().map(|scopes| {
+        scopes
+            .iter()
+            .flat_map(|scope| {
+                if scope.selector_rules.is_empty() {
+                    return vec![WritableScope {
+                        address: scope.target,
+                        selector: None,
+                        recipients: Vec::new(),
+                    }];
+                }
+                scope
+                    .selector_rules
+                    .iter()
+                    .map(|rule| WritableScope {
+                        address: scope.target,
+                        selector: Some(alloy_primitives::hex::encode_prefixed(rule.selector)),
+                        recipients: rule.recipients.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
+    })
+}
+
+fn writable_access_key(
+    account: Address,
+    signer: &PrivateKeySigner,
+    authorization: &SignedKeyAuthorization,
+) -> Result<WritableAccessKey, TempoAccountsError> {
+    let limits = authorization.limits.as_ref().map(|limits| {
+        limits
+            .iter()
+            .map(|limit| WritableTokenLimit {
+                token: limit.token,
+                limit: writable_bigint(limit.limit),
+                period: (limit.period != 0).then_some(limit.period),
+            })
+            .collect()
+    });
+    Ok(WritableAccessKey {
+        address: signer.address(),
+        access: account,
+        chain_id: authorization.chain_id,
+        key_type: "secp256k1",
+        private_key: alloy_primitives::hex::encode_prefixed(signer.to_bytes()),
+        expiry: authorization.expiry.map(NonZeroU64::get),
+        limits: limits.clone(),
+        scopes: writable_scopes(authorization),
+        key_authorization: WritableSignedKeyAuthorization {
+            address: authorization.key_id,
+            chain_id: writable_bigint(U256::from(authorization.chain_id)),
+            expiry: authorization.expiry.map(NonZeroU64::get),
+            limits,
+            scopes: writable_scopes(authorization),
+            witness: authorization.witness,
+            is_admin: authorization.is_admin,
+            account: authorization.account,
+            key_type: "secp256k1",
+            signature: writable_signature(&authorization.signature)?,
+        },
+    })
+}
+
+fn new_editable_store(
+    account: Address,
+    chain_id: u64,
+) -> Result<EditableTempoCliStore, serde_json::Error> {
+    let mut envelope = BTreeMap::new();
+    envelope.insert("version".into(), RawValue::from_string("0".into())?);
+    Ok(EditableTempoCliStore {
+        root: BTreeMap::new(),
+        envelope,
+        state: BTreeMap::new(),
+        active_account: RawValue::from_string("0".into())?,
+        chain_id,
+        accounts: vec![serde_json::value::to_raw_value(&WritableAccount {
+            address: account,
+        })?],
+        access_keys: Vec::new(),
+    })
+}
+
+fn take_raw(
+    object: &mut BTreeMap<String, Box<RawValue>>,
+    field: &'static str,
+) -> Result<Box<RawValue>, serde_json::Error> {
+    object
+        .remove(field)
+        .ok_or_else(|| <serde_json::Error as de::Error>::missing_field(field))
+}
+
+fn take_field<T: for<'de> Deserialize<'de>>(
+    object: &mut BTreeMap<String, Box<RawValue>>,
+    field: &'static str,
+) -> Result<T, serde_json::Error> {
+    serde_json::from_str(take_raw(object, field)?.get())
+}
+
+fn decode_editable_store(bytes: &[u8]) -> Result<EditableTempoCliStore, serde_json::Error> {
+    let mut root: BTreeMap<String, Box<RawValue>> = serde_json::from_slice(bytes)?;
+    let mut envelope: BTreeMap<String, Box<RawValue>> =
+        serde_json::from_str(take_raw(&mut root, "tempo-cli.store")?.get())?;
+    let mut state: BTreeMap<String, Box<RawValue>> =
+        serde_json::from_str(take_raw(&mut envelope, "state")?.get())?;
+    let active_account = take_raw(&mut state, "activeAccount")?;
+    let chain_id = take_field(&mut state, "chainId")?;
+    let accounts = take_field(&mut state, "accounts")?;
+    let access_keys = state
+        .remove("accessKeys")
+        .map(|raw| serde_json::from_str(raw.get()))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(EditableTempoCliStore {
+        root,
+        envelope,
+        state,
+        active_account,
+        chain_id,
+        accounts,
+        access_keys,
+    })
+}
+
+fn encode_editable_store(mut store: EditableTempoCliStore) -> Result<Vec<u8>, serde_json::Error> {
+    store
+        .state
+        .insert("activeAccount".into(), store.active_account);
+    store.state.insert(
+        "chainId".into(),
+        serde_json::value::to_raw_value(&store.chain_id)?,
+    );
+    store.state.insert(
+        "accounts".into(),
+        serde_json::value::to_raw_value(&store.accounts)?,
+    );
+    store.state.insert(
+        "accessKeys".into(),
+        serde_json::value::to_raw_value(&store.access_keys)?,
+    );
+    store.envelope.insert(
+        "state".into(),
+        serde_json::value::to_raw_value(&store.state)?,
+    );
+    store.root.insert(
+        "tempo-cli.store".into(),
+        serde_json::value::to_raw_value(&store.envelope)?,
+    );
+    serde_json::to_vec_pretty(&store.root)
+}
+
+fn upsert_secp256k1_access_key(
+    path: &Path,
+    account: Address,
+    signer: &PrivateKeySigner,
+    authorization: &SignedKeyAuthorization,
+) -> Result<(), TempoAccountsError> {
+    let mut file = match fs::read(path) {
+        Ok(bytes) => {
+            decode_editable_store(&bytes).map_err(|source| TempoAccountsError::Decode {
+                path: path.to_owned(),
+                source,
+            })?
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            new_editable_store(account, authorization.chain_id).map_err(|source| {
+                TempoAccountsError::Encode {
+                    path: path.to_owned(),
+                    source,
+                }
+            })?
+        }
+        Err(source) => {
+            return Err(TempoAccountsError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+
+    let account_index = file.accounts.iter().position(|raw| {
+        serde_json::from_str::<EditableAccountIdentity>(raw.get())
+            .is_ok_and(|stored| stored.address == account)
+    });
+    let account_index = match account_index {
+        Some(index) => index,
+        None => {
+            file.accounts.push(
+                serde_json::value::to_raw_value(&WritableAccount { address: account }).map_err(
+                    |source| TempoAccountsError::Encode {
+                        path: path.to_owned(),
+                        source,
+                    },
+                )?,
+            );
+            file.accounts.len() - 1
+        }
+    };
+    file.active_account = RawValue::from_string(account_index.to_string()).map_err(|source| {
+        TempoAccountsError::Encode {
+            path: path.to_owned(),
+            source,
+        }
+    })?;
+    file.chain_id = authorization.chain_id;
+    file.access_keys.retain(|raw| {
+        serde_json::from_str::<EditableAccessKeyIdentity>(raw.get()).map_or(true, |stored| {
+            stored.access != account
+                || stored.chain_id != authorization.chain_id
+                || stored.address != signer.address()
+        })
+    });
+    file.access_keys.insert(
+        0,
+        serde_json::value::to_raw_value(&writable_access_key(account, signer, authorization)?)
+            .map_err(|source| TempoAccountsError::Encode {
+                path: path.to_owned(),
+                source,
+            })?,
+    );
+
+    write_store_atomic(path, file)
+}
+
+fn write_store_atomic(path: &Path, store: EditableTempoCliStore) -> Result<(), TempoAccountsError> {
+    let bytes = encode_editable_store(store).map_err(|source| TempoAccountsError::Encode {
+        path: path.to_owned(),
+        source,
+    })?;
+    let parent = path.parent().ok_or_else(|| TempoAccountsError::Write {
+        path: path.to_owned(),
+        source: std::io::Error::other("Tempo Accounts store has no parent directory"),
+    })?;
+    fs::create_dir_all(parent).map_err(|source| TempoAccountsError::Write {
+        path: path.to_owned(),
+        source,
+    })?;
+    set_private_directory_permissions(parent).map_err(|source| TempoAccountsError::Write {
+        path: path.to_owned(),
+        source,
+    })?;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = parent.join(format!(".store.json.{}.{}.tmp", std::process::id(), suffix));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options.open(&temp_path)?;
+        output.write_all(&bytes)?;
+        output.write_all(b"\n")?;
+        output.sync_all()?;
+        fs::rename(&temp_path, path)?;
+        set_private_file_permissions(path)?;
+        Ok::<_, std::io::Error>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result.map_err(|source| TempoAccountsError::Write {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn load_state(path: &Path) -> Result<PersistedAccountsState, TempoAccountsError> {
@@ -1777,6 +2743,216 @@ mod tests {
                     .unwrap()
             ))
         );
+    }
+
+    #[test]
+    fn decodes_the_accounts_sdk_device_authorization_shape() {
+        let key = Address::repeat_byte(0x33);
+        let token = Address::repeat_byte(0x20);
+        let mut webauthn_data = vec![0_u8; 37];
+        webauthn_data[32] = 0x05;
+        webauthn_data.extend_from_slice(br#"{"type":"webauthn.get","challenge":"test"}"#);
+        let authorization: TempoAccountsKeyAuthorization =
+            serde_json::from_value(serde_json::json!({
+                "address": key,
+                "chainId": "0x1079",
+                "expiry": 4_000_000_000_u64,
+                "keyId": key,
+                "keyType": "secp256k1",
+                "limits": [{"token": token, "limit": "0xf4240"}],
+                "signature": {
+                    "type": "webAuthn",
+                    "pubKeyX": B256::repeat_byte(0x11),
+                    "pubKeyY": B256::repeat_byte(0x22),
+                    "r": B256::repeat_byte(0x33),
+                    "s": B256::repeat_byte(0x44),
+                    "webauthnData": alloy_primitives::hex::encode_prefixed(&webauthn_data),
+                },
+            }))
+            .unwrap();
+        let authorization = authorization.as_signed();
+
+        assert_eq!(authorization.chain_id, 4217);
+        assert_eq!(authorization.key_id, key);
+        assert_eq!(authorization.key_type, SignatureType::Secp256k1);
+        assert_eq!(
+            authorization.expiry.map(NonZeroU64::get),
+            Some(4_000_000_000)
+        );
+        assert_eq!(
+            authorization.limits.as_deref(),
+            Some(
+                [TokenLimit {
+                    token,
+                    limit: U256::from(1_000_000_u64),
+                    period: 0,
+                }]
+                .as_slice()
+            )
+        );
+        let PrimitiveSignature::WebAuthn(signature) = &authorization.signature else {
+            panic!("expected WebAuthn root signature")
+        };
+        assert_eq!(signature.webauthn_data.as_ref(), webauthn_data);
+    }
+
+    #[test]
+    fn upsert_writes_the_accounts_sdk_store_without_flattening_existing_state() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let account = ROOT.parse::<Address>().unwrap();
+        let access_key = PrivateKeySigner::random();
+        let unrelated_key = Address::repeat_byte(0x33);
+        let initial = serde_json::json!({
+            "tempo-cli.store": {
+                "state": {
+                    "activeAccount": 0,
+                    "chainId": 42431,
+                    "accounts": [{
+                        "address": account,
+                        "capabilities": {"futureAccountField": true},
+                    }],
+                    "accessKeys": [{
+                        "address": unrelated_key,
+                        "access": account,
+                        "chainId": 42431,
+                        "keyType": "secp256k1",
+                        "futureKeyField": {"nested": 7},
+                    }],
+                    "futureStateField": ["kept"],
+                },
+                "version": 9,
+                "futureEnvelopeField": "kept",
+            },
+            "futureRootField": {"kept": true},
+        });
+        fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
+
+        let mut webauthn_data = vec![0_u8; 37];
+        webauthn_data[32] = 0x05;
+        webauthn_data.extend_from_slice(br#"{"type":"webauthn.get","challenge":"test"}"#);
+        let authorization = KeyAuthorization {
+            chain_id: 4217,
+            key_type: SignatureType::Secp256k1,
+            key_id: access_key.address(),
+            expiry: NonZeroU64::new(4_000_000_000),
+            limits: Some(vec![TokenLimit {
+                token: Address::repeat_byte(0x20),
+                limit: U256::from(1_000_000_u64),
+                period: 86_400,
+            }]),
+            allowed_calls: Some(vec![CallScope {
+                target: TARGET.parse().unwrap(),
+                selector_rules: vec![SelectorRule {
+                    selector: [0xa9, 0x05, 0x9c, 0xbb],
+                    recipients: vec![Address::repeat_byte(0x44)],
+                }],
+            }]),
+            witness: Some(B256::repeat_byte(0x55)),
+            is_admin: false,
+            account: Some(account),
+        }
+        .into_signed(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: B256::repeat_byte(0x33),
+            pub_key_y: B256::repeat_byte(0x44),
+            webauthn_data: webauthn_data.into(),
+        }));
+
+        TempoAccountsStore::at(&path)
+            .upsert_secp256k1_access_key(account, &access_key, &authorization)
+            .unwrap();
+
+        let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let root = &written["tempo-cli.store"];
+        assert_eq!(root["version"], 9);
+        assert_eq!(root["futureEnvelopeField"], "kept");
+        assert_eq!(written["futureRootField"]["kept"], true);
+        assert_eq!(
+            root["state"]["accounts"][0]["capabilities"]["futureAccountField"],
+            true
+        );
+        assert_eq!(root["state"]["futureStateField"][0], "kept");
+        assert_eq!(root["state"]["accessKeys"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            root["state"]["accessKeys"][1]["address"],
+            unrelated_key.to_string()
+        );
+        assert_eq!(
+            root["state"]["accessKeys"][1]["futureKeyField"]["nested"],
+            7
+        );
+        let stored_authorization = &root["state"]["accessKeys"][0]["keyAuthorization"];
+        assert!(stored_authorization.is_object());
+        assert_eq!(stored_authorization["type"], "secp256k1");
+        assert_eq!(stored_authorization["signature"]["type"], "webAuthn");
+        assert_eq!(
+            stored_authorization["signature"]["metadata"]["clientDataJSON"],
+            r#"{"type":"webauthn.get","challenge":"test"}"#
+        );
+
+        let store = TempoAccountsStore::open(&path).unwrap();
+        assert_eq!(store.active_account().unwrap(), account);
+        let keys = store.access_keys().unwrap();
+        let stored = keys
+            .iter()
+            .find(|key| key.address() == access_key.address())
+            .unwrap();
+        assert!(stored.is_locally_signable());
+        assert_eq!(stored.key_authorization(), Some(&authorization));
+        assert_eq!(stored.limits(), authorization.limits.as_deref().unwrap());
+        assert_eq!(
+            stored.allowed_calls(),
+            authorization.allowed_calls.as_deref()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reads_legacy_rlp_authorizations_migrated_by_the_wallet_cli() {
+        let access_key = PrivateKeySigner::random();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, access_key.address())
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let mut encoded = Vec::new();
+        alloy_rlp::Encodable::encode(&authorization, &mut encoded);
+        let path = write_store(serde_json::json!([{
+            "access": ROOT,
+            "address": access_key.address(),
+            "chainId": 4217,
+            "keyType": "secp256k1",
+            "privateKey": alloy_primitives::hex::encode_prefixed(access_key.to_bytes()),
+            "keyAuthorization": alloy_primitives::hex::encode_prefixed(encoded),
+        }]));
+
+        let store = TempoAccountsStore::open(&path).unwrap();
+        assert_eq!(
+            store.access_keys().unwrap()[0].key_authorization(),
+            Some(&authorization)
+        );
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -2141,6 +3317,17 @@ mod tests {
         ));
         overwrite_store(&path, access_keys);
         path
+    }
+
+    fn unique_test_directory() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "tempo-alloy-accounts-store-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     fn overwrite_store(path: &Path, access_keys: serde_json::Value) {
