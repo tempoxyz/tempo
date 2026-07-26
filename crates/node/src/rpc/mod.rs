@@ -23,7 +23,7 @@ pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Respons
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::TempoStateAccess;
+use tempo_evm::{FeeTokenResolver, TempoStateAccess};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
@@ -105,7 +105,7 @@ pub trait TempoEthApiBounds:
                     >,
                 >,
             >,
-        >,
+        > + FeeTokenResolver,
     >
 {
 }
@@ -128,7 +128,7 @@ impl<N> TempoEthApiBounds for N where
                         >,
                     >,
                 >,
-            >,
+            > + FeeTokenResolver,
         >
 {
 }
@@ -419,21 +419,19 @@ where
             .fee_payer()
             .map_err(EVMError::<ProviderError, _>::from)?;
 
-        let fee_token = db
-            .get_fee_token(
+        let actions = StorageActions::disabled();
+        let fee_token = self
+            .evm_config()
+            .resolve_fee_token(
+                &mut db,
                 tx_env,
                 fee_payer,
                 evm_env.cfg_env.spec,
-                StorageActions::disabled(),
+                actions.clone(),
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(
-                fee_token,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                StorageActions::disabled(),
-            )
+            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
             .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance
