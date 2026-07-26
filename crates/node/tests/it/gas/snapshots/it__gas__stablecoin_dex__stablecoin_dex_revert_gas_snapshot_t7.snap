@@ -1,0 +1,6 @@
+---
+source: crates/node/tests/it/gas/stablecoin_dex.rs
+expression: gas
+---
+place_aggregate_overflow: 350014
+swap_exact_out_accumulation_overflow: 877808
