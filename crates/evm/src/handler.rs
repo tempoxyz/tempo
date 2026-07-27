@@ -1315,6 +1315,9 @@ fn execute_batch(
     };
 
     for call in calls {
+        if let TxKind::Call(address) = call.to {
+            host.state_mut().prewarm(&address);
+        }
         let (bytecode, mut message) = initial_message(
             host,
             caller,
@@ -1526,11 +1529,6 @@ fn handle(
     validate_regular_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     warm_base_accounts(request.host, caller, tx.calls[0].to);
-    for call in &tx.calls[1..] {
-        if let TxKind::Call(address) = call.to {
-            request.host.state_mut().prewarm(&address);
-        }
-    }
     warm_access_list(request.host, &tx.access_list);
 
     // Collect fees for the transaction.

@@ -215,8 +215,8 @@ alloy-consensus = { version = "2.1.1", default-features = false }
 alloy-contract = { version = "2.1.1", default-features = false }
 alloy-eip7928 = { version = "0.4.5", default-features = false }
 alloy-eips = { version = "2.1.1", default-features = false }
-evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "0b5f142e839f9e124ff847cbd7b965a8c1cdb9a9", default-features = false }
-evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "0b5f142e839f9e124ff847cbd7b965a8c1cdb9a9" }
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "f63cbd2409c11837432ac58cf7bf633c53f7684c", default-features = false }
+evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "f63cbd2409c11837432ac58cf7bf633c53f7684c" }
 alloy-genesis = { version = "2.1.1", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-json-rpc = "2.1.1"

@@ -12,7 +12,7 @@ use evm2::{
     SpecId, TxResult,
     ethereum::{LazyTxEip7702, eip1559, eip2930, eip7702, finalize_gas, legacy},
     evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
-    handler::{GasSettlement, TxHandlerHooks, UpfrontFee},
+    handler::{GasSettlement, TxHandlerHooks},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
     version::GasId,
 };
@@ -68,10 +68,6 @@ pub trait ProtocolFeeManager: core::fmt::Debug + Send + Sync {
     /// The handler checks the TIP-20 prefix first. Implementations define which tokens are valid.
     /// `host` is mutable because validation reads can warm accounts and storage, but
     /// implementations must not stage state changes here.
-    ///
-    /// This hook runs before nonce and replay state are consumed. Do not return
-    /// `CollectFeePreTx`, `FeeTokenPaused`, or `LackOfFundForMaxFee`; subblock handling treats
-    /// those as post-nonce fee collection failures.
     ///
     /// Implementations charging non-zero fees in non-USD tokens must normalize them to the fee
     /// unit used by admission, ordering, charging, and settlement.
@@ -505,11 +501,11 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
     fn before_execution(
         host: &mut Evm<'_, TempoEvmTypes>,
         envelope: &TempoTxEnv,
-        _fee: UpfrontFee,
-        disable_fee_charge: bool,
+        _caller: Address,
+        _upfront_fee: U256,
     ) -> HandlerResult<()> {
         let context = Self::resolve_fee_context(host, envelope)?;
-        if !disable_fee_charge {
+        if host.feature(EvmFeatures::FEE_CHARGE) {
             Self::collect_fee(host, context, None)?;
         }
         Ok(())
