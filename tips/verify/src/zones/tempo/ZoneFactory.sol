@@ -51,9 +51,6 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @notice Initial value is configured by the T9 activation.
     address public owner;
 
-    /// @notice Whether shared runtime updates have been permanently disabled.
-    bool public override implementationUpdatesLocked;
-
     mapping(uint32 => ZoneInfo) internal _zones;
 
     /*//////////////////////////////////////////////////////////////
@@ -71,6 +68,18 @@ abstract contract ZoneFactory is IZoneFactory {
         }
         if (!_nativeTokenTransferPolicyIsSet(params.initialToken)) {
             revert TokenTransferPolicyNotSet();
+        }
+        for (uint256 i; i < params.allowedAccounts.length; ++i) {
+            if (params.allowedAccounts[i] == ZONE_MESSENGER_ADDRESS) {
+                revert InvalidClosedLoopConfig();
+            }
+        }
+        for (uint256 i; i < params.zoneGateways.length; ++i) {
+            for (uint256 j; j < params.allowedAccounts.length; ++j) {
+                if (params.zoneGateways[i] == params.allowedAccounts[j]) {
+                    revert InvalidClosedLoopConfig();
+                }
+            }
         }
         if (params.admin == address(0)) revert InvalidAdmin();
         _validateSequencerSet(params.sequencers, params.threshold);
@@ -98,6 +107,10 @@ abstract contract ZoneFactory is IZoneFactory {
             .initialize(
                 zoneId,
                 params.initialToken,
+                params.accessMode,
+                params.gatewayMode,
+                params.allowedAccounts,
+                params.zoneGateways,
                 ZONE_MESSENGER_ADDRESS,
                 params.admin,
                 params.sequencers,
@@ -109,6 +122,8 @@ abstract contract ZoneFactory is IZoneFactory {
         _zones[zoneId] = ZoneInfo({
             zoneId: zoneId,
             portal: portal,
+            accessMode: params.accessMode,
+            gatewayMode: params.gatewayMode,
             admin: params.admin,
             sequencers: params.sequencers,
             threshold: params.threshold,
@@ -120,6 +135,8 @@ abstract contract ZoneFactory is IZoneFactory {
             zoneId,
             portal,
             params.initialToken,
+            params.accessMode,
+            params.gatewayMode,
             params.admin,
             params.sequencers,
             params.threshold,
@@ -134,42 +151,6 @@ abstract contract ZoneFactory is IZoneFactory {
         address previousOwner = owner;
         owner = newOwner;
         emit OwnershipTransferred(previousOwner, newOwner);
-    }
-
-    /// @inheritdoc IZoneFactory
-    function lockImplementationUpdates() external {
-        if (msg.sender != owner) revert NotOwner();
-        implementationUpdatesLocked = true;
-    }
-
-    /// @inheritdoc IZoneFactory
-    function setPortalImplementation(address source) external {
-        if (msg.sender != owner) revert NotOwner();
-        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
-        if (source.code.length == 0) revert InvalidPortalImplementation();
-
-        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_PORTAL_IMPL_ADDRESS);
-        emit PortalUpdated(source, codeHash);
-    }
-
-    /// @inheritdoc IZoneFactory
-    function setZoneMessengerImplementation(address source) external {
-        if (msg.sender != owner) revert NotOwner();
-        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
-        if (source.code.length == 0) revert InvalidZoneMessengerImplementation();
-
-        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_MESSENGER_ADDRESS);
-        emit MessengerUpdated(source, codeHash);
-    }
-
-    /// @inheritdoc IZoneFactory
-    function setVerifierImplementation(address source) external {
-        if (msg.sender != owner) revert NotOwner();
-        if (implementationUpdatesLocked) revert ImplementationUpdatesLocked();
-        if (source.code.length == 0) revert InvalidVerifierImplementation();
-
-        bytes32 codeHash = _nativeCopyRuntime(source, ZONE_VERIFIER_ADDRESS);
-        emit VerifierUpdated(source, codeHash);
     }
 
     /// @notice Returns the deterministic portal vanity address for a zone ID.
@@ -204,15 +185,8 @@ abstract contract ZoneFactory is IZoneFactory {
     /// @dev Native host hook: return whether TIP-403 stores an explicit policy binding for `token`.
     function _nativeTokenTransferPolicyIsSet(address token) internal virtual returns (bool);
 
-    /// @dev Native host hook: copy `source` runtime bytecode to `destination`.
-    /// Returns `EXTCODEHASH(source)` for the emitted update event.
-    function _nativeCopyRuntime(
-        address source,
-        address destination
-    )
-        internal
-        virtual
-        returns (bytes32 codeHash);
+    /// @dev Hardfork-only host hook: copy `source` runtime bytecode to `destination`.
+    function _nativeCopyRuntime(address source, address destination) internal virtual;
 
     /*//////////////////////////////////////////////////////////////
                                  VIEWS

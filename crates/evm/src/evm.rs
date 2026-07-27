@@ -358,7 +358,9 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IZoneFactory, ZONE_FACTORY_ADDRESS};
+    use tempo_contracts::precompiles::{
+        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -556,14 +558,13 @@ mod tests {
         let owner = Address::repeat_byte(0x11);
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
-        let implementation_source = Address::repeat_byte(0x44);
         // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
         let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
             0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
         ]));
         let mut db = CacheDB::new(EmptyDB::default());
         db.insert_account_info(
-            implementation_source,
+            ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
                 code_hash: logic_runtime.hash_slow(),
                 code: Some(logic_runtime),
@@ -584,27 +585,13 @@ mod tests {
             .transact_system_call(
                 owner,
                 ZONE_FACTORY_ADDRESS,
-                IZoneFactory::setPortalImplementationCall {
-                    source: implementation_source,
-                }
-                .abi_encode()
-                .into(),
-            )
-            .unwrap();
-        assert!(
-            result.result.is_success(),
-            "setPortalImplementation failed: {:?}",
-            result.result
-        );
-        evm.db_mut().commit(result.state);
-
-        let result = evm
-            .transact_system_call(
-                owner,
-                ZONE_FACTORY_ADDRESS,
                 IZoneFactory::createZoneCall {
                     params: IZoneFactory::CreateZoneParams {
                         initialToken: PATH_USD_ADDRESS,
+                        accessMode: true,
+                        gatewayMode: true,
+                        allowedAccounts: vec![admin],
+                        zoneGateways: vec![Address::repeat_byte(0x44)],
                         admin,
                         sequencers: vec![sequencer],
                         threshold: 1,
@@ -666,6 +653,10 @@ mod tests {
         let input = IZoneFactory::createZoneCall {
             params: IZoneFactory::CreateZoneParams {
                 initialToken: PATH_USD_ADDRESS,
+                accessMode: true,
+                gatewayMode: true,
+                allowedAccounts: vec![admin],
+                zoneGateways: vec![Address::repeat_byte(0x44)],
                 admin,
                 sequencers: vec![sequencer],
                 threshold: 1,

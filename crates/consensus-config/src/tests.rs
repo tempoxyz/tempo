@@ -133,15 +133,43 @@ fn signing_key_write_to_file_encrypted_roundtrip() {
     let mut rng = rand_08::rngs::StdRng::seed_from_u64(99);
     let original = SigningKey::random(&mut rng);
 
-    let file = tempfile::NamedTempFile::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("signing.key");
     original
-        .write_to_file_encrypted(file.path(), passphrase("hunter2"))
+        .write_to_file_encrypted(&path, passphrase("hunter2"))
         .expect("encrypted write must succeed");
 
-    let loaded = SigningKey::read_from_file_encrypted(file.path(), passphrase("hunter2"))
+    let loaded = SigningKey::read_from_file_encrypted(&path, passphrase("hunter2"))
         .expect("encrypted read with the correct passphrase must succeed");
 
     assert_eq!(loaded.public_key(), original.public_key());
+}
+
+#[cfg(unix)]
+#[test]
+fn signing_key_write_to_file_encrypted_restricts_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("signing.key");
+
+    SigningKey::random(&mut rand_08::thread_rng())
+        .write_to_file_encrypted(&path, passphrase("hunter2"))
+        .unwrap();
+
+    assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn signing_key_write_to_file_encrypted_does_not_overwrite_existing_file() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), b"existing contents").unwrap();
+
+    SigningKey::random(&mut rand_08::thread_rng())
+        .write_to_file_encrypted(file.path(), passphrase("hunter2"))
+        .expect_err("writing to an existing file must fail");
+
+    assert_eq!(std::fs::read(file.path()).unwrap(), b"existing contents");
 }
 
 #[test]
