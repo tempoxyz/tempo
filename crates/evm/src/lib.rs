@@ -43,7 +43,7 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
 use alloy_rlp::Decodable;
 use core::num::NonZeroU64;
-use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnvFor, evm::DynDatabase, version::GasId};
+use evm2::{EvmFeatures, ExecutionConfig, env::BlockEnv, evm::DynDatabase, version::GasId};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
     BlockExecutorFactory, ConfigureEvm, EvmEnv, EvmEnvFor, EvmTransactionValidationGasRules,
@@ -99,11 +99,11 @@ impl EvmEnv for TempoEvmEnv {
         self.version.chain_id
     }
 
-    fn block_env(&self) -> &BlockEnvFor<TempoEvmTypes> {
+    fn block_env(&self) -> &BlockEnv<TempoEvmTypes> {
         &self.block
     }
 
-    fn block_env_mut(&mut self) -> &mut BlockEnvFor<TempoEvmTypes> {
+    fn block_env_mut(&mut self) -> &mut BlockEnv<TempoEvmTypes> {
         &mut self.block
     }
 
@@ -259,7 +259,7 @@ impl TempoEvmConfig {
     fn resolved_env(
         &self,
         tempo_spec: tempo_chainspec::hardfork::TempoHardfork,
-        block: BlockEnvFor<TempoEvmTypes>,
+        block: BlockEnv<TempoEvmTypes>,
         blob_params: Option<BlobParams>,
     ) -> TempoEvmEnv {
         let config = tempo_execution_config(tempo_spec, self.chain_spec.chain().id());
