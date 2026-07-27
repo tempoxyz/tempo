@@ -1930,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_price_level_preserves_pre_t9_liquidity_across_fork() -> eyre::Result<()> {
+    fn test_get_price_level_across_fork() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let maker = Address::random();
         let admin = Address::random();
@@ -2012,6 +2012,48 @@ mod tests {
             assert_eq!(
                 exchange.get_price_level(base, tick, true)?.total_liquidity,
                 0
+            );
+
+            let maker_1 = Address::random();
+            let maker_2 = Address::random();
+            let overflow_amount = u128::MAX / 2 + 1;
+            let escrow = base_to_quote(overflow_amount, MIN_TICK, RoundingDirection::Up).unwrap();
+            let mut quote_token = TIP20Token::from_address(quote)?;
+            for maker in [maker_1, maker_2] {
+                quote_token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: maker,
+                        amount: U256::from(escrow),
+                    },
+                )?;
+                quote_token.approve(
+                    maker,
+                    ITIP20::approveCall {
+                        spender: exchange.address,
+                        amount: U256::MAX,
+                    },
+                )?;
+            }
+            let head = exchange.place(maker_1, base, overflow_amount, true, MIN_TICK)?;
+            let tail = exchange.place(maker_2, base, overflow_amount, true, MIN_TICK)?;
+
+            let links_before = exchange.books[book_key]
+                .tick_level_handler(MIN_TICK, true)
+                .read()?
+                .links;
+            assert_eq!(links_before.head, head);
+            assert_eq!(links_before.tail, tail);
+            assert_eq!(
+                exchange.get_price_level(base, MIN_TICK, true),
+                Err(TempoPrecompileError::under_overflow())
+            );
+            assert_eq!(
+                exchange.books[book_key]
+                    .tick_level_handler(MIN_TICK, true)
+                    .read()?
+                    .links,
+                links_before
             );
 
             Ok::<_, eyre::Report>(())
