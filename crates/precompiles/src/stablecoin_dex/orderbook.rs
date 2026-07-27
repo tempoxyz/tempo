@@ -3,7 +3,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::{IStablecoinDEX, Order, TICK_SPACING},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::ops::Deref;
@@ -163,8 +163,8 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
 /// (zero-sum with the maker): selling base into a bid yields quote rounded down,
 /// buying base from an ask yields the base amount exactly.
 ///
-/// Shared by the swap settlement (`partial_fill_order`/`fill_order`) and the
-/// per-order quote so both compute the taker output identically.
+/// Used by the shared per-order step arithmetic so quote and swap compute the
+/// taker output identically.
 pub fn taker_output(fill_amount: u128, tick: i16, is_bid: bool) -> Option<u128> {
     if is_bid {
         base_to_quote(fill_amount, tick, RoundingDirection::Down)
@@ -182,32 +182,28 @@ pub fn step_exact_in(
     tick: i16,
     is_bid: bool,
 ) -> Option<OrderStep> {
-    let fill_amount = if is_bid {
+    let (fill_amount, next_amount) = if is_bid {
         // Selling base: input is base, fill in base.
-        amount_in.min(remaining)
+        (
+            amount_in.min(remaining),
+            amount_in.saturating_sub(remaining),
+        )
     } else {
         // Buying base: input is quote, convert to base (round down, favors protocol).
-        quote_to_base(amount_in, tick, RoundingDirection::Down)?.min(remaining)
-    };
-
-    let accumulate = taker_output(fill_amount, tick, is_bid)?;
-
-    let next_amount = if is_bid {
-        amount_in.saturating_sub(remaining)
-    } else {
         let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
-        if base_out > remaining {
+        let next_amount = if base_out > remaining {
             // Quote consumed = what the maker receives, rounded up (zero-sum with maker).
             let quote_needed = base_to_quote(remaining, tick, RoundingDirection::Up)?;
             amount_in.checked_sub(quote_needed)?
         } else {
             0
-        }
+        };
+        (base_out.min(remaining), next_amount)
     };
 
     Some(OrderStep {
         fill_amount,
-        accumulate,
+        accumulate: taker_output(fill_amount, tick, is_bid)?,
         next_amount,
     })
 }
@@ -220,26 +216,21 @@ pub fn step_exact_out(
     tick: i16,
     is_bid: bool,
 ) -> Option<OrderStep> {
-    let (fill_amount, accumulate) = if is_bid {
+    let (fill_amount, accumulate, demand) = if is_bid {
         // Receiving quote: round up the base needed to cover the exact output.
         let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
         let fill_amount = base_needed.min(remaining);
-        (fill_amount, fill_amount)
+        (fill_amount, fill_amount, base_needed)
     } else {
         // Receiving base: input is quote the maker receives, rounded up (zero-sum).
         let fill_amount = amount_out.min(remaining);
         let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)?;
-        (fill_amount, amount_in)
+        (fill_amount, amount_in, amount_out)
     };
 
     // The trade carries over only when demand strictly exceeds this order: for a
     // bid that is the base needed to cover the output, for an ask the output
     // itself. The carried amount is the output still owed after this full fill.
-    let demand = if is_bid {
-        quote_to_base(amount_out, tick, RoundingDirection::Up)?
-    } else {
-        amount_out
-    };
     let next_amount = if demand > remaining {
         let amount_out_received = taker_output(remaining, tick, is_bid)?;
         amount_out.checked_sub(amount_out_received)?
@@ -259,14 +250,21 @@ pub(crate) const MIN_PRICE: u32 = 98_000;
 /// Highest representable scaled price (`PRICE_SCALE + MAX_TICK`).
 pub(crate) const MAX_PRICE: u32 = 102_000;
 
+/// The packed linked-list fields in the first storage slot of [`TickLevel`].
+#[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TickLevelLinks {
+    /// Order ID of the first order at this tick (0 if empty).
+    pub head: u128,
+    /// Order ID of the last order at this tick (0 if empty).
+    pub tail: u128,
+}
+
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
 #[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TickLevel {
-    /// Order ID of the first order at this tick (0 if empty)
-    pub head: u128,
-    /// Order ID of the last order at this tick (0 if empty)
-    pub tail: u128,
+    /// Live order links packed into the first storage slot.
+    pub links: TickLevelLinks,
     /// Total liquidity available at this tick level
     pub total_liquidity: u128,
 }
@@ -306,8 +304,7 @@ impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
-            head: 0,
-            tail: 0,
+            links: TickLevelLinks::default(),
             total_liquidity: 0,
         }
     }
@@ -315,15 +312,14 @@ impl TickLevel {
     /// Creates a tick level with specific values
     pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
         Self {
-            head,
-            tail,
+            links: TickLevelLinks { head, tail },
             total_liquidity,
         }
     }
 
     /// Returns true if this tick level has no orders
     pub fn is_empty(&self) -> bool {
-        self.head == 0 && self.tail == 0
+        self.links.head == 0 && self.links.tail == 0
     }
 
     /// Returns true if this tick level has orders
@@ -332,11 +328,49 @@ impl TickLevel {
     }
 }
 
+// `Storable` also generates `Handler<TickLevel>` for raw two-slot access. These
+// inherent methods intentionally take precedence at call sites so normal T9 access
+// uses only `links`; tests use UFCS when they need to inspect the stale aggregate.
+impl TickLevelHandler {
+    /// Reads only the live linked-list slot at T9 while preserving the legacy layout below T9.
+    #[inline]
+    pub(crate) fn read(&self) -> Result<TickLevel> {
+        if StorageCtx.spec().is_t9() {
+            Ok(TickLevel {
+                links: self.links.read()?,
+                total_liquidity: 0,
+            })
+        } else {
+            <Self as Handler<TickLevel>>::read(self)
+        }
+    }
+
+    /// Writes only the live linked-list slot at T9 while preserving the legacy layout below T9.
+    #[inline]
+    pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
+        if StorageCtx.spec().is_t9() {
+            self.links.write(level.links)
+        } else {
+            <Self as Handler<TickLevel>>::write(self, level)
+        }
+    }
+
+    /// Deletes only the live linked-list slot at T9 while preserving the stale aggregate.
+    #[inline]
+    pub(crate) fn delete(&mut self) -> Result<()> {
+        if StorageCtx.spec().is_t9() {
+            self.links.delete()
+        } else {
+            <Self as Handler<TickLevel>>::delete(self)
+        }
+    }
+}
+
 impl From<TickLevel> for IStablecoinDEX::PriceLevel {
     fn from(value: TickLevel) -> Self {
         Self {
-            head: value.head,
-            tail: value.tail,
+            head: value.links.head,
+            tail: value.links.tail,
             totalLiquidity: value.total_liquidity,
         }
     }
@@ -687,19 +721,109 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::TempoPrecompileError;
+    use crate::{
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
     use rand_08::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use alloy::primitives::address;
 
     #[test]
+    fn test_walk_settles_before_accumulation_overflow() {
+        for second_remaining in [2, 3] {
+            let mut first = Order::new_ask(1, Address::ZERO, B256::ZERO, 1, 0);
+            first.next = 2;
+            let mut second = Order::new_ask(2, Address::ZERO, B256::ZERO, second_remaining, 0);
+            second.prev = 1;
+            let mut settled = Vec::new();
+
+            let result = walk_resting_orders(
+                first,
+                3,
+                false,
+                |amount, remaining, _, _| {
+                    Some(OrderStep {
+                        fill_amount: amount.min(remaining),
+                        accumulate: if remaining == 1 { u128::MAX } else { 1 },
+                        next_amount: amount.saturating_sub(remaining),
+                    })
+                },
+                |order, fill| {
+                    settled.push(order.order_id());
+                    match (order.order_id(), fill) {
+                        (1, Fill::Full) => Ok(Some(second)),
+                        (2, Fill::Full | Fill::Partial(_)) => Ok(None),
+                        _ => unreachable!(),
+                    }
+                },
+            );
+
+            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+            assert_eq!(settled, [1, 2]);
+        }
+    }
+
+    #[test]
     fn test_tick_level_creation() {
         let level = TickLevel::new();
-        assert_eq!(level.head, 0);
-        assert_eq!(level.tail, 0);
+        assert_eq!(level.links.head, 0);
+        assert_eq!(level.links.tail, 0);
         assert_eq!(level.total_liquidity, 0);
         assert!(level.is_empty());
         assert!(!level.has_liquidity());
+    }
+
+    #[test]
+    fn test_tick_level_handler_io() -> eyre::Result<()> {
+        let slot = U256::from(7);
+        let address = Address::random();
+        let legacy = TickLevel::with_values(11, 22, 33);
+        let updated = TickLevel::with_values(44, 55, 0);
+
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T3,
+            TempoHardfork::T8,
+            TempoHardfork::T9,
+        ] {
+            let is_t9 = spec.is_t9();
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
+            })?;
+
+            storage.reset_counters();
+            let level =
+                StorageCtx::enter(&mut storage, || TickLevelHandler::new(slot, address).read())?;
+            assert_eq!(level.links, legacy.links);
+            assert_eq!(level.total_liquidity, if is_t9 { 0 } else { 33 });
+            assert_eq!(storage.counter_sload(), if is_t9 { 1 } else { 2 });
+            assert_eq!(storage.counter_sstore(), 0);
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                TickLevelHandler::new(slot, address).write(updated)
+            })?;
+            assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
+            assert_eq!(storage.counter_sstore(), if is_t9 { 1 } else { 2 });
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                TickLevelHandler::new(slot, address).delete()
+            })?;
+            assert_eq!(storage.counter_sload(), 0);
+            assert_eq!(storage.counter_sstore(), if is_t9 { 1 } else { 2 });
+
+            let stored = StorageCtx::enter(&mut storage, || {
+                Handler::<TickLevel>::read(&TickLevelHandler::new(slot, address))
+            })?;
+            assert_eq!(stored.links, TickLevelLinks::default());
+            assert_eq!(stored.total_liquidity, if is_t9 { 33 } else { 0 });
+        }
+
+        Ok(())
     }
 
     #[test]

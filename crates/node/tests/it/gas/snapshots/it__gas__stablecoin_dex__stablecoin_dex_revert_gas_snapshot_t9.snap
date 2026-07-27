@@ -3,8 +3,8 @@ source: crates/node/tests/it/gas/stablecoin_dex.rs
 expression: gas
 ---
 place_aggregate_overflow:
-  gas: 77014
-  status: false
+  gas: 841969
+  status: true
 swap_exact_out_accumulation_overflow:
-  gas: 850608
+  gas: 845408
   status: false

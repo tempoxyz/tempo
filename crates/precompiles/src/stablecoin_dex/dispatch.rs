@@ -7,7 +7,7 @@ use tempo_contracts::precompiles::IStablecoinDEX;
 use crate::{
     Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
     stablecoin_dex::{
-        StablecoinDEX,
+        StablecoinDEX, TickLevel,
         orderbook::{BookId, compute_book_key},
     },
     view,
@@ -35,8 +35,8 @@ impl Precompile for StablecoinDEX {
                         self.get_order(c.orderId).map(|order| order.into())
                     }),
                     getTickLevel(call) => view(call, |c| {
-                        let level = self.get_price_level(c.base, c.tick, c.isBid)?;
-                        Ok((level.head, level.tail, level.total_liquidity).into())
+                        let TickLevel { links, total_liquidity } = self.get_price_level(c.base, c.tick, c.isBid)?;
+                        Ok((links.head, links.tail, total_liquidity).into())
                     }),
                     pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
                     books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
