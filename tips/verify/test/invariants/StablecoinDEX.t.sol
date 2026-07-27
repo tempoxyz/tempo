@@ -483,6 +483,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint128 tokenOutInternal;
     }
 
+    struct ExactOutQuote {
+        uint128 amountIn;
+        bool succeeded;
+    }
+
     /// @notice Fuzz handler: Executes swaps with exact amount in or exact amount out
     /// @dev Tests TEMPO-DEX4, TEMPO-DEX5, TEMPO-DEX6, TEMPO-DEX7
     /// @param swapperRnd Random seed for selecting swapper
@@ -510,8 +515,15 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // Skip if same token (can't swap token for itself)
         vm.assume(tokenIn != tokenOut);
 
-        // Ensure swapper has enough of tokenIn
-        _ensureFunds(swapper, ITIP20(tokenIn), amount);
+        // Exact-in spends `amount`, while exact-out may require more input than its requested
+        // output. Fund the quoted input before taking the balance snapshot so caller-level
+        // balance errors do not masquerade as quote/execution parity failures.
+        ExactOutQuote memory exactOutQuote;
+        if (amtIn) {
+            _ensureFunds(swapper, ITIP20(tokenIn), amount);
+        } else {
+            exactOutQuote = _quoteAndFundExactAmountOut(swapper, tokenIn, tokenOut, amount);
+        }
 
         // Check if swapper has active orders - if so, skip TEMPO-DEX6 balance checks
         // because self-trade makes the accounting complex (maker proceeds returned to swapper)
@@ -531,7 +543,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         if (amtIn) {
             _swapExactAmountIn(swapper, amount, before, swapperHasOrders);
         } else {
-            _swapExactAmountOut(swapper, amount, before, swapperHasOrders);
+            _swapExactAmountOut(swapper, amount, before, swapperHasOrders, exactOutQuote);
         }
         // TIP-1056 (T5+): swaps must not allocate new order IDs. Flips reuse
         // the original `orderId`, so the cached counter must equal the on-chain
@@ -955,32 +967,41 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @dev Quotes an exact-out swap and funds the caller for the quoted input.
+    function _quoteAndFundExactAmountOut(
+        address swapper,
+        address tokenIn,
+        address tokenOut,
+        uint128 amountOut
+    )
+        internal
+        returns (ExactOutQuote memory result)
+    {
+        try exchange.quoteSwapExactAmountOut(tokenIn, tokenOut, amountOut) returns (
+            uint128 quoted
+        ) {
+            result.amountIn = quoted;
+            result.succeeded = true;
+        } catch { }
+
+        _ensureFunds(swapper, ITIP20(tokenIn), result.succeeded ? result.amountIn : amountOut);
+    }
+
     /// @dev Helper for swapExactAmountOut to avoid stack too deep
     function _swapExactAmountOut(
         address swapper,
         uint128 amount,
         SwapBalanceSnapshot memory before,
-        bool skipBalanceCheck
+        bool skipBalanceCheck,
+        ExactOutQuote memory quote
     )
         internal
     {
-        // TEMPO-DEX7: Quote should match execution
-        uint128 quotedIn;
-        bool quoteSucceeded;
-        try exchange.quoteSwapExactAmountOut(before.tokenIn, before.tokenOut, amount) returns (
-            uint128 quoted
-        ) {
-            quotedIn = quoted;
-            quoteSucceeded = true;
-        } catch {
-            quotedIn = 0;
-        }
-
         // TEMPO-DEX8: Record dust before swap
         _dustBeforeSwap = _computeDust();
 
         uint128 fallbackMax = amount > type(uint128).max - 100 ? type(uint128).max : amount + 100;
-        uint128 maxAmountIn = quoteSucceeded ? quotedIn : fallbackMax;
+        uint128 maxAmountIn = quote.succeeded ? quote.amountIn : fallbackMax;
 
         vm.recordLogs();
         try exchange.swapExactAmountOut(
@@ -1014,11 +1035,15 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             }
 
             // TEMPO-DEX7: Quote matches execution (T9+).
-            if (quoteSucceeded) {
-                assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
+            if (quote.succeeded) {
+                assertEq(
+                    amountIn,
+                    quote.amountIn,
+                    "TEMPO-DEX7: quote mismatch for swapExactAmountOut"
+                );
             }
         } catch (bytes memory reason) {
-            assertTrue(!quoteSucceeded, "TEMPO-DEX7: swapExactAmountOut reverted after quote");
+            assertTrue(!quote.succeeded, "TEMPO-DEX7: swapExactAmountOut reverted after quote");
             _assertKnownSwapError(reason);
         }
     }
