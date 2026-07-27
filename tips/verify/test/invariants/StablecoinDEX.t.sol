@@ -1037,9 +1037,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
             // TEMPO-DEX7: Quote matches execution (T9+).
             if (quote.succeeded) {
                 assertEq(
-                    amountIn,
-                    quote.amountIn,
-                    "TEMPO-DEX7: quote mismatch for swapExactAmountOut"
+                    amountIn, quote.amountIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut"
                 );
             }
         } catch (bytes memory reason) {
