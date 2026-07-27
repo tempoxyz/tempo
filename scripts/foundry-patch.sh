@@ -76,6 +76,45 @@ while IFS=$'\t' read -r crate path; do
 done <<< "$PATCHES"
 
 # ── 3. Patch [patch."https://github.com/tempoxyz/tempo"] ────────────────────
+# Reconcile feature names before resolving Foundry against the local Tempo checkout.
+tempo_alloy_path="$(printf '%s\n' "$PATCHES" | awk '$1 == "tempo-alloy" { print $2; exit }')"
+if [[ -n "$tempo_alloy_path" ]]; then
+  tempo_alloy_cargo="$TEMPO_ROOT/$tempo_alloy_path/Cargo.toml"
+  local_tempo_alloy_features="$({
+    awk '
+      /^\[features\]/ { in_features = 1; next }
+      in_features && /^\[/ { exit }
+      in_features && $1 ~ /^[A-Za-z0-9_-]+$/ && $2 == "=" { print $1 }
+    ' "$tempo_alloy_cargo"
+  })"
+
+  # Foundry may pin a Tempo revision where the reth compatibility layer is
+  # named `revm`, while the local Tempo checkout under test names it `reth`.
+  # Only reconcile that exact rename when the local feature set confirms it.
+  if ! grep -qx 'revm' <<< "$local_tempo_alloy_features" &&
+    grep -qx 'reth' <<< "$local_tempo_alloy_features"; then
+    mapped_tempo_alloy_feature=false
+    while IFS= read -r cargo_file; do
+      cargo_file="$FOUNDRY_ROOT/$cargo_file"
+      if ! grep -q '^tempo-alloy = .*features = \[[^]]*"revm"' "$cargo_file"; then
+        continue
+      fi
+      tmp_cargo="$(mktemp "${cargo_file}.XXXXXX")"
+      awk '
+        /^tempo-alloy = .*features = \[[^]]*"revm"/ {
+          sub(/"revm"/, "\"reth\"")
+        }
+        { print }
+      ' "$cargo_file" > "$tmp_cargo"
+      mv "$tmp_cargo" "$cargo_file"
+      mapped_tempo_alloy_feature=true
+    done < <(git -C "$FOUNDRY_ROOT" ls-files '*Cargo.toml')
+    if [[ "$mapped_tempo_alloy_feature" == "true" ]]; then
+      echo "Mapped Foundry tempo-alloy feature 'revm' to local feature 'reth'."
+    fi
+  fi
+fi
+
 if [[ "$has_tempo_git_patch" == "true" ]]; then
   echo "Foundry Cargo.toml already contains tempo git patch section – keeping existing section."
 else
