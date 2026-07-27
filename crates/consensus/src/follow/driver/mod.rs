@@ -1,7 +1,7 @@
 //! Follower finalization driver.
 //!
-//! Validates finalized blocks received from upstream and reports them to marshal and the consensus
-//! feed.
+//! Validates finalized blocks received from upstream and reports them to marshal.
+//! Marshal's finalized block updates independently drive the consensus feed.
 
 use std::future::Future;
 
@@ -28,7 +28,6 @@ use tempo_primitives::TempoHeader;
 use crate::{
     consensus::{Block, Digest},
     epoch::SchemeProvider,
-    feed,
 };
 
 mod actor;
@@ -42,7 +41,7 @@ pub(super) use ingress::Mailbox;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(super) struct Config<P, M, F> {
+pub(super) struct Config<P, M> {
     pub(super) execution_provider: P,
     pub(super) scheme_provider: SchemeProvider,
     pub(super) network_identity: NetworkIdentity,
@@ -50,20 +49,18 @@ pub(super) struct Config<P, M, F> {
     pub(super) last_finalized_height: Height,
 
     pub(super) marshal: M,
-    pub(super) feed: F,
 
     pub(super) epoch_strategy: FixedEpocher,
 }
 
-pub(super) fn try_init<TContext, P, M, F>(
+pub(super) fn try_init<TContext, P, M>(
     context: TContext,
-    config: Config<P, M, F>,
-) -> eyre::Result<(Driver<TContext, P, M, F>, Mailbox)>
+    config: Config<P, M>,
+) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
-    F: Feed + 'static,
 {
     actor::try_init(context, config)
 }
@@ -80,11 +77,6 @@ pub(super) trait Marshal: Send + Sync {
     fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send;
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send;
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send;
-}
-
-/// Consensus-feed operation used by the follower driver.
-pub(super) trait Feed: Send + Sync {
-    fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send;
 }
 
 impl<N> ExecutionProvider for BlockchainProvider<N>
@@ -123,13 +115,6 @@ impl Marshal for crate::alias::marshal::Mailbox {
         async move { mailbox.certified(round, block).await }
     }
 
-    fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
-        let mut mailbox = self.clone();
-        async move { commonware_consensus::Reporter::report(&mut mailbox, activity).await }
-    }
-}
-
-impl Feed for feed::Mailbox {
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
         let mut mailbox = self.clone();
         async move { commonware_consensus::Reporter::report(&mut mailbox, activity).await }

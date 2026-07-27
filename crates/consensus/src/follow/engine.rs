@@ -180,7 +180,6 @@ impl<TUpstream> Config<TUpstream> {
                 network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox,
-                feed: feed_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
@@ -199,6 +198,7 @@ impl<TUpstream> Config<TUpstream> {
             executor: executor_actor,
             executor_mailbox,
             feed: feed_actor,
+            feed_mailbox,
             broadcast,
             upstream: self.upstream,
         })
@@ -218,7 +218,6 @@ where
             NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
         >,
         crate::alias::marshal::Mailbox,
-        feed::Mailbox,
     >,
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
@@ -234,6 +233,7 @@ where
     >,
     executor_mailbox: executor::Mailbox,
     feed: feed::Actor<TContext>,
+    feed_mailbox: feed::Mailbox,
     broadcast: buffered::Mailbox<PublicKey, Block>,
     upstream: TUpstreamActor,
 }
@@ -270,6 +270,7 @@ where
             executor,
             executor_mailbox,
             feed,
+            feed_mailbox,
             broadcast,
             ..
         } = self;
@@ -281,7 +282,7 @@ where
             marshal.start(
                 Reporters::from((
                     executor_mailbox.clone(),
-                    driver_mailbox.to_marshal_reporter(),
+                    Reporters::from((driver_mailbox.to_marshal_reporter(), feed_mailbox)),
                 )),
                 broadcast,
                 (resolver_rx, resolver_mailbox),

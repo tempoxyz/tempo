@@ -19,7 +19,7 @@ use tempo_node::rpc::consensus::Event;
 use super::{Config, try_init};
 use crate::epoch::SchemeProvider;
 use utils::{
-    EPOCH_LENGTH, StubExecutionProvider, StubFeed, StubMarshal, dkg_fixture, make_block,
+    EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture, make_block,
     make_certified_block, make_finalization,
 };
 
@@ -62,7 +62,6 @@ fn startup_uses_previous_execution_boundary() {
                 },
                 last_finalized_height: finalized_height,
                 marshal: StubMarshal::default(),
-                feed: StubFeed::default(),
                 epoch_strategy: strategy,
             },
         );
@@ -91,7 +90,6 @@ fn startup_propagates_finalized_block_read_failure() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                feed: StubFeed::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         );
@@ -118,7 +116,6 @@ fn startup_requires_execution_boundary_header() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                feed: StubFeed::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         );
@@ -137,7 +134,6 @@ fn valid_finalization_is_certified_and_reported() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-        let feed = StubFeed::default();
         let (actor, mailbox) = try_init(
             context.with_label("driver"),
             Config {
@@ -149,7 +145,6 @@ fn valid_finalization_is_certified_and_reported() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                feed: feed.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -173,7 +168,6 @@ fn valid_finalization_is_certified_and_reported() {
         assert_eq!(certified[0].0, finalization.proposal.round);
         assert_eq!(certified[0].1, block);
         assert_eq!(marshal.report_count(), 1);
-        assert_eq!(feed.report_count(), 1);
         assert!(marshal.hints().is_empty());
     });
 }
@@ -187,7 +181,6 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let feed = StubFeed::default();
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
             context.with_label("driver"),
@@ -200,7 +193,6 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                feed: feed.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -228,7 +220,6 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         assert_eq!(marshal.report_count(), 1);
-        assert_eq!(feed.report_count(), 1);
         assert!(marshal.hints().is_empty());
     });
 }
@@ -243,7 +234,6 @@ fn invalid_finalization_hints_current_epoch_boundary() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-        let feed = StubFeed::default();
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
         let expected_boundary = strategy
             .last(Epoch::zero())
@@ -260,7 +250,6 @@ fn invalid_finalization_hints_current_epoch_boundary() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                feed: feed.clone(),
                 epoch_strategy: strategy,
             },
         )
@@ -283,7 +272,6 @@ fn invalid_finalization_hints_current_epoch_boundary() {
         assert_eq!(marshal.hints(), vec![expected_boundary]);
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
-        assert_eq!(feed.report_count(), 0);
     });
 }
 
@@ -296,7 +284,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
 
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let feed = StubFeed::default();
         let (actor, mailbox) = try_init(
             context.with_label("driver"),
             Config {
@@ -308,7 +295,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                feed: feed.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -331,7 +317,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
 
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
-        assert_eq!(feed.report_count(), 0);
         assert!(marshal.hints().is_empty());
 
         let block = make_block(3, None);
@@ -347,7 +332,6 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
 
         assert_eq!(marshal.certified()[0].1, block);
         assert_eq!(marshal.report_count(), 1);
-        assert_eq!(feed.report_count(), 1);
     });
 }
 
@@ -361,7 +345,6 @@ fn scheme_before_network_identity_epoch_is_required() {
         provider.add_header(&startup_block);
 
         let marshal = StubMarshal::default();
-        let feed = StubFeed::default();
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
             context.with_label("driver"),
@@ -374,7 +357,6 @@ fn scheme_before_network_identity_epoch_is_required() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                feed: feed.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -402,7 +384,6 @@ fn scheme_before_network_identity_epoch_is_required() {
 
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
-        assert_eq!(feed.report_count(), 0);
         assert!(marshal.hints().is_empty());
     });
 }
@@ -433,7 +414,6 @@ fn boundary_update_registers_scheme_before_acknowledging() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                feed: StubFeed::default(),
                 epoch_strategy: strategy,
             },
         )
@@ -473,7 +453,6 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: StubMarshal::default(),
-                feed: StubFeed::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -527,7 +506,6 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
                 },
                 last_finalized_height,
                 marshal: marshal.clone(),
-                feed: StubFeed::default(),
                 epoch_strategy: strategy,
             },
         )
@@ -544,14 +522,13 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 }
 
 #[test_traced]
-fn non_finalized_event_is_ignored() {
+fn non_finalized_events_are_ignored() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let startup_block = make_block(0, Some(&fixture.outcome));
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
-        let feed = StubFeed::default();
         let (actor, mailbox) = try_init(
             context.with_label("driver"),
             Config {
@@ -563,7 +540,6 @@ fn non_finalized_event_is_ignored() {
                 },
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
-                feed: feed.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
@@ -578,11 +554,11 @@ fn non_finalized_event_is_ignored() {
         };
         let mut reporter = mailbox.to_event_reporter();
         reporter.report(event).await;
+
         context.sleep(Duration::from_millis(1)).await;
 
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
-        assert_eq!(feed.report_count(), 0);
         assert!(marshal.hints().is_empty());
     });
 }

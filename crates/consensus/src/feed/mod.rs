@@ -1,8 +1,9 @@
 //! Feed module for consensus event tracking and RPC.
 //!
 //! Architecture:
-//! - `Mailbox` implements `Reporter` and sends Activity to the actor
-//! - `Actor` processes Activity and updates shared [`FeedStateHandle`]
+//! - `Mailbox` implements `Reporter` for marshal updates and immediately
+//!   acknowledges finalized blocks before forwarding them to the actor
+//! - `Actor` publishes finalized blocks and updates shared [`FeedStateHandle`]
 //! - [`FeedStateHandle`] implements `ConsensusFeed` for RPC access
 //!
 //! This design ensures RPC traffic cannot block consensus activity processing.

@@ -57,12 +57,9 @@ async fn consensus_subscribe_and_query_finalization() {
 
     let http_client = HttpClientBuilder::default().build(&http_url).unwrap();
 
-    let mut saw_notarized = false;
-    let mut saw_finalized = false;
-    let mut notarized_height = initial_height;
-    let mut finalized_height = initial_height;
+    let finalized_height = initial_height;
 
-    while !saw_notarized || !saw_finalized {
+    loop {
         let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
             .await
             .unwrap()
@@ -70,13 +67,7 @@ async fn consensus_subscribe_and_query_finalization() {
             .unwrap();
 
         match event {
-            Event::Notarized { block, .. } => {
-                let height = block.block.inner.number;
-                assert!(height > notarized_height);
-
-                notarized_height = height;
-                saw_notarized = true;
-            }
+            Event::Notarized { .. } => panic!("feed must not publish notarizations"),
             Event::Finalized { block, .. } => {
                 let height = block.block.inner.number;
                 assert!(height > finalized_height);
@@ -87,11 +78,9 @@ async fn consensus_subscribe_and_query_finalization() {
                     .unwrap();
 
                 assert_eq!(queried_block, block);
-
-                finalized_height = height;
-                saw_finalized = true;
+                break;
             }
-            Event::Nullified { .. } => {}
+            Event::Nullified { .. } => panic!("feed must not publish nullifications"),
         }
     }
 
@@ -100,6 +89,7 @@ async fn consensus_subscribe_and_query_finalization() {
     let state = http_client.get_latest().await.unwrap();
 
     assert!(state.finalized.is_some());
+    assert!(state.notarized.is_none());
 
     drop(done_tx);
     executor_handle.join().unwrap();

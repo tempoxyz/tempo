@@ -3,7 +3,7 @@
 use crate::alias::marshal;
 use alloy_primitives::hex;
 use commonware_codec::Encode;
-use commonware_consensus::types::{Epoch, Height, Round, View};
+use commonware_consensus::types::Height;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{
@@ -16,8 +16,6 @@ const BROADCAST_CHANNEL_SIZE: usize = 1024;
 
 /// Internal shared state for the feed.
 pub(super) struct FeedState {
-    /// Latest notarized block.
-    pub(super) latest_notarized: Option<CertifiedBlock>,
     /// Latest finalized block.
     pub(super) latest_finalized: Option<CertifiedBlock>,
 }
@@ -25,7 +23,7 @@ pub(super) struct FeedState {
 /// Handle to shared feed state.
 ///
 /// This handle can be cloned and used by both:
-/// - The feed actor (to update state when processing Activity)
+/// - The feed actor (to update state when processing finalized blocks)
 /// - RPC handlers (implements `ConsensusFeed`)
 #[derive(Clone)]
 pub struct FeedStateHandle {
@@ -43,7 +41,6 @@ impl FeedStateHandle {
         let (events_tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
         Self {
             state: Arc::new(RwLock::new(FeedState {
-                latest_notarized: None,
                 latest_finalized: None,
             })),
             marshal: Arc::new(OnceLock::new()),
@@ -59,11 +56,6 @@ impl FeedStateHandle {
     /// Get the broadcast sender for events.
     pub(super) fn events_tx(&self) -> &broadcast::Sender<Event> {
         &self.events_tx
-    }
-
-    /// Get read access to the internal state.
-    pub(super) fn read(&self) -> parking_lot::RwLockReadGuard<'_, FeedState> {
-        self.state.read()
     }
 
     /// Get write access to the internal state.
@@ -91,7 +83,6 @@ impl std::fmt::Debug for FeedStateHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.state.read();
         f.debug_struct("FeedStateHandle")
-            .field("latest_notarized", &state.latest_notarized)
             .field("latest_finalized", &state.latest_finalized)
             .field("marshal_set", &self.marshal.get().is_some())
             .field("subscriber_count", &self.events_tx.receiver_count())
@@ -134,30 +125,9 @@ impl ConsensusFeed for FeedStateHandle {
     }
 
     async fn get_latest(&self) -> ConsensusState {
-        let (finalized, mut notarized) = {
-            let state = self.state.read();
-            (
-                state.latest_finalized.clone(),
-                state.latest_notarized.clone(),
-            )
-        };
-
-        let finalized_round = finalized
-            .as_ref()
-            .map(|f| Round::new(Epoch::new(f.epoch), View::new(f.view)));
-
-        let notarized_round = notarized
-            .as_ref()
-            .map(|n| Round::new(Epoch::new(n.epoch), View::new(n.view)));
-
-        // Only include the notarization if it is ahead.
-        if finalized_round.is_some_and(|f| notarized_round.is_none_or(|n| n <= f)) {
-            notarized = None;
-        }
-
         ConsensusState {
-            finalized,
-            notarized,
+            finalized: self.state.read().latest_finalized.clone(),
+            notarized: None,
         }
     }
 
