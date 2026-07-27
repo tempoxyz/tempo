@@ -30,6 +30,7 @@ env:
 jobs:
   update:
     name: Update reth dependencies
+    if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 120
     steps:

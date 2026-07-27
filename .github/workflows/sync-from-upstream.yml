@@ -12,7 +12,7 @@ permissions: {}
 
 jobs:
   sync:
-    if: ${{ github.repository != 'tempoxyz/tempo' }}
+    if: ${{ github.repository != 'tempoxyz/tempo' && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     steps:
       - name: Generate GitHub App token
