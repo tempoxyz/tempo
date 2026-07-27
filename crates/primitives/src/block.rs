@@ -6,7 +6,7 @@ use core::num::NonZeroU64;
 use crate::ed25519::PublicKey;
 
 /// Tempo's complete EVM2 block environment.
-pub type TempoBlockEnv = evm2::env::BlockEnvWithExt<TempoBlockExt>;
+pub type TempoBlockEnv = evm2::env::BlockEnvExt<TempoBlockExt>;
 
 /// Tempo fields carried in EVM2's block environment extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

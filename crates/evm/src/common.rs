@@ -165,7 +165,7 @@ pub trait TempoStateAccess<M = ()> {
 
             Ok(Ok(()))
         })
-        .map_err(|err: TempoPrecompileError| HandlerError::Custom(err.to_string()))?
+        .map_err(|err: TempoPrecompileError| HandlerError::external(err))?
     }
 
     /// Checks if the given token can be used as a fee token.

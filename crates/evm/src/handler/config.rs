@@ -417,7 +417,7 @@ fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
     match result {
         Ok(value) => Ok(value),
         Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
-        Err(error) => Err(HandlerError::Custom(error.to_string())),
+        Err(error) => Err(HandlerError::external(error)),
     }
 }
 
@@ -522,7 +522,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         settle_storage_credit_refunds(host, &mut gas.result)?;
         let gas_price = u128::try_from(gas.gas_price)
-            .map_err(|_| HandlerError::Custom("effective gas price does not fit u128".into()))?;
+            .map_err(|_| HandlerError::External("effective gas price does not fit u128".into()))?;
         let gas_limit = gas.gas_limit;
         let mut result = finalize_gas(host, gas)?;
         if !host.feature(EvmFeatures::FEE_CHARGE) {
@@ -532,7 +532,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let collected = calc_gas_balance_spending(gas_limit, gas_price);
         let refund = collected
             .checked_sub(actual_spending)
-            .ok_or_else(|| HandlerError::Custom("actual fee exceeds upfront fee".into()))?;
+            .ok_or_else(|| HandlerError::External("actual fee exceeds upfront fee".into()))?;
 
         if collected.is_zero() && !actual_spending.is_zero() {
             return Ok(result);
@@ -542,7 +542,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             .fee_payer()
             .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
         let fee_token = host.ext().resolved_fee_token.ok_or_else(|| {
-            HandlerError::Custom("fee token was not resolved before settlement".into())
+            HandlerError::External("fee token was not resolved before settlement".into())
         })?;
         let fee_manager = host.ext().fee_manager.clone();
         let beneficiary = host.block().beneficiary;
@@ -575,7 +575,7 @@ impl TempoHandlerHooks {
             .fee_payer()
             .map_err(|_| invalid(TempoInvalidTransaction::InvalidFeePayerSignature))?;
         let base_fee = u64::try_from(host.block().basefee)
-            .map_err(|_| HandlerError::Custom("block base fee does not fit u64".into()))?;
+            .map_err(|_| HandlerError::External("block base fee does not fit u64".into()))?;
         let gas_price = envelope.evm_tx().effective_gas_price(Some(base_fee));
         let collected = if host.feature(EvmFeatures::FEE_CHARGE) {
             calc_gas_balance_spending(envelope.evm_tx().gas_limit(), gas_price)
@@ -660,7 +660,7 @@ impl TempoHandlerHooks {
                     })
                 }
                 TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                TempoPrecompileError::Fatal(error) => HandlerError::Custom(error),
+                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
                 error => invalid(FeePaymentError::Other(error.to_string())),
             });
         }

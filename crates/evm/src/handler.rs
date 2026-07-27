@@ -673,7 +673,7 @@ pub(super) struct KeychainState {
 fn keychain_error(error: TempoPrecompileError) -> HandlerError {
     match error {
         TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-        TempoPrecompileError::Fatal(error) => HandlerError::Custom(error),
+        error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
         error => invalid(TempoInvalidTransaction::KeychainValidationFailed {
             reason: format!("{error:?}"),
         }),
@@ -947,7 +947,7 @@ fn apply_key_authorization(
             host.state_mut().rollback(checkpoint, features);
             Err(match error {
                 TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                TempoPrecompileError::Fatal(error) => HandlerError::Custom(error),
+                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
                 error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
                     reason: error.to_string(),
                 }),
@@ -1061,7 +1061,7 @@ fn prevalidate_call_scopes(
     caller: Address,
     access_key: Option<Address>,
     calls: &[tempo_primitives::transaction::Call],
-    gas_limit: u64,
+    remaining: &mut u64,
     reservoir: u64,
 ) -> HandlerResult<Option<MessageResult<TempoEvmTypes>>> {
     if !host.config_spec_id().is_t3() {
@@ -1075,7 +1075,7 @@ fn prevalidate_call_scopes(
     // This keeps unpaid transaction validation bounded while still failing before the first
     // user call executes.
     let (validation, mut gas) =
-        StorageCtx::enter_evm_with_gas_limit(host, gas_limit, reservoir, || {
+        StorageCtx::enter_evm_with_gas_limit(host, *remaining, reservoir, || {
             let keychain = AccountKeychain::new();
             for call in calls {
                 keychain.validate_call_scope_for_transaction(
@@ -1088,6 +1088,7 @@ fn prevalidate_call_scopes(
             Ok::<_, TempoPrecompileError>(())
         });
     let Err(error) = validation else {
+        *remaining = gas.remaining();
         return Ok(None);
     };
 
@@ -1098,15 +1099,15 @@ fn prevalidate_call_scopes(
             (InstrStop::PrecompileOOG, Default::default())
         }
         Err(PrecompileError::Fatal(error)) => {
-            return Err(HandlerError::Custom(error.to_string()));
+            return Err(HandlerError::External(error));
         }
         Ok(_) => unreachable!("Tempo precompile errors cannot produce success"),
     };
-    Ok(Some(MessageResult {
+    Ok(Some(MessageResult::<TempoEvmTypes> {
         stop,
         gas,
         output,
-        ..MessageResult::default()
+        ..MessageResult::<TempoEvmTypes>::default()
     }))
 }
 
@@ -1288,8 +1289,9 @@ fn execute_batch(
     // Create checkpoint for atomic execution - captures state before any calls
     let checkpoint = host.state().checkpoint();
     let features = host.version().features;
+    let mut remaining = gas_limit;
     if let Some(result) =
-        prevalidate_call_scopes(host, caller, access_key, calls, gas_limit, reservoir)?
+        prevalidate_call_scopes(host, caller, access_key, calls, &mut remaining, reservoir)?
     {
         host.state_mut().rollback(checkpoint, features);
         return Ok(result);
@@ -1300,17 +1302,16 @@ fn execute_batch(
             .map_err(HandlerError::Fatal)?
             .bump_nonce();
     }
-    let mut remaining = gas_limit;
     let mut reservoir = reservoir;
     let mut refund = 0i64;
     let mut state_gas = 0i64;
     let mut spilled_state_gas = 0u64;
     let mut final_result = None;
-    let tx_env = TxEnv {
+    let tx_env = TxEnv::<TempoEvmTypes> {
         origin: caller,
         gas_price,
         chain_id: U256::from(host.version().chain_id),
-        ..TxEnv::default()
+        ..TxEnv::<TempoEvmTypes>::default()
     };
 
     for call in calls {
@@ -1554,11 +1555,11 @@ fn handle(
     };
     if let Err(error) = fee_result {
         if tx.subblock_proposer().is_some() && is_subblock_fee_error(&error) {
-            return Ok(TxResult {
+            return Ok(TxResult::<TempoEvmTypes> {
                 status: false,
                 total_gas_spent: tx.gas_limit.min(request.host.version().tx_gas_limit_cap),
                 stop: InstrStop::PrecompileError,
-                ..TxResult::default()
+                ..TxResult::<TempoEvmTypes>::default()
             });
         }
         return Err(error);
@@ -1579,10 +1580,10 @@ fn handle(
                 .saturating_sub(intrinsic)
                 .saturating_sub(initial_state_gas)
     {
-        let result = MessageResult {
+        let result = MessageResult::<TempoEvmTypes> {
             stop: InstrStop::OutOfGas,
             gas: GasTracker::new_spent_with_reservoir(tx.gas_limit.saturating_sub(intrinsic), 0),
-            ..MessageResult::default()
+            ..MessageResult::<TempoEvmTypes>::default()
         };
         return TempoHandlerHooks::settle_transaction(
             request.host,

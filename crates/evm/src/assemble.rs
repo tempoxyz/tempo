@@ -108,7 +108,7 @@ mod tests {
     use crate::TempoEvmEnv;
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
-    use evm2::env::BlockEnvWithExt;
+    use evm2::env::BlockEnvExt;
     use reth_chainspec::EthChainSpec;
     use reth_evm::{EvmState, execute::BlockAssembler};
     use reth_evm_ethereum::EthBlockExecutionCtx;
@@ -156,7 +156,7 @@ mod tests {
         let shared_gas_limit = 10_000_000u64;
 
         let evm_env = TempoEvmEnv {
-            block: BlockEnvWithExt {
+            block: BlockEnvExt {
                 number: U256::from(block_number),
                 timestamp: U256::from(timestamp),
                 beneficiary: Address::repeat_byte(0x01),
@@ -270,7 +270,7 @@ mod tests {
         };
 
         let evm_env = TempoEvmEnv {
-            block: BlockEnvWithExt {
+            block: BlockEnvExt {
                 number: U256::from(1),
                 timestamp: U256::from(1000),
                 beneficiary: Address::repeat_byte(0x01),
@@ -348,7 +348,7 @@ mod tests {
         let shared_gas_limit = 10_000_000u64;
 
         let evm_env = TempoEvmEnv {
-            block: BlockEnvWithExt {
+            block: BlockEnvExt {
                 number: U256::from(1),
                 timestamp: U256::from(1000),
                 beneficiary: Address::repeat_byte(0x01),

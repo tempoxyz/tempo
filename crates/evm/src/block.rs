@@ -942,7 +942,7 @@ mod tests {
 
         let cumulative_gas_used = 21000;
 
-        let receipt = builder.build_receipt(ReceiptBuilderCtx {
+        let receipt = builder.build_receipt::<TempoEvmTypes>(ReceiptBuilderCtx {
             tx_type: tx.tx_type(),
             result,
             cumulative_gas_used,
@@ -1486,7 +1486,7 @@ mod tests {
         let output = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 21000,
                         ..Default::default()
@@ -1634,7 +1634,7 @@ mod tests {
         let output = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 21000,
                         ..Default::default()
@@ -1673,7 +1673,7 @@ mod tests {
         let output1 = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 21000,
                         ..Default::default()
@@ -1696,7 +1696,7 @@ mod tests {
         let output2 = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 50000,
                         ..Default::default()
@@ -1737,7 +1737,7 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
-                        result: TxResult {
+                        result: TxResult::<TempoEvmTypes> {
                             status: true,
                             total_gas_spent: 21000,
                             ..Default::default()
@@ -1777,7 +1777,7 @@ mod tests {
         let output = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 50_000,
                         ..Default::default()
@@ -1822,7 +1822,7 @@ mod tests {
         let output = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 300_000,
                         state_gas_spent: 100_000,
@@ -1871,7 +1871,7 @@ mod tests {
         let output = TempoTxResult {
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
-                    result: TxResult {
+                    result: TxResult::<TempoEvmTypes> {
                         status: true,
                         total_gas_spent: 300_000,
                         state_gas_spent: 100_000,
@@ -2140,7 +2140,7 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
-                        result: TxResult {
+                        result: TxResult::<TempoEvmTypes> {
                             status: true,
                             total_gas_spent: 300_000,
                             state_gas_spent: state_gas,
@@ -2188,7 +2188,7 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
-                        result: TxResult {
+                        result: TxResult::<TempoEvmTypes> {
                             status: true,
                             total_gas_spent: 300_000,
                             state_gas_spent: 200_000,
@@ -2236,7 +2236,7 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
-                        result: TxResult {
+                        result: TxResult::<TempoEvmTypes> {
                             status: true,
                             total_gas_spent: regular,
                             refunded: regular - cumulative,

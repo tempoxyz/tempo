@@ -1110,6 +1110,26 @@ use keychain::invalid_transaction;
 #[test]
 fn test_t3_scope_validation_moves_to_execution() {
     const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+    const CALL_GAS: u64 = 1_000;
+
+    #[derive(Debug)]
+    struct Runner;
+
+    impl evm2::InterpreterRunner<TempoEvmTypes> for Runner {
+        fn run<'frame, 'host>(
+            &self,
+            _config: &ExecutionConfig<TempoEvmTypes>,
+            interpreter: &mut evm2::interpreter::Interpreter<'frame, 'host, TempoEvmTypes>,
+            _host: &mut Evm<'host, TempoEvmTypes>,
+        ) -> Option<InstrStop> {
+            interpreter
+                .gas_mut()
+                .tracker_mut()
+                .spend(CALL_GAS)
+                .expect("mock call has enough gas");
+            Some(InstrStop::Stop)
+        }
+    }
 
     let caller = Address::repeat_byte(0x11);
     let access_key = Address::repeat_byte(0x22);
@@ -1185,14 +1205,39 @@ fn test_t3_scope_validation_moves_to_execution() {
     .expect("scope validation no longer runs during state validation");
     assert_eq!(keychain.access_key, Some(access_key));
 
+    evm.set_interpreter_runner(Runner);
+    let result = execute_batch(
+        &mut evm,
+        caller,
+        Some(access_key),
+        0,
+        U256::ZERO,
+        1_000_000,
+        0,
+        &calls,
+        false,
+    )
+    .expect("batch execution should succeed");
+    assert!(result.is_success());
+    assert!(
+        result.gas.spent() > CALL_GAS,
+        "successful call-scope validation gas must be included in batch gas"
+    );
+
     // EVM2 passes only the post-intrinsic execution budget into batch execution. A
     // transaction whose gas limit is exactly its intrinsic gas therefore has no gas left for
     // call-scope validation.
-    let execution_gas = 0;
-    let result =
-        prevalidate_call_scopes(&mut evm, caller, Some(access_key), &calls, execution_gas, 0)
-            .expect("scope validation should return a frame result")
-            .expect("insufficient execution gas should halt");
+    let mut execution_gas = 0;
+    let result = prevalidate_call_scopes(
+        &mut evm,
+        caller,
+        Some(access_key),
+        &calls,
+        &mut execution_gas,
+        0,
+    )
+    .expect("scope validation should return a frame result")
+    .expect("insufficient execution gas should halt");
 
     assert!(
         matches!(result.stop, InstrStop::PrecompileOOG),
@@ -1263,9 +1308,17 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
             .expect("access key authorization succeeds");
     });
 
-    let result = prevalidate_call_scopes(&mut evm, caller, Some(access_key), &calls, 1_000_000, 0)
-        .expect("execution should return a frame result")
-        .expect("denied call should revert");
+    let mut remaining = 1_000_000;
+    let result = prevalidate_call_scopes(
+        &mut evm,
+        caller,
+        Some(access_key),
+        &calls,
+        &mut remaining,
+        0,
+    )
+    .expect("execution should return a frame result")
+    .expect("denied call should revert");
 
     let expected_revert: Bytes = AccountKeychainError::call_not_allowed().abi_encode().into();
 
@@ -2845,7 +2898,7 @@ fn test_refund_cap_removed_on_t7() {
         let evm = test_evm(spec);
         let mut result = MessageResult::<TempoEvmTypes> {
             gas: GasTracker::new_spent_with_reservoir(SPENT, 0),
-            ..MessageResult::default()
+            ..MessageResult::<TempoEvmTypes>::default()
         };
         result.gas.record_refund(REFUND);
         result.final_refund(
