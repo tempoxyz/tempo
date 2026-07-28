@@ -2133,7 +2133,11 @@ mod tests {
         }
 
         let calls = hook_calls.lock().unwrap();
-        assert_eq!(calls.len(), 2, "T10 installation must dispatch both updates");
+        assert_eq!(
+            calls.len(),
+            2,
+            "T10 installation must dispatch both updates"
+        );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
