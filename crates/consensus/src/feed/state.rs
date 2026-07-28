@@ -54,14 +54,10 @@ impl FeedStateHandle {
     }
 
     /// Update the latest finalized block and broadcast it to RPC subscribers.
-    pub(crate) fn publish_finalized(&self, finalized: CertifiedBlock, seen: u64) -> usize {
-        self.state.write().latest_finalized = Some(finalized.clone());
+    pub(crate) fn publish_certified(&self, block: CertifiedBlock, seen: u64) -> usize {
+        self.state.write().latest_finalized = Some(block.clone());
         let subscribers = self.events_tx.receiver_count();
-        let _ = self.events_tx.send(Event::Finalized {
-            block: finalized,
-            seen,
-        });
-
+        let _ = self.events_tx.send(Event::Finalized { block, seen });
         subscribers
     }
 

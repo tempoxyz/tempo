@@ -10,7 +10,7 @@ use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use futures::StreamExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempo_node::rpc::consensus::CertifiedBlock;
-use tracing::{debug, error, info_span, instrument};
+use tracing::{debug, error, info_span, instrument, warn};
 
 use super::{ingress::FinalizedTip, state::FeedStateHandle};
 use crate::alias::marshal;
@@ -63,15 +63,15 @@ impl<TContext: Spawner> Actor<TContext> {
     #[instrument(skip_all, fields(height = %tip.height, digest = %tip.digest))]
     async fn handle_tip(&self, tip: FinalizedTip) {
         let Some(finalization) = self.marshal.get_finalization(tip.height).await else {
-            debug!("skipping finalized tip without a certificate");
+            warn!("finalized tip without a persisted certificate");
             return;
         };
         let Some(block) = self.marshal.get_block(tip.height).await else {
-            debug!("skipping finalized tip without persisted block");
+            warn!("finalized tip without a persisted block");
             return;
         };
 
-        let finalized = CertifiedBlock {
+        let certified = CertifiedBlock {
             epoch: tip.round.epoch().get(),
             view: tip.round.view().get(),
             digest: tip.digest.0,
@@ -79,8 +79,8 @@ impl<TContext: Spawner> Actor<TContext> {
             certificate: hex::encode(finalization.encode()),
         };
 
-        let subscribers = self.state.publish_finalized(finalized, now_millis());
-        debug!(subscribers, "sending new finalized event");
+        let subscribers = self.state.publish_certified(certified, now_millis());
+        debug!(subscribers, "published new certified block");
     }
 }
 
