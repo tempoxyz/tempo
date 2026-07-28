@@ -180,7 +180,7 @@ impl<TUpstream> Config<TUpstream> {
                 network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox,
-                feed: feed_mailbox.clone(),
+                feed: feed_mailbox,
                 epoch_strategy: epoch_strategy.clone(),
             },
         )

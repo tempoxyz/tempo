@@ -46,7 +46,7 @@ pub(super) struct Actor<TContext> {
 }
 
 impl<TContext: Spawner> Actor<TContext> {
-    pub(super) fn start(self) -> Handle<()> {
+    pub(super) fn start(mut self) -> Handle<()> {
         spawn_cell!(self.context, self.run())
     }
 
