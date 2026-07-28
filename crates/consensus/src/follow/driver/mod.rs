@@ -1,7 +1,7 @@
 //! Follower finalization driver.
 //!
 //! Validates finalized blocks received from upstream and reports them to marshal.
-//! Marshal's finalized block updates independently drive the consensus feed.
+//! Marshal's finalized tip updates independently drive the consensus feed.
 
 use std::future::Future;
 
