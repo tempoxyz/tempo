@@ -1,4 +1,4 @@
-//! Canonical Zone runtimes installed directly by the T9 hardfork.
+//! Canonical Zone runtimes installed directly by the T10 hardfork.
 
 use alloy_primitives::{Bytes, bytes};
 
