@@ -150,7 +150,7 @@ where
             .containing(Height::new(start_after.number))
             .expect("failed to get epoch containing start block");
 
-        let verifier = if let Some(identity) = config.network_identity {
+        let verifier = if let Some(identity) = &config.network_identity {
             let mut verifier = FinalizationVerifier::new(identity.clone(), epoch_strategy.clone());
 
             // If the start block is one or more epoch transitions ahead of the initial identity,
@@ -181,6 +181,20 @@ where
             // If we don't have an initial identity, our only option is to fetch identity from the start block.
             verifier_from_start(&rpc, &epoch_strategy, start_after).await?
         };
+
+        if let Some(configured) = &config.network_identity {
+            let active = verifier.network_identity();
+            if active.from_epoch >= configured.from_epoch && active.identity != configured.identity
+            {
+                warn!(
+                    configured_from_epoch = configured.from_epoch,
+                    active_from_epoch = active.from_epoch,
+                    configured_network_identity = %configured.identity,
+                    active_network_identity = %active.identity,
+                    "Network identity derived from the trusted start block differs from the configured network identity!!! Update the binary with the latest network identity"
+                );
+            }
+        }
 
         Ok(Self {
             rpc,
