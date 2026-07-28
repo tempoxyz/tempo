@@ -22,17 +22,18 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
 
-use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
+use super::{Config, ExecutionProvider, Feed, Mailbox, Marshal, ingress::Message};
 use crate::consensus::{Block, Digest};
 
-pub(super) fn try_init<TContext, P, M>(
+pub(super) fn try_init<TContext, P, M, F>(
     context: TContext,
-    config: Config<P, M>,
-) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
+    config: Config<P, M, F>,
+) -> eyre::Result<(Driver<TContext, P, M, F>, Mailbox)>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    F: Feed + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
@@ -106,20 +107,21 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext, P, M> {
+pub(crate) struct Driver<TContext, P, M, F> {
     context: ContextCell<TContext>,
-    config: Config<P, M>,
+    config: Config<P, M, F>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
-impl<C, P, M> Driver<C, P, M>
+impl<C, P, M, F> Driver<C, P, M, F>
 where
     C: Clock + Rng + CryptoRng + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    F: Feed + 'static,
 {
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run())
@@ -288,9 +290,14 @@ where
         }
 
         let round = finalization.round();
-        let activity = Activity::Finalization(finalization);
+        let activity = Activity::Finalization(finalization.clone());
 
-        let _ = self.config.marshal.certified(round, consensus_block).await;
+        let _ = self
+            .config
+            .marshal
+            .certified(round, consensus_block.clone())
+            .await;
+        self.config.feed.report(consensus_block, finalization);
         self.config.marshal.report(activity).await;
         Ok(())
     }

@@ -36,7 +36,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{ConsensusActivity, ExecutionProvider, Marshal};
+use super::super::{ConsensusActivity, ConsensusFinalization, ExecutionProvider, Feed, Marshal};
 use crate::consensus::{Block, Digest};
 
 pub(super) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
@@ -193,6 +193,7 @@ struct StubMarshalInner {
     hints: Mutex<Vec<Height>>,
     certified: Mutex<Vec<(Round, Block)>>,
     reports: Mutex<Vec<ConsensusActivity>>,
+    block_reports: AtomicBool,
 }
 
 impl StubMarshal {
@@ -215,6 +216,10 @@ impl StubMarshal {
     pub(super) fn report_count(&self) -> usize {
         self.inner.reports.lock().len()
     }
+
+    pub(super) fn block_reports(&self) {
+        self.inner.block_reports.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Marshal for StubMarshal {
@@ -236,6 +241,28 @@ impl Marshal for StubMarshal {
 
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
         self.inner.reports.lock().push(activity);
-        async {}
+        let block = self.inner.block_reports.load(Ordering::SeqCst);
+        async move {
+            if block {
+                std::future::pending().await
+            }
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct StubFeed {
+    blocks: Arc<Mutex<Vec<Block>>>,
+}
+
+impl StubFeed {
+    pub(super) fn blocks(&self) -> Vec<Block> {
+        self.blocks.lock().clone()
+    }
+}
+
+impl Feed for StubFeed {
+    fn report(&self, block: Block, _finalization: ConsensusFinalization) {
+        self.blocks.lock().push(block);
     }
 }
