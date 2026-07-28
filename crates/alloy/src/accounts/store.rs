@@ -223,6 +223,11 @@ impl TempoAccessKey {
         self.chain_id
     }
 
+    /// Cryptographic signature type produced by this key.
+    pub const fn signature_type(&self) -> SignatureType {
+        self.signer.signature_type()
+    }
+
     /// Pending authorization attached until the key is observed on-chain.
     pub fn key_authorization(&self) -> Option<&SignedKeyAuthorization> {
         self.key_authorization.as_deref()
@@ -3499,6 +3504,7 @@ mod tests {
         let path = write_store(serde_json::json!([key_json(signer.address(), private_key)]));
         let wallet = TempoAccountsWallet::from_store(&path).unwrap();
         let key = wallet.active_access_key().unwrap();
+        assert_eq!(key.signature_type(), SignatureType::P256);
         let mut request = TempoTransactionRequest {
             inner: TransactionRequest {
                 chain_id: Some(1),
