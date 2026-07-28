@@ -93,7 +93,12 @@ impl FinalizedBlockStream {
     {
         let state = State::initialize(provider, config).await?;
         let stream = stream::try_unfold(state, |mut state| async move {
-            let header = state.next_header().await?;
+            let header = state.next_header().await.inspect_err(|error| {
+                warn!(
+                    error = %error,
+                    "Finalized block stream error"
+                );
+            })?;
             Ok(Some((header, state)))
         });
         Ok(Self {
@@ -244,7 +249,7 @@ where
                         .epoch();
                     self.plan = Some(self.plan_to_transition(epoch).await?);
                 }
-                // If the certifciate is malformed, treat this as fatal error.
+                // If the certificate is malformed, treat this as fatal error.
                 Err(error) => return Err(error.into()),
             }
         }
