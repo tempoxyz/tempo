@@ -42,6 +42,7 @@ pub(super) struct Actor<TContext> {
     context: ContextCell<TContext>,
     receiver: mpsc::UnboundedReceiver<Certified>,
     state: FeedStateHandle,
+    last_published_height: Option<commonware_consensus::types::Height>,
 }
 
 impl<TContext: Spawner> Actor<TContext> {
@@ -58,8 +59,15 @@ impl<TContext: Spawner> Actor<TContext> {
     }
 
     #[instrument(skip_all, fields(height = %block.height(), digest = %block.digest()))]
-    fn publish(&self, block: Block, finalization: ConsensusFinalization) {
+    fn publish(&mut self, block: Block, finalization: ConsensusFinalization) {
         let height = block.height();
+        if self
+            .last_published_height
+            .is_some_and(|last_height| height <= last_height)
+        {
+            return;
+        }
+        self.last_published_height = Some(height);
         let round = finalization.proposal.round;
         let finalized = CertifiedBlock {
             epoch: round.epoch().get(),
@@ -90,6 +98,7 @@ pub(super) fn init<TContext: Spawner>(
             context: ContextCell::new(context),
             receiver,
             state,
+            last_published_height: None,
         },
         Mailbox(sender),
     )
