@@ -400,6 +400,11 @@ where
     T: Storable + StorageKey + Hash + Eq + Clone,
     T::Handler: Handler<T>,
 {
+    /// Returns a `Slot` accessor for full-set operations.
+    fn as_slot(&self) -> Slot<Set<T>> {
+        Slot::new(self.base_slot, self.address)
+    }
+
     /// Reads all elements from storage as a `Set<T>`.
     ///
     /// The returned `Set` preserves storage order: `set[i] == handler.at(i)`.

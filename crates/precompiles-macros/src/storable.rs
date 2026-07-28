@@ -376,18 +376,15 @@ fn gen_handler_struct(
             pub fn base_slot(&self) -> ::alloy::primitives::U256 {
                 self.base_slot
             }
-
-            /// Returns a `Slot<T>` for whole-struct storage operations.
-            #[inline]
-            fn as_slot(&self) -> crate::storage::Slot<#struct_name> {
-                crate::storage::Slot::<#struct_name>::new(
-                    self.base_slot,
-                    self.address
-                )
-            }
         }
 
         impl crate::storage::Handler<#struct_name> for #handler_name {
+            /// Returns a `Slot<T>` for whole-struct storage operations.
+            #[inline]
+            fn as_slot(&self) -> crate::storage::Slot<#struct_name> {
+                crate::storage::Slot::<#struct_name>::new(self.base_slot, self.address)
+            }
+
             #[inline]
             fn read(&self) -> crate::error::Result<#struct_name> {
                 self.as_slot().read()

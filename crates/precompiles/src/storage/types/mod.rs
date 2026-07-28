@@ -196,6 +196,13 @@ pub trait StorableType {
 
 /// Abstracts reading, writing, and deleting values for [`Storable`] types.
 pub trait Handler<T: Storable> {
+    /// Returns the canonical base [`Slot<T>`] represented by this handler.
+    ///
+    /// - For fixed-layout values, the slot and [`StorableType::SLOTS`] describe the contiguous
+    ///   storage footprint.
+    /// - For dynamic values, the slot identifies only the base location and should be used carefully.
+    fn as_slot(&self) -> Slot<T>;
+
     /// Reads the value from storage.
     fn read(&self) -> Result<T>;
 

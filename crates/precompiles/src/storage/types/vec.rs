@@ -150,6 +150,12 @@ impl<T> Handler<Vec<T>> for VecHandler<T>
 where
     T: Storable,
 {
+    /// Returns a `Slot` accessor for full-vector operations.
+    #[inline]
+    fn as_slot(&self) -> Slot<Vec<T>> {
+        Slot::new(self.len_slot, self.address)
+    }
+
     /// Reads the entire vector from storage.
     #[inline]
     fn read(&self) -> Result<Vec<T>> {
@@ -224,12 +230,6 @@ where
     #[inline]
     pub fn data_slot(&self) -> ::alloy::primitives::U256 {
         calc_data_slot(self.len_slot)
-    }
-
-    /// Returns a `Slot` accessor for full-vector operations.
-    #[inline]
-    fn as_slot(&self) -> Slot<Vec<T>> {
-        Slot::new(self.len_slot, self.address)
     }
 
     /// Returns the length of the vector.

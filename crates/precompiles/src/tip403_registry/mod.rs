@@ -72,33 +72,33 @@ pub struct TIP403Registry {
 #[derive(Debug, Clone, Default, Storable)]
 pub struct TokenTransferPolicy {
     /// Active transfer policy ID.
-    policy_id: u64,
+    pub policy_id: u64,
     /// Distinguishes an unset binding from the valid reject-all policy ID `0`.
-    is_set: bool,
+    pub is_set: bool,
 }
 
 /// Per-account TIP-1028 receive policy configuration.
 #[derive(Debug, Clone, Default, Storable)]
-struct ReceivePolicy {
-    config: ReceivePolicyConfig,
-    recovery_address: Address,
+pub struct ReceivePolicy {
+    pub config: ReceivePolicyConfig,
+    pub recovery_address: Address,
 }
 
 /// Per-account TIP-1028 receive policy configuration. Packed in a single slot.
 #[derive(Debug, Clone, Default, Storable)]
-struct ReceivePolicyConfig {
+pub struct ReceivePolicyConfig {
     /// Whether the account has configured a receive policy.
-    has_receive_policy: bool,
+    pub has_receive_policy: bool,
     /// Policy ID authorizing senders for inbound transfers.
-    sender_policy_id: u64,
+    pub sender_policy_id: u64,
     /// Type of the sender policy ID; either WHITELIST, or BLACKLIST.
-    sender_policy_type: u8,
+    pub sender_policy_type: u8,
     /// Policy ID filtering which tokens may be received.
-    token_filter_id: u64,
+    pub token_filter_id: u64,
     /// Type of the token policy ID; either WHITELIST, or BLACKLIST.
-    token_filter_type: u8,
+    pub token_filter_type: u8,
     /// Recovery authority for blocked inbound funds.
-    recovery_mode: RecoveryMode,
+    pub recovery_mode: RecoveryMode,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])

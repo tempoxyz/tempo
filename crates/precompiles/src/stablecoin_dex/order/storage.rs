@@ -388,6 +388,10 @@ impl StorageOps for OrderHandler {
 }
 
 impl Handler<Order> for OrderHandler {
+    fn as_slot(&self) -> Slot<Order> {
+        panic!("OrderHandler has no canonical typed slot; use read() or a versioned order handler")
+    }
+
     /// Reads the order using the cached or detected physical layout version.
     fn read(&self) -> StorageResult<Order> {
         self.read_with_book_key(None)

@@ -24,12 +24,23 @@ use crate::{
 ///
 /// The actual storage operations are handled by generated accessor methods
 /// that read/write values using the `PrecompileStorageProvider` trait.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Slot<T> {
     slot: U256,
     ctx: LayoutCtx,
     address: Address,
     _ty: PhantomData<T>,
+}
+
+impl<T> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        Self {
+            slot: self.slot,
+            ctx: self.ctx,
+            address: self.address,
+            _ty: PhantomData,
+        }
+    }
 }
 
 impl<T> Slot<T> {
@@ -191,6 +202,10 @@ impl<T: Storable> Slot<T> {
 }
 
 impl<T: Storable> Handler<T> for Slot<T> {
+    fn as_slot(&self) -> Slot<T> {
+        self.clone()
+    }
+
     /// Reads a value from storage at this slot.
     ///
     /// This method delegates to the `Storable::load` implementation,

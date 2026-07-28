@@ -59,11 +59,6 @@ impl<T: Storable> BytesLikeHandler<T> {
         }
     }
 
-    #[inline]
-    fn as_slot(&self) -> Slot<T> {
-        Slot::new(self.base_slot, self.address)
-    }
-
     /// Returns the byte length without loading all data (only reads base slot).
     #[inline]
     pub fn len(&self) -> Result<usize> {
@@ -80,6 +75,12 @@ impl<T: Storable> BytesLikeHandler<T> {
 }
 
 impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
+    /// Returns a `Slot` accessor for full-value operations.
+    #[inline]
+    fn as_slot(&self) -> Slot<T> {
+        Slot::new(self.base_slot, self.address)
+    }
+
     #[inline]
     fn read(&self) -> Result<T> {
         self.as_slot().read()

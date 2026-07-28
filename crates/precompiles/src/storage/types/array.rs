@@ -73,12 +73,6 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
         }
     }
 
-    /// Returns a `Slot` accessor for full-array operations.
-    #[inline]
-    fn as_slot(&self) -> Slot<[T; N]> {
-        Slot::new(self.base_slot, self.address)
-    }
-
     /// Returns the base storage slot where this array's data is stored.
     ///
     /// Single-slot arrays pack all fields into this slot.
@@ -168,6 +162,12 @@ impl<T: StorableType, const N: usize> Handler<[T; N]> for ArrayHandler<T, N>
 where
     [T; N]: Storable,
 {
+    /// Returns a `Slot` accessor for full-array operations.
+    #[inline]
+    fn as_slot(&self) -> Slot<[T; N]> {
+        Slot::new(self.base_slot, self.address)
+    }
+
     /// Reads the entire array from storage.
     #[inline]
     fn read(&self) -> Result<[T; N]> {
