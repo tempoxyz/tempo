@@ -96,5 +96,11 @@ crate::sol! {
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
         event RoleUpdated(address indexed account, Role prev, Role next);
         event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+        event LeaderUpdated(
+            address indexed previousLeader,
+            address indexed newLeader,
+            uint64 indexed leaderEpoch,
+            uint64 leaderActivationTempoBlock
+        );
     }
 }
