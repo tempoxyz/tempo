@@ -730,6 +730,13 @@ impl TempoStoredAccessKey {
         self.key_authorization.as_ref()
     }
 
+    /// One-time authorization witness, when the stored authorization carries one.
+    pub fn authorization_witness(&self) -> Option<B256> {
+        self.key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.witness)
+    }
+
     /// Whether the store contains usable local signing material for this key.
     pub const fn is_locally_signable(&self) -> bool {
         self.locally_signable
@@ -811,6 +818,19 @@ impl TempoAccountsStore {
     ) -> Result<(), TempoAccountsError> {
         validate_stored_authorization(account, signer, authorization)?;
         upsert_secp256k1_access_key(&self.path, account, signer, authorization)
+    }
+
+    /// Erase local signing material for one access key while retaining its non-secret metadata.
+    ///
+    /// Keeping the account, chain, policy, and authorization witness lets callers finish or retry
+    /// on-chain revocation without leaving the key locally usable.
+    pub fn retire_access_key(
+        &self,
+        account: Address,
+        chain_id: u64,
+        access_key: Address,
+    ) -> Result<bool, TempoAccountsError> {
+        retire_access_key(&self.path, account, chain_id, access_key)
     }
 }
 
@@ -922,7 +942,11 @@ impl TempoAccountsWallet {
         }
     }
 
-    fn from_selected(selected: TempoAccessKey) -> Self {
+    /// Pin one access key previously loaded from an Accounts store.
+    ///
+    /// The resulting wallet no longer consults the store during selection, so a caller can retain
+    /// the exact key and pending authorization across request preparation and signing.
+    pub fn from_access_key(selected: TempoAccessKey) -> Self {
         Self {
             chain_id: Some(selected.chain_id),
             authorization_reservations: selected.authorization_reservations,
@@ -1200,7 +1224,7 @@ impl TempoAccountsWallet {
         selected
             .fill_request(request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
-        Ok(Self::from_selected(selected))
+        Ok(Self::from_access_key(selected))
     }
 
     fn fill_metadata(
@@ -2577,6 +2601,58 @@ fn upsert_secp256k1_access_key(
     write_store_atomic(path, file)
 }
 
+fn retire_access_key(
+    path: &Path,
+    account: Address,
+    chain_id: u64,
+    access_key: Address,
+) -> Result<bool, TempoAccountsError> {
+    let bytes = fs::read(path).map_err(|source| TempoAccountsError::Read {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut file = decode_editable_store(&bytes).map_err(|source| TempoAccountsError::Decode {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut changed = false;
+
+    for raw in &mut file.access_keys {
+        let Ok(identity) = serde_json::from_str::<EditableAccessKeyIdentity>(raw.get()) else {
+            continue;
+        };
+        if identity.access != account
+            || identity.chain_id != chain_id
+            || identity.address != access_key
+        {
+            continue;
+        }
+
+        let mut entry: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_str(raw.get()).map_err(|source| TempoAccountsError::Decode {
+                path: path.to_owned(),
+                source,
+            })?;
+        changed |= entry.remove("privateKey").is_some();
+        changed |= entry.remove("handle").is_some();
+        changed |= entry.remove("keyPair").is_some();
+        if changed {
+            *raw = serde_json::value::to_raw_value(&entry).map_err(|source| {
+                TempoAccountsError::Encode {
+                    path: path.to_owned(),
+                    source,
+                }
+            })?;
+        }
+        break;
+    }
+
+    if changed {
+        write_store_atomic(path, file)?;
+    }
+    Ok(changed)
+}
+
 fn write_store_atomic(path: &Path, store: EditableTempoCliStore) -> Result<(), TempoAccountsError> {
     let bytes = encode_editable_store(store).map_err(|source| TempoAccountsError::Encode {
         path: path.to_owned(),
@@ -3172,6 +3248,41 @@ mod tests {
         assert_eq!(
             stored.allowed_calls(),
             authorization.allowed_calls.as_deref()
+        );
+        assert_eq!(
+            stored.authorization_witness(),
+            Some(B256::repeat_byte(0x55))
+        );
+
+        assert!(
+            store
+                .retire_access_key(account, 4217, access_key.address())
+                .unwrap()
+        );
+        assert!(
+            !store
+                .retire_access_key(account, 4217, access_key.address())
+                .unwrap()
+        );
+        let retired = store
+            .access_keys()
+            .unwrap()
+            .into_iter()
+            .find(|key| key.address() == access_key.address())
+            .unwrap();
+        assert!(!retired.is_locally_signable());
+        assert_eq!(retired.key_authorization(), Some(&authorization));
+        assert_eq!(
+            retired.authorization_witness(),
+            Some(B256::repeat_byte(0x55))
+        );
+        let retired_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let retired_key = &retired_json["tempo-cli.store"]["state"]["accessKeys"][0];
+        assert!(retired_key.get("privateKey").is_none());
+        assert_eq!(
+            retired_json["tempo-cli.store"]["state"]["accessKeys"][1]["futureKeyField"]["nested"],
+            7
         );
 
         #[cfg(unix)]
