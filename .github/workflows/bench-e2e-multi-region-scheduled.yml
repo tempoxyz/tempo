@@ -11,6 +11,14 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
+      cloud:
+        description: Cloud provider used for disposable benchmark infrastructure.
+        type: choice
+        required: true
+        default: aws
+        options:
+          - aws
+          - gcp
       force:
         description: Force a run when Tempo main has not changed.
         type: boolean
@@ -37,10 +45,10 @@ on:
         required: true
         default: "50"
       regions:
-        description: Comma-separated AWS regions.
+        description: Comma-separated cloud regions. Empty uses the selected cloud's defaults.
         type: string
-        required: true
-        default: "us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1"
+        required: false
+        default: ""
       tps:
         description: Target transactions per second.
         type: string
@@ -67,7 +75,6 @@ permissions: {}
 jobs:
   resolve-refs:
     name: resolve-refs
-    if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -150,6 +157,7 @@ jobs:
       id-token: write
       packages: read
     with:
+      cloud: ${{ inputs.cloud || 'aws' }}
       baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
@@ -157,7 +165,7 @@ jobs:
       duration: ${{ inputs.duration || '90' }}
       bloat: ${{ inputs.bloat || '100' }}
       validator-count: ${{ inputs['validator-count'] || '50' }}
-      regions: ${{ inputs.regions || 'us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1' }}
+      regions: ${{ inputs.regions || '' }}
       tps: ${{ inputs.tps || '50000' }}
       accounts: ${{ inputs.accounts || '1000' }}
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '100' }}
