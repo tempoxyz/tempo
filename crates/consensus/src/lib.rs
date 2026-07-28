@@ -172,7 +172,7 @@ pub async fn run_follow_stack(
     config: Args,
     upstream_url: String,
     execution_node: Arc<TempoFullNode>,
-    feed_state: feed::FeedStateHandle,
+    feed_state: follow::feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let chain_spec = execution_node.chain_spec();
 

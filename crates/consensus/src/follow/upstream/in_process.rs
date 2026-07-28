@@ -13,7 +13,7 @@ use futures::{
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{
     TempoFullNode,
-    rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Event, Query},
+    rpc::consensus::{CertifiedBlock, ConsensusFeed, Event, Query},
 };
 use tokio::{
     select,
@@ -24,18 +24,17 @@ use tracing::{debug, debug_span, info, instrument};
 
 use crate::{
     consensus::{Block, Digest},
-    feed::FeedStateHandle,
     utils::OptionFuture,
 };
 
 use super::ingress::{Mailbox, Message};
 
-pub struct Config {
+pub struct Config<F> {
     pub execution_node: Arc<TempoFullNode>,
-    pub feed: FeedStateHandle,
+    pub feed: F,
 }
 
-pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox) {
+pub fn init<TContext, F>(context: TContext, config: Config<F>) -> (Actor<TContext, F>, Mailbox) {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox::new(tx);
 
@@ -51,17 +50,18 @@ pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Ma
     (actor, mailbox)
 }
 
-pub struct Actor<TContext> {
+pub struct Actor<TContext, F> {
     context: ContextCell<TContext>,
-    config: Config,
+    config: Config<F>,
     event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     waiters: Vec<Message>,
 }
 
-impl<TContext> Actor<TContext>
+impl<TContext, F> Actor<TContext, F>
 where
     TContext: Clock + Metrics + Spawner,
+    F: Clone + ConsensusFeed + Send + Sync + 'static,
 {
     pub(crate) fn start(
         mut self,
@@ -139,8 +139,8 @@ where
 }
 
 #[instrument(skip_all, fields(%height), err)]
-async fn get_finalization(
-    client: FeedStateHandle,
+async fn get_finalization<F: ConsensusFeed>(
+    client: F,
     height: Height,
     response: oneshot::Sender<Option<CertifiedBlock>>,
 ) -> eyre::Result<()> {

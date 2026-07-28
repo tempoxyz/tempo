@@ -24,8 +24,11 @@ use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRngCore;
 use reth_ethereum::provider::BlockIdReader as _;
-use tempo_consensus::{feed::FeedStateHandle, follow};
-use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
+use tempo_consensus::{
+    feed::FeedStateHandle,
+    follow::{self, feed::FeedStateHandle as FollowerFeedStateHandle},
+};
+use tempo_node::rpc::consensus::{ConsensusFeed, ConsensusFeed as _, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
 
@@ -91,12 +94,16 @@ async fn follower_rpc_survives_execution_node_handle_drop() {
 }
 
 trait FeedStateProvider {
-    fn feed_state(&self) -> FeedStateHandle;
+    type Feed: Clone + ConsensusFeed + Send + Sync + 'static;
+
+    fn feed_state(&self) -> Self::Feed;
 
     fn execution_node(&self) -> Arc<tempo_node::TempoFullNode>;
 }
 
 impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
+    type Feed = FeedStateHandle;
+
     fn feed_state(&self) -> FeedStateHandle {
         self.consensus_config.feed_state.clone()
     }
@@ -112,7 +119,9 @@ impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
 }
 
 impl FeedStateProvider for Follower {
-    fn feed_state(&self) -> FeedStateHandle {
+    type Feed = FollowerFeedStateHandle;
+
+    fn feed_state(&self) -> Self::Feed {
         self.feed.clone()
     }
 
@@ -122,7 +131,9 @@ impl FeedStateProvider for Follower {
 }
 
 impl<T: FeedStateProvider> FeedStateProvider for &T {
-    fn feed_state(&self) -> FeedStateHandle {
+    type Feed = T::Feed;
+
+    fn feed_state(&self) -> Self::Feed {
         (*self).feed_state()
     }
 
@@ -198,14 +209,15 @@ impl FollowerBuilder {
         });
 
         let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
-        let feed_state = FeedStateHandle::new();
+        let feed_state = FollowerFeedStateHandle::new();
         let upstream_execution_node = upstream.execution_node();
         let upstream_feed_state = upstream.feed_state();
 
         let config = crate::ExecutionNodeConfig {
             secret_key: alloy_primitives::B256::random(),
             validator_key: None,
-            feed_state: Some(feed_state.clone()),
+            feed_state: None,
+            follower_feed_state: Some(feed_state.clone()),
             share_sparse_trie_with_payload_builder: false,
         };
 
@@ -278,7 +290,7 @@ impl FollowerBuilder {
 
 struct Follower {
     name: String,
-    feed: FeedStateHandle,
+    feed: FollowerFeedStateHandle,
     execution_node: ExecutionNode,
     _handle: Handle<eyre::Result<()>>,
 }

@@ -235,6 +235,8 @@ pub struct ExecutionNodeConfig {
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
     pub feed_state: Option<FeedStateHandle>,
+    /// Feed state handle for consensus RPC (if follower).
+    pub follower_feed_state: Option<tempo_consensus::follow::feed::FeedStateHandle>,
     /// Share the engine's sparse trie pipeline with the payload builder.
     pub share_sparse_trie_with_payload_builder: bool,
 }
@@ -250,6 +252,7 @@ impl ExecutionNodeConfig {
             secret_key: B256::random(),
             validator_key: None,
             feed_state: None,
+            follower_feed_state: None,
             share_sparse_trie_with_payload_builder: false,
         }
     }
@@ -866,6 +869,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         secret_key,
         validator_key,
         feed_state,
+        follower_feed_state,
         share_sparse_trie_with_payload_builder,
     } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
@@ -909,6 +913,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     .node(tempo_node)
     .extend_rpc_modules(move |ctx| {
         if let Some(feed_state) = feed_state {
+            ctx.modules
+                .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+        }
+        if let Some(feed_state) = follower_feed_state {
             ctx.modules
                 .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
         }

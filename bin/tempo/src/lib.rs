@@ -62,7 +62,9 @@ use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
+use tempo_consensus::{
+    feed as consensus_feed, follow::feed as follower_feed, run_consensus_stack, run_follow_stack,
+};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
@@ -265,9 +267,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let cl_feed_state = consensus_feed::FeedStateHandle::new();
+    let follower_feed_state = follower_feed::FeedStateHandle::new();
 
     let shutdown_token_clone = shutdown_token.clone();
     let cl_feed_state_clone = cl_feed_state.clone();
+    let follower_feed_state_clone = follower_feed_state.clone();
 
     let consensus_handle = thread::spawn(move || {
         // Exit early if we are not executing `tempo node` command.
@@ -356,7 +360,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.consensus,
                     follow_url,
                     Arc::new(node),
-                    cl_feed_state_clone,
+                    follower_feed_state_clone,
                 ))
             } else {
                 Either::Right(run_consensus_stack(
@@ -449,6 +453,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        let is_following = args.follow.is_some();
         let NodeHandle {
             node,
             node_exit_future,
@@ -490,9 +495,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     }
 
                     if has_consensus_engine {
-                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
-                        ctx.modules.merge_configured(consensus_rpc.into_rpc())
-                            .wrap_err("failed to register consensus rpc module")?;
+                        if is_following {
+                            let consensus_rpc = TempoConsensusRpc::new(follower_feed_state);
+                            ctx.modules.merge_configured(consensus_rpc.into_rpc())
+                                .wrap_err("failed to register follower consensus rpc module")?;
+                        } else {
+                            let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
+                            ctx.modules.merge_configured(consensus_rpc.into_rpc())
+                                .wrap_err("failed to register consensus rpc module")?;
+                        }
                     }
 
                     Ok(())

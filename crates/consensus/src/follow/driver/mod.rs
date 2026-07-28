@@ -1,12 +1,15 @@
 //! Follower finalization driver.
 //!
-//! Validates finalized blocks received from upstream and reports them to marshal.
-//! Marshal's finalized block updates independently drive the consensus feed.
+//! Validates finalized blocks received from upstream and reports them to marshal
+//! and the local consensus feed.
 
 use std::future::Future;
 
 use commonware_consensus::{
-    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
+    simplex::{
+        scheme::bls12381_threshold::vrf::Scheme,
+        types::{Activity, Finalization},
+    },
     types::{FixedEpocher, Height, Round},
 };
 use commonware_cryptography::{
@@ -30,6 +33,8 @@ use crate::{
     epoch::SchemeProvider,
 };
 
+use super::feed as follower_feed;
+
 mod actor;
 mod ingress;
 
@@ -40,8 +45,9 @@ pub(super) use actor::Driver;
 pub(super) use ingress::Mailbox;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
+type ConsensusFinalization = Finalization<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(super) struct Config<P, M> {
+pub(super) struct Config<P, M, F> {
     pub(super) execution_provider: P,
     pub(super) scheme_provider: SchemeProvider,
     pub(super) network_identity: NetworkIdentity,
@@ -49,20 +55,27 @@ pub(super) struct Config<P, M> {
     pub(super) last_finalized_height: Height,
 
     pub(super) marshal: M,
+    pub(super) feed: F,
 
     pub(super) epoch_strategy: FixedEpocher,
 }
 
-pub(super) fn try_init<TContext, P, M>(
+pub(super) fn try_init<TContext, P, M, F>(
     context: TContext,
-    config: Config<P, M>,
-) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
+    config: Config<P, M, F>,
+) -> eyre::Result<(Driver<TContext, P, M, F>, Mailbox)>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    F: Feed + 'static,
 {
     actor::try_init(context, config)
+}
+
+/// Local feed operation used to republish certified blocks received upstream.
+pub(super) trait Feed: Send + Sync {
+    fn report(&self, block: Block, finalization: ConsensusFinalization);
 }
 
 /// Finalized execution-layer state needed to establish the driver's trusted boundary.
@@ -118,5 +131,11 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
         let mut mailbox = self.clone();
         async move { commonware_consensus::Reporter::report(&mut mailbox, activity).await }
+    }
+}
+
+impl Feed for follower_feed::Mailbox {
+    fn report(&self, block: Block, finalization: ConsensusFinalization) {
+        self.report(block, finalization);
     }
 }
