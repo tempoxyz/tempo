@@ -45,11 +45,11 @@ pub(super) struct Actor<TContext> {
 }
 
 impl<TContext: Spawner> Actor<TContext> {
-    pub(super) fn start(mut self) -> Handle<()> {
+    pub(super) fn start(self) -> Handle<()> {
         spawn_cell!(self.context, self.run())
     }
 
-    async fn run(&mut self) {
+    async fn run(mut self) {
         while let Some((block, finalization)) = self.receiver.next().await {
             self.publish(block, finalization);
         }
