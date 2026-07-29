@@ -206,6 +206,10 @@ pub(crate) struct GenesisArgs {
     /// T9 hardfork activation time.
     #[arg(long, default_value = "0")]
     t9_time: u64,
+
+    /// T10 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t10_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -556,7 +560,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t9_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(self.t10_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -637,6 +641,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t9Time".to_string(), self.t9_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t10Time".to_string(), self.t10_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -683,11 +690,11 @@ fn zone_factory_genesis_account() -> GenesisAccount {
 }
 
 fn insert_zone_state_at_genesis(
-    t9_time: u64,
+    t10_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
-    if t9_time == 0 {
-        println!("Initializing ZoneFactory and shared runtimes (T9 active at genesis)");
+    if t10_time == 0 {
+        println!("Initializing ZoneFactory and shared runtimes (T10 active at genesis)");
         genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
         for (destination, runtime) in [
             (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
@@ -1243,7 +1250,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn t9_genesis_installs_factory_and_canonical_shared_runtimes() {
+    fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(0, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
@@ -1265,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn future_t9_does_not_install_zone_factory_at_genesis() {
+    fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(1, &mut alloc);
 
