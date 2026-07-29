@@ -35,6 +35,9 @@ pub struct AA2dPoolMetrics {
 
     /// Number of live transaction updates skipped by lagging best-transaction iterators
     pub best_transactions_lagged_updates: Counter,
+
+    /// Number of higher-priority live updates stashed by best-transaction iterators
+    pub best_transactions_stashed_updates: Counter,
 }
 
 impl AA2dPoolMetrics {

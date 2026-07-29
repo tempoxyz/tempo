@@ -2158,6 +2158,7 @@ impl BestAA2dTransactions {
                     {
                         // Higher priority than what we already yielded — stash in `by_id`
                         // only (not `independent`) to preserve nonce chain lookups.
+                        self.metrics.best_transactions_stashed_updates.increment(1);
                         return Some(IncomingAA2dTransaction::Stash(tx));
                     }
                     return Some(IncomingAA2dTransaction::Process(tx));
