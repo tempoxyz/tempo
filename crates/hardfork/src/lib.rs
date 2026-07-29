@@ -350,7 +350,7 @@ impl TempoHardfork {
             Self::T6 => Some(MAINNET_T6_TIMESTAMP),
             Self::T7 => Some(MAINNET_T7_TIMESTAMP),
             Self::T8 => Some(MAINNET_T8_TIMESTAMP),
-            Self::T9 => None,
+            Self::T9 => Some(MAINNET_T9_TIMESTAMP),
             Self::T10 => None,
         }
     }
@@ -394,7 +394,7 @@ impl TempoHardfork {
             Self::T6 => Some(MODERATO_T6_TIMESTAMP),
             Self::T7 => Some(MODERATO_T7_TIMESTAMP),
             Self::T8 => Some(MODERATO_T8_TIMESTAMP),
-            Self::T9 => None,
+            Self::T9 => Some(MODERATO_T9_TIMESTAMP),
             Self::T10 => None,
         }
     }
