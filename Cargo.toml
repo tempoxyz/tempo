@@ -219,30 +219,30 @@ alloy-json-abi = { version = "1.6.1", default-features = false }
 alloy-primitives = { version = "1.6.1", default-features = false }
 alloy-sol-types = { version = "1.6.1", default-features = false }
 
-alloy = { version = "2.1.1", default-features = false }
-alloy-consensus = { version = "2.1.1", default-features = false }
-alloy-contract = { version = "2.1.1", default-features = false }
+alloy = { version = "2.2.0", default-features = false }
+alloy-consensus = { version = "2.2.0", default-features = false }
+alloy-contract = { version = "2.2.0", default-features = false }
 alloy-eip7928 = { version = "0.4.5", default-features = false }
-alloy-eips = { version = "2.1.1", default-features = false }
+alloy-eips = { version = "2.2.0", default-features = false }
 alloy-evm = { version = "0.37.1", default-features = false }
-alloy-genesis = { version = "2.1.1", default-features = false }
+alloy-genesis = { version = "2.2.0", default-features = false }
 alloy-hardforks = "0.4.7"
-alloy-json-rpc = "2.1.1"
-alloy-network = { version = "2.1.1", default-features = false }
-alloy-provider = { version = "2.1.1", default-features = false }
+alloy-json-rpc = "2.2.0"
+alloy-network = { version = "2.2.0", default-features = false }
+alloy-provider = { version = "2.2.0", default-features = false }
 alloy-rlp = { version = "0.3.16", default-features = false }
-alloy-rpc-client = { version = "2.1.1", default-features = false }
-alloy-rpc-types-admin = "2.1.1"
-alloy-rpc-types-engine = "2.1.1"
-alloy-rpc-types-eth = { version = "2.1.1" }
-alloy-serde = { version = "2.1.1", default-features = false }
-alloy-signer = "2.1.1"
-alloy-signer-aws = "2.1.1"
-alloy-signer-gcp = "2.1.1"
-alloy-signer-ledger = "2.1.1"
-alloy-signer-local = "2.1.1"
-alloy-signer-trezor = "2.1.1"
-alloy-transport = "2.1.1"
+alloy-rpc-client = { version = "2.2.0", default-features = false }
+alloy-rpc-types-admin = "2.2.0"
+alloy-rpc-types-engine = "2.2.0"
+alloy-rpc-types-eth = { version = "2.2.0" }
+alloy-serde = { version = "2.2.0", default-features = false }
+alloy-signer = "2.2.0"
+alloy-signer-aws = "2.2.0"
+alloy-signer-gcp = "2.2.0"
+alloy-signer-ledger = "2.2.0"
+alloy-signer-local = "2.2.0"
+alloy-signer-trezor = "2.2.0"
+alloy-transport = "2.2.0"
 
 commonware-actor = "2026.7.0"
 commonware-broadcast = "2026.7.0"
