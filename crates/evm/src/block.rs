@@ -253,7 +253,7 @@ where
         Ok(())
     }
 
-    /// Installs and initializes the complete TIP-1091 state when T9 first becomes active.
+    /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let factory_config =
             U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
@@ -645,7 +645,7 @@ where
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
 
@@ -2074,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deploy_zone_factory_at_boundary_installs_t9_state() {
+    fn test_deploy_zone_factory_at_boundary_installs_t10_state() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
@@ -2133,7 +2133,11 @@ mod tests {
         }
 
         let calls = hook_calls.lock().unwrap();
-        assert_eq!(calls.len(), 2, "T9 installation must dispatch both updates");
+        assert_eq!(
+            calls.len(),
+            2,
+            "T10 installation must dispatch both updates"
+        );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,

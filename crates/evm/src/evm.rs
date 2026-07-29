@@ -572,7 +572,7 @@ mod tests {
             },
         );
         initialize_zone_factory(&mut db, owner);
-        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T9));
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
 
         StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
             TIP20Setup::path_usd(admin).apply()
@@ -637,7 +637,7 @@ mod tests {
         let owner = Address::repeat_byte(0x11);
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
-        let mut env = evm_env_with_spec(TempoHardfork::T9);
+        let mut env = evm_env_with_spec(TempoHardfork::T10);
         env.block_env.basefee = 0;
         let mut db = CacheDB::new(EmptyDB::default());
         initialize_zone_factory(&mut db, owner);

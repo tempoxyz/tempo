@@ -1,28 +1,27 @@
 //! Feed actor implementation.
 //!
-//! The actor receives finalized blocks from marshal, publishes those with a
-//! direct finalization certificate, updates the shared RPC state, and
+//! The actor receives finalized-tip updates from marshal, resolves their
+//! persisted blocks and certificates, updates the shared RPC state, and
 //! broadcasts them to subscribers.
 
 use alloy_primitives::hex;
 use commonware_codec::Encode;
-use commonware_consensus::Heightable as _;
 use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use futures::StreamExt;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tempo_node::rpc::consensus::{CertifiedBlock, Event};
-use tracing::{debug, error, info_span, instrument};
+use tempo_node::rpc::consensus::CertifiedBlock;
+use tracing::{debug, error, info_span, instrument, warn};
 
-use super::state::FeedStateHandle;
-use crate::{alias::marshal, consensus::block::Block};
+use super::{ingress::FinalizedTip, state::FeedStateHandle};
+use crate::alias::marshal;
 
-/// Receiver for finalized blocks.
-pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<Block>;
+/// Receiver for finalized tips.
+pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FinalizedTip>;
 
 pub(crate) struct Actor<TContext> {
     /// Runtime context.
     context: ContextCell<TContext>,
-    /// Receiver for finalized blocks.
+    /// Receiver for finalized tips.
     receiver: Receiver,
     /// Shared state handle.
     state: FeedStateHandle,
@@ -32,7 +31,7 @@ pub(crate) struct Actor<TContext> {
 
 impl<TContext: Spawner> Actor<TContext> {
     /// Create a new feed actor.
-    pub(crate) fn new(
+    pub(super) fn new(
         context: TContext,
         marshal: marshal::Mailbox,
         receiver: Receiver,
@@ -54,45 +53,34 @@ impl<TContext: Spawner> Actor<TContext> {
     }
 
     async fn run(mut self) {
-        while let Some(block) = self.receiver.next().await {
-            self.handle_block(block).await;
+        while let Some(tip) = self.receiver.next().await {
+            self.handle_tip(tip).await;
         }
 
         info_span!("feed_actor").in_scope(|| error!("mailbox closed; shutting down"));
     }
 
-    #[instrument(skip_all, fields(height = %block.height(), digest = %block.digest()))]
-    async fn handle_block(&self, block: Block) {
-        let height = block.height();
-        let Some(finalization) = self.marshal.get_finalization(height).await else {
-            debug!(
-                height = height.get(),
-                "skipping finalized block without a direct finalization certificate"
-            );
+    #[instrument(skip_all, fields(height = %tip.height, digest = %tip.digest))]
+    async fn handle_tip(&self, tip: FinalizedTip) {
+        let Some(finalization) = self.marshal.get_finalization(tip.height).await else {
+            warn!("finalized tip without a persisted certificate");
             return;
         };
-        let round = finalization.proposal.round;
+        let Some(block) = self.marshal.get_block(tip.height).await else {
+            warn!("finalized tip without a persisted block");
+            return;
+        };
 
-        let finalized = CertifiedBlock {
-            epoch: round.epoch().get(),
-            view: round.view().get(),
+        let certified = CertifiedBlock {
+            epoch: tip.round.epoch().get(),
+            view: tip.round.view().get(),
+            digest: tip.digest.0,
             block: block.into_execution_block(),
-            digest: finalization.proposal.payload.0,
             certificate: hex::encode(finalization.encode()),
         };
 
-        self.state.write().latest_finalized = Some(finalized.clone());
-
-        let subscribers = self.state.events_tx().receiver_count();
-        debug!(
-            subscribers,
-            height = height.get(),
-            "sending finalized block event"
-        );
-        let _ = self.state.events_tx().send(Event::Finalized {
-            block: finalized,
-            seen: now_millis(),
-        });
+        let subscribers = self.state.publish_certified(certified, now_millis());
+        debug!(subscribers, "published new certified block");
     }
 }
 

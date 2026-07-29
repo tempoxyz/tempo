@@ -44,7 +44,7 @@ pub struct PortalWithdrawalQueue {
     slots: Mapping<U256, B256>,
 }
 
-/// Canonical Solidity storage layout of the ZonePortal runtime installed at T9.
+/// Canonical Solidity storage layout of the ZonePortal runtime installed at T10.
 ///
 /// The generated handlers let the native factory initialize a portal without duplicating raw
 /// slot numbers. This contract type is deliberately absent from the EVM precompile map.

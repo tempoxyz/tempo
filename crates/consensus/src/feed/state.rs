@@ -53,14 +53,12 @@ impl FeedStateHandle {
         let _ = self.marshal.set(marshal);
     }
 
-    /// Get the broadcast sender for events.
-    pub(super) fn events_tx(&self) -> &broadcast::Sender<Event> {
-        &self.events_tx
-    }
-
-    /// Get write access to the internal state.
-    pub(super) fn write(&self) -> parking_lot::RwLockWriteGuard<'_, FeedState> {
-        self.state.write()
+    /// Update the latest finalized block and broadcast it to RPC subscribers.
+    pub(crate) fn publish_certified(&self, block: CertifiedBlock, seen: u64) -> usize {
+        self.state.write().latest_finalized = Some(block.clone());
+        let subscribers = self.events_tx.receiver_count();
+        let _ = self.events_tx.send(Event::Finalized { block, seen });
+        subscribers
     }
 
     /// Get the marshal mailbox, logging if not yet set.
