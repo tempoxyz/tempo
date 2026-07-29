@@ -59,12 +59,22 @@ on:
         type: string
         required: false
         default: "3"
+      clickhouse-run:
+        type: string
+        required: false
+        default: "feature-1"
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
       BENCH_METRICS_PUSH_URL:
+        required: false
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
         required: false
       DEREK_BENCH_TOKEN:
         required: false
@@ -205,11 +215,6 @@ on:
         type: string
         required: true
         default: "5000000000"
-      force-bloat:
-        description: Force regeneration of local benchmark state.
-        type: boolean
-        required: true
-        default: false
       no-cache:
         description: Skip binary cache.
         type: boolean
@@ -225,6 +230,11 @@ on:
         type: string
         required: true
         default: "3"
+      clickhouse-run:
+        description: Benchmark phase that may use the direct ClickHouse reporter.
+        type: string
+        required: false
+        default: "feature-1"
 
 permissions:
   actions: read
@@ -274,10 +284,13 @@ jobs:
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
-      BENCH_INPUT_FORCE_BLOAT: ${{ github.event_name == 'workflow_dispatch' && (inputs['force-bloat'] == true || inputs['force-bloat'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
+      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
 
     steps:
       - name: Check org membership
@@ -458,11 +471,11 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
@@ -514,11 +527,11 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
@@ -560,11 +573,11 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
@@ -606,11 +619,11 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
