@@ -190,11 +190,13 @@ pub(crate) mod marshal {
         let last_finalized_height = marshal_stored_height.map_or(startup_floor_height, |height| {
             height.max(startup_floor_height)
         });
+
         info!(
             marshal_stored = ?marshal_stored_height,
             selected_floor = %startup_floor_height,
             "setting marshal sync floor"
         );
+
         Ok(Initialized {
             actor,
             mailbox,
