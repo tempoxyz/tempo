@@ -32,6 +32,9 @@ pub struct AA2dPoolMetrics {
 
     /// Number of transactions demoted from pending to queued
     pub demoted_transactions: Counter,
+
+    /// Number of live transaction updates skipped by lagging best-transaction iterators
+    pub best_transactions_lagged_updates: Counter,
 }
 
 impl AA2dPoolMetrics {

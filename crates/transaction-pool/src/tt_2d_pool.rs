@@ -660,6 +660,7 @@ impl AA2dPool {
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
             base_fee,
+            metrics: self.metrics.clone(),
         }
     }
 
@@ -2084,6 +2085,8 @@ pub(crate) struct BestAA2dTransactions {
     last_priority: Option<Priority<u64>>,
     /// Base fee used to filter and prioritize this block-building snapshot.
     base_fee: u64,
+    /// Metrics shared with the AA2D pool.
+    metrics: AA2dPoolMetrics,
 }
 
 impl BestAA2dTransactions {
@@ -2158,8 +2161,10 @@ impl BestAA2dTransactions {
                     }
                     return Some(IncomingAA2dTransaction::Process(tx));
                 }
-                Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                    // Buffer overflowed; self-corrects on next call.
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    self.metrics
+                        .best_transactions_lagged_updates
+                        .increment(skipped);
                 }
                 Err(_) => return None,
             }
