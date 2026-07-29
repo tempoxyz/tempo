@@ -35,8 +35,9 @@ impl TempoTransactionRequest {
         }
 
         let fee_payer = if self.fee_payer_signature.is_some() {
-            // Try to recover the fee payer address from the signature. A dummy or incomplete
-            // simulation request retains the failed recovery for normal validation downstream.
+            // Try to recover the fee payer address from the signature.
+            // If recovery fails (e.g. dummy signature during gas estimation / fill),
+            // keep it unresolved so estimation/fill can continue with sender-paid semantics.
             let recovered = self
                 .clone()
                 .build_aa()
@@ -67,6 +68,9 @@ impl TempoTransactionRequest {
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
+            // Create a mock signature for gas estimation.
+            // If key_type is not provided, default to secp256k1.
+            // For Keychain signatures, use the caller's address as the root key address.
             let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
             let mock_signature =
                 create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, is_t1c);
@@ -106,6 +110,13 @@ impl TempoTransactionRequest {
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints.
+///
+/// - `key_type`: The primitive signature type (secp256k1, P256, WebAuthn)
+/// - `key_data`: Type-specific data (e.g., WebAuthn size)
+/// - `key_id`: If Some, wraps the signature in a Keychain wrapper (+3,000 gas for key validation)
+/// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
+/// - `is_t1c`: Whether T1C is active — determines keychain signature version (V1 pre-T1C, V2
+///   post-T1C)
 pub(super) fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
@@ -118,6 +129,7 @@ pub(super) fn create_mock_tempo_sig(
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
     if key_id.is_some() {
+        // For Keychain signatures, the root_key_address is the caller (account owner).
         let keychain_sig = if is_t1c {
             KeychainSignature::new(caller_addr, inner_sig)
         } else {
@@ -139,11 +151,13 @@ pub(super) fn create_mock_primitive_signature(
     };
 
     match sig_type {
+        // Create a dummy secp256k1 signature (65 bytes).
         SignatureType::Secp256k1 => PrimitiveSignature::Secp256k1(Signature::new(
             alloy_primitives::U256::ZERO,
             alloy_primitives::U256::ZERO,
             false,
         )),
+        // Create a dummy P256 signature.
         SignatureType::P256 => PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -152,13 +166,21 @@ pub(super) fn create_mock_primitive_signature(
             pre_hash: false,
         }),
         SignatureType::WebAuthn => {
-            // Base clientDataJSON template (50 bytes) plus 37 bytes of authenticator data.
+            // Create a dummy WebAuthn signature with the specified size.
+            // key_data contains the total size of webauthn_data (excluding 128 bytes for public
+            // keys). Default: 800 bytes if no key_data is provided.
+
+            // Base clientDataJSON template (50 bytes):
+            // {"type":"webauthn.get","challenge":"","origin":""}
+            // Authenticator data (37 bytes): 32 rpIdHash + 1 flags + 4 signCount.
+            // Minimum total: 87 bytes.
             const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
             const AUTH_DATA_SIZE: usize = 37;
-            const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len();
-            const DEFAULT_WEBAUTHN_SIZE: usize = 800;
-            const MAX_WEBAUTHN_SIZE: usize = 8192;
+            const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes
+            const DEFAULT_WEBAUTHN_SIZE: usize = 800; // Default when no key_data provided
+            const MAX_WEBAUTHN_SIZE: usize = 8192; // Maximum realistic WebAuthn signature size
 
+            // Parse size from key_data, or use the default.
             let size = if let Some(data) = key_data.as_ref() {
                 match data.len() {
                     1 => data[0] as usize,
@@ -169,13 +191,18 @@ pub(super) fn create_mock_primitive_signature(
             } else {
                 DEFAULT_WEBAUTHN_SIZE
             }
+            // Clamp size to safe bounds to prevent DoS via unbounded allocation.
             .clamp(MIN_WEBAUTHN_SIZE, MAX_WEBAUTHN_SIZE);
 
+            // Construct authenticatorData (37 bytes).
             let mut webauthn_data = vec![0u8; AUTH_DATA_SIZE];
-            webauthn_data[32] = 0x01;
+            webauthn_data[32] = 0x01; // UP flag set
 
+            // Construct clientDataJSON with padding in the origin field if needed.
             let additional_bytes = size - MIN_WEBAUTHN_SIZE;
             let client_json = if additional_bytes > 0 {
+                // Add padding bytes to origin field:
+                // {"type":"webauthn.get","challenge":"","origin":"XXXXX"}
                 let padding = "x".repeat(additional_bytes);
                 format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#,)
             } else {
