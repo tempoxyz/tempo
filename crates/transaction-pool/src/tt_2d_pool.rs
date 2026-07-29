@@ -131,7 +131,8 @@ impl Default for AA2dPool {
 impl AA2dPool {
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
-        let (new_transaction_notifier, _) = broadcast::channel(200);
+        let live_update_capacity = config.pending_limit.max_txs.max(1);
+        let (new_transaction_notifier, _) = broadcast::channel(live_update_capacity);
         Self {
             submission_id: 0,
             independent_transactions: Default::default(),
