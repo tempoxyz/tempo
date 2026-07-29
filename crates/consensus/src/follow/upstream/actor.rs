@@ -103,10 +103,10 @@ where
                                 "connecting to upstream node failed, attempting again",
                             ));
                             self.pending_connect.replace({
-                                let context = self.context.child("reconnect");
+                                let sleep = self.context.sleep(reconnect_in);
                                 let url = self.url;
                                 async move {
-                                    context.sleep(reconnect_in).await;
+                                    sleep.await;
                                     connect(url, attempts.saturating_add(1)).await
                                 }.boxed()
                             });
