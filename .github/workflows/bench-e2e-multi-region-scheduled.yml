@@ -170,9 +170,13 @@ jobs:
       accounts: ${{ inputs.accounts || '1000' }}
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '100' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
+      clickhouse-run: feature-1
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
       BENCH_METRICS_PUSH_URL: ${{ secrets.BENCH_METRICS_PUSH_URL }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
