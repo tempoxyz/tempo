@@ -61,6 +61,9 @@ pub struct Config<TUpstream> {
     /// Mailbox size for async channels.
     pub mailbox_size: usize,
 
+    /// Deadline for individual requests to the upstream node.
+    pub upstream_request_timeout: Duration,
+
     /// FCU heartbeat interval.
     pub fcu_heartbeat_interval: Duration,
 
@@ -144,6 +147,7 @@ impl<TUpstream> Config<TUpstream> {
                 execution_provider: self.execution_node.provider.clone(),
                 upstream: self.upstream_mailbox.clone(),
                 mailbox_size: self.mailbox_size,
+                upstream_request_timeout: self.upstream_request_timeout,
             },
         );
 

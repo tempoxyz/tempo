@@ -18,6 +18,15 @@ pub(super) enum Message {
     },
 }
 
+impl Message {
+    pub(super) fn response_is_closed(&self) -> bool {
+        match self {
+            Self::GetFinalization { response, .. } => response.is_closed(),
+            Self::GetBlock { response, .. } => response.is_closed(),
+        }
+    }
+}
+
 /// Mailbox to the Upstream actor to issue requests to.
 #[derive(Clone)]
 pub struct Mailbox(mpsc::UnboundedSender<Message>);

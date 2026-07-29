@@ -2,7 +2,10 @@
 //! the standard websocket based provider requires a tokio runtime, which the tests
 //! runtime does not provide.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
@@ -10,6 +13,7 @@ use futures::{
     FutureExt as _, StreamExt as _,
     stream::{self, BoxStream, Fuse},
 };
+use parking_lot::Mutex;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{
     TempoFullNode,
@@ -33,11 +37,59 @@ use super::ingress::{Mailbox, Message};
 pub struct Config {
     pub execution_node: Arc<TempoFullNode>,
     pub feed: FeedStateHandle,
+    pub request_mode: RequestMode,
+    pub max_waiters: usize,
 }
 
-pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox) {
+#[derive(Clone, Default)]
+pub enum RequestMode {
+    #[default]
+    Respond,
+    NeverRespond(RequestLog),
+}
+
+impl RequestMode {
+    fn should_respond(&self) -> bool {
+        matches!(self, Self::Respond)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ObservedRequestKind {
+    Finalization(Height),
+    Block(Digest),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservedRequest {
+    pub kind: ObservedRequestKind,
+    pub received_at: SystemTime,
+}
+
+#[derive(Clone, Default)]
+pub struct RequestLog(Arc<Mutex<Vec<ObservedRequest>>>);
+
+impl RequestLog {
+    pub fn requests(&self) -> Vec<ObservedRequest> {
+        self.0.lock().clone()
+    }
+
+    fn record(&self, request: &Message, received_at: SystemTime) {
+        let kind = match request {
+            Message::GetFinalization { height, .. } => ObservedRequestKind::Finalization(*height),
+            Message::GetBlock { digest, .. } => ObservedRequestKind::Block(*digest),
+        };
+        self.0.lock().push(ObservedRequest { kind, received_at });
+    }
+}
+
+pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox)
+where
+    TContext: Metrics,
+{
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox::new(tx);
+    let waiters = super::Waiters::new(&context, config.max_waiters);
 
     let actor = Actor {
         context: ContextCell::new(context),
@@ -46,7 +98,7 @@ pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Ma
             .boxed()
             .fuse(),
         mailbox: rx,
-        waiters: Vec::new(),
+        waiters,
     };
     (actor, mailbox)
 }
@@ -56,7 +108,7 @@ pub struct Actor<TContext> {
     config: Config,
     event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
-    waiters: Vec<Message>,
+    waiters: super::Waiters,
 }
 
 impl<TContext> Actor<TContext>
@@ -113,11 +165,14 @@ where
                 }
 
                 Some(request) = self.mailbox.recv() => {
+                    if let RequestMode::NeverRespond(log) = &self.config.request_mode {
+                        log.record(&request, self.context.current());
+                    }
                     self.waiters.push(request);
                 }
             );
-            if connected {
-                for request in self.waiters.drain(..) {
+            if connected && self.config.request_mode.should_respond() {
+                for request in self.waiters.take() {
                     match request {
                         Message::GetFinalization { height, response } => {
                             let feed = self.config.feed.clone();

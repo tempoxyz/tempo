@@ -355,6 +355,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     ctx.with_label("follow"),
                     args.consensus,
                     follow_url,
+                    args.follow_upstream_request_timeout.into_duration(),
                     Arc::new(node),
                     cl_feed_state_clone,
                 ))
@@ -670,6 +671,49 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn follow_upstream_request_timeout_is_certified_follow_only() {
+        init_defaults_once();
+
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--follow.upstream-request-timeout",
+                "750ms",
+            ])
+            .is_err()
+        );
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--follow.upstream-request-timeout",
+                "750ms",
+            ])
+            .is_err()
+        );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--follow",
+            "--follow.upstream-request-timeout",
+            "750ms",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd.ext.follow_upstream_request_timeout.into_duration(),
+            Duration::from_millis(750)
+        );
     }
 
     #[test]

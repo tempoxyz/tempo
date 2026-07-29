@@ -8,12 +8,13 @@ use commonware_consensus::{
     types::Height,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
+use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{
     channel::mpsc,
     futures::{AbortablePool, Aborter},
 };
 use eyre::Report;
+use prometheus_client::metrics::counter::Counter;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 
@@ -43,16 +44,24 @@ pub(super) fn try_init<TContext, P, U>(
     mpsc::Receiver<handler::Message<Digest>>,
 )
 where
-    TContext: Clock + Spawner,
+    TContext: Clock + Metrics + Spawner,
     P: BlockProvider + Clone + 'static,
     U: Upstream + Clone + 'static,
 {
     let (handler_tx, handler_rx) = mpsc::channel(config.mailbox_size);
     let (mailbox_tx, mailbox_rx) = mpsc::unbounded_channel();
+    let upstream_request_timeouts = Counter::default();
+    context.register(
+        "upstream_request_timeouts",
+        "number of upstream requests that exceeded their deadline",
+        upstream_request_timeouts.clone(),
+    );
     let actor = Resolver {
         context: ContextCell::new(context),
         execution_provider: config.execution_provider,
         upstream: config.upstream,
+        upstream_request_timeout: config.upstream_request_timeout,
+        upstream_request_timeouts,
         mailbox: mailbox_rx,
         handler_tx,
         requests: BTreeMap::new(),
@@ -77,6 +86,8 @@ pub(crate) struct Resolver<
     context: ContextCell<TContext>,
     execution_provider: P,
     upstream: U,
+    upstream_request_timeout: Duration,
+    upstream_request_timeouts: Counter,
     /// To send messages to the application/actor relying on the resolver.
     handler_tx: mpsc::Sender<handler::Message<Digest>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -86,7 +97,7 @@ pub(crate) struct Resolver<
 
 impl<TContext, P, U> Resolver<TContext, P, U>
 where
-    TContext: Clock + Spawner,
+    TContext: Clock + Metrics + Spawner,
     P: BlockProvider + Clone + 'static,
     U: Upstream + Clone + 'static,
 {
@@ -171,6 +182,8 @@ where
                     let context = self.context.clone();
                     let execution_provider = self.execution_provider.clone();
                     let upstream = self.upstream.clone();
+                    let upstream_request_timeout = self.upstream_request_timeout;
+                    let upstream_request_timeouts = self.upstream_request_timeouts.clone();
                     let digest = *digest;
                     let key = key.clone();
                     self.fetches.push(async move {
@@ -178,20 +191,37 @@ where
                             context.sleep(delay).await;
                         }
 
-                        let response = resolve_block(&execution_provider, &upstream, digest).await;
+                        let response = resolve_block(
+                            &context,
+                            &execution_provider,
+                            &upstream,
+                            upstream_request_timeout,
+                            &upstream_request_timeouts,
+                            digest,
+                        )
+                        .await;
                         (key, attempt, response)
                     })
                 }
                 handler::Request::Finalized { height } => {
                     let context = self.context.clone();
                     let upstream = self.upstream.clone();
+                    let upstream_request_timeout = self.upstream_request_timeout;
+                    let upstream_request_timeouts = self.upstream_request_timeouts.clone();
                     let height = *height;
                     let key = key.clone();
                     self.fetches.push(async move {
                         if !delay.is_zero() {
                             context.sleep(delay).await;
                         }
-                        let response = resolve_finalized(&upstream, height).await;
+                        let response = resolve_finalized(
+                            &context,
+                            &upstream,
+                            upstream_request_timeout,
+                            &upstream_request_timeouts,
+                            height,
+                        )
+                        .await;
                         (key, attempt, response)
                     })
                 }
@@ -209,10 +239,15 @@ where
 }
 
 /// Resolves an encoded block from the execution layer, falling back to the upstream node.
-#[instrument(skip(execution_provider, upstream))]
-async fn resolve_block<P: BlockProvider, U: Upstream>(
+///
+/// An upstream timeout is treated as a retryable failure.
+#[instrument(skip_all, fields(%block_digest))]
+async fn resolve_block<TContext: Clock, P: BlockProvider, U: Upstream>(
+    context: &TContext,
     execution_provider: &P,
     upstream: &U,
+    upstream_request_timeout: Duration,
+    upstream_request_timeouts: &Counter,
     block_digest: Digest,
 ) -> Result<Bytes, bool> {
     match execution_provider
@@ -222,9 +257,14 @@ async fn resolve_block<P: BlockProvider, U: Upstream>(
         Err(_) => Err(true),
         Ok(Some(block)) => Ok(block.encode()),
         Ok(None) => {
-            let Some(block) = upstream.get_block(block_digest).await else {
-                return Err(true);
-            };
+            let block = context
+                .timeout(upstream_request_timeout, upstream.get_block(block_digest))
+                .await
+                .inspect_err(|_| {
+                    upstream_request_timeouts.inc();
+                })
+                .map_err(|_| true)?
+                .ok_or(true)?;
 
             Ok(block.encode())
         }
@@ -232,12 +272,24 @@ async fn resolve_block<P: BlockProvider, U: Upstream>(
 }
 
 /// Resolves a finalization (cert + block) by height from the upstream node.
+///
+/// An upstream timeout is treated as a retryable failure.
 #[instrument(skip_all, fields(%height))]
-async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Result<Bytes, bool> {
-    let certified_block = match upstream.get_finalization(height).await {
-        Some(certified_block) => certified_block,
-        None => return Err(true),
-    };
+async fn resolve_finalized<TContext: Clock, U: Upstream>(
+    context: &TContext,
+    upstream: &U,
+    upstream_request_timeout: Duration,
+    upstream_request_timeouts: &Counter,
+    height: Height,
+) -> Result<Bytes, bool> {
+    let certified_block = context
+        .timeout(upstream_request_timeout, upstream.get_finalization(height))
+        .await
+        .inspect_err(|_| {
+            upstream_request_timeouts.inc();
+        })
+        .map_err(|_| true)?
+        .ok_or(true)?;
 
     let Ok(finalization) = alloy_primitives::hex::decode(&certified_block.certificate)
         .map_err(Report::new)
