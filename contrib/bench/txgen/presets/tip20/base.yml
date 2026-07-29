@@ -2,7 +2,7 @@ merge:
   chain_id: 1337
 
   gas:
-    max_fee_per_gas: 100000000000
+    max_fee_per_gas: 200000000000
     max_priority_fee_per_gas: 100000000000
 
   accounts:
@@ -21,7 +21,7 @@ merge:
       from:
         pool: users
         select: random
-      max_fee_per_gas: 100000000000
+      max_fee_per_gas: 200000000000
       max_priority_fee_per_gas: 100000000000
       call:
         to:
