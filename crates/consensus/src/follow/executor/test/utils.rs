@@ -164,10 +164,11 @@ impl StubMarshal {
 }
 
 impl Marshal for StubMarshal {
-    fn prune(&self, height: Height) -> impl Future<Output = ()> + Send {
+    fn set_floor(&self, height: Height) -> impl Future<Output = bool> + Send {
         let floor = self.floor.clone();
         async move {
             floor.fetch_max(height.get(), Ordering::SeqCst);
+            true
         }
     }
 }

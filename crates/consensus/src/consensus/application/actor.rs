@@ -45,7 +45,7 @@ use tempo_telemetry_util::display_duration;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-    marshal_persist_estimate,
+    marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, instrument, warn};
@@ -82,6 +82,11 @@ struct ProposalReturn {
     /// After the proposal is persisted locally, the actor sleeps until this time
     /// so early builds still respect the proposal pacing budget.
     return_at: SystemTime,
+    /// Approximate encoded proposal size used for marshal-persist pacing.
+    ///
+    /// This is a reasonably close estimate derived during payload building, not the exact final
+    /// encoded block size.
+    block_size_estimate_bytes: usize,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -321,6 +326,15 @@ impl Inner<Init> {
                 };
 
                 if let Some(proposal_return) = proposal_return {
+                    let persist_start = Instant::now();
+                    if !self.marshal.verified(round, block.clone()).await {
+                        bail!("marshal actor rejected persisting proposal");
+                    }
+                    observe_marshal_persist(
+                        proposal_return.block_size_estimate_bytes,
+                        persist_start.elapsed(),
+                    );
+
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
                 }
@@ -662,7 +676,13 @@ impl Inner<Init> {
         );
         let return_at = context.current() + return_delay;
 
-        Ok((proposal, Some(ProposalReturn { return_at })))
+        Ok((
+            proposal,
+            Some(ProposalReturn {
+                return_at,
+                block_size_estimate_bytes,
+            }),
+        ))
     }
 
     #[instrument(

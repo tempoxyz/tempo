@@ -261,7 +261,7 @@ impl FollowerBuilder {
         };
 
         let handle = config
-            .try_init(context.child("follower").with_attribute("name", &name))
+            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
             .await
             .expect("failed to initialize follow engine")
             .start();
@@ -327,7 +327,12 @@ fn follower_bootstraps_from_validator() {
 
         wait_for_height(&context, &follower, target_height).await;
 
-        follower.feed.get_finalization(Query::Latest).await.unwrap();
+        while !matches!(
+            follower.feed.get_finalization(Query::Latest).await,
+            Response::Success(..)
+        ) {
+            context.sleep(Duration::from_millis(100)).await;
+        }
 
         // The marshal floor only advances with actually processed blocks, so
         // the follower backfills the gap between its startup floor (genesis
@@ -484,17 +489,18 @@ fn follower_bootstraps_from_follower() {
             .await;
         follower_follower.connect_peers(&validators).await;
 
-        // Wait on the *primary*, but query the *secondary* follower. This
-        // should address all race conditions between a) the secondary follower
-        // starting, b) receving the finalized block, and c) propagating it to its
-        // consensus feed so that it can d) be queried successfully.
+        // Wait for the primary to progress far enough that the secondary has
+        // finalizations available to fetch.
         wait_for_height(&context, &validator_follower, target_height * 2).await;
 
-        follower_follower
-            .feed
-            .get_finalization(Query::Latest)
-            .await
-            .unwrap();
+        // Height progress can precede ordered delivery into the secondary's
+        // consensus feed, so wait for the state this test actually asserts.
+        while !matches!(
+            follower_follower.feed.get_finalization(Query::Latest).await,
+            Response::Success(..)
+        ) {
+            context.sleep(Duration::from_millis(100)).await;
+        }
     });
 }
 

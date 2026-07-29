@@ -215,7 +215,10 @@ where
         };
 
         debug!(%finalized_height, %floor_height, %floor_digest, "advancing marshal floor");
-        self.marshal.prune(floor_height).await;
+        if !self.marshal.set_floor(floor_height).await {
+            debug!(%finalized_height, %floor_height, "floor finalization not available in marshal");
+            return Ok(());
+        }
         self.floor = floor_height;
 
         Ok(())

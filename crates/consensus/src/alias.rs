@@ -70,10 +70,6 @@ pub(crate) mod marshal {
         /// archive. Older blocks are served from reth via [`Hybrid`].
         pub finalized_blocks_retention: u64,
 
-        /// Require startup to use the consensus finalization archive as its
-        /// finalized floor instead of falling back to the execution layer.
-        pub strict_startup: bool,
-
         /// Epoch length / boundary configuration.
         pub epoch_strategy: FixedEpocher,
 
@@ -99,9 +95,7 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Finalized tip selected at startup. In strict mode this comes from
-        /// the archive or genesis; otherwise it is the highest available value
-        /// from the archive and execution layer.
+        /// Finalized tip selected at startup from the archive or genesis.
         pub finalized_tip: (Height, Digest),
     }
 
@@ -140,27 +134,17 @@ pub(crate) mod marshal {
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
-        } = establish_finalization_range(
-            &finalizations_by_height,
-            &execution_node,
-            config.strict_startup,
-        )
-        .await?;
+        } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
         info!(
             floor_height = %finalized_floor.0,
             floor_digest = %finalized_floor.1,
             tip_height = %finalized_tip.0,
             tip_digest = %finalized_tip.1,
-            strict_startup = config.strict_startup,
             "selected finalized startup range"
         );
-        let start = start_from_finalized_floor(
-            &finalizations_by_height,
-            &execution_node,
-            finalized_floor,
-            config.strict_startup,
-        )
-        .await?;
+        let start =
+            start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
+                .await?;
         register_scheme_for_start(
             &config.epoch_strategy,
             &config.scheme_provider,
@@ -209,7 +193,6 @@ pub(crate) mod marshal {
         info!(
             marshal_stored = ?marshal_stored_height,
             selected_floor = %startup_floor_height,
-            strict_startup = config.strict_startup,
             "setting marshal sync floor"
         );
         Ok(Initialized {
@@ -232,7 +215,6 @@ pub(crate) mod marshal {
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         execution_node: &TempoFullNode,
-        strict_startup: bool,
     ) -> eyre::Result<FinalizationRange>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -242,35 +224,19 @@ pub(crate) mod marshal {
             .wrap_err("failed to establish finalized archive bounds")?;
         let execution_finalized = execution_finalized_point(execution_node);
 
-        match (strict_startup, archive_range) {
-            (true, Some((floor, tip))) => Ok(FinalizationRange { floor, tip }),
-            (true, None) if execution_finalized.0.is_zero() => Ok(FinalizationRange {
+        match archive_range {
+            Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
+            None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
                 tip: execution_finalized,
             }),
-            (true, None) => Err(eyre!(
-                "strict consensus startup requires a finalized certificate archive unless the \
+            None => Err(eyre!(
+                "consensus startup requires a finalized certificate archive unless the \
                     execution layer is empty, but no finalized certificate was found and execution \
                     finalized block is `{}` at height `{}`",
                 execution_finalized.1,
                 execution_finalized.0,
             )),
-            (false, Some((archive_floor, archive_tip))) => Ok(FinalizationRange {
-                floor: if archive_floor.0 >= execution_finalized.0 {
-                    archive_floor
-                } else {
-                    execution_finalized
-                },
-                tip: if archive_tip.0 >= execution_finalized.0 {
-                    archive_tip
-                } else {
-                    execution_finalized
-                },
-            }),
-            (false, None) => Ok(FinalizationRange {
-                floor: execution_finalized,
-                tip: execution_finalized,
-            }),
         }
     }
 
@@ -321,7 +287,6 @@ pub(crate) mod marshal {
         >,
         execution_node: &TempoFullNode,
         finalized_floor: (Height, Digest),
-        strict_startup: bool,
     ) -> eyre::Result<marshal::Start<Scheme<PublicKey, MinSig>, Digest, Block>>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -335,7 +300,7 @@ pub(crate) mod marshal {
             return Ok(marshal::Start::Floor(finalization));
         }
 
-        if strict_startup && !finalized_floor.0.is_zero() {
+        if !finalized_floor.0.is_zero() {
             bail!("finalized range floor missing from archive");
         }
 

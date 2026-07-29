@@ -80,7 +80,7 @@ pub(crate) trait ExecutionEngine: Send + Sync {
 
 /// Narrow marshal capability used by the follower executor.
 pub(crate) trait Marshal: Clone + Send + Sync {
-    fn prune(&self, height: Height) -> impl Future<Output = ()> + Send;
+    fn set_floor(&self, height: Height) -> impl Future<Output = bool> + Send;
 }
 
 impl<N> FinalizedBlockProvider for BlockchainProvider<N>
@@ -125,8 +125,14 @@ impl ExecutionEngine for ConsensusEngineHandle<TempoPayloadTypes> {
 }
 
 impl Marshal for crate::alias::marshal::Mailbox {
-    fn prune(&self, height: Height) -> impl Future<Output = ()> + Send {
+    fn set_floor(&self, height: Height) -> impl Future<Output = bool> + Send {
         let mailbox = self.clone();
-        async move { mailbox.prune(height) }
+        async move {
+            let Some(finalization) = mailbox.get_finalization(height).await else {
+                return false;
+            };
+            mailbox.set_floor(finalization);
+            true
+        }
     }
 }

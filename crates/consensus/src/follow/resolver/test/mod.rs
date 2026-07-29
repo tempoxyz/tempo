@@ -1,8 +1,11 @@
 use commonware_codec::Encode as _;
-use commonware_consensus::types::Height;
+use commonware_consensus::{marshal::resolver::handler, types::Height};
 use futures::executor::block_on;
+use std::time::{Duration, SystemTime};
 
-use super::{resolve_block, resolve_finalized};
+use super::{
+    MAX_RETRY_DELAY, RETRY_STATE_TTL, RetryState, resolve_block, resolve_finalized, retry_delay,
+};
 
 mod utils;
 use utils::{StubBlockProvider, StubUpstream, make_block, make_certified_block};
@@ -66,4 +69,51 @@ fn resolves_finalizations_from_upstream() {
         assert_eq!(resolve_finalized(&upstream, height).await, Some(encoded));
         assert_eq!(upstream.finalization_reads(), 1);
     });
+}
+
+#[test]
+fn malformed_finalization_is_retried() {
+    block_on(async {
+        let upstream = StubUpstream::default();
+        let height = Height::new(6);
+        let (mut certified, _) = make_certified_block(height);
+        certified.certificate = "not-hex".to_string();
+        upstream.add_finalization(height, certified);
+
+        assert_eq!(resolve_finalized(&upstream, height).await, None);
+        assert_eq!(upstream.finalization_reads(), 1);
+    });
+}
+
+#[test]
+fn retry_delay_grows_exponentially_and_caps() {
+    assert_eq!(retry_delay(0), Duration::ZERO);
+    assert_eq!(retry_delay(1), Duration::from_millis(250));
+    assert_eq!(retry_delay(2), Duration::from_millis(500));
+    assert_eq!(retry_delay(3), Duration::from_secs(1));
+    assert_eq!(retry_delay(7), Duration::from_secs(16));
+    assert_eq!(retry_delay(8), MAX_RETRY_DELAY);
+    assert_eq!(retry_delay(u32::MAX), MAX_RETRY_DELAY);
+}
+
+#[test]
+fn retry_state_advances_resets_and_expires() {
+    let now = SystemTime::UNIX_EPOCH;
+    let first = handler::Key::Block(make_block(7).digest());
+    let second = handler::Key::Block(make_block(8).digest());
+    let mut retries = RetryState::default();
+
+    assert_eq!(retries.begin(first, now), 0);
+    retries.failed(first, 0, now);
+    assert_eq!(retries.begin(first, now), 1);
+    retries.failed(first, 1, now);
+    assert_eq!(retries.begin(first, now), 2);
+
+    retries.succeeded(&first);
+    assert_eq!(retries.begin(first, now), 0);
+    retries.failed(first, 0, now);
+
+    let expired = now + RETRY_STATE_TTL;
+    assert_eq!(retries.begin(second, expired), 0);
+    assert!(!retries.attempts.contains_key(&first));
 }

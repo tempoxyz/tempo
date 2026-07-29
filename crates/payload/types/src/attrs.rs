@@ -150,8 +150,8 @@ impl TempoPayloadAttributes {
     }
 
     /// Returns the consensus context
-    pub fn consensus_context(&self) -> Option<&TempoConsensusContext> {
-        self.consensus_context.as_ref()
+    pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
+        self.consensus_context.clone()
     }
 
     /// Returns the subblocks.

@@ -307,9 +307,13 @@ pub struct Args {
     )]
     pub finalized_blocks_retention: u64,
 
-    /// Deprecated compatability flag. Ignored as consensus state is now always
-    /// required on startup.
-    #[arg(long = "consensus.strict-startup", default_value_t = true)]
+    /// Deprecated compatibility flag. Consensus state is always required on
+    /// startup, so this setting no longer has any effect.
+    #[arg(
+        long = "consensus.strict-startup",
+        default_value_t = true,
+        help = "Deprecated: consensus state is always required on startup, so this flag no longer has any effect."
+    )]
     pub strict_startup: bool,
 
     /// Deprecated compatibility flag. Ignored because the legacy immutable

@@ -118,7 +118,6 @@ impl<TUpstream> Config<TUpstream> {
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
                 max_pending_acks: NZUsize!(1),
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                strict_startup: false,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
@@ -133,7 +132,7 @@ impl<TUpstream> Config<TUpstream> {
             )
         });
 
-        let (resolver_mailbox, resolver_rx) = resolver::try_init(
+        let (resolver, resolver_rx) = resolver::try_init(
             context.child("resolver"),
             resolver::Config {
                 execution_provider: self.execution_node.provider.clone(),
@@ -186,7 +185,7 @@ impl<TUpstream> Config<TUpstream> {
             _execution_node: self.execution_node,
             driver,
             driver_mailbox,
-            resolver_mailbox,
+            resolver,
             resolver_rx,
             marshal: marshal_actor,
             executor: executor_actor,
@@ -214,7 +213,7 @@ where
         crate::alias::marshal::Mailbox,
     >,
     driver_mailbox: driver::Mailbox,
-    resolver_mailbox: resolver::Mailbox,
+    resolver: resolver::Mailbox,
     resolver_rx: commonware_consensus::marshal::resolver::handler::Receiver<Digest>,
     marshal: crate::alias::marshal::Actor<TContext>,
     executor: executor::Actor<
@@ -255,7 +254,7 @@ where
             upstream,
             driver,
             driver_mailbox,
-            resolver_mailbox,
+            resolver,
             resolver_rx,
             marshal,
             executor,
@@ -276,7 +275,7 @@ where
                     Reporters::from((driver_mailbox.to_marshal_reporter(), feed_mailbox)),
                 )),
                 broadcast,
-                (resolver_rx, resolver_mailbox),
+                (resolver_rx, resolver),
             ),
             upstream.start(driver_mailbox.to_event_reporter()),
         ];
