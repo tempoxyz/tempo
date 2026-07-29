@@ -66,6 +66,12 @@ on:
         required: false
       BENCH_METRICS_PUSH_URL:
         required: false
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
+        required: false
       DEREK_BENCH_TOKEN:
         required: false
       VICTORIALOGS_URL:
@@ -278,6 +284,9 @@ jobs:
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
 
     steps:
       - name: Check org membership
@@ -307,6 +316,12 @@ jobs:
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           persist-credentials: false
+
+      - name: Mask ClickHouse credentials
+        if: env.CLICKHOUSE_URL
+        run: |
+          echo "::add-mask::$CLICKHOUSE_URL"
+          echo "::add-mask::$CLICKHOUSE_PASSWORD"
 
       - name: Validate Tempo commit ancestry
         env:
