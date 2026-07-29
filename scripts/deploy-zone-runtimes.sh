@@ -7,8 +7,10 @@
 #   PRIVATE_KEY=0x... ETH_RPC_URL=https://rpc.moderato.tempo.xyz ./scripts/deploy-zone-runtimes.sh
 #
 # The runtimes land at CREATE-derived addresses, not the canonical protocol addresses that the T10
-# hardfork etches — an EOA cannot write to those. Creating a usable zone still requires the native
-# factory; the portal implementation rejects `initialize` from any other caller.
+# hardfork etches — an EOA cannot write to those. No real portal can reference these copies either:
+# portal proxies hardcode the canonical implementation, and the factory fixes every portal's
+# messenger and verifier to the canonical addresses. Use genesis or the T10 boundary for a usable
+# zone; this script is for exercising the contracts standalone.
 
 set -e
 

@@ -7,15 +7,26 @@
 //!
 //! This command deploys ordinary copies of the same runtime bytecode at CREATE-derived addresses
 //! using nothing but a private key and an RPC URL. That works on any network, whether or not T10
-//! is active, and is useful for inspecting or exercising the zone contracts directly.
+//! is active, and is useful for exercising or inspecting the contracts standalone: reading the
+//! verifier, poking the messenger, or confirming the runtimes deploy and match the expected bytes.
 //!
 //! ## What this cannot do
 //!
-//! It cannot stand up a working *zone*. A live portal is an ERC-1167 proxy whose storage the
-//! factory initializes, and the implementation gates its one-time `initialize` on the caller being
-//! the factory: calling it from an EOA reverts `NotFactory()` immediately. Since the gate is the
-//! canonical [`ZONE_FACTORY_ADDRESS`], nothing an EOA can do satisfies it on a real network. Zone
-//! creation therefore still requires `createZone` on a chain where T10 is active.
+//! It cannot stand up a working *zone*, and no real portal can reference these copies. Every
+//! address a zone resolves is fixed to a canonical one:
+//!
+//! * a portal proxy hardcodes [`ZONE_PORTAL_IMPL_ADDRESS`] in its 45-byte runtime
+//!   (`ZONE_PORTAL_PROXY_RUNTIME`), so it always delegates to the canonical implementation;
+//! * the factory writes [`ZONE_MESSENGER_ADDRESS`] and [`ZONE_VERIFIER_ADDRESS`] into portal
+//!   storage from constants, and `CreateZoneParams` has no fields for them, so a zone creator
+//!   cannot point a portal at a different messenger or verifier;
+//! * the implementation gates its one-time `initialize` on the caller being the factory, reverting
+//!   `NotFactory()` for an EOA, so a hand-rolled proxy cannot be initialized either.
+//!
+//! Getting these runtimes to their canonical addresses therefore requires either the genesis
+//! allocation (`cargo xtask generate-genesis` etches them when T10 is active at genesis) or the T10
+//! boundary install on a live chain. There is no EOA-only path, and no `anvil_setCode`-style escape
+//! hatch on a Tempo node.
 
 use alloy::{
     network::{EthereumWallet, TransactionBuilder as _},
@@ -119,9 +130,10 @@ impl DeployZoneRuntimes {
             println!("  {label:<25} {address}  ({canonical})");
         }
         println!(
-            "\nThese are CREATE-derived addresses, not the canonical ones the T10 boundary etches.\n\
-             Creating a usable zone still needs the native factory at {ZONE_FACTORY_ADDRESS}: the\n\
-             portal implementation rejects `initialize` from any other caller with NotFactory()."
+            "\nThese are CREATE-derived addresses, not the canonical ones the T10 boundary etches,\n\
+             and no real portal can reference them: proxies hardcode the canonical implementation,\n\
+             and the factory at {ZONE_FACTORY_ADDRESS} fixes each portal's messenger and verifier to\n\
+             the canonical addresses. Use genesis or the T10 boundary for a usable zone."
         );
 
         Ok(())
