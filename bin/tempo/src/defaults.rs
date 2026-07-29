@@ -188,7 +188,7 @@ fn init_txpool_defaults() {
         .with_pending_tx_listener_buffer_size(50000)
         .with_new_tx_listener_buffer_size(50000)
         .with_disable_transactions_backup(true)
-        .with_additional_validation_tasks(8)
+        .with_additional_validation_tasks(31)
         .with_minimal_protocol_basefee(TEMPO_T7_BASE_FEE_FLOOR)
         .with_minimum_priority_fee(Some(0))
         .with_max_batch_size(50000)
