@@ -63,9 +63,10 @@ tokio.workspace = true
 
 [features]
 default = []
+revm = ["dep:tempo-revm"]
 reth = [
+    "revm",
     "dep:tempo-evm",
-    "dep:tempo-revm",
     "dep:reth-evm",
     "dep:reth-primitives-traits",
     "dep:reth-rpc-convert",
