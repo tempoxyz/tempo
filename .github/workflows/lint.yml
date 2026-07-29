@@ -3,6 +3,7 @@ name: Lint
 permissions: {}
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -58,7 +59,7 @@ jobs:
   crate-checks:
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     strategy:
