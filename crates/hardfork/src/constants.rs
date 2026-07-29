@@ -221,6 +221,9 @@ pub mod mainnet {
 
     /// T8 activation timestamp (Jul 30th 2026 14:00 UTC).
     pub const MAINNET_T8_TIMESTAMP: u64 = 1_785_420_000;
+
+    /// T9 activation timestamp (Aug 6th 2026 14:00 UTC).
+    pub const MAINNET_T9_TIMESTAMP: u64 = 1_786_024_800;
 }
 
 pub mod moderato {
@@ -279,4 +282,7 @@ pub mod moderato {
 
     /// T8 activation timestamp (Jul 27th 2026 14:00 UTC).
     pub const MODERATO_T8_TIMESTAMP: u64 = 1_785_160_800;
+
+    /// T9 activation timestamp (Aug 5th 2026 14:00 UTC).
+    pub const MODERATO_T9_TIMESTAMP: u64 = 1_785_938_400;
 }
