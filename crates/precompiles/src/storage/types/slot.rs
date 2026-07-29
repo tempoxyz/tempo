@@ -202,7 +202,7 @@ impl<T: Storable> Slot<T> {
 }
 
 impl<T: Storable> Handler<T> for Slot<T> {
-    fn as_slot(&self) -> Slot<T> {
+    fn as_slot(&self) -> Self {
         self.clone()
     }
 
