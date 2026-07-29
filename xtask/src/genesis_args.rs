@@ -1250,7 +1250,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn t9_genesis_installs_factory_and_canonical_shared_runtimes() {
+    fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(0, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
@@ -1272,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn future_t9_does_not_install_zone_factory_at_genesis() {
+    fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(1, &mut alloc);
 
