@@ -38,7 +38,7 @@ use alloy_evm::{
 use alloy_primitives::Address;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
+use reth_evm::{self, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -97,6 +97,12 @@ impl TempoEvmConfig {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
+    }
+
+    /// Uses the provided sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.inner = self.inner.with_sender_recovery_cache(cache);
+        self
     }
 
     /// Returns the chain spec
