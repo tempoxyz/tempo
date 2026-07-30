@@ -2761,10 +2761,10 @@ fn retire_access_key(
                 path: path.to_owned(),
                 source,
             })?;
-        changed |= entry.remove("privateKey").is_some();
-        changed |= entry.remove("handle").is_some();
-        changed |= entry.remove("keyPair").is_some();
-        if changed {
+        let entry_changed = entry.remove("privateKey").is_some()
+            | entry.remove("handle").is_some()
+            | entry.remove("keyPair").is_some();
+        if entry_changed {
             *raw = serde_json::value::to_raw_value(&entry).map_err(|source| {
                 TempoAccountsError::Encode {
                     path: path.to_owned(),
@@ -2772,7 +2772,7 @@ fn retire_access_key(
                 }
             })?;
         }
-        break;
+        changed |= entry_changed;
     }
 
     if changed {
@@ -3308,6 +3308,51 @@ mod tests {
                 .all(|address| keys.iter().any(|key| key.address() == *address))
         );
         assert!(directory.join("wallet/store.json.lock").is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retirement_scrubs_all_duplicate_access_key_records() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let private_key = format!("0x{}", "02".repeat(32));
+        let signer =
+            TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&private_key).unwrap())
+                .unwrap();
+        overwrite_store(
+            &path,
+            serde_json::json!([
+                {
+                    "access": ROOT,
+                    "address": signer.address(),
+                    "chainId": 4217,
+                    "keyType": "p256",
+                },
+                key_json(signer.address(), private_key),
+            ]),
+        );
+        let account = ROOT.parse().unwrap();
+        let store = TempoAccountsStore::open(&path).unwrap();
+
+        assert!(
+            store
+                .retire_access_key(account, 4217, signer.address())
+                .unwrap()
+        );
+        assert!(
+            store
+                .access_keys()
+                .unwrap()
+                .iter()
+                .all(|key| !key.is_locally_signable())
+        );
+        assert!(
+            !store
+                .retire_access_key(account, 4217, signer.address())
+                .unwrap()
+        );
+
         fs::remove_dir_all(directory).unwrap();
     }
 
