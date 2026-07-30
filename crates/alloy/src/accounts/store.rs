@@ -306,11 +306,49 @@ impl TempoAccessKey {
         self.key_authorization.as_deref()
     }
 
+    fn validate_pending_authorization(&self) -> Result<(), TempoAccessKeyError> {
+        let Some(authorization) = self.key_authorization.as_deref() else {
+            return Ok(());
+        };
+        if authorization.key_id != self.address {
+            return Err(TempoAccessKeyError::InvalidAuthorization(
+                "key ID does not match the selected signer",
+            ));
+        }
+        if authorization.key_type != self.signature_type() {
+            return Err(TempoAccessKeyError::InvalidAuthorization(
+                "key type does not match the selected signer",
+            ));
+        }
+        if authorization.chain_id != self.chain_id {
+            return Err(TempoAccessKeyError::InvalidAuthorization(
+                "chain ID does not match the selected key",
+            ));
+        }
+        if authorization
+            .account
+            .is_some_and(|account| account != self.account)
+        {
+            return Err(TempoAccessKeyError::InvalidAuthorization(
+                "account does not match the selected key",
+            ));
+        }
+        if authorization.account.is_none()
+            && authorization.recover_signer().ok() != Some(self.account)
+        {
+            return Err(TempoAccessKeyError::InvalidAuthorization(
+                "signature does not recover the root account",
+            ));
+        }
+        Ok(())
+    }
+
     /// Fill access-key metadata and resolve a pending authorization before
     /// external gas estimation or fee-payer signing.
     ///
-    /// The returned key owns the resolved authorization state and must be
-    /// retained through final signing.
+    /// The returned key owns its resolved pending-key state and must be retained
+    /// through final signing. Separately supplied cross-key authorizations remain
+    /// attached to the request.
     pub async fn prepare_request<P>(
         &self,
         provider: &P,
@@ -325,7 +363,9 @@ impl TempoAccessKey {
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
         if let Some(key_authorization) = resolve_key_authorization(provider, request).await? {
             request.key_authorization = key_authorization.clone();
-            prepared.key_authorization = key_authorization.map(Box::new);
+            if prepared.key_authorization.is_some() {
+                prepared.key_authorization = key_authorization.map(Box::new);
+            }
         }
         Ok(prepared)
     }
@@ -336,6 +376,8 @@ impl TempoAccessKey {
                 TempoAccessKeyError::CreateUnsupported,
             ));
         }
+        self.validate_pending_authorization()
+            .map_err(alloy_signer::Error::other)?;
         if let Some(chain_id) = request.chain_id()
             && chain_id != self.chain_id
         {
@@ -429,6 +471,8 @@ impl TempoAccessKey {
                 },
             ));
         }
+        self.validate_pending_authorization()
+            .map_err(alloy_signer::Error::other)?;
 
         if let Some(expected) = self.key_authorization.as_deref() {
             if tx
@@ -585,7 +629,9 @@ impl TxFiller<TempoNetwork> for TempoAccessKey {
         request.key_authorization = key_authorization.clone();
 
         let mut selected = self.clone();
-        selected.key_authorization = key_authorization.map(Box::new);
+        if selected.key_authorization.is_some() {
+            selected.key_authorization = key_authorization.map(Box::new);
+        }
         selected
             .fill_request(&mut request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
@@ -627,6 +673,8 @@ enum TempoAccessKeyError {
     },
     #[error("request key authorization does not match the selected Tempo Accounts key")]
     AuthorizationMismatch,
+    #[error("invalid pending Tempo key authorization: {0}")]
+    InvalidAuthorization(&'static str),
     #[error(
         "Tempo key authorization for {key_id} on account {account} and chain {chain_id} is already in flight"
     )]
@@ -1311,9 +1359,9 @@ impl TempoAccountsWallet {
     /// pending authorization.
     ///
     /// Call this before external gas estimation or fee-payer signing when the
-    /// request is prepared outside an Alloy provider filler stack. The returned
-    /// wallet owns the exact resolved signing state, so a caller can retain it
-    /// through gas estimation and final signing.
+    /// request is prepared outside an Alloy provider filler stack. Retain both
+    /// the returned wallet and prepared request through gas estimation and final
+    /// signing.
     pub async fn prepare_request<P>(
         &self,
         provider: &P,
@@ -1329,8 +1377,8 @@ impl TempoAccountsWallet {
             };
             request.set_chain_id(chain_id);
         }
-        let selected = self.prepare_selected(provider, request).await?;
-        request.key_authorization = selected.key_authorization.as_deref().cloned();
+        let (selected, key_authorization) = self.prepare_selected(provider, request).await?;
+        request.key_authorization = key_authorization;
         selected
             .fill_request(request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
@@ -1396,7 +1444,7 @@ impl TempoAccountsWallet {
         &self,
         provider: &P,
         request: &TempoTransactionRequest,
-    ) -> TransportResult<TempoAccessKey>
+    ) -> TransportResult<(TempoAccessKey, Option<SignedKeyAuthorization>)>
     where
         P: Provider<TempoNetwork>,
     {
@@ -1407,12 +1455,13 @@ impl TempoAccountsWallet {
         selected
             .fill_request(&mut resolved_request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
-        if let Some(key_authorization) =
-            resolve_key_authorization(provider, &resolved_request).await?
-        {
-            selected.key_authorization = key_authorization.map(Box::new);
+        let key_authorization = resolve_key_authorization(provider, &resolved_request)
+            .await?
+            .unwrap_or(resolved_request.key_authorization);
+        if selected.key_authorization.is_some() {
+            selected.key_authorization = key_authorization.clone().map(Box::new);
         }
-        Ok(selected)
+        Ok((selected, key_authorization))
     }
 
     fn ensure_direct_signing_ready(
@@ -1479,7 +1528,7 @@ impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
 }
 
 impl TxFiller<TempoNetwork> for TempoAccountsWallet {
-    type Fillable = TempoAccessKey;
+    type Fillable = (TempoAccessKey, Option<SignedKeyAuthorization>);
 
     fn status(&self, request: &TempoTransactionRequest) -> FillerControlFlow {
         if request.chain_id().is_none() && self.chain_id.is_none() {
@@ -1517,14 +1566,14 @@ impl TxFiller<TempoNetwork> for TempoAccountsWallet {
 
     async fn fill(
         &self,
-        selected: Self::Fillable,
+        (selected, key_authorization): Self::Fillable,
         tx: SendableTx<TempoNetwork>,
     ) -> TransportResult<SendableTx<TempoNetwork>> {
         let mut request = match tx {
             SendableTx::Builder(request) => request,
             _ => return Ok(tx),
         };
-        request.key_authorization = selected.key_authorization.as_deref().cloned();
+        request.key_authorization = key_authorization;
         selected
             .fill_request(&mut request)
             .map_err(alloy_json_rpc::RpcError::local_usage)?;
@@ -4330,20 +4379,28 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
-    #[test]
-    fn selected_key_rejects_a_different_pending_authorization() {
-        let account = ROOT.parse::<Address>().unwrap();
+    #[tokio::test]
+    async fn selected_key_validates_its_pending_authorization() {
+        let root = PrivateKeySigner::random();
+        let account = root.address();
         let signer = PrivateKeySigner::random();
-        let expected =
-            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
-                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sign = |authorization: KeyAuthorization, authorizer: &PrivateKeySigner| {
+            let signature = authorizer
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
+        };
+        let expected = sign(
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address()),
+            &root,
+        );
         let different = expected
             .authorization
             .clone()
             .with_expiry(4_000_000_000)
             .into_signed(expected.signature.clone());
-        let key =
-            TempoAccessKey::from_secp256k1(account, 4217, signer).with_key_authorization(expected);
+        let key = TempoAccessKey::from_secp256k1(account, 4217, signer.clone())
+            .with_key_authorization(expected.clone());
         let mut request = TempoTransactionRequest {
             key_authorization: Some(different),
             ..Default::default()
@@ -4355,6 +4412,128 @@ mod tests {
                 .to_string()
                 .contains("does not match the selected Tempo Accounts key")
         );
+
+        let direct_invalid = sign(
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, Address::random()),
+            &root,
+        );
+        let invalid = [
+            sign(
+                KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, Address::random()),
+                &root,
+            ),
+            sign(
+                KeyAuthorization::unrestricted(4217, SignatureType::P256, signer.address()),
+                &root,
+            ),
+            sign(
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, signer.address()),
+                &root,
+            ),
+            sign(
+                KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                    .with_account(Address::random()),
+                &root,
+            ),
+            sign(
+                KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address()),
+                &PrivateKeySigner::random(),
+            ),
+        ];
+
+        for authorization in invalid {
+            let key = TempoAccessKey::from_secp256k1(account, 4217, signer.clone())
+                .with_key_authorization(authorization);
+            let mut request = TempoTransactionRequest::default();
+            let error = key.fill_request(&mut request).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid pending Tempo key authorization")
+            );
+            assert_eq!(request.key_authorization, None);
+        }
+
+        let key = TempoAccessKey::from_secp256k1(account, 4217, signer)
+            .with_key_authorization(direct_invalid);
+        let tx = tempo_primitives::transaction::TempoTransaction {
+            chain_id: 4217,
+            ..Default::default()
+        };
+        let error = key.sign_aa(account, tx).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid pending Tempo key authorization")
+        );
+    }
+
+    #[tokio::test]
+    async fn request_level_cross_key_authorization_remains_separate_from_the_selected_key() {
+        let account = Address::random();
+        let signer = PrivateKeySigner::random();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, Address::random())
+                .with_account(account);
+        let signature = signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let authorization = authorization.into_signed(PrimitiveSignature::Secp256k1(signature));
+        let request = || TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TARGET.parse::<Address>().unwrap().into()),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_authorization: Some(authorization.clone()),
+            ..Default::default()
+        };
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Asserter::new());
+
+        let key = TempoAccessKey::from_secp256k1(account, 4217, signer.clone());
+        let mut key_request = request();
+        let prepared_key = key
+            .prepare_request(&provider, &mut key_request)
+            .await
+            .unwrap();
+        assert_eq!(prepared_key.key_authorization(), None);
+        assert_eq!(key_request.key_authorization.as_ref(), Some(&authorization));
+        let prepared_wallet = TempoAccountsWallet::from_access_key(prepared_key);
+        let envelope = prepared_wallet.sign_request(key_request).await.unwrap();
+        let TempoTxEnvelope::AA(signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+        assert_eq!(signed.tx().key_authorization.as_ref(), Some(&authorization));
+        let reservation = prepared_wallet
+            .in_flight_authorization_reservations()
+            .unwrap()[0];
+        prepared_wallet.release_authorization(reservation).unwrap();
+
+        let wallet = TempoAccountsWallet::from_secp256k1(account, signer, None).with_chain_id(4217);
+        let mut wallet_request = request();
+        let prepared_wallet = wallet
+            .prepare_request(&provider, &mut wallet_request)
+            .await
+            .unwrap();
+        assert_eq!(prepared_wallet.key_authorization(), None);
+        assert_eq!(
+            wallet_request.key_authorization.as_ref(),
+            Some(&authorization)
+        );
+        let envelope = prepared_wallet.sign_request(wallet_request).await.unwrap();
+        let TempoTxEnvelope::AA(signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+        assert_eq!(signed.tx().key_authorization.as_ref(), Some(&authorization));
+        let reservation = prepared_wallet
+            .in_flight_authorization_reservations()
+            .unwrap()[0];
+        prepared_wallet.release_authorization(reservation).unwrap();
     }
 
     #[tokio::test]
@@ -4395,8 +4574,12 @@ mod tests {
         let signing_wallet = wallet.clone();
         let mut first_request = request.clone();
         let selected = signing_wallet.fill_metadata(&mut first_request).unwrap();
+        let key_authorization = first_request.key_authorization.clone();
         signing_wallet
-            .fill(selected, SendableTx::Builder(first_request))
+            .fill(
+                (selected, key_authorization),
+                SendableTx::Builder(first_request),
+            )
             .await
             .unwrap();
 
@@ -4409,8 +4592,12 @@ mod tests {
 
         let mut blocked_request = request.clone();
         let selected = independent.fill_metadata(&mut blocked_request).unwrap();
+        let key_authorization = blocked_request.key_authorization.clone();
         let error = independent
-            .fill(selected, SendableTx::Builder(blocked_request))
+            .fill(
+                (selected, key_authorization),
+                SendableTx::Builder(blocked_request),
+            )
             .await
             .unwrap_err();
         assert!(error.to_string().contains("already in flight"));
@@ -4424,8 +4611,12 @@ mod tests {
         wallet.release_authorization(reservation).unwrap();
         let mut retry_request = request;
         let selected = independent.fill_metadata(&mut retry_request).unwrap();
+        let key_authorization = retry_request.key_authorization.clone();
         independent
-            .fill(selected, SendableTx::Builder(retry_request))
+            .fill(
+                (selected, key_authorization),
+                SendableTx::Builder(retry_request),
+            )
             .await
             .unwrap();
         let retry_reservation = independent.in_flight_authorization_reservations().unwrap()[0];
@@ -4437,11 +4628,15 @@ mod tests {
 
     #[tokio::test]
     async fn independent_wallets_share_and_can_release_one_time_authorization_reservations() {
-        let account = ROOT.parse::<Address>().unwrap();
+        let root = PrivateKeySigner::random();
+        let account = root.address();
         let signer = PrivateKeySigner::random();
         let authorization =
-            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
-                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address());
+        let signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let authorization = authorization.into_signed(PrimitiveSignature::Secp256k1(signature));
         let first = TempoAccountsWallet::from_secp256k1(
             account,
             signer.clone(),
