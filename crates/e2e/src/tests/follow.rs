@@ -138,7 +138,6 @@ struct FollowerBuilder {
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
     upstream_request_mode: Option<follow::upstream::in_process::RequestMode>,
-    upstream_max_waiters: Option<usize>,
     upstream_request_timeout: Option<Duration>,
 }
 
@@ -157,14 +156,12 @@ impl FollowerBuilder {
     fn never_respond_upstream(
         self,
         request_log: follow::upstream::in_process::RequestLog,
-        max_waiters: usize,
         request_timeout: Duration,
     ) -> Self {
         Self {
             upstream_request_mode: Some(follow::upstream::in_process::RequestMode::NeverRespond(
                 request_log,
             )),
-            upstream_max_waiters: Some(max_waiters),
             upstream_request_timeout: Some(request_timeout),
             ..self
         }
@@ -207,7 +204,6 @@ impl FollowerBuilder {
             runtime,
             donor,
             upstream_request_mode,
-            upstream_max_waiters,
             upstream_request_timeout,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
@@ -258,7 +254,6 @@ impl FollowerBuilder {
                 execution_node: upstream_execution_node,
                 feed: upstream_feed_state,
                 request_mode: upstream_request_mode.unwrap_or_default(),
-                max_waiters: upstream_max_waiters.unwrap_or(16_384),
             },
         );
 
@@ -368,8 +363,7 @@ fn follower_bootstraps_from_validator() {
 }
 
 #[test_traced]
-fn follower_retries_timed_out_upstream_requests_and_bounds_waiters() {
-    const MAX_WAITERS: usize = 2;
+fn follower_retries_timed_out_upstream_requests_with_backoff() {
     const REQUEST_TIMEOUT: Duration = Duration::from_millis(50);
     const FIRST_RETRY_DELAY: Duration = Duration::from_millis(250);
     const SECOND_RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -390,23 +384,15 @@ fn follower_retries_timed_out_upstream_requests_and_bounds_waiters() {
         let request_log = follow::upstream::in_process::RequestLog::default();
         let _follower = Follower::builder()
             .runtime(execution_runtime.handle())
-            .never_respond_upstream(request_log.clone(), MAX_WAITERS, REQUEST_TIMEOUT)
+            .never_respond_upstream(request_log.clone(), REQUEST_TIMEOUT)
             .follow(&mut context, &validators[0])
             .await;
 
         let mut observed_retry_intervals = None;
         for _ in 0..WAIT_ATTEMPTS {
             let metrics = context.to_metrics();
-            let waiters_depth = metrics
-                .value::<usize>("upstream_waiters_depth")
-                .expect("upstream waiter depth metric should be registered");
-            assert!(waiters_depth <= MAX_WAITERS);
-
             let timed_out = metrics
                 .value::<u64>("upstream_request_timeouts_total")
-                .unwrap_or(0);
-            let dropped = metrics
-                .value::<u64>("upstream_waiters_dropped_total")
                 .unwrap_or(0);
 
             let mut requests_by_kind = HashMap::new();
@@ -427,7 +413,6 @@ fn follower_retries_timed_out_upstream_requests_and_bounds_waiters() {
             });
 
             if timed_out > 0
-                && dropped > 0
                 && let Some(retry_intervals) = retry_intervals
             {
                 observed_retry_intervals = Some(retry_intervals);
@@ -438,7 +423,7 @@ fn follower_retries_timed_out_upstream_requests_and_bounds_waiters() {
         }
 
         let retry_intervals = observed_retry_intervals
-            .expect("upstream requests should time out, be dropped, and retry with backoff");
+            .expect("upstream requests should time out and retry with backoff");
         assert!(retry_intervals.1 > retry_intervals.0);
     });
 }

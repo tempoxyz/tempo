@@ -65,7 +65,7 @@ pub(crate) struct Actor<TContext> {
         OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
     pub(super) event_stream: EventStream,
     /// Requests waiting for the actor to establish a connection.
-    pub(super) waiters: super::Waiters,
+    pub(super) waiters: Vec<super::ingress::Message>,
 }
 
 impl<TContext> Actor<TContext>
@@ -206,7 +206,7 @@ where
             return;
         }
 
-        for request in self.waiters.take() {
+        for request in self.waiters.drain(..) {
             match request {
                 super::ingress::Message::GetFinalization { height, response } => {
                     let client = client.clone();

@@ -38,7 +38,6 @@ pub struct Config {
     pub execution_node: Arc<TempoFullNode>,
     pub feed: FeedStateHandle,
     pub request_mode: RequestMode,
-    pub max_waiters: usize,
 }
 
 #[derive(Clone, Default)]
@@ -83,13 +82,9 @@ impl RequestLog {
     }
 }
 
-pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox)
-where
-    TContext: Metrics,
-{
+pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox::new(tx);
-    let waiters = super::Waiters::new(&context, config.max_waiters);
 
     let actor = Actor {
         context: ContextCell::new(context),
@@ -98,7 +93,7 @@ where
             .boxed()
             .fuse(),
         mailbox: rx,
-        waiters,
+        waiters: Vec::new(),
     };
     (actor, mailbox)
 }
@@ -108,7 +103,7 @@ pub struct Actor<TContext> {
     config: Config,
     event_stream: Fuse<BoxStream<'static, Result<Event, BroadcastStreamRecvError>>>,
     mailbox: mpsc::UnboundedReceiver<Message>,
-    waiters: super::Waiters,
+    waiters: Vec<Message>,
 }
 
 impl<TContext> Actor<TContext>
@@ -172,7 +167,7 @@ where
                 }
             );
             if connected && self.config.request_mode.should_respond() {
-                for request in self.waiters.take() {
+                for request in self.waiters.drain(..) {
                     match request {
                         Message::GetFinalization { height, response } => {
                             let feed = self.config.feed.clone();
