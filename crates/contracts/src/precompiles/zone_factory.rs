@@ -1,4 +1,5 @@
-use alloy_primitives::{Address, address};
+use crate::zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME};
+use alloy_primitives::{Address, Bytes, U256, address};
 
 pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
@@ -20,6 +21,47 @@ pub const ZONE_VERIFIER_ADDRESS: Address = address!("0x5A56000000000000000000000
 
 /// Protocol-managed shared ZoneMessenger address.
 pub const ZONE_MESSENGER_ADDRESS: Address = address!("0x5A4D000000000000000000000000000000000000");
+
+/// One account installed as part of the native ZoneFactory state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitialZoneFactoryAccount {
+    /// Account address.
+    pub address: Address,
+    /// Runtime bytecode.
+    pub code: Bytes,
+    /// Optional initial storage slot and value.
+    pub storage: Option<(U256, U256)>,
+}
+
+fn initial_zone_factory_config(owner: Address) -> U256 {
+    U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS)
+}
+
+/// Returns the complete native ZoneFactory state for the given owner.
+pub fn initial_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    [
+        InitialZoneFactoryAccount {
+            address: ZONE_FACTORY_ADDRESS,
+            code: Bytes::from_static(&[0xef]),
+            storage: Some((U256::ZERO, initial_zone_factory_config(owner))),
+        },
+        InitialZoneFactoryAccount {
+            address: ZONE_PORTAL_IMPL_ADDRESS,
+            code: ZONE_PORTAL_RUNTIME,
+            storage: None,
+        },
+        InitialZoneFactoryAccount {
+            address: ZONE_VERIFIER_ADDRESS,
+            code: ZONE_VERIFIER_RUNTIME,
+            storage: None,
+        },
+        InitialZoneFactoryAccount {
+            address: ZONE_MESSENGER_ADDRESS,
+            code: ZONE_MESSENGER_RUNTIME,
+            storage: None,
+        },
+    ]
+}
 
 crate::sol! {
     /// Zone metadata recorded by the native factory.

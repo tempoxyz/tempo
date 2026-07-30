@@ -27,15 +27,10 @@ use reth_revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::{
-    precompiles::{
-        ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
-        INITIAL_FACTORY_OWNER, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-        STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-        ZONE_VERIFIER_ADDRESS,
-    },
-    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+use tempo_contracts::precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -255,27 +250,13 @@ where
 
     /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-        let runtimes = [
-            (
-                ZONE_PORTAL_IMPL_ADDRESS,
-                Bytecode::new_legacy(ZONE_PORTAL_RUNTIME),
-            ),
-            (
-                ZONE_VERIFIER_ADDRESS,
-                Bytecode::new_legacy(ZONE_VERIFIER_RUNTIME),
-            ),
-            (
-                ZONE_MESSENGER_ADDRESS,
-                Bytecode::new_legacy(ZONE_MESSENGER_RUNTIME),
-            ),
-        ];
+        let [factory, portal, verifier, messenger] =
+            initial_zone_factory_state(INITIAL_FACTORY_OWNER);
 
         let runtime_state = {
             let db = self.inner.evm.db_mut();
             let factory_info = db
-                .basic(ZONE_FACTORY_ADDRESS)
+                .basic(factory.address)
                 .map_err(BlockExecutionError::other)?
                 .unwrap_or_default();
             // Genesis allocations are authoritative, and the marker also records a completed
@@ -285,7 +266,9 @@ where
             }
 
             let mut state = EvmState::default();
-            for (destination, code) in runtimes {
+            for account in [portal, verifier, messenger] {
+                let destination = account.address;
+                let code = Bytecode::new_legacy(account.code);
                 let info = db
                     .basic(destination)
                     .map_err(BlockExecutionError::other)?
@@ -299,7 +282,7 @@ where
             state
         };
 
-        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])?;
+        self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
         self.inner.evm.db_mut().commit(runtime_state);
         Ok(())
     }
@@ -868,9 +851,12 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{
-        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_MESSENGER_ADDRESS,
-        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    use tempo_contracts::{
+        precompiles::{
+            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
+            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{

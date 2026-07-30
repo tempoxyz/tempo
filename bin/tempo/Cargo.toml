@@ -58,7 +58,7 @@ alloy-rpc-types-eth.workspace = true
 alloy-signer-aws.workspace = true
 alloy-signer-gcp.workspace = true
 alloy-signer-ledger.workspace = true
-alloy-signer-local.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer-trezor.workspace = true
 alloy-sol-types.workspace = true
 commonware-codec.workspace = true
