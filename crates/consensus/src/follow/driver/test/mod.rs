@@ -11,6 +11,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::certificate::Provider as _;
 use commonware_macros::test_traced;
+use commonware_parallel::Sequential;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use tempo_chainspec::NetworkIdentity;
@@ -173,7 +174,7 @@ fn valid_finalization_is_certified_and_reported() {
 }
 
 #[test_traced]
-fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
+fn network_identity_registers_verified_fallback_for_floor_installation() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let network_fixture = dkg_fixture(&mut context, Epoch::new(2));
@@ -221,6 +222,13 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
 
         assert_eq!(marshal.report_count(), 1);
         assert!(marshal.hints().is_empty());
+        let scheme = schemes
+            .scheme(network_fixture.outcome.epoch)
+            .expect("verified network identity fallback should be retained");
+        assert!(
+            finalization.verify(&mut context, scheme.as_ref(), &Sequential),
+            "registered fallback should verify the certificate during floor installation",
+        );
     });
 }
 

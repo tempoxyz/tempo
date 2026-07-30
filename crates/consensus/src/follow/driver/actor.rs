@@ -249,9 +249,13 @@ where
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
-        let scheme = match self.config.scheme_provider.scheme(finalization_epoch) {
-            Some(scheme) => scheme,
-            None if can_use_network_identity_fallback => self.network_scheme.clone(),
+        let (scheme, used_network_identity_fallback) = match self
+            .config
+            .scheme_provider
+            .scheme(finalization_epoch)
+        {
+            Some(scheme) => (scheme, false),
+            None if can_use_network_identity_fallback => (self.network_scheme.clone(), true),
             None => {
                 bail!(
                     "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`",
@@ -285,6 +289,14 @@ where
             self.config.marshal.hint_finalized(boundary_height).await;
 
             return Ok(());
+        }
+
+        // Marshal re-verifies certificates when installing a floor, so
+        // retain the trusted fallback under the certificate's epoch.
+        if used_network_identity_fallback {
+            self.config
+                .scheme_provider
+                .register(finalization_epoch, (*scheme).clone());
         }
 
         let round = finalization.round();
