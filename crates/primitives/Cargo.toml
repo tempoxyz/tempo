@@ -74,7 +74,12 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
-test-utils = []
+test-utils = [
+	"reth-codecs?/test-utils",
+	"reth-db-api?/test-utils",
+	"reth-ethereum-primitives?/test-utils",
+	"reth-primitives-traits?/test-utils",
+]
 std = [
 	"alloy-consensus/secp256k1",
 	"alloy-consensus/std",

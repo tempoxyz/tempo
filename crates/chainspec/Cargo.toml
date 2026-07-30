@@ -47,6 +47,7 @@ std = [
     "alloy-evm?/std",
     "alloy-genesis/std",
     "alloy-primitives/std",
+    "commonware-cryptography?/std",
     "once_cell/std",
     "reth-chainspec?/std",
     "reth-network-peers?/std",
