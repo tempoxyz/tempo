@@ -705,6 +705,11 @@ pub enum TempoAccountsError {
     /// A locally supplied access key was used before its chain was known.
     #[error("Tempo Accounts needs a chain ID to select the access key")]
     MissingChainId,
+    /// Store-backed direct signing cannot resolve a pending authorization.
+    #[error(
+        "Tempo Accounts store key has an unresolved authorization; call prepare_request or use the wallet as a provider filler"
+    )]
+    AuthorizationResolutionRequired,
     /// No matching locally signable access key was available.
     #[error(
         "Tempo Accounts has no locally signable access key for account {account} on chain {chain_id}"
@@ -1409,6 +1414,18 @@ impl TempoAccountsWallet {
         }
         Ok(selected)
     }
+
+    fn ensure_direct_signing_ready(
+        &self,
+        selected: &TempoAccessKey,
+    ) -> Result<(), TempoAccountsError> {
+        if matches!(&self.source, AccountsSource::Store { .. })
+            && selected.key_authorization.is_some()
+        {
+            return Err(TempoAccountsError::AuthorizationResolutionRequired);
+        }
+        Ok(())
+    }
 }
 
 impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
@@ -1443,6 +1460,8 @@ impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
         let selected = self
             .select_unsigned(sender, &tx)
             .map_err(alloy_signer::Error::other)?;
+        self.ensure_direct_signing_ready(&selected)
+            .map_err(alloy_signer::Error::other)?;
         selected.sign_transaction_from(sender, tx).await
     }
 
@@ -1452,6 +1471,8 @@ impl NetworkWallet<TempoNetwork> for TempoAccountsWallet {
     ) -> alloy_signer::Result<TempoTxEnvelope> {
         let selected = self
             .fill_metadata(&mut request)
+            .map_err(alloy_signer::Error::other)?;
+        self.ensure_direct_signing_ready(&selected)
             .map_err(alloy_signer::Error::other)?;
         selected.sign_request(request).await
     }
@@ -3831,6 +3852,54 @@ mod tests {
         assert_eq!(wallet.account(), ROOT.parse::<Address>().unwrap());
         assert_eq!(wallet.active_account().unwrap(), second);
         fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn store_wallet_rejects_direct_signing_with_an_unresolved_authorization() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        let root = PrivateKeySigner::random();
+        let account = root.address();
+        let signer = PrivateKeySigner::random();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address());
+        let signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let authorization = authorization.into_signed(PrimitiveSignature::Secp256k1(signature));
+        TempoAccountsStore::at(&path)
+            .upsert_secp256k1_access_key(account, &signer, &authorization)
+            .unwrap();
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TARGET.parse::<Address>().unwrap().into()),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = wallet.sign_request(request.clone()).await.unwrap_err();
+        assert!(error.to_string().contains("call prepare_request"));
+
+        let mut unsigned_request = request;
+        wallet.fill_metadata(&mut unsigned_request).unwrap();
+        let tx = unsigned_request.build_unsigned().unwrap();
+        let error = wallet.sign_transaction_from(account, tx).await.unwrap_err();
+        assert!(error.to_string().contains("call prepare_request"));
+        assert!(
+            wallet
+                .in_flight_authorization_reservations()
+                .unwrap()
+                .is_empty()
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
