@@ -1193,7 +1193,7 @@ impl TempoAccountsWallet {
                     &state,
                     account,
                     chain_id,
-                    None,
+                    (None, None),
                     None,
                     unix_now(),
                     &self.authorization_reservations,
@@ -1237,7 +1237,7 @@ impl TempoAccountsWallet {
                     &state,
                     account,
                     chain_id,
-                    request.key_id,
+                    (request.key_id, request.key_type),
                     calls.as_deref(),
                     unix_now(),
                     &self.authorization_reservations,
@@ -1281,7 +1281,7 @@ impl TempoAccountsWallet {
                     &state,
                     account,
                     chain_id,
-                    Some(access_key),
+                    (Some(access_key), None),
                     None,
                     unix_now(),
                     &self.authorization_reservations,
@@ -1367,7 +1367,7 @@ impl TempoAccountsWallet {
                     &state,
                     account,
                     tx.chain_id,
-                    None,
+                    (None, None),
                     calls.as_deref(),
                     unix_now(),
                     &self.authorization_reservations,
@@ -2923,11 +2923,12 @@ fn select_access_key(
     state: &PersistedAccountsState,
     account: Address,
     chain_id: u64,
-    preferred: Option<Address>,
+    requested_key: (Option<Address>, Option<SignatureType>),
     calls: Option<&[IntentCall<'_>]>,
     now: u64,
     authorization_reservations: &AuthorizationReservations,
 ) -> Result<TempoAccessKey, TempoAccountsError> {
+    let (preferred, signature_type) = requested_key;
     for key in state
         .access_keys
         .iter()
@@ -2938,7 +2939,9 @@ fn select_access_key(
         let Ok(mut signer) = hydrate_access_key(key) else {
             continue;
         };
-        if signer.address() != key.address {
+        if signer.address() != key.address
+            || signature_type.is_some_and(|expected| signer.signature_type() != expected)
+        {
             continue;
         }
         signer.set_chain_id(Some(chain_id));
@@ -3583,6 +3586,41 @@ mod tests {
             store.access_keys().unwrap()[0].key_authorization(),
             Some(&authorization)
         );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn selects_an_access_key_matching_the_requested_signature_type() {
+        let secp256k1 = PrivateKeySigner::random();
+        let p256_key = format!("0x{}", "02".repeat(32));
+        let p256 = TempoP256Signer::from_slice(&alloy_primitives::hex::decode(&p256_key).unwrap())
+            .unwrap();
+        let path = write_store(serde_json::json!([
+            {
+                "access": ROOT,
+                "address": secp256k1.address(),
+                "chainId": 4217,
+                "keyType": "secp256k1",
+                "privateKey": alloy_primitives::hex::encode_prefixed(secp256k1.to_bytes()),
+            },
+            key_json(p256.address(), p256_key),
+        ]));
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
+
+        let mut untyped_request = TempoTransactionRequest::default();
+        wallet.fill_metadata(&mut untyped_request).unwrap();
+        assert_eq!(untyped_request.key_id, Some(secp256k1.address()));
+
+        let mut p256_request = TempoTransactionRequest {
+            key_type: Some(SignatureType::P256),
+            ..Default::default()
+        };
+        wallet.fill_metadata(&mut p256_request).unwrap();
+        assert_eq!(p256_request.key_id, Some(p256.address()));
+        assert_eq!(p256_request.key_type, Some(SignatureType::P256));
 
         fs::remove_file(path).unwrap();
     }
