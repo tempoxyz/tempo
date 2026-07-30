@@ -189,8 +189,12 @@ jobs:
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: v0.15.0
+      - name: Install RISC-V C toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
       - name: Run no_std checks
         run: .github/scripts/check_no_std.sh
+        env:
+          CC_riscv32imac_unknown_none_elf: riscv64-unknown-elf-gcc
 
   lint-success:
     name: lint success
