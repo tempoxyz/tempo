@@ -583,6 +583,14 @@ pub enum TempoAccountsError {
         /// Filesystem error.
         source: std::io::Error,
     },
+    /// The Accounts store could not be locked for mutation.
+    #[error("failed to lock Tempo Accounts store at {path}: {source}")]
+    Lock {
+        /// Store path.
+        path: PathBuf,
+        /// Filesystem error.
+        source: std::io::Error,
+    },
     /// The Accounts store did not match the persisted Accounts schema.
     #[error("invalid Tempo Accounts store at {path}: {source}")]
     Decode {
@@ -2539,6 +2547,7 @@ fn upsert_secp256k1_access_key(
     signer: &PrivateKeySigner,
     authorization: &SignedKeyAuthorization,
 ) -> Result<(), TempoAccountsError> {
+    let _lock = lock_store(path)?;
     let mut file = match fs::read(path) {
         Ok(bytes) => {
             decode_editable_store(&bytes).map_err(|source| TempoAccountsError::Decode {
@@ -2612,6 +2621,7 @@ fn retire_access_key(
     chain_id: u64,
     access_key: Address,
 ) -> Result<bool, TempoAccountsError> {
+    let _lock = lock_store(path)?;
     let bytes = fs::read(path).map_err(|source| TempoAccountsError::Read {
         path: path.to_owned(),
         source,
@@ -2656,6 +2666,41 @@ fn retire_access_key(
         write_store_atomic(path, file)?;
     }
     Ok(changed)
+}
+
+fn lock_store(path: &Path) -> Result<fs::File, TempoAccountsError> {
+    let result = (|| {
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("Tempo Accounts store has no parent directory"))?;
+        fs::create_dir_all(parent)?;
+        set_private_directory_permissions(parent)?;
+
+        let lock_path = {
+            let mut name = path
+                .file_name()
+                .ok_or_else(|| std::io::Error::other("Tempo Accounts store has no file name"))?
+                .to_os_string();
+            name.push(".lock");
+            parent.join(name)
+        };
+
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options.open(&lock_path)?;
+        set_private_file_permissions(&lock_path)?;
+        lock.lock()?;
+        Ok(lock)
+    })();
+    result.map_err(|source| TempoAccountsError::Lock {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 fn write_store_atomic(path: &Path, store: EditableTempoCliStore) -> Result<(), TempoAccountsError> {
@@ -3045,7 +3090,11 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::mpsc,
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     use alloy_network::{NetworkWallet, TransactionBuilder};
     use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller, mock::Asserter};
@@ -3056,6 +3105,68 @@ mod tests {
 
     const ROOT: &str = "0x1111111111111111111111111111111111111111";
     const TARGET: &str = "0x2222222222222222222222222222222222222222";
+
+    #[test]
+    fn serializes_concurrent_store_upserts() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        let held_lock = lock_store(&path).unwrap();
+        let account = ROOT.parse::<Address>().unwrap();
+        let signers = [PrivateKeySigner::random(), PrivateKeySigner::random()];
+        let addresses = signers.each_ref().map(|signer| signer.address());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let handles: Vec<_> = signers
+            .into_iter()
+            .map(|signer| {
+                let path = path.clone();
+                let started_tx = started_tx.clone();
+                let done_tx = done_tx.clone();
+                thread::spawn(move || {
+                    let authorization = KeyAuthorization::unrestricted(
+                        4217,
+                        SignatureType::Secp256k1,
+                        signer.address(),
+                    )
+                    .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+                    started_tx.send(()).unwrap();
+                    let result = TempoAccountsStore::at(path)
+                        .upsert_secp256k1_access_key(account, &signer, &authorization)
+                        .map_err(|error| error.to_string());
+                    done_tx.send(result).unwrap();
+                })
+            })
+            .collect();
+        drop(started_tx);
+        drop(done_tx);
+
+        started_rx.recv().unwrap();
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(held_lock);
+
+        done_rx.recv().unwrap().unwrap();
+        done_rx.recv().unwrap().unwrap();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let keys = TempoAccountsStore::open(&path)
+            .unwrap()
+            .access_keys()
+            .unwrap();
+        assert!(
+            addresses
+                .iter()
+                .all(|address| keys.iter().any(|key| key.address() == *address))
+        );
+        assert!(directory.join("wallet/store.json.lock").is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn persisted_boundary_deserializes_to_strict_types() {
