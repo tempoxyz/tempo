@@ -42,8 +42,8 @@ pub(super) struct Config<TContext> {
     /// the validator config v2 contract.
     pub(super) public_key: PublicKey,
 
-    /// Number of messages from consensus to hold in our backlog
-    /// before blocking.
+    /// Number of messages held in the application mailbox's ready queue
+    /// before subsequent messages are retained in overflow.
     pub(super) mailbox_size: usize,
 
     /// For subscribing to blocks distributed via the consensus p2p network.

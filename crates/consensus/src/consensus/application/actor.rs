@@ -11,12 +11,14 @@
 //! layer calls to complete.
 
 use std::{
+    num::NonZeroUsize,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
+use commonware_actor::mailbox;
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
@@ -34,7 +36,7 @@ use commonware_runtime::{
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, channel::mpsc, future::try_join};
+use futures::future::try_join;
 use rand_core::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
@@ -63,7 +65,7 @@ use crate::{
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     context: ContextCell<TContext>,
-    mailbox: mpsc::Receiver<Message>,
+    mailbox: mailbox::Receiver<Message>,
 
     inner: Inner<TState>,
 }
@@ -106,7 +108,10 @@ where
         + commonware_runtime::Metrics,
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
-        let (tx, rx) = mpsc::channel(config.mailbox_size);
+        let mailbox_size =
+            NonZeroUsize::new(config.mailbox_size).expect("application mailbox size is non-zero");
+
+        let (tx, rx) = mailbox::new(config.context.child("mailbox"), mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
         let metrics = Metrics::init(&config.context);
@@ -181,7 +186,7 @@ where
         + commonware_runtime::Metrics,
 {
     async fn run_until_stopped(mut self) {
-        while let Some(msg) = self.mailbox.next().await {
+        while let Some(msg) = self.mailbox.recv().await {
             self.handle_message(msg);
         }
     }
