@@ -318,9 +318,10 @@ jobs:
             const fs = require('fs');
             const path = 'contrib/bench/clickhouse-metrics.txt';
             const { data } = await github.rest.repos.getContent({
-              ...context.repo,
+              owner: 'tempoxyz',
+              repo: 'tempo',
               path,
-              ref: context.sha,
+              ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
             });
 
             if (Array.isArray(data) || data.type !== 'file' || !data.content) {
