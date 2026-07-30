@@ -240,11 +240,10 @@ jobs:
         working-directory: tips/verify
         run: forge fmt --check
 
-  foundry-test:
-    name: Forge Test (Rust Precompiles)
+  foundry-build:
+    name: Build patched Forge
     needs: [check-specs-changes, check-precompiles]
-    # Skip for forked repos
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.release_only_sdk_crates != 'true' && (github.event_name != 'pull_request' || needs.check-precompiles.outputs.coverage == 'true')
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.release_only_sdk_crates != 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
@@ -287,35 +286,70 @@ jobs:
         working-directory: foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
 
-      - name: Run Forge tests with Rust precompiles (with coverage)
-        if: needs.check-precompiles.outputs.coverage == 'true'
-        working-directory: tempo/tips/verify
-        run: |
-          echo "Running forge test with Rust precompiles"
-          LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
-
-      # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
+      # Build WITHOUT coverage on main/merge-group runs.
       - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
         run: cargo build --bin forge --profile release --no-default-features
 
+      - name: Upload patched Forge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: patched-forge
+          path: foundry/target/release/forge
+          retention-days: 1
+
+  foundry-test:
+    name: Forge Test (Rust Precompiles, ${{ matrix.profile }})
+    needs: [check-specs-changes, check-precompiles, foundry-build]
+    if: needs.foundry-build.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, next]
+    runs-on: depot-ubuntu-latest-8
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tempo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          path: tempo
+          persist-credentials: false
+
+      - name: Setup Rust
+        if: needs.check-precompiles.outputs.coverage == 'true' && matrix.profile == 'default'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Download patched Forge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: patched-forge
+          path: foundry/target/release
+
       - name: Run Forge tests with Rust precompiles
-        if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: tempo/tips/verify
+        env:
+          FOUNDRY_PROFILE: ${{ matrix.profile }}
+          LLVM_PROFILE_FILE: ${{ needs.check-precompiles.outputs.coverage == 'true' && format('{0}/forge-coverage-%p.profraw', github.workspace) || '' }}
         run: |
-          echo "Running forge test with Rust precompiles"
+          chmod +x ../../../foundry/target/release/forge
+          echo "Running Forge tests with the ${{ matrix.profile }} profile"
           ../../../foundry/target/release/forge test -vvv
 
       - name: Generate coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: needs.check-precompiles.outputs.coverage == 'true' && matrix.profile == 'default'
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
-          "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/verify/*.profraw -o coverage/forge-test.profdata
+          "$LLVM_BIN/llvm-profdata" merge -sparse forge-coverage-*.profraw -o coverage/forge-test.profdata
 
       - name: Upload forge coverage artifacts
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: needs.check-precompiles.outputs.coverage == 'true' && matrix.profile == 'default'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-test-coverage
@@ -336,14 +370,14 @@ jobs:
       - build
       - abi-alignment-check
       - lint
+      - foundry-build
       - foundry-test
     timeout-minutes: 5
     steps:
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
-          allowed-failures: foundry-test
-          allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-test
+          allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test
           jobs: ${{ toJSON(needs) }}
 
   precompiles-coverage:
