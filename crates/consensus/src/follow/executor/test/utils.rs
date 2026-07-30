@@ -164,11 +164,14 @@ impl StubMarshal {
 }
 
 impl Marshal for StubMarshal {
-    fn set_floor(&self, height: Height) -> impl Future<Output = bool> + Send {
+    type Finalization = Height;
+
+    async fn get_finalization(&self, height: Height) -> Option<Self::Finalization> {
+        Some(height)
+    }
+
+    fn set_floor(&self, height: Self::Finalization) {
         let floor = self.floor.clone();
-        async move {
-            floor.fetch_max(height.get(), Ordering::SeqCst);
-            true
-        }
+        floor.fetch_max(height.get(), Ordering::SeqCst);
     }
 }

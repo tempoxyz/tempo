@@ -35,14 +35,14 @@ async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl Fn
 }
 
 #[test_traced]
-fn block_is_executed_canonicalized_acknowledged_and_advances_floor() {
+fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candidate() {
     deterministic::Runner::default().start(|context| async move {
         let finalized_height = EPOCH_LENGTH.get() * 2;
-        let expected_floor = finalized_height - EPOCH_LENGTH.get();
+        let expected_floor = finalized_height - EPOCH_LENGTH.get() - 1;
         let block_height = finalized_height + 1;
         let provider = StubExecutionProvider::default();
         provider.set_finalized(finalized_height, B256::with_last_byte(20));
-        provider.set_durable(expected_floor, B256::with_last_byte(10));
+        provider.set_durable(expected_floor, B256::with_last_byte(9));
 
         let marshal = StubMarshal::default();
 
@@ -59,6 +59,14 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor() {
         );
 
         actor.start();
+
+        for height in [expected_floor, expected_floor + 1, finalized_height] {
+            let _ = mailbox.report(Update::Tip(
+                Round::zero(),
+                Height::new(height),
+                Digest(B256::with_last_byte(height as u8)),
+            ));
+        }
 
         let block = make_block(block_height, B256::with_last_byte(20));
         let block_hash = block.block_hash();
@@ -78,6 +86,65 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor() {
                 finalized_block_hash: block_hash,
             }]
         );
+    });
+}
+
+#[test_traced]
+fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(18, B256::with_last_byte(18));
+        provider.set_durable(9, B256::with_last_byte(9));
+
+        let marshal = StubMarshal::default();
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: marshal.clone(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+
+        actor.start();
+
+        for height in [9, 18] {
+            let _ = mailbox.report(Update::Tip(
+                Round::zero(),
+                Height::new(height),
+                Digest(B256::with_last_byte(height as u8)),
+            ));
+        }
+
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(
+            make_block(19, B256::with_last_byte(18)).into(),
+            ack,
+        ));
+        waiter.await.expect("valid payload should be acknowledged");
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(marshal.floor(), Height::zero());
+
+        provider.set_finalized(19, B256::with_last_byte(19));
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(
+            make_block(20, B256::with_last_byte(19)).into(),
+            ack,
+        ));
+        waiter.await.expect("valid payload should be acknowledged");
+        wait_until(&context, || marshal.floor() == Height::new(9)).await;
+
+        provider.set_finalized(39, B256::with_last_byte(39));
+        provider.set_durable(29, B256::with_last_byte(29));
+        let _ = mailbox.report(Update::Tip(
+            Round::zero(),
+            Height::new(29),
+            Digest(B256::with_last_byte(29)),
+        ));
+        wait_until(&context, || marshal.floor() == Height::new(29)).await;
     });
 }
 
@@ -134,6 +201,18 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
         );
 
         actor.start();
+
+        let floor_candidate = finalized_height - EPOCH_LENGTH.get();
+        let _ = mailbox.report(Update::Tip(
+            Round::zero(),
+            Height::new(floor_candidate),
+            Digest(B256::with_last_byte(floor_candidate as u8)),
+        ));
+        let _ = mailbox.report(Update::Tip(
+            Round::zero(),
+            Height::new(finalized_height),
+            Digest(B256::with_last_byte(finalized_height as u8)),
+        ));
 
         let block = make_block(block_height, B256::with_last_byte(20));
         let (ack, waiter) = Exact::handle();
