@@ -2,10 +2,7 @@
 //! the standard websocket based provider requires a tokio runtime, which the tests
 //! runtime does not provide.
 
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{sync::Arc, time::Duration};
 
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
@@ -13,7 +10,6 @@ use futures::{
     FutureExt as _, StreamExt as _,
     stream::{self, BoxStream, Fuse},
 };
-use parking_lot::Mutex;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::{
     TempoFullNode,
@@ -37,49 +33,6 @@ use super::ingress::{Mailbox, Message};
 pub struct Config {
     pub execution_node: Arc<TempoFullNode>,
     pub feed: FeedStateHandle,
-    pub request_mode: RequestMode,
-}
-
-#[derive(Clone, Default)]
-pub enum RequestMode {
-    #[default]
-    Respond,
-    NeverRespond(RequestLog),
-}
-
-impl RequestMode {
-    fn should_respond(&self) -> bool {
-        matches!(self, Self::Respond)
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum ObservedRequestKind {
-    Finalization(Height),
-    Block(Digest),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObservedRequest {
-    pub kind: ObservedRequestKind,
-    pub received_at: SystemTime,
-}
-
-#[derive(Clone, Default)]
-pub struct RequestLog(Arc<Mutex<Vec<ObservedRequest>>>);
-
-impl RequestLog {
-    pub fn requests(&self) -> Vec<ObservedRequest> {
-        self.0.lock().clone()
-    }
-
-    fn record(&self, request: &Message, received_at: SystemTime) {
-        let kind = match request {
-            Message::GetFinalization { height, .. } => ObservedRequestKind::Finalization(*height),
-            Message::GetBlock { digest, .. } => ObservedRequestKind::Block(*digest),
-        };
-        self.0.lock().push(ObservedRequest { kind, received_at });
-    }
 }
 
 pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox) {
@@ -160,13 +113,10 @@ where
                 }
 
                 Some(request) = self.mailbox.recv() => {
-                    if let RequestMode::NeverRespond(log) = &self.config.request_mode {
-                        log.record(&request, self.context.current());
-                    }
                     self.waiters.push(request);
                 }
             );
-            if connected && self.config.request_mode.should_respond() {
+            if connected {
                 for request in self.waiters.drain(..) {
                     match request {
                         Message::GetFinalization { height, response } => {

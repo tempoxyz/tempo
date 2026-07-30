@@ -3,7 +3,7 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::{
     Setup, TestingNode, connect_execution_peers,
@@ -137,8 +137,6 @@ struct FollowerBuilder {
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
-    upstream_request_mode: Option<follow::upstream::in_process::RequestMode>,
-    upstream_request_timeout: Option<Duration>,
 }
 
 impl FollowerBuilder {
@@ -149,20 +147,6 @@ impl FollowerBuilder {
     fn runtime(self, runtime: ExecutionRuntimeHandle) -> Self {
         Self {
             runtime: Some(runtime),
-            ..self
-        }
-    }
-
-    fn never_respond_upstream(
-        self,
-        request_log: follow::upstream::in_process::RequestLog,
-        request_timeout: Duration,
-    ) -> Self {
-        Self {
-            upstream_request_mode: Some(follow::upstream::in_process::RequestMode::NeverRespond(
-                request_log,
-            )),
-            upstream_request_timeout: Some(request_timeout),
             ..self
         }
     }
@@ -203,8 +187,6 @@ impl FollowerBuilder {
             partition_prefix,
             runtime,
             donor,
-            upstream_request_mode,
-            upstream_request_timeout,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -249,11 +231,10 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label(&name).with_label("upstream"),
+            context.with_label("upstream"),
             in_process::Config {
                 execution_node: upstream_execution_node,
                 feed: upstream_feed_state,
-                request_mode: upstream_request_mode.unwrap_or_default(),
             },
         );
 
@@ -273,7 +254,7 @@ impl FollowerBuilder {
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
-            upstream_request_timeout: upstream_request_timeout.unwrap_or(Duration::from_secs(2)),
+            upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
@@ -359,72 +340,6 @@ fn follower_bootstraps_from_validator() {
         ) {
             context.sleep(Duration::from_millis(100)).await;
         }
-    });
-}
-
-#[test_traced]
-fn follower_retries_timed_out_upstream_requests_with_backoff() {
-    const REQUEST_TIMEOUT: Duration = Duration::from_millis(50);
-    const FIRST_RETRY_DELAY: Duration = Duration::from_millis(250);
-    const SECOND_RETRY_DELAY: Duration = Duration::from_millis(500);
-    const WAIT_ATTEMPTS: usize = 200;
-
-    let _ = tempo_eyre::install();
-
-    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
-    let cfg = deterministic::Config::default().with_seed(setup.seed);
-
-    let executor = Runner::from(cfg);
-    executor.start(|mut context| async move {
-        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
-        validators[0].start(&context).await;
-
-        wait_for_height(&context, &validators[0], 15).await;
-
-        let request_log = follow::upstream::in_process::RequestLog::default();
-        let _follower = Follower::builder()
-            .runtime(execution_runtime.handle())
-            .never_respond_upstream(request_log.clone(), REQUEST_TIMEOUT)
-            .follow(&mut context, &validators[0])
-            .await;
-
-        let mut observed_retry_intervals = None;
-        for _ in 0..WAIT_ATTEMPTS {
-            let metrics = context.to_metrics();
-            let timed_out = metrics
-                .value::<u64>("upstream_request_timeouts_total")
-                .unwrap_or(0);
-
-            let mut requests_by_kind = HashMap::new();
-            for request in request_log.requests() {
-                requests_by_kind
-                    .entry(request.kind)
-                    .or_insert_with(Vec::new)
-                    .push(request.received_at);
-            }
-
-            let retry_intervals = requests_by_kind.values().find_map(|times| {
-                times.windows(3).find_map(|times| {
-                    let first = times[1].duration_since(times[0]).unwrap();
-                    let second = times[2].duration_since(times[1]).unwrap();
-                    (first >= FIRST_RETRY_DELAY && second >= SECOND_RETRY_DELAY)
-                        .then_some((first, second))
-                })
-            });
-
-            if timed_out > 0
-                && let Some(retry_intervals) = retry_intervals
-            {
-                observed_retry_intervals = Some(retry_intervals);
-                break;
-            }
-
-            context.sleep(Duration::from_millis(10)).await;
-        }
-
-        let retry_intervals = observed_retry_intervals
-            .expect("upstream requests should time out and retry with backoff");
-        assert!(retry_intervals.1 > retry_intervals.0);
     });
 }
 
