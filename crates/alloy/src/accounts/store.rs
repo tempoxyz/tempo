@@ -8,7 +8,7 @@ use std::{
     num::NonZeroU64,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -107,43 +107,107 @@ impl SignerSync<PrimitiveSignature> for AccountsSigner {
     }
 }
 
-static AUTHORIZATION_RESERVATIONS: LazyLock<Mutex<BTreeSet<TempoAuthorizationReservation>>> =
-    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+static AUTHORIZATION_RESERVATIONS: LazyLock<Mutex<AuthorizationReservationState>> =
+    LazyLock::new(|| Mutex::new(AuthorizationReservationState::default()));
+
+#[derive(Default)]
+struct AuthorizationReservationState {
+    next_generation: u64,
+    reservations: BTreeMap<AuthorizationIdentity, u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AuthorizationIdentity {
+    chain_id: u64,
+    account: Address,
+    key_id: Address,
+}
 
 #[derive(Clone, Debug, Default)]
-struct AuthorizationReservations;
+struct AuthorizationReservations {
+    observed: Arc<Mutex<BTreeSet<TempoAuthorizationReservation>>>,
+}
 
 impl AuthorizationReservations {
-    fn reserve(
+    fn reserve(&self, identity: AuthorizationIdentity) -> Result<(), TempoAccessKeyError> {
+        let mut state = AUTHORIZATION_RESERVATIONS
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        if state.reservations.contains_key(&identity) {
+            return Err(TempoAccessKeyError::AuthorizationInFlight {
+                chain_id: identity.chain_id,
+                account: identity.account,
+                key_id: identity.key_id,
+            });
+        }
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        let generation = state
+            .next_generation
+            .checked_add(1)
+            .ok_or(TempoAccessKeyError::ReservationStateUnavailable)?;
+        state.next_generation = generation;
+        state.reservations.insert(identity, generation);
+        let reservation = TempoAuthorizationReservation {
+            chain_id: identity.chain_id,
+            account: identity.account,
+            key_id: identity.key_id,
+            generation,
+        };
+        observed.insert(reservation);
+        Ok(())
+    }
+
+    fn release_owned(
         &self,
         reservation: TempoAuthorizationReservation,
     ) -> Result<(), TempoAccessKeyError> {
-        let mut reservations = AUTHORIZATION_RESERVATIONS
+        let mut state = AUTHORIZATION_RESERVATIONS
             .lock()
             .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
-        if !reservations.insert(reservation) {
-            return Err(TempoAccessKeyError::AuthorizationInFlight {
-                chain_id: reservation.chain_id,
-                account: reservation.account,
-                key_id: reservation.key_id,
-            });
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        if observed.remove(&reservation)
+            && state.reservations.get(&reservation.identity()) == Some(&reservation.generation)
+        {
+            state.reservations.remove(&reservation.identity());
         }
         Ok(())
     }
 
-    fn release(
-        &self,
-        reservation: TempoAuthorizationReservation,
-    ) -> Result<(), TempoAccessKeyError> {
-        AUTHORIZATION_RESERVATIONS
+    fn resolve_on_chain(&self, identity: AuthorizationIdentity) -> Result<(), TempoAccessKeyError> {
+        let mut state = AUTHORIZATION_RESERVATIONS
             .lock()
-            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?
-            .remove(&reservation);
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        state.reservations.remove(&identity);
+        observed.retain(|reservation| reservation.identity() != identity);
         Ok(())
+    }
+
+    fn in_flight(&self) -> Result<Vec<TempoAuthorizationReservation>, TempoAccessKeyError> {
+        let state = AUTHORIZATION_RESERVATIONS
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| TempoAccessKeyError::ReservationStateUnavailable)?;
+        observed.retain(|reservation| {
+            state.reservations.get(&reservation.identity()) == Some(&reservation.generation)
+        });
+        Ok(observed.iter().copied().collect())
     }
 }
 
-/// Identity of one pending, one-time Tempo key authorization.
+/// Handle for one pending, one-time Tempo key authorization.
 ///
 /// Payment transports can retain this value with the signed credential and
 /// release it after a definitive local rejection. Ambiguous transport failures
@@ -153,9 +217,18 @@ pub struct TempoAuthorizationReservation {
     chain_id: u64,
     account: Address,
     key_id: Address,
+    generation: u64,
 }
 
 impl TempoAuthorizationReservation {
+    const fn identity(&self) -> AuthorizationIdentity {
+        AuthorizationIdentity {
+            chain_id: self.chain_id,
+            account: self.account,
+            key_id: self.key_id,
+        }
+    }
+
     /// Chain on which the authorization can be published.
     pub const fn chain_id(&self) -> u64 {
         self.chain_id
@@ -193,7 +266,7 @@ impl TempoAccessKey {
             chain_id,
             signer: AccountsSigner::Secp256k1(signer),
             key_authorization: None,
-            authorization_reservations: AuthorizationReservations,
+            authorization_reservations: AuthorizationReservations::default(),
         }
     }
 
@@ -373,7 +446,7 @@ impl TempoAccessKey {
         let primitive = self.signer.sign_hash(&signing_hash).await?;
         if let Some(authorization) = tx.key_authorization.as_ref() {
             self.authorization_reservations
-                .reserve(TempoAuthorizationReservation {
+                .reserve(AuthorizationIdentity {
                     chain_id: self.chain_id,
                     account: self.account,
                     key_id: authorization.key_id,
@@ -381,7 +454,7 @@ impl TempoAccessKey {
                 .map_err(alloy_signer::Error::other)?;
         } else {
             self.authorization_reservations
-                .release(TempoAuthorizationReservation {
+                .resolve_on_chain(AuthorizationIdentity {
                     chain_id: self.chain_id,
                     account: self.account,
                     key_id: self.address,
@@ -915,7 +988,7 @@ impl TempoAccountsWallet {
                 fallback_account,
             },
             chain_id: None,
-            authorization_reservations: AuthorizationReservations,
+            authorization_reservations: AuthorizationReservations::default(),
         })
     }
 
@@ -951,7 +1024,7 @@ impl TempoAccountsWallet {
                 key_authorization: key_authorization.map(Box::new),
             },
             chain_id: None,
-            authorization_reservations: AuthorizationReservations,
+            authorization_reservations: AuthorizationReservations::default(),
         }
     }
 
@@ -1029,8 +1102,8 @@ impl TempoAccountsWallet {
         }
     }
 
-    /// Reservation associated with this prepared wallet's pending
-    /// authorization, if any.
+    /// In-flight reservation associated with this prepared wallet's pending
+    /// authorization, if signing has reserved it.
     pub fn authorization_reservation(&self) -> Option<TempoAuthorizationReservation> {
         let AccountsSource::Local {
             account,
@@ -1040,11 +1113,30 @@ impl TempoAccountsWallet {
         else {
             return None;
         };
-        Some(TempoAuthorizationReservation {
+        let identity = AuthorizationIdentity {
             chain_id: self.chain_id?,
             account: *account,
             key_id: authorization.key_id,
-        })
+        };
+        self.authorization_reservations
+            .in_flight()
+            .ok()?
+            .into_iter()
+            .find(|reservation| reservation.identity() == identity)
+    }
+
+    /// Reservations created by authorization-bearing sends through this wallet
+    /// or any of its clones.
+    ///
+    /// Callers can use the request's chain, account, and key ID to identify the
+    /// reservation for a definitively rejected send. Ambiguous transport
+    /// failures must remain reserved because the transaction may still land.
+    pub fn in_flight_authorization_reservations(
+        &self,
+    ) -> Result<Vec<TempoAuthorizationReservation>, TempoAccountsError> {
+        self.authorization_reservations
+            .in_flight()
+            .map_err(|_| TempoAccountsError::AuthorizationReservationStateUnavailable)
     }
 
     /// Release a reservation after the caller knows the signed authorization
@@ -1057,7 +1149,7 @@ impl TempoAccountsWallet {
         reservation: TempoAuthorizationReservation,
     ) -> Result<(), TempoAccountsError> {
         self.authorization_reservations
-            .release(reservation)
+            .release_owned(reservation)
             .map_err(|_| TempoAccountsError::AuthorizationReservationStateUnavailable)
     }
 
@@ -3107,6 +3199,33 @@ mod tests {
     const TARGET: &str = "0x2222222222222222222222222222222222222222";
 
     #[test]
+    fn stale_observation_cannot_release_a_new_reservation_generation() {
+        let identity = AuthorizationIdentity {
+            chain_id: 4217,
+            account: Address::random(),
+            key_id: Address::random(),
+        };
+        let first = AuthorizationReservations::default();
+        let resolver = AuthorizationReservations::default();
+        let second = AuthorizationReservations::default();
+        let contender = AuthorizationReservations::default();
+
+        first.reserve(identity).unwrap();
+        let stale = first.in_flight().unwrap()[0];
+        resolver.resolve_on_chain(identity).unwrap();
+        second.reserve(identity).unwrap();
+        let current = second.in_flight().unwrap()[0];
+
+        first.release_owned(stale).unwrap();
+        assert!(matches!(
+            contender.reserve(identity),
+            Err(TempoAccessKeyError::AuthorizationInFlight { .. })
+        ));
+
+        second.release_owned(current).unwrap();
+    }
+
+    #[test]
     fn serializes_concurrent_store_upserts() {
         let directory = unique_test_directory();
         let path = directory.join("wallet/store.json");
@@ -4054,6 +4173,84 @@ mod tests {
                 .to_string()
                 .contains("does not match the selected Tempo Accounts key")
         );
+    }
+
+    #[tokio::test]
+    async fn store_filler_exposes_the_reservation_created_by_its_clone() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        let root = PrivateKeySigner::random();
+        let account = root.address();
+        let signer = PrivateKeySigner::random();
+        let key_id = signer.address();
+        let authorization = KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, key_id);
+        let signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let authorization = authorization.into_signed(PrimitiveSignature::Secp256k1(signature));
+        TempoAccountsStore::at(&path)
+            .upsert_secp256k1_access_key(account, &signer, &authorization)
+            .unwrap();
+
+        let wallet = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
+        let independent = TempoAccountsWallet::from_store(&path)
+            .unwrap()
+            .with_chain_id(4217);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TARGET.parse::<Address>().unwrap().into()),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let signing_wallet = wallet.clone();
+        let mut first_request = request.clone();
+        let selected = signing_wallet.fill_metadata(&mut first_request).unwrap();
+        signing_wallet
+            .fill(selected, SendableTx::Builder(first_request))
+            .await
+            .unwrap();
+
+        let reservations = wallet.in_flight_authorization_reservations().unwrap();
+        assert_eq!(reservations.len(), 1);
+        let reservation = reservations[0];
+        assert_eq!(reservation.chain_id(), 4217);
+        assert_eq!(reservation.account(), account);
+        assert_eq!(reservation.key_id(), key_id);
+
+        let mut blocked_request = request.clone();
+        let selected = independent.fill_metadata(&mut blocked_request).unwrap();
+        let error = independent
+            .fill(selected, SendableTx::Builder(blocked_request))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already in flight"));
+        assert!(
+            independent
+                .in_flight_authorization_reservations()
+                .unwrap()
+                .is_empty()
+        );
+
+        wallet.release_authorization(reservation).unwrap();
+        let mut retry_request = request;
+        let selected = independent.fill_metadata(&mut retry_request).unwrap();
+        independent
+            .fill(selected, SendableTx::Builder(retry_request))
+            .await
+            .unwrap();
+        let retry_reservation = independent.in_flight_authorization_reservations().unwrap()[0];
+        independent
+            .release_authorization(retry_reservation)
+            .unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
