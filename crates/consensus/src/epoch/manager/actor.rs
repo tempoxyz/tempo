@@ -67,6 +67,7 @@ use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
+use reth_provider::BlockHashReader as _;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -338,15 +339,21 @@ where
                     consensus engine for epoch `{epoch}` cannot be started"
                 );
 
-                let hash = state.hash_by_number(boundary_height.get()).ok_or_else(|| {
-                    eyre!(
-                        "consensus layer does not have access to certificate or \
-                    block at boundary `{boundary_height}`, and execution layer \
-                    does not know about the finalized block hash corresponding \
-                    to it, so a consensus engine for epoch `{epoch}` cannot be \
-                    started"
-                    )
-                })?;
+                let hash = self
+                    .config
+                    .execution_node
+                    .provider
+                    .block_hash(boundary_height.get())
+                    .map_err(eyre::Report::new)?
+                    .ok_or_else(|| {
+                        eyre!(
+                            "consensus layer does not have access to certificate or \
+                        block at boundary `{boundary_height}`, and execution layer \
+                        does not know about the finalized block hash corresponding \
+                        to it, so a consensus engine for epoch `{epoch}` cannot be \
+                        started"
+                        )
+                    })?;
 
                 Floor::Genesis(Digest(hash))
             }
