@@ -476,6 +476,7 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
@@ -532,6 +533,7 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
@@ -578,6 +580,7 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
@@ -624,6 +627,7 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
