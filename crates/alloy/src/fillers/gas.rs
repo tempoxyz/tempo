@@ -145,7 +145,10 @@ where
     let key = provider
         .get_keychain_key(account, key_id)
         .await
-        .map_err(RpcError::local_usage)?;
+        .map_err(|error| match error {
+            alloy_contract::Error::TransportError(error) => error,
+            error => RpcError::local_usage(error),
+        })?;
     if key.isRevoked {
         return Err(RpcError::local_usage(KeyAuthorizationError::Revoked {
             account,
@@ -235,8 +238,8 @@ enum KeyAuthorizationError {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Signature;
-    use alloy_provider::{ProviderBuilder, fillers::TxFiller};
+    use alloy_primitives::{Bytes, Signature};
+    use alloy_provider::{ProviderBuilder, fillers::TxFiller, mock::Asserter};
     use alloy_rpc_types_eth::TransactionRequest;
     use tempo_primitives::{
         SignatureType, TempoTxType,
@@ -406,5 +409,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(resolved, Some(Some(authorization)));
+    }
+
+    #[tokio::test]
+    async fn preserves_keychain_transport_errors_and_localizes_decode_errors() {
+        let account = Address::repeat_byte(0x11);
+        let key_id = Address::repeat_byte(0x22);
+        let authorization = KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, key_id)
+            .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::Secp256k1),
+            key_id: Some(key_id),
+            key_authorization: Some(authorization),
+            ..Default::default()
+        };
+
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Asserter::new());
+        let error = resolve_key_authorization(&provider, &request)
+            .await
+            .unwrap_err();
+        assert!(error.is_transport_error());
+
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("keychain unavailable");
+        let provider =
+            ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+        let error = resolve_key_authorization(&provider, &request)
+            .await
+            .unwrap_err();
+        assert!(error.is_error_resp());
+        assert!(error.to_string().contains("keychain unavailable"));
+
+        let asserter = Asserter::new();
+        asserter.push_success(&Bytes::new());
+        let provider =
+            ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+        let error = resolve_key_authorization(&provider, &request)
+            .await
+            .unwrap_err();
+        assert!(error.is_local_usage_error());
     }
 }
