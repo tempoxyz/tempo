@@ -153,7 +153,7 @@ fn signing_key_write_to_file_encrypted_restricts_permissions() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("signing.key");
 
-    SigningKey::random(&mut rand_10::rng())
+    SigningKey::random(rand_10::rng())
         .write_to_file_encrypted(&path, passphrase("hunter2"))
         .unwrap();
 
@@ -165,7 +165,7 @@ fn signing_key_write_to_file_encrypted_does_not_overwrite_existing_file() {
     let file = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(file.path(), b"existing contents").unwrap();
 
-    SigningKey::random(&mut rand_10::rng())
+    SigningKey::random(rand_10::rng())
         .write_to_file_encrypted(file.path(), passphrase("hunter2"))
         .expect_err("writing to an existing file must fail");
 

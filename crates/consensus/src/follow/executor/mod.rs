@@ -151,6 +151,6 @@ impl Marshal for crate::alias::marshal::Mailbox {
     }
 
     fn set_floor(&self, finalization: Self::Finalization) {
-        commonware_consensus::marshal::core::Mailbox::set_floor(self, finalization);
+        Self::set_floor(self, finalization);
     }
 }

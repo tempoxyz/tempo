@@ -103,8 +103,8 @@ impl Marshal for crate::alias::marshal::Mailbox {
         let mailbox = self.clone();
         async move {
             // Stub out a random target
-            let target = PrivateKey::random(&mut rand_10::rng()).public_key();
-            let _ = mailbox.hint_finalized(height, NonEmptyVec::new(target));
+            let target = PrivateKey::random(rand_10::rng()).public_key();
+            mailbox.hint_finalized(height, NonEmptyVec::new(target));
         }
     }
 
