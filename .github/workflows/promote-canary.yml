@@ -115,15 +115,19 @@ jobs:
               exit 1
             fi
 
-            echo "cutoff=${cutoff}" >> "$GITHUB_OUTPUT"
-            echo "nightly_completed_at=${run_completed_at}" >> "$GITHUB_OUTPUT"
-            echo "nightly_run_url=${run_url}" >> "$GITHUB_OUTPUT"
-            echo "soak_days=${soak_days}" >> "$GITHUB_OUTPUT"
+            {
+              echo "cutoff=${cutoff}"
+              echo "nightly_completed_at=${run_completed_at}"
+              echo "nightly_run_url=${run_url}"
+              echo "soak_days=${soak_days}"
+            } >> "$GITHUB_OUTPUT"
           fi
 
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "source=${source}" >> "$GITHUB_OUTPUT"
-          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
+          {
+            echo "digest=${digest}"
+            echo "source=${source}"
+            echo "source_ref=${source_ref}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Move canary tag
         env:
