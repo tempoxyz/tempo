@@ -2684,31 +2684,20 @@ fn upsert_secp256k1_access_key(
         }
     };
 
-    let account_index = file.accounts.iter().position(|raw| {
+    let account_exists = file.accounts.iter().any(|raw| {
         serde_json::from_str::<EditableAccountIdentity>(raw.get())
             .is_ok_and(|stored| stored.address == account)
     });
-    let account_index = match account_index {
-        Some(index) => index,
-        None => {
-            file.accounts.push(
-                serde_json::value::to_raw_value(&WritableAccount { address: account }).map_err(
-                    |source| TempoAccountsError::Encode {
-                        path: path.to_owned(),
-                        source,
-                    },
-                )?,
-            );
-            file.accounts.len() - 1
-        }
-    };
-    file.active_account = RawValue::from_string(account_index.to_string()).map_err(|source| {
-        TempoAccountsError::Encode {
-            path: path.to_owned(),
-            source,
-        }
-    })?;
-    file.chain_id = authorization.chain_id;
+    if !account_exists {
+        file.accounts.push(
+            serde_json::value::to_raw_value(&WritableAccount { address: account }).map_err(
+                |source| TempoAccountsError::Encode {
+                    path: path.to_owned(),
+                    source,
+                },
+            )?,
+        );
+    }
     file.access_keys.retain(|raw| {
         serde_json::from_str::<EditableAccessKeyIdentity>(raw.get()).map_or(true, |stored| {
             stored.access != account
@@ -3352,6 +3341,47 @@ mod tests {
                 .retire_access_key(account, 4217, signer.address())
                 .unwrap()
         );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn access_key_upsert_preserves_existing_store_defaults() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let account = ROOT.parse::<Address>().unwrap();
+        let active_account = TARGET.parse::<Address>().unwrap();
+        let signer = PrivateKeySigner::random();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let initial = serde_json::json!({
+            "tempo-cli.store": {
+                "state": {
+                    "activeAccount": 0,
+                    "chainId": 42431,
+                    "accounts": [
+                        {"address": active_account},
+                        {"address": account},
+                    ],
+                    "accessKeys": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
+
+        let store = TempoAccountsStore::open(&path).unwrap();
+        store
+            .upsert_secp256k1_access_key(account, &signer, &authorization)
+            .unwrap();
+
+        let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let state = &written["tempo-cli.store"]["state"];
+        assert_eq!(state["activeAccount"], 0);
+        assert_eq!(state["chainId"], 42431);
+        assert_eq!(store.active_account().unwrap(), active_account);
+        assert_eq!(store.access_keys().unwrap()[0].address(), signer.address());
 
         fs::remove_dir_all(directory).unwrap();
     }
