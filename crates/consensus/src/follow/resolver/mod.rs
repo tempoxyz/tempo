@@ -79,8 +79,9 @@ where
         },
         consumer,
         mailbox_size,
-        // Applied by the fetcher so it can preserve the exponential retry policy
-        Duration::ZERO,
+        // Opaque applies this floor after consumer-rejected deliveries. The
+        // fetcher adds its exponential backoff after missing responses.
+        INITIAL_RETRY_DELAY,
     );
     (resolver, receiver)
 }
