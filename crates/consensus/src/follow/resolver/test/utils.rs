@@ -122,6 +122,7 @@ struct StubUpstreamInner {
     finalizations: Mutex<HashMap<u64, CertifiedBlock>>,
     block_reads: AtomicUsize,
     finalization_reads: AtomicUsize,
+    hang_block_reads: AtomicBool,
 }
 
 impl StubUpstream {
@@ -140,19 +141,29 @@ impl StubUpstream {
     pub(super) fn finalization_reads(&self) -> usize {
         self.inner.finalization_reads.load(Ordering::SeqCst)
     }
+
+    pub(super) fn hang_block_reads(&self) {
+        self.inner.hang_block_reads.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Upstream for StubUpstream {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         self.inner.block_reads.fetch_add(1, Ordering::SeqCst);
         let block = self.inner.blocks.lock().get(&digest).cloned();
-        async move { block }
+        let hang = self.inner.hang_block_reads.load(Ordering::SeqCst);
+        async move {
+            if hang {
+                std::future::pending::<()>().await;
+            }
+            block
+        }
     }
 
     fn get_finalization(
         &self,
         height: Height,
-    ) -> impl Future<Output = Option<CertifiedBlock>> + Send {
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static {
         self.inner.finalization_reads.fetch_add(1, Ordering::SeqCst);
         let finalization = self.inner.finalizations.lock().get(&height.get()).cloned();
         async move { finalization }

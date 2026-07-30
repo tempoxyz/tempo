@@ -1,9 +1,20 @@
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
+
 use commonware_codec::Encode as _;
 use commonware_consensus::{marshal::resolver::handler, types::Height};
+use commonware_macros::test_traced;
+use commonware_resolver::opaque::Fetcher as _;
+use commonware_runtime::{Metrics as _, Runner as _, deterministic};
 use futures::executor::block_on;
-use std::time::{Duration, SystemTime};
+use parking_lot::Mutex;
+use prometheus_client::metrics::counter::Counter;
 
-use super::{MAX_RETRY_DELAY, RETRY_STATE_TTL, RetryState, resolve_block, resolve_finalized};
+use super::{
+    Fetcher, MAX_RETRY_DELAY, RETRY_STATE_TTL, RetryState, resolve_block, resolve_finalized,
+};
 
 mod utils;
 use utils::{StubBlockProvider, StubUpstream, make_block, make_certified_block};
@@ -115,4 +126,36 @@ fn retry_state_advances_resets_and_expires() {
     let expired = now + RETRY_STATE_TTL;
     assert_eq!(retries.begin(second, expired), Duration::ZERO);
     assert!(!retries.entries.contains_key(&first));
+}
+
+#[test_traced]
+fn timed_out_upstream_request_is_retried_with_backoff() {
+    const TIMEOUT: Duration = Duration::from_millis(10);
+
+    deterministic::Runner::default().start(|context| async move {
+        let upstream = StubUpstream::default();
+        upstream.hang_block_reads();
+        let timeouts = context.register(
+            "upstream_request_timeouts",
+            "number of upstream requests that exceeded their deadline",
+            Counter::default(),
+        );
+        let fetcher = Fetcher {
+            context: Arc::new(context),
+            execution_provider: StubBlockProvider::default(),
+            upstream: upstream.clone(),
+            upstream_request_timeout: TIMEOUT,
+            upstream_request_timeouts: timeouts.clone(),
+            retries: Arc::new(Mutex::new(RetryState::default())),
+        };
+        let key = handler::Key::Block(make_block(9).digest());
+
+        assert_eq!(fetcher.fetch(key).await, None);
+        assert_eq!(upstream.block_reads(), 1);
+        assert_eq!(timeouts.get(), 1);
+
+        assert_eq!(fetcher.fetch(key).await, None);
+        assert_eq!(upstream.block_reads(), 2);
+        assert_eq!(timeouts.get(), 2);
+    });
 }

@@ -19,9 +19,10 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::opaque;
-use commonware_runtime::{Clock, Metrics, Spawner};
+use commonware_runtime::{Clock, Metrics, Spawner, telemetry::metrics::Registered};
 use eyre::Report;
 use parking_lot::Mutex;
+use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::NodePrimitives;
@@ -56,6 +57,7 @@ pub(super) struct Config<
     pub(super) execution_provider: P,
     pub(super) upstream: U,
     pub(super) mailbox_size: NonZeroUsize,
+    pub(super) upstream_request_timeout: Duration,
 }
 
 pub(super) fn try_init<TContext, P, U>(
@@ -68,6 +70,11 @@ where
     U: Upstream + Clone + 'static,
 {
     let mailbox_size = config.mailbox_size;
+    let upstream_request_timeouts = context.register(
+        "upstream_request_timeouts",
+        "number of upstream requests that exceeded their deadline",
+        Counter::default(),
+    );
     let (receiver, consumer) = handler::init(context.child("handler"), mailbox_size);
     let resolver = opaque::init(
         context.child("opaque"),
@@ -75,6 +82,8 @@ where
             context: Arc::new(context.child("fetcher")),
             execution_provider: config.execution_provider,
             upstream: config.upstream,
+            upstream_request_timeout: config.upstream_request_timeout,
+            upstream_request_timeouts,
             retries: Arc::new(Mutex::new(RetryState::default())),
         },
         consumer,
@@ -90,6 +99,8 @@ struct Fetcher<TContext, P, U> {
     context: Arc<TContext>,
     execution_provider: P,
     upstream: U,
+    upstream_request_timeout: Duration,
+    upstream_request_timeouts: Registered<Counter>,
     retries: Arc<Mutex<RetryState>>,
 }
 
@@ -103,6 +114,8 @@ where
             context: self.context.clone(),
             execution_provider: self.execution_provider.clone(),
             upstream: self.upstream.clone(),
+            upstream_request_timeout: self.upstream_request_timeout,
+            upstream_request_timeouts: self.upstream_request_timeouts.clone(),
             retries: self.retries.clone(),
         }
     }
@@ -121,6 +134,8 @@ where
         let context = self.context.clone();
         let execution_provider = self.execution_provider.clone();
         let upstream = self.upstream.clone();
+        let upstream_request_timeout = self.upstream_request_timeout;
+        let upstream_request_timeouts = self.upstream_request_timeouts.clone();
         let retries = self.retries.clone();
 
         async move {
@@ -137,12 +152,25 @@ where
                 context.sleep(delay).await;
             }
 
-            let value = match key {
-                handler::Key::Block(digest) => {
-                    resolve_block(&execution_provider, &upstream, digest).await
+            let request_key = key;
+            let request = async move {
+                match request_key {
+                    handler::Key::Block(digest) => {
+                        resolve_block(&execution_provider, &upstream, digest).await
+                    }
+                    handler::Key::Finalized { height } => {
+                        resolve_finalized(&upstream, height).await
+                    }
+                    handler::Key::Notarized { .. } => unreachable!(),
                 }
-                handler::Key::Finalized { height } => resolve_finalized(&upstream, height).await,
-                handler::Key::Notarized { .. } => unreachable!(),
+            };
+
+            let value = match context.timeout(upstream_request_timeout, request).await {
+                Ok(value) => value,
+                Err(_) => {
+                    upstream_request_timeouts.inc();
+                    None
+                }
             };
 
             let now = context.current();
@@ -250,8 +278,11 @@ pub(super) trait BlockProvider: Send + Sync {
 
 /// Upstream reads needed by the resolver.
 pub(super) trait Upstream: Send + Sync {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send;
-    fn get_finalization(&self, h: Height) -> impl Future<Output = Option<CertifiedBlock>> + Send;
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static;
+    fn get_finalization(
+        &self,
+        h: Height,
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static;
 }
 
 impl<N> BlockProvider for BlockchainProvider<N>
@@ -267,7 +298,7 @@ where
 }
 
 impl Upstream for super::upstream::Mailbox {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         let upstream = self.clone();
         async move { upstream.get_block(digest).await }
     }
@@ -275,7 +306,7 @@ impl Upstream for super::upstream::Mailbox {
     fn get_finalization(
         &self,
         height: Height,
-    ) -> impl Future<Output = Option<CertifiedBlock>> + Send {
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static {
         let upstream = self.clone();
         async move { upstream.get_finalization(height).await }
     }

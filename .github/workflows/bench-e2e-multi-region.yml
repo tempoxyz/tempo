@@ -68,7 +68,7 @@ on:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
-      BENCH_METRICS_PUSH_URL:
+      BENCH_VICTORIAMETRICS_URL:
         required: false
       CLICKHOUSE_URL:
         required: false
@@ -311,6 +311,27 @@ jobs:
 
             core.setFailed(`@${username} is not a member of ${org}`);
 
+      - name: Fetch ClickHouse metric allowlist
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'contrib/bench/clickhouse-metrics.txt';
+            const { data } = await github.rest.repos.getContent({
+              owner: 'tempoxyz',
+              repo: 'tempo',
+              path,
+              ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
+            });
+
+            if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+              core.setFailed(`Expected ${path} to be a file at ${context.sha}`);
+              return;
+            }
+
+            fs.mkdirSync('contrib/bench', { recursive: true });
+            fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
+
       - name: Checkout benchmark repo
         id: checkout_benchmark_repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -476,11 +497,12 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -532,11 +554,12 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -578,11 +601,12 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -624,11 +648,12 @@ jobs:
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
