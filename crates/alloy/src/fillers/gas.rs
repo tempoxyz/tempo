@@ -36,6 +36,9 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
     type Fillable = TempoGasFillable;
 
     fn status(&self, request: &TempoTransactionRequest) -> FillerControlFlow {
+        if !request.has_aa_fields() {
+            return <GasFiller as TxFiller<TempoNetwork>>::status(&self.inner, request);
+        }
         if request.gas_price().is_some() {
             return FillerControlFlow::Ready;
         }
@@ -60,7 +63,7 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
     where
         P: Provider<TempoNetwork>,
     {
-        if request.gas_price().is_some() {
+        if request.has_aa_fields() && request.gas_price().is_some() {
             return Err(RpcError::local_usage(
                 KeyAuthorizationError::LegacyGasPriceUnsupported,
             ));
@@ -236,16 +239,40 @@ mod tests {
     use alloy_provider::{ProviderBuilder, fillers::TxFiller};
     use alloy_rpc_types_eth::TransactionRequest;
     use tempo_primitives::{
-        SignatureType,
+        SignatureType, TempoTxType,
         transaction::{KeyAuthorization, PrimitiveSignature},
     };
 
     use super::*;
 
     #[test]
-    fn waits_for_the_endpoint_chain_and_sender_before_estimation() {
+    fn delegates_non_aa_status_to_the_inner_filler() {
         let filler = TempoGasFiller::default();
-        let mut request = TempoTransactionRequest::default();
+        for transaction_type in [TempoTxType::Legacy, TempoTxType::Eip2930] {
+            let request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    transaction_type: Some(transaction_type as u8),
+                    gas_price: Some(1),
+                    gas: Some(21_000),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            assert!(matches!(
+                filler.status(&request),
+                FillerControlFlow::Finished
+            ));
+        }
+    }
+
+    #[test]
+    fn waits_for_the_endpoint_chain_and_sender_before_aa_estimation() {
+        let filler = TempoGasFiller::default();
+        let mut request = TempoTransactionRequest {
+            key_type: Some(SignatureType::Secp256k1),
+            ..Default::default()
+        };
 
         assert!(matches!(
             filler.status(&request),
@@ -285,7 +312,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_legacy_gas_price_without_an_rpc() {
+    async fn accepts_legacy_gas_price_without_an_rpc() {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Default::default());
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                gas_price: Some(1),
+                gas: Some(21_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        TempoGasFiller::default()
+            .prepare(&provider, &request)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_aa_gas_price_without_an_rpc() {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_mocked_client(Default::default());
         let request = TempoTransactionRequest {
@@ -293,6 +339,7 @@ mod tests {
                 gas_price: Some(1),
                 ..Default::default()
             },
+            key_type: Some(SignatureType::Secp256k1),
             ..Default::default()
         };
 
