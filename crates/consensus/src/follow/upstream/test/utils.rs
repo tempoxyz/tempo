@@ -30,7 +30,7 @@ struct StubConnectorInner {
     endpoint: Url,
     client: StubClient,
     replacement_client: Mutex<Option<StubClient>>,
-    failures_remaining: AtomicUsize,
+    failures_remaining: Mutex<usize>,
     attempts: Mutex<Vec<u64>>,
 }
 
@@ -41,14 +41,14 @@ impl StubConnector {
                 endpoint: Url::parse("ws://upstream.test").expect("valid test URL"),
                 client,
                 replacement_client: Mutex::new(None),
-                failures_remaining: AtomicUsize::new(0),
+                failures_remaining: Mutex::new(0),
                 attempts: Mutex::new(Vec::new()),
             }),
         }
     }
 
     pub(super) fn fail_connections(&self, count: usize) {
-        self.inner.failures_remaining.store(count, Ordering::SeqCst);
+        *self.inner.failures_remaining.lock() = count;
     }
 
     pub(super) fn attempts(&self) -> Vec<u64> {
@@ -69,13 +69,12 @@ impl Connector for StubConnector {
             recorded_attempts.push(attempts);
             recorded_attempts.len()
         };
-        let fail = self
-            .inner
-            .failures_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok();
+        let fail = {
+            let mut failures_remaining = self.inner.failures_remaining.lock();
+            let fail = *failures_remaining > 0;
+            *failures_remaining = failures_remaining.saturating_sub(1);
+            fail
+        };
         let client = if connection_count > 1 {
             self.inner
                 .replacement_client
