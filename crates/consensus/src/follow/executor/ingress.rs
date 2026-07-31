@@ -22,10 +22,6 @@ impl Mailbox {
         Self { sender }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the driver in a later stack commit")
-    )]
     pub(crate) fn certified_tip(&self, round: Round, digest: Digest) {
         let _ = self.send(Message::CertifiedTip { round, digest });
     }
