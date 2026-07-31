@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     future::Future,
-    iter::repeat_with,
     num::NonZeroU64,
     sync::{
         Arc,
@@ -17,73 +16,28 @@ use commonware_codec::Encode as _;
 use commonware_consensus::{
     simplex::{
         scheme::bls12381_threshold::vrf::Scheme,
-        types::{Activity, Finalization, Finalize, Proposal},
+        types::{Activity, Finalization},
     },
-    types::{Epoch, Height, Round, View},
+    types::{Epoch, Height, Round},
 };
-use commonware_cryptography::{
-    Signer as _,
-    bls12381::{dkg::feldman_desmedt as dkg, primitives::variant::MinSig},
-    ed25519::{PrivateKey, PublicKey},
-};
-use commonware_math::algebra::Random as _;
-use commonware_parallel::Sequential;
-use commonware_utils::{N3f1, TryFromIterator as _, ordered};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use parking_lot::Mutex;
-use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use super::driver::{ExecutionProvider, Marshal};
-use crate::consensus::{Block, Digest};
+use crate::{
+    consensus::{Block, Digest},
+    test_utils::make_certificate,
+};
+
+pub(crate) use crate::test_utils::dkg_fixture;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
 pub(crate) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
-
-pub(crate) struct DkgFixture {
-    pub(crate) outcome: OnchainDkgOutcome,
-    pub(crate) schemes: Vec<Scheme<PublicKey, MinSig>>,
-}
-
-pub(crate) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture {
-    let player_keys = repeat_with(|| PrivateKey::random(&mut *rng))
-        .take(4)
-        .collect::<Vec<_>>();
-    let players = ordered::Set::try_from_iter(
-        player_keys
-            .iter()
-            .map(|private_key| private_key.public_key()),
-    )
-    .expect("test players should be unique");
-
-    let (output, shares) =
-        dkg::deal::<_, _, N3f1>(&mut *rng, Default::default(), players).expect("test DKG");
-
-    let schemes = shares
-        .into_iter()
-        .map(|(_, share)| {
-            Scheme::signer(
-                crate::config::NAMESPACE,
-                output.players().clone(),
-                output.public().clone(),
-                share,
-            )
-            .expect("test share should match the public polynomial")
-        })
-        .collect();
-
-    let outcome = OnchainDkgOutcome {
-        epoch,
-        next_players: output.players().clone(),
-        output,
-        is_next_full_dkg: false,
-    };
-
-    DkgFixture { outcome, schemes }
-}
 
 pub(crate) fn make_block(height: u64, outcome: Option<&OnchainDkgOutcome>) -> Block {
     make_block_with_parent(height, Default::default(), outcome)
@@ -125,18 +79,7 @@ pub(crate) fn make_finalization(
     epoch: Epoch,
     schemes: &[Scheme<PublicKey, MinSig>],
 ) -> Finalization<Scheme<PublicKey, MinSig>, Digest> {
-    let proposal = Proposal::new(
-        Round::new(epoch, View::new(block.number())),
-        View::zero(),
-        block.digest(),
-    );
-    let votes = schemes
-        .iter()
-        .map(|scheme| Finalize::sign(scheme, proposal.clone()).expect("signer should sign"))
-        .collect::<Vec<_>>();
-
-    Finalization::from_finalizes(&schemes[0], &votes, &Sequential)
-        .expect("all test signers form a quorum")
+    make_certificate(block.digest(), epoch, block.number(), schemes)
 }
 
 pub(crate) fn make_certified_block(
