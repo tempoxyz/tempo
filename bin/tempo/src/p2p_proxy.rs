@@ -473,9 +473,6 @@ async fn run_p2p_network(
             IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
-            // Snap sync is not supported by the proxy; drop the response sender to signal
-            // that the request could not be served.
-            IncomingEthRequest::GetSnap { .. } => {}
         }
     }
 
