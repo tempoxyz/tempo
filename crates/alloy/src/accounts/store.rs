@@ -3245,9 +3245,11 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::{
+        env,
+        process::{Child, Command},
         sync::mpsc,
         thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use alloy_network::{NetworkWallet, TransactionBuilder};
@@ -3259,6 +3261,22 @@ mod tests {
 
     const ROOT: &str = "0x1111111111111111111111111111111111111111";
     const TARGET: &str = "0x2222222222222222222222222222222222222222";
+    const PROCESS_STORE_PATH_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_STORE_PATH";
+    const PROCESS_STARTED_PATH_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_STARTED_PATH";
+    const PROCESS_OPERATION_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_OPERATION";
+    const PROCESS_SIGNER_BYTE_ENV: &str = "TEMPO_ACCOUNTS_PROCESS_TEST_SIGNER_BYTE";
+
+    struct StoreMutationProcess {
+        child: Child,
+        started_path: PathBuf,
+    }
+
+    impl Drop for StoreMutationProcess {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 
     #[test]
     fn stale_observation_cannot_release_a_new_reservation_generation() {
@@ -3347,6 +3365,108 @@ mod tests {
         );
         assert!(directory.join("wallet/store.json.lock").is_file());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn serializes_retirements_across_processes() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        let account = ROOT.parse::<Address>().unwrap();
+        let store = TempoAccountsStore::at(path.clone());
+        let signers = [test_process_signer(2), test_process_signer(3)];
+
+        for signer in &signers {
+            store
+                .upsert_secp256k1_access_key(account, signer, &test_process_authorization(signer))
+                .unwrap();
+        }
+
+        let held_lock = lock_store(&path).unwrap();
+        let mut children = [
+            spawn_store_mutation_process(&directory, &path, "retire-a", "retire", 2),
+            spawn_store_mutation_process(&directory, &path, "retire-b", "retire", 3),
+        ];
+        wait_for_store_mutation_processes_to_block(&mut children);
+        drop(held_lock);
+        wait_for_store_mutation_processes_to_succeed(&mut children);
+
+        let keys = store.access_keys().unwrap();
+        for signer in &signers {
+            let key = keys
+                .iter()
+                .find(|key| key.address() == signer.address())
+                .unwrap();
+            assert!(!key.is_locally_signable());
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn serializes_retirement_and_upsert_across_processes() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        let account = ROOT.parse::<Address>().unwrap();
+        let store = TempoAccountsStore::at(path.clone());
+        let retired_signer = test_process_signer(4);
+        let inserted_signer = test_process_signer(5);
+        store
+            .upsert_secp256k1_access_key(
+                account,
+                &retired_signer,
+                &test_process_authorization(&retired_signer),
+            )
+            .unwrap();
+
+        let held_lock = lock_store(&path).unwrap();
+        let mut children = [
+            spawn_store_mutation_process(&directory, &path, "retire", "retire", 4),
+            spawn_store_mutation_process(&directory, &path, "upsert", "upsert", 5),
+        ];
+        wait_for_store_mutation_processes_to_block(&mut children);
+        drop(held_lock);
+        wait_for_store_mutation_processes_to_succeed(&mut children);
+
+        let keys = store.access_keys().unwrap();
+        let retired = keys
+            .iter()
+            .find(|key| key.address() == retired_signer.address())
+            .unwrap();
+        let inserted = keys
+            .iter()
+            .find(|key| key.address() == inserted_signer.address())
+            .unwrap();
+        assert!(!retired.is_locally_signable());
+        assert!(inserted.is_locally_signable());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn store_mutation_process_helper() {
+        let Some(path) = env::var_os(PROCESS_STORE_PATH_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let started_path = PathBuf::from(env::var_os(PROCESS_STARTED_PATH_ENV).unwrap());
+        let operation = env::var(PROCESS_OPERATION_ENV).unwrap();
+        let signer_byte = env::var(PROCESS_SIGNER_BYTE_ENV)
+            .unwrap()
+            .parse::<u8>()
+            .unwrap();
+        let signer = test_process_signer(signer_byte);
+        let account = ROOT.parse::<Address>().unwrap();
+        fs::write(started_path, b"started").unwrap();
+
+        let store = TempoAccountsStore::at(path);
+        match operation.as_str() {
+            "retire" => assert!(
+                store
+                    .retire_access_key(account, 4217, signer.address())
+                    .unwrap()
+            ),
+            "upsert" => store
+                .upsert_secp256k1_access_key(account, &signer, &test_process_authorization(&signer))
+                .unwrap(),
+            _ => panic!("unknown process store mutation {operation}"),
+        }
     }
 
     #[test]
@@ -4678,6 +4798,78 @@ mod tests {
             "keyType": "p256",
             "privateKey": private_key,
         })
+    }
+
+    fn test_process_signer(byte: u8) -> PrivateKeySigner {
+        PrivateKeySigner::from_slice(&[byte; 32]).unwrap()
+    }
+
+    fn test_process_authorization(signer: &PrivateKeySigner) -> SignedKeyAuthorization {
+        KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+            .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+    }
+
+    fn spawn_store_mutation_process(
+        directory: &Path,
+        store_path: &Path,
+        name: &str,
+        operation: &str,
+        signer_byte: u8,
+    ) -> StoreMutationProcess {
+        let started_path = directory.join(format!("{name}.started"));
+        let child = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "accounts::store::tests::store_mutation_process_helper",
+            ])
+            .env(PROCESS_STORE_PATH_ENV, store_path)
+            .env(PROCESS_STARTED_PATH_ENV, &started_path)
+            .env(PROCESS_OPERATION_ENV, operation)
+            .env(PROCESS_SIGNER_BYTE_ENV, signer_byte.to_string())
+            .spawn()
+            .unwrap();
+        StoreMutationProcess {
+            child,
+            started_path,
+        }
+    }
+
+    fn wait_for_store_mutation_processes_to_block(children: &mut [StoreMutationProcess]) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for process in children.iter_mut() {
+            while !process.started_path.is_file() {
+                assert!(
+                    process.child.try_wait().unwrap().is_none(),
+                    "store mutation exited before starting"
+                );
+                assert!(Instant::now() < deadline, "store mutation did not start");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+        for process in children {
+            assert!(
+                process.child.try_wait().unwrap().is_none(),
+                "store mutation did not block on the lock"
+            );
+        }
+    }
+
+    fn wait_for_store_mutation_processes_to_succeed(children: &mut [StoreMutationProcess]) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for process in children {
+            loop {
+                if let Some(status) = process.child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "store mutation did not finish after the lock was released"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 
     fn write_store(access_keys: serde_json::Value) -> PathBuf {
