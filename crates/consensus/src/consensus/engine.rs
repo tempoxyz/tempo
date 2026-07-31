@@ -145,7 +145,7 @@ where
             actor: marshal,
             mailbox: marshal_mailbox,
             finalized_floor,
-            finalized_tip,
+            startup_tip,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -171,7 +171,7 @@ where
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
-                finalized_tip,
+                finalized_tip: startup_tip.point(),
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -186,7 +186,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_floor,
-                finalized_tip,
+                finalized_tip: startup_tip.point(),
             },
         );
 
