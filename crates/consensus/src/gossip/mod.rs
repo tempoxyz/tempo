@@ -6,12 +6,6 @@
 //! The driver owns the epoch schemes, so only the driver can verify a
 //! certificate.
 
-#![allow(
-    dead_code,
-    unused_imports,
-    reason = "production wiring is added by the following stack layer"
-)]
-
 use std::future::Future;
 
 mod actor;
@@ -20,7 +14,7 @@ mod metrics;
 #[cfg(test)]
 mod test;
 
-pub(crate) use actor::{Actor, Config, init};
+pub(crate) use actor::{Actor, Config as ActorConfig, init};
 #[cfg(test)]
 pub(crate) use ingress::Message;
 pub(crate) use ingress::{Mailbox, channel};
@@ -33,6 +27,16 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 use tokio::sync::oneshot;
 
 use crate::consensus::Digest;
+
+/// Transport and policy settings for certificate gossip.
+pub struct Config {
+    /// The consensus layer's end of the `tempo/1` transport.
+    pub transport: tempo_node::gossip::TransportHandle,
+    /// Maximum driver judgements per second across all peers.
+    pub verify_rate: u32,
+    /// Frames remembered as already settled or published.
+    pub recent_frames: usize,
+}
 
 /// A finalization certificate as it travels over `tempo/1`.
 pub(crate) type Certificate = Finalization<Scheme<PublicKey, MinSig>, Digest>;
