@@ -4,11 +4,7 @@ use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
-use futures::{
-    FutureExt as _, StreamExt as _,
-    future::{BoxFuture, Either},
-    stream::{self, FusedStream},
-};
+use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use jsonrpsee::{
     core::client::{ClientT as _, Subscription},
     rpc_params,
@@ -31,9 +27,7 @@ use crate::{
     utils::OptionFuture,
 };
 
-use super::{ActiveEventStream, Connector, UpstreamClient};
-
-pub(super) type EventStream = Either<stream::Empty<eyre::Result<Event>>, ActiveEventStream>;
+use super::{Connector, EventStream, UpstreamClient};
 
 const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
@@ -63,8 +57,8 @@ where
     pub(super) mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     pub(super) pending_connect:
         OptionFuture<BoxFuture<'static, (u64, eyre::Result<TConnector::Client>)>>,
-    pub(super) pending_stream: OptionFuture<BoxFuture<'static, eyre::Result<ActiveEventStream>>>,
-    pub(super) event_stream: EventStream,
+    pub(super) pending_stream: OptionFuture<BoxFuture<'static, eyre::Result<EventStream>>>,
+    pub(super) event_stream: Option<EventStream>,
     pub(super) reconnect_jitter: fn() -> Duration,
     /// Requests waiting for the actor to establish a connection.
     pub(super) waiters: Vec<super::ingress::Message>,
@@ -86,7 +80,7 @@ where
         mailbox: rx,
         pending_connect: OptionFuture::none(),
         pending_stream: OptionFuture::none(),
-        event_stream: inactive_event_stream(),
+        event_stream: None,
         reconnect_jitter,
         waiters: Vec::new(),
     };
@@ -120,7 +114,7 @@ where
                             self.connection.replace(client);
                         }
                         Err(reason) => {
-                            let reconnect_in = reconnect_delay(attempts, self.reconnect_jitter);
+                            let reconnect_in = reconnect_backoff(attempts) + (self.reconnect_jitter)();
                             warn_span!("reconnect").in_scope(|| warn!(
                                 %reason,
                                 attempts,
@@ -145,7 +139,7 @@ where
                         Ok(stream) => {
                         debug_span!("consensus_event_subscription")
                             .in_scope(|| debug!("subscription for consensus events established"));
-                            self.event_stream = active_event_stream(stream);
+                            self.event_stream = Some(stream);
                         }
                         Err(error) => {
                             warn_span!("event_subscription").in_scope(|| warn!(
@@ -153,12 +147,12 @@ where
                                 "failed subscribing to events; reconnecting to upstream node"
                             ));
                             self.connection.take();
-                            self.event_stream = inactive_event_stream();
+                            self.event_stream = None;
                         }
                     }
                 }
 
-                event = self.event_stream.next(), if !self.event_stream.is_terminated() => {
+                event = next_event(&mut self.event_stream) => {
                     match event {
                         Some(Ok(event)) => {
                             debug_span!("consensus_event").in_scope(|| debug!(
@@ -171,14 +165,14 @@ where
                                 %error,
                                 "event stream encountered an error",
                             ));
-                            self.event_stream = inactive_event_stream();
+                            self.event_stream = None;
                         }
                         None => {
                             warn_span!("event_subscription").in_scope(|| warn!(
                                 url = %self.connector.endpoint(),
                                 "event stream terminated",
                             ));
-                            self.event_stream = inactive_event_stream();
+                            self.event_stream = None;
                         }
                     }
                 }
@@ -204,7 +198,7 @@ where
             return;
         };
 
-        if !self.event_stream.is_terminated() {
+        if self.event_stream.is_some() {
             return;
         }
 
@@ -223,7 +217,7 @@ where
     fn drain_waiters(&mut self) {
         if self.pending_connect.is_some()
             || self.pending_stream.is_some()
-            || self.event_stream.is_terminated()
+            || self.event_stream.is_none()
         {
             return;
         }
@@ -254,16 +248,11 @@ where
     }
 }
 
-pub(super) fn inactive_event_stream() -> EventStream {
-    Either::Left(stream::empty())
-}
-
-fn active_event_stream(stream: ActiveEventStream) -> EventStream {
-    Either::Right(stream)
-}
-
-fn reconnect_delay(attempts: u64, jitter: fn() -> Duration) -> Duration {
-    reconnect_backoff(attempts) + jitter()
+async fn next_event(stream: &mut Option<EventStream>) -> Option<eyre::Result<Event>> {
+    match stream {
+        Some(stream) => stream.next().await,
+        None => std::future::pending().await,
+    }
 }
 
 pub(super) fn reconnect_backoff(attempts: u64) -> Duration {
@@ -321,15 +310,12 @@ impl UpstreamClient for Arc<WsClient> {
         WsClient::is_connected(self)
     }
 
-    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<ActiveEventStream>> {
+    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>> {
         let client = self.clone();
         async move {
             let stream: Subscription<Event> =
                 TempoConsensusApiClient::subscribe_events(client.as_ref()).await?;
-            Ok(stream
-                .map(|event| event.map_err(Report::new))
-                .boxed()
-                .fuse())
+            Ok(stream.map(|event| event.map_err(Report::new)).boxed())
         }
         .boxed()
     }

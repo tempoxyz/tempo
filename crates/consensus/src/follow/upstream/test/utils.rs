@@ -13,12 +13,12 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::sync::oneshot;
 use url::Url;
 
-use super::super::{ActiveEventStream, Connector, UpstreamClient};
+use super::super::{Connector, EventStream, UpstreamClient};
 use crate::consensus::{Block, Digest};
 
 struct SubscriptionPlan {
     gate: Option<oneshot::Receiver<()>>,
-    result: eyre::Result<ActiveEventStream>,
+    result: eyre::Result<EventStream>,
 }
 
 #[derive(Clone)]
@@ -127,7 +127,7 @@ impl StubClient {
             .lock()
             .push_back(SubscriptionPlan {
                 gate: None,
-                result: Ok(stream::pending().boxed().fuse()),
+                result: Ok(stream::pending().boxed()),
             });
     }
 
@@ -139,8 +139,7 @@ impl StubClient {
                 gate: None,
                 result: Ok(stream::once(async move { Ok(event) })
                     .chain(stream::pending())
-                    .boxed()
-                    .fuse()),
+                    .boxed()),
             });
     }
 
@@ -150,7 +149,7 @@ impl StubClient {
             .lock()
             .push_back(SubscriptionPlan {
                 gate: None,
-                result: Ok(stream::empty().boxed().fuse()),
+                result: Ok(stream::empty().boxed()),
             });
     }
 
@@ -165,8 +164,7 @@ impl StubClient {
                     let _ = gate.expect("gate is present on first poll").await;
                     None::<(eyre::Result<Event>, Option<oneshot::Receiver<()>>)>
                 })
-                .boxed()
-                .fuse()),
+                .boxed()),
             });
         release
     }
@@ -180,8 +178,7 @@ impl StubClient {
                 result: Ok(stream::once(async {
                     Err::<Event, _>(eyre::eyre!("event stream failed"))
                 })
-                .boxed()
-                .fuse()),
+                .boxed()),
             });
     }
 
@@ -192,7 +189,7 @@ impl StubClient {
             .lock()
             .push_back(SubscriptionPlan {
                 gate: Some(gate),
-                result: Ok(stream::pending().boxed().fuse()),
+                result: Ok(stream::pending().boxed()),
             });
         release
     }
@@ -221,7 +218,7 @@ impl UpstreamClient for StubClient {
         self.inner.connected.load(Ordering::SeqCst)
     }
 
-    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<ActiveEventStream>> {
+    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>> {
         self.inner.subscriptions.fetch_add(1, Ordering::SeqCst);
         let plan = self.inner.subscription_plans.lock().pop_front();
         async move {

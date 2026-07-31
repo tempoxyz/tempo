@@ -7,10 +7,7 @@ use alloy_rpc_client::BuiltInConnectionString;
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, Metrics, Spawner};
 use eyre::WrapErr as _;
-use futures::{
-    future::BoxFuture,
-    stream::{BoxStream, Fuse},
-};
+use futures::{future::BoxFuture, stream::BoxStream};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use url::Url;
 
@@ -26,7 +23,7 @@ mod test;
 pub(crate) use actor::Actor;
 pub use ingress::Mailbox;
 
-pub(crate) type ActiveEventStream = Fuse<BoxStream<'static, eyre::Result<Event>>>;
+pub(crate) type EventStream = BoxStream<'static, eyre::Result<Event>>;
 
 pub(crate) trait Connector: Clone + Send + Sync + 'static {
     type Client: UpstreamClient;
@@ -39,7 +36,7 @@ pub(crate) trait Connector: Clone + Send + Sync + 'static {
 pub(crate) trait UpstreamClient: Clone + Send + Sync + 'static {
     fn is_connected(&self) -> bool;
 
-    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<ActiveEventStream>>;
+    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>>;
 
     fn get_finalization(
         &self,
