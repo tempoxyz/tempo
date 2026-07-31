@@ -24,21 +24,17 @@ use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
-use super::{Config, ExecutionEngine, FinalizedBlockProvider, Marshal};
+use super::{
+    Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message, target::Target,
+};
 use crate::{
     consensus::{Digest, block::Block},
     utils::OptionFuture,
 };
 
-#[derive(Clone, Copy, Debug)]
-struct FinalizedTip {
-    height: Height,
-    digest: Digest,
-}
-
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
-    mailbox: mpsc::UnboundedReceiver<Update<Block>>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 
     execution_provider: P,
     execution_engine: E,
@@ -47,8 +43,8 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     epoch_strategy: FixedEpocher,
     floor: Height,
 
-    last_fcu: FinalizedTip,
-    latest_tip: FinalizedTip,
+    last_fcu: Target,
+    latest_tip: Target,
 
     block_queue: VecDeque<(Block, Exact)>,
     floor_candidate: Option<Height>,
@@ -69,7 +65,7 @@ where
     pub(super) fn new(
         context: TContext,
         config: Config<P, E, M>,
-        mailbox: mpsc::UnboundedReceiver<Update<Block>>,
+        mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
         let Config {
             execution_provider,
@@ -77,18 +73,16 @@ where
             marshal,
             epoch_strategy,
             floor,
+            startup_tip,
             fcu_heartbeat_interval,
         } = config;
 
         let tip = execution_provider
             .finalized_block_num_hash()
             .expect("failed reading finalized execution tip");
-        let tip = FinalizedTip {
-            height: Height::new(tip.number),
-            digest: Digest(tip.hash),
-        };
+        let tip = Target::from_execution(Height::new(tip.number), Digest(tip.hash));
 
-        Self {
+        let mut actor = Self {
             context: ContextCell::new(context),
 
             mailbox,
@@ -106,7 +100,13 @@ where
 
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
-        }
+        };
+
+        // Store the startup round before marshal sends the same tip. This lets
+        // the actor order certificates received during that gap. Genesis has
+        // no round, so this call changes nothing there.
+        actor.observe(startup_tip.into());
+        actor
     }
 
     pub(crate) fn start(mut self) -> Handle<()> {
@@ -140,21 +140,22 @@ where
                     }
                 }
 
-                Some(update) = self.mailbox.next() => {
-                    match update {
-                        Update::Block(block, ack) => {
+                Some(message) = self.mailbox.next() => {
+                    match message {
+                        Message::Update(Update::Block(block, ack)) => {
                             self.block_queue.push_back(((*block).clone(), ack));
                         }
 
                         // Finalization certificates for Tip updates must be available
                         // making them a good candidates for setting marshal's floor.
-                        Update::Tip(_, height, digest) => {
+                        Message::Update(Update::Tip(round, height, digest)) => {
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            if height > self.latest_tip.height {
-                                self.latest_tip = FinalizedTip { height, digest };
-                            }
+                            self.observe(Target::finalized(round, height, digest));
+                        }
+                        Message::CertifiedTip { round, digest } => {
+                            self.observe(Target::certified(round, digest));
                         }
                     }
                 }
@@ -164,6 +165,51 @@ where
                 }
             }
         }
+    }
+
+    fn observe(&mut self, candidate: Target) {
+        if self.is_newer_target(candidate, self.latest_tip) {
+            self.latest_tip = candidate;
+        } else if candidate.digest == self.latest_tip.digest {
+            self.latest_tip.height = self.latest_tip.height.or(candidate.height);
+            self.latest_tip.round = self.latest_tip.round.or(candidate.round);
+        }
+
+        if candidate.digest == self.last_fcu.digest {
+            self.last_fcu.height = self.last_fcu.height.or(candidate.height);
+            self.last_fcu.round = self.last_fcu.round.or(candidate.round);
+        }
+    }
+
+    fn should_send_forkchoice(&self) -> bool {
+        self.latest_tip.digest != self.last_fcu.digest
+            && !self.is_newer_target(self.last_fcu, self.latest_tip)
+    }
+
+    fn is_newer_target(&self, candidate: Target, current: Target) -> bool {
+        candidate.supersedes(&current) || self.is_certificate_from_later_epoch(candidate, current)
+    }
+
+    /// A certified target has a round but no height. An execution target has a
+    /// height but no round. We can safely compare them when their epochs differ.
+    /// A certificate from a later epoch lets a restarted follower resume P2P sync.
+    fn is_certificate_from_later_epoch(&self, candidate: Target, current: Target) -> bool {
+        let (Some(candidate_round), None, None, Some(current_height)) = (
+            candidate.round,
+            candidate.height,
+            current.round,
+            current.height,
+        ) else {
+            return false;
+        };
+
+        let current_epoch = self
+            .epoch_strategy
+            .containing(current_height)
+            .expect("strategy is valid for all heights and epochs")
+            .epoch();
+
+        candidate_round.epoch() > current_epoch
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
@@ -184,7 +230,7 @@ where
 
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
             ExecutionRequest::Block(block, ack)
-        } else if self.latest_tip.height > self.last_fcu.height || heartbeat {
+        } else if self.should_send_forkchoice() || heartbeat {
             ExecutionRequest::Forkchoice(self.latest_tip)
         } else {
             return;
@@ -244,19 +290,19 @@ where
 }
 
 enum ExecutionRequest {
-    Forkchoice(FinalizedTip),
+    Forkchoice(Target),
     Block(Block, Exact),
 }
 
 enum ExecutionTaskResult {
-    Completed(FinalizedTip),
+    Completed(Target),
     Fatal(Report),
 }
 
 async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
-    last_fcu: FinalizedTip,
+    last_fcu: Target,
     request: ExecutionRequest,
 ) -> ExecutionTaskResult {
     match request {
@@ -267,16 +313,13 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
             }
         }
         ExecutionRequest::Block(block, ack) => {
-            let tip = FinalizedTip {
-                height: block.height(),
-                digest: block.digest(),
-            };
+            let tip = Target::from_execution(block.height(), block.digest());
 
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
 
-            let last_fcu = if tip.height > last_fcu.height {
+            let last_fcu = if tip.supersedes(&last_fcu) {
                 if let Err(error) =
                     submit_forkchoice_update(&context, &execution_engine, &tip).await
                 {
@@ -324,11 +367,11 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     Ok(())
 }
 
-#[instrument(skip_all, fields(height = %tip.height, digest = %tip.digest))]
+#[instrument(skip_all, fields(height = ?tip.height, digest = %tip.digest))]
 async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
-    tip: &FinalizedTip,
+    tip: &Target,
 ) -> eyre::Result<()> {
     let hash = tip.digest.0;
     let forkchoice = ForkchoiceState {

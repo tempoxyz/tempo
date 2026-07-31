@@ -110,7 +110,7 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            startup_tip: _,
+            startup_tip,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,
@@ -163,6 +163,7 @@ impl<TUpstream> Config<TUpstream> {
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 floor: last_finalized_height,
+                startup_tip,
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
             },
         );
