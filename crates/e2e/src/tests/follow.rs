@@ -1,9 +1,15 @@
 //! Tests for follow mode.
 //!
-//! These tests verify that a follower node can sync blocks from an upstream
-//! node (validator or another follower) using in-process direct access.
+//! These tests verify follower block sync from an upstream node (validator or
+//! another follower) using in-process direct access. They also verify
+//! certificate admission through an in-process `tempo/1` transport.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crate::{
     Setup, TestingNode, connect_execution_peers,
@@ -137,6 +143,7 @@ struct FollowerBuilder {
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
+    gossip: bool,
 }
 
 impl FollowerBuilder {
@@ -147,6 +154,14 @@ impl FollowerBuilder {
     fn runtime(self, runtime: ExecutionRuntimeHandle) -> Self {
         Self {
             runtime: Some(runtime),
+            ..self
+        }
+    }
+
+    /// Enables `tempo/1` ingest through the in-process test transport.
+    fn with_gossip(self) -> Self {
+        Self {
+            gossip: true,
             ..self
         }
     }
@@ -187,6 +202,7 @@ impl FollowerBuilder {
             partition_prefix,
             runtime,
             donor,
+            gossip,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -261,10 +277,57 @@ impl FollowerBuilder {
             finalized_blocks_retention: 1024,
         };
 
+        // Build both transport halves in process. The engine owns the receivers,
+        // while the test keeps the senders to act as the network transport.
+        let gossip = gossip.then(|| {
+            let (control, control_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (frames, frames_rx) = tokio::sync::mpsc::channel(64);
+            let routes = Arc::new(Mutex::new(HashMap::<
+                alloy_primitives::B512,
+                tokio::sync::mpsc::Sender<alloy_primitives::Bytes>,
+            >::new()));
+            let sender = tempo_node::gossip::TransportSender::new({
+                let routes = Arc::clone(&routes);
+                move |peer, frame| {
+                    let Some(outbound) = routes
+                        .lock()
+                        .expect("gossip route mutex poisoned")
+                        .get(&peer)
+                        .cloned()
+                    else {
+                        return Err(tokio::sync::mpsc::error::TrySendError::Closed(frame));
+                    };
+                    outbound.try_send(frame)
+                }
+            });
+            let transport = tempo_node::gossip::TransportHandle {
+                control: control_rx,
+                frames: frames_rx,
+                sender,
+            };
+            (
+                tempo_consensus::gossip::Config {
+                    transport,
+                    verify_rate: 64,
+                    recent_frames: 64,
+                    relay: true,
+                },
+                GossipHandles {
+                    control,
+                    frames,
+                    routes,
+                },
+            )
+        });
+        let (gossip_config, gossip_handles) = match gossip {
+            Some((config, handles)) => (Some(config), Some(handles)),
+            None => (None, None),
+        };
+
         let handle = config
             .try_init(
                 context.child(Box::leak(name.clone().into_boxed_str())),
-                None,
+                gossip_config,
             )
             .await
             .expect("failed to initialize follow engine")
@@ -274,15 +337,26 @@ impl FollowerBuilder {
             name,
             feed: feed_state,
             execution_node: node,
+            gossip: gossip_handles,
             _handle: handle,
         }
     }
+}
+
+/// Test inputs for the consensus side of a `tempo/1` transport.
+struct GossipHandles {
+    control: tokio::sync::mpsc::UnboundedSender<tempo_node::gossip::PeerEvent>,
+    frames: tokio::sync::mpsc::Sender<tempo_node::gossip::Frame>,
+    routes: Arc<
+        Mutex<HashMap<alloy_primitives::B512, tokio::sync::mpsc::Sender<alloy_primitives::Bytes>>>,
+    >,
 }
 
 struct Follower {
     name: String,
     feed: FeedStateHandle,
     execution_node: ExecutionNode,
+    gossip: Option<GossipHandles>,
     _handle: Handle<eyre::Result<()>>,
 }
 
@@ -304,6 +378,107 @@ impl MetricScope for Follower {
     fn metric_prefix(&self) -> String {
         self.name.clone()
     }
+}
+
+/// Sends a validator certificate through the consensus transport channels and
+/// follower driver.
+///
+/// Admission confirms that the driver verified the certificate and reported it
+/// to marshal and the executor. The test connects execution peers afterward, so
+/// it does not prove that gossip alone can download the block when the upstream
+/// is unavailable.
+#[test_traced]
+fn gossiped_certificate_is_verified_and_applied_by_a_follower() {
+    let _ = tempo_eyre::install();
+
+    let target_height = 12;
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        wait_for_height(&context, &validators[0], target_height).await;
+
+        // Start without execution peers to keep certificate admission separate
+        // from peer block download.
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .with_gossip()
+            .follow(&mut context, &validators[0])
+            .await;
+
+        let gossip = follower.gossip.as_ref().expect("gossip is enabled");
+        let peer = alloy_primitives::B512::with_last_byte(1);
+        let (outbound, mut relayed) = tokio::sync::mpsc::channel(8);
+        gossip
+            .routes
+            .lock()
+            .expect("gossip route mutex poisoned")
+            .insert(peer, outbound);
+        gossip
+            .control
+            .send(tempo_node::gossip::PeerEvent::Up(peer))
+            .expect("actor is running");
+
+        // Use a certificate produced by the validator so the driver can verify it.
+        let certified = loop {
+            if let Response::Success(certified) = validators[0]
+                .feed_state()
+                .get_finalization(Query::Latest)
+                .await
+            {
+                break certified;
+            }
+            context.sleep(Duration::from_millis(10)).await;
+        };
+        let frame: alloy_primitives::Bytes = tempo_node::gossip::wire::encode(
+            &alloy_primitives::hex::decode(&certified.certificate)
+                .expect("the feed encodes valid hex"),
+        )
+        .freeze()
+        .into();
+
+        gossip
+            .frames
+            .send(tempo_node::gossip::Frame { peer, frame })
+            .await
+            .expect("actor is running");
+
+        let mut admitted = 0;
+        for _ in 0..200 {
+            admitted = context
+                .to_metrics()
+                .value::<u64>("gossip_admitted_total")
+                .unwrap_or(0);
+            if admitted > 0 {
+                break;
+            }
+            context.sleep(Duration::from_millis(10)).await;
+        }
+
+        let metrics = context.to_metrics();
+        assert_eq!(
+            admitted,
+            1,
+            "a certificate the validator produced must verify; gossip metrics: {:?}",
+            metrics.matching("gossip"),
+        );
+        assert_eq!(metrics.value::<u64>("gossip_invalid_total").unwrap_or(0), 0,);
+        assert_eq!(
+            metrics.value::<u64>("gossip_penalties_total").unwrap_or(0),
+            0,
+            "an honest peer must not be penalized",
+        );
+
+        // Nothing is relayed back to whoever supplied it.
+        assert!(relayed.try_recv().is_err());
+
+        // With peers, the follower goes on to converge normally.
+        follower.connect_peers(&validators).await;
+        wait_for_height(&context, &follower, target_height).await;
+    });
 }
 
 #[test_traced]
