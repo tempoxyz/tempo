@@ -30,6 +30,7 @@ use crate::consensus::Digest;
 
 mod actor;
 mod ingress;
+mod target;
 
 #[cfg(test)]
 mod test;
@@ -43,6 +44,8 @@ pub(crate) struct Config<P, E, M = crate::alias::marshal::Mailbox> {
     pub(crate) marshal: M,
     pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) floor: Height,
+    /// The actor uses this tip to order certificates received before marshal reports one.
+    pub(crate) startup_tip: crate::alias::marshal::StartupTip,
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 

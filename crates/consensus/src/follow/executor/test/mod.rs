@@ -8,7 +8,7 @@ use alloy_primitives::B256;
 use commonware_consensus::{
     Reporter as _,
     marshal::Update,
-    types::{FixedEpocher, Height, Round},
+    types::{Epoch, FixedEpocher, Height, Round, View},
 };
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
@@ -34,6 +34,22 @@ async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl Fn
     assert!(cond(), "condition was not met before the test deadline");
 }
 
+fn genesis_tip() -> crate::alias::marshal::StartupTip {
+    crate::alias::marshal::StartupTip {
+        round: None,
+        height: Height::zero(),
+        digest: Digest(B256::ZERO),
+    }
+}
+
+fn round(view: u64) -> Round {
+    Round::new(Epoch::zero(), View::new(view))
+}
+
+fn epoch_round(epoch: u64, view: u64) -> Round {
+    Round::new(Epoch::new(epoch), View::new(view))
+}
+
 #[test_traced]
 fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candidate() {
     deterministic::Runner::default().start(|context| async move {
@@ -54,6 +70,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -105,6 +122,7 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -163,6 +181,7 @@ fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -196,6 +215,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -238,6 +258,7 @@ fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -272,6 +293,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -305,6 +327,7 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -351,6 +374,281 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
     });
 }
 
+// A certified tip has no height until execution fetches its block. The executor
+// orders it by round and updates forkchoice at once. These tests cover normal
+// use, startup before marshal reports the tip, and startup at genesis.
+#[test_traced]
+fn certified_tip_drives_forkchoice_by_round() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: genesis_tip(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let first = Digest(B256::with_last_byte(1));
+        let _ = mailbox.report(Update::Tip(round(1), Height::new(1), first));
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        let certified = Digest(B256::with_last_byte(9));
+        mailbox.certified_tip(round(2), certified);
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+
+        let _ = mailbox.report(Update::Tip(
+            round(1),
+            Height::new(2),
+            Digest(B256::with_last_byte(2)),
+        ));
+        context.sleep(Duration::from_millis(5)).await;
+
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 2);
+        assert_eq!(forkchoices[1].head_block_hash, certified.0);
+        assert_eq!(forkchoices[1].safe_block_hash, certified.0);
+        assert_eq!(forkchoices[1].finalized_block_hash, certified.0);
+    });
+}
+
+/// Marshal reports a tip before its block. An older certificate received while
+/// the block FCU is in flight must not become the next forkchoice target.
+#[test_traced]
+fn delayed_certificate_does_not_regress_newer_block_forkchoice() {
+    deterministic::Runner::default().start(|context| async move {
+        let current = Digest(B256::with_last_byte(10));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(100, current.0);
+        let release_first_forkchoice = provider.pause_next_forkchoice();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(round(10)),
+                    height: Height::new(100),
+                    digest: current,
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let first = Digest(B256::with_last_byte(11));
+        let _ = mailbox.report(Update::Tip(round(11), Height::new(101), first));
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        let block = make_block(102, first.0);
+        let newest = Digest(block.block_hash());
+        let _ = mailbox.report(Update::Tip(round(13), Height::new(102), newest));
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(block.into(), ack));
+        context.sleep(Duration::from_millis(1)).await;
+
+        release_first_forkchoice
+            .send(())
+            .expect("the first FCU should still be waiting");
+        let release_block_forkchoice = provider.pause_next_forkchoice();
+        wait_until(&context, || {
+            provider.payload_count() == 1 && provider.forkchoices().len() == 2
+        })
+        .await;
+
+        let delayed = Digest(B256::with_last_byte(12));
+        mailbox.certified_tip(round(12), delayed);
+        context.sleep(Duration::from_millis(1)).await;
+
+        release_block_forkchoice
+            .send(())
+            .expect("the block FCU should still be waiting");
+        waiter.await.expect("valid payload should be acknowledged");
+        context.sleep(Duration::from_millis(1)).await;
+
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 2);
+        assert_eq!(forkchoices[0].head_block_hash, first.0);
+        assert_eq!(forkchoices[1].head_block_hash, newest.0);
+    });
+}
+
+#[test_traced]
+fn round_bearing_startup_tip_orders_certificate_immediately() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(100, B256::with_last_byte(100));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(round(7)),
+                    height: Height::new(100),
+                    digest: Digest(B256::with_last_byte(100)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let certified = Digest(B256::with_last_byte(9));
+        mailbox.certified_tip(round(8), certified);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        assert_eq!(
+            provider.forkchoices()[0].head_block_hash,
+            certified.0,
+            "driven to without waiting for marshal",
+        );
+    });
+}
+
+#[test_traced]
+fn later_epoch_certified_tip_drives_forkchoice_after_restart() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let certified = Digest(B256::with_last_byte(20));
+        mailbox.certified_tip(epoch_round(2, 1), certified);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        assert_eq!(provider.forkchoices()[0].head_block_hash, certified.0);
+    });
+}
+
+#[test_traced]
+fn same_epoch_certified_tip_does_not_regress_roundless_execution_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), Digest(B256::with_last_byte(19)));
+        context.sleep(Duration::from_millis(5)).await;
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn earlier_epoch_certified_tip_does_not_regress_roundless_execution_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(22));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(22, execution_digest.0);
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(2, 1)),
+                    height: Height::new(21),
+                    digest: Digest(B256::with_last_byte(21)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), Digest(B256::with_last_byte(19)));
+        context.sleep(Duration::from_millis(5)).await;
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn certified_tip_is_driven_to_from_genesis() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: genesis_tip(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        let certified = Digest(B256::with_last_byte(9));
+        mailbox.certified_tip(round(5), certified);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        let forkchoices = provider.forkchoices();
+        assert_eq!(forkchoices.len(), 1);
+        assert_eq!(
+            forkchoices[0].head_block_hash, certified.0,
+            "nothing is below genesis, so the certificate is driven directly",
+        );
+    });
+}
+
 #[test_traced]
 fn heartbeat_resubmits_latest_tip_after_interval() {
     deterministic::Runner::default().start(|context| async move {
@@ -364,6 +662,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
@@ -399,6 +698,7 @@ fn heartbeat_waits_for_in_flight_execution() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
@@ -441,6 +741,7 @@ fn durable_block_read_failure_does_not_exit_actor() {
                 marshal: marshal.clone(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: Duration::from_secs(60),
             },
         );
@@ -480,6 +781,7 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
+                startup_tip: genesis_tip(),
                 fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
             },
         );
