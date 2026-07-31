@@ -146,69 +146,69 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
 reth-codecs = { version = "0.5.2", default-features = false }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider", default-features = false }
-reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider", default-features = false }
-reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider", features = ["partial-persistence"] }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics", default-features = false }
+reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics", features = ["partial-persistence"] }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
 reth-primitives-traits = { version = "0.5.2", default-features = false }
-reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider", features = ["partial-persistence"] }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider" }
+reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics", features = ["partial-persistence"] }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics" }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-aware-state-provider", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/partial-persistence-write-metrics", features = [
   "std",
   "optional-checks",
 ] }
