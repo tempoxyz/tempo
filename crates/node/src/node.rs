@@ -439,10 +439,7 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
-        if let Some(cache) = ctx.sender_recovery_cache() {
-            evm_config = evm_config.with_sender_recovery_cache(cache.clone());
-        }
+        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
         Ok(evm_config)
     }
 }
