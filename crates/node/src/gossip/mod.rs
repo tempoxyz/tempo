@@ -14,4 +14,9 @@
 //! inspect certificate payloads because the consensus crate already depends on
 //! the node crate. The dependency cannot point in both directions.
 
+pub mod peer_control;
+pub mod transport;
 pub mod wire;
+
+pub use peer_control::{NoPeerControl, PeerControl};
+pub use transport::{Config, Frame, GossipProtocolHandler, SessionEvent, TransportHandle, init};
