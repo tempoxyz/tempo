@@ -10,7 +10,7 @@ pub(crate) mod marshal {
         Epochable as _,
         marshal::{self, core, standard::Standard},
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-        types::{Epoch, Epocher as _, FixedEpocher, Height, ViewDelta},
+        types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
     use commonware_parallel::Sequential;
@@ -98,7 +98,7 @@ pub(crate) mod marshal {
         pub finalized_floor: Height,
 
         /// Finalized tip selected at startup from the archive or genesis.
-        pub finalized_tip: (Height, Digest),
+        pub startup_tip: StartupTip,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -135,19 +135,21 @@ pub(crate) mod marshal {
 
         let FinalizationRange {
             floor: finalized_floor,
-            tip: finalized_tip,
+            tip: startup_tip,
         } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
         info!(
-            floor_height = %finalized_floor.0,
-            floor_digest = %finalized_floor.1,
-            tip_height = %finalized_tip.0,
-            tip_digest = %finalized_tip.1,
+            floor_height = %finalized_floor.height,
+            floor_digest = %finalized_floor.digest,
+            tip_height = %startup_tip.height,
+            tip_digest = %startup_tip.digest,
             "selected finalized startup range"
         );
-
-        let start =
-            start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
-                .await?;
+        let start = start_from_finalized_floor(
+            &finalizations_by_height,
+            &execution_node,
+            finalized_floor.point(),
+        )
+        .await?;
 
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
@@ -155,7 +157,7 @@ pub(crate) mod marshal {
                 &config.epoch_strategy,
                 &config.scheme_provider,
                 &execution_node,
-                (finalized_floor.0, finalization),
+                (finalized_floor.height, finalization),
             )?;
         }
 
@@ -193,7 +195,7 @@ pub(crate) mod marshal {
         )
         .await;
 
-        let startup_floor_height = finalized_floor.0;
+        let startup_floor_height = finalized_floor.height;
         let last_finalized_height = marshal_stored_height.map_or(startup_floor_height, |height| {
             height.max(startup_floor_height)
         });
@@ -208,13 +210,32 @@ pub(crate) mod marshal {
             actor,
             mailbox,
             finalized_floor: last_finalized_height,
-            finalized_tip,
+            startup_tip,
         })
     }
 
     struct FinalizationRange {
-        floor: (Height, Digest),
-        tip: (Height, Digest),
+        floor: StartupTip,
+        tip: StartupTip,
+    }
+
+    /// A finalized block selected at startup.
+    ///
+    /// Genesis has no certificate, so its round is `None`. Other startup tips
+    /// come from certificates and have a round. The round lets callers compare
+    /// the tip with a gossiped certificate before they know its block height.
+    /// Feed tips always have a round, so they use a separate type.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct StartupTip {
+        pub(crate) round: Option<Round>,
+        pub(crate) height: Height,
+        pub(crate) digest: Digest,
+    }
+
+    impl StartupTip {
+        pub(crate) const fn point(&self) -> (Height, Digest) {
+            (self.height, self.digest)
+        }
     }
 
     async fn establish_finalization_range<TContext>(
@@ -231,20 +252,20 @@ pub(crate) mod marshal {
         let archive_range = finalized_archive_range(finalizations_by_height)
             .await
             .wrap_err("failed to establish finalized archive bounds")?;
-        let execution_finalized = execution_finalized_point(execution_node);
+        let execution_tip = execution_finalized_tip(execution_node);
 
         match archive_range {
             Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
-            None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
-                floor: execution_finalized,
-                tip: execution_finalized,
+            None if execution_tip.height.is_zero() => Ok(FinalizationRange {
+                floor: execution_tip,
+                tip: execution_tip,
             }),
             None => Err(eyre!(
                 "consensus startup requires a finalized certificate archive unless the \
                     execution layer is empty, but no finalized certificate was found and execution \
                     finalized block is `{}` at height `{}`",
-                execution_finalized.1,
-                execution_finalized.0,
+                execution_tip.digest,
+                execution_tip.height,
             )),
         }
     }
@@ -255,7 +276,7 @@ pub(crate) mod marshal {
             Digest,
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
-    ) -> eyre::Result<Option<((Height, Digest), (Height, Digest))>>
+    ) -> eyre::Result<Option<(StartupTip, StartupTip)>>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
@@ -270,7 +291,7 @@ pub(crate) mod marshal {
             }
         };
 
-        let floor = finalized_archive_point(archive, first)
+        let floor = finalized_archive_tip(archive, first)
             .await
             .wrap_err_with(|| {
                 format!("failed to read finalized floor from archive at height `{first}`")
@@ -278,7 +299,7 @@ pub(crate) mod marshal {
         let tip = if first == last {
             floor
         } else {
-            finalized_archive_point(archive, last)
+            finalized_archive_tip(archive, last)
                 .await
                 .wrap_err_with(|| {
                     format!("failed to read finalized tip from archive at height `{last}`")
@@ -377,14 +398,14 @@ pub(crate) mod marshal {
         })
     }
 
-    async fn finalized_archive_point<TContext>(
+    async fn finalized_archive_tip<TContext>(
         archive: &immutable::Archive<
             TContext,
             Digest,
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         height: u64,
-    ) -> eyre::Result<(Height, Digest)>
+    ) -> eyre::Result<StartupTip>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
@@ -393,11 +414,15 @@ pub(crate) mod marshal {
             .await
             .wrap_err("failed reading certificate from archive")?
             .ok_or_eyre("archive did not contain certificate")?;
-        Ok((Height::new(height), finalization.proposal.payload))
+        Ok(StartupTip {
+            round: Some(finalization.proposal.round),
+            height: Height::new(height),
+            digest: finalization.proposal.payload,
+        })
     }
 
-    fn execution_finalized_point(execution_node: &TempoFullNode) -> (Height, Digest) {
-        execution_node
+    fn execution_finalized_tip(execution_node: &TempoFullNode) -> StartupTip {
+        let (height, digest) = execution_node
             .provider
             .canonical_in_memory_state()
             .get_finalized_num_hash()
@@ -407,6 +432,81 @@ pub(crate) mod marshal {
                     Height::zero(),
                     Digest(execution_node.chain_spec().genesis_hash()),
                 )
-            })
+            });
+        StartupTip {
+            round: None,
+            height,
+            digest,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use alloy_primitives::B256;
+        use commonware_codec::{FixedSize, types::lazy::Lazy};
+        use commonware_consensus::{
+            simplex::{
+                scheme::bls12381_threshold::vrf::{
+                    Certificate as VrfCertificate, Signature as VrfSignature,
+                },
+                types::Proposal,
+            },
+            types::{Epoch, View},
+        };
+        use commonware_macros::test_traced;
+        use commonware_runtime::{Runner as _, deterministic};
+
+        use super::*;
+
+        /// Uses a dummy signature because this test reads only the proposal.
+        fn make_finalization(
+            height: u64,
+            digest: Digest,
+        ) -> Finalization<Scheme<PublicKey, MinSig>, Digest> {
+            let signature_bytes = [0u8; <VrfSignature<MinSig> as FixedSize>::SIZE];
+            Finalization {
+                proposal: Proposal::new(
+                    Round::new(Epoch::zero(), View::new(height)),
+                    View::zero(),
+                    digest,
+                ),
+                certificate: VrfCertificate {
+                    signature: Lazy::deferred(&mut &signature_bytes[..], ()),
+                },
+            }
+        }
+
+        #[test_traced]
+        fn single_certificate_archive_preserves_tip_round() {
+            deterministic::Runner::default().start(|context| async move {
+                let height = 7u64;
+                let digest = Digest(B256::with_last_byte(height as u8));
+                let certificate = make_finalization(height, digest);
+                let expected = StartupTip {
+                    round: Some(certificate.proposal.round),
+                    height: Height::new(height),
+                    digest,
+                };
+                let page_cache = CacheRef::from_pooler(
+                    &context,
+                    storage::BUFFER_POOL_PAGE_SIZE,
+                    storage::BUFFER_POOL_CAPACITY,
+                );
+                let mut archive =
+                    storage::init_finalizations_archive(&context, "test-alias", page_cache)
+                        .await
+                        .expect("initialize finalizations archive");
+                archive
+                    .put(height, digest, certificate)
+                    .await
+                    .expect("store finalization");
+
+                let range = finalized_archive_range(&archive)
+                    .await
+                    .expect("read archive range");
+
+                assert_eq!(range, Some((expected, expected)));
+            });
+        }
     }
 }
