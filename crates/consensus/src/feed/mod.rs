@@ -3,8 +3,8 @@
 //! Architecture:
 //! - `Mailbox` implements `Reporter` for marshal updates, forwards finalized
 //!   tips, and immediately acknowledges gap-free block updates
-//! - `Actor` resolves and publishes finalized tips and updates shared
-//!   [`FeedStateHandle`]
+//! - `Actor` resolves finalized tips, offers their certificates to `tempo/1`
+//!   peers, and publishes the tips through shared [`FeedStateHandle`]
 //! - [`FeedStateHandle`] implements `ConsensusFeed` for RPC access
 //!
 //! This design ensures RPC traffic cannot block consensus activity processing.
@@ -26,9 +26,10 @@ pub(crate) fn init<TContext: Spawner>(
     context: TContext,
     marshal: marshal::Mailbox,
     state: FeedStateHandle,
+    gossip: Option<crate::gossip::Mailbox>,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox::new(tx);
-    let actor = Actor::new(context, marshal, rx, state);
+    let actor = Actor::new(context, marshal, rx, state, gossip);
     (actor, mailbox)
 }

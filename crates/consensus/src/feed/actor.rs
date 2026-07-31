@@ -1,8 +1,8 @@
 //! Feed actor implementation.
 //!
 //! The actor receives finalized-tip updates from marshal, resolves their
-//! persisted blocks and certificates, updates the shared RPC state, and
-//! broadcasts them to subscribers.
+//! persisted blocks and certificates, offers certificates to `tempo/1` peers,
+//! updates the shared RPC state, and broadcasts finalized blocks to subscribers.
 
 use alloy_primitives::hex;
 use commonware_codec::Encode;
@@ -27,6 +27,8 @@ pub(crate) struct Actor<TContext> {
     state: FeedStateHandle,
     /// Marshal mailbox for finalization certificate lookups.
     marshal: marshal::Mailbox,
+    /// Offers certificates to `tempo/1` peers, when gossip is enabled.
+    gossip: Option<crate::gossip::Mailbox>,
 }
 
 impl<TContext: Spawner> Actor<TContext> {
@@ -36,6 +38,7 @@ impl<TContext: Spawner> Actor<TContext> {
         marshal: marshal::Mailbox,
         receiver: Receiver,
         state: FeedStateHandle,
+        gossip: Option<crate::gossip::Mailbox>,
     ) -> Self {
         state.set_marshal(marshal.clone());
 
@@ -44,6 +47,7 @@ impl<TContext: Spawner> Actor<TContext> {
             receiver,
             state,
             marshal,
+            gossip,
         }
     }
 
@@ -70,6 +74,18 @@ impl<TContext: Spawner> Actor<TContext> {
             warn!("finalized tip without a persisted block");
             return;
         };
+
+        // Publish only after marshal returns both the certificate and its block.
+        // The node can now serve the block instead of advertising unavailable
+        // data.
+        if let Some(gossip) = &self.gossip {
+            gossip.publish(
+                finalization.round(),
+                tempo_node::gossip::wire::encode(&finalization.encode())
+                    .freeze()
+                    .into(),
+            );
+        }
 
         let certified = CertifiedBlock {
             epoch: tip.round.epoch().get(),

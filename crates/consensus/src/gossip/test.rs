@@ -249,7 +249,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
     let (mailbox, receiver) = super::channel();
     let actor = super::init(
         context.child("gossip"),
-        super::Config {
+        super::ActorConfig {
             verify_rate,
             recent_frames: 64,
             relay,
@@ -888,8 +888,8 @@ fn verified_frame_is_not_forwarded_when_forwarding_is_off() {
     });
 }
 
-/// A certificate produced locally or received by RPC is offered to each peer
-/// that has not claimed the same round or a later one.
+/// A stored certificate is offered to each peer that has not claimed the same
+/// round or a later one.
 #[test_traced]
 fn publishing_an_unseen_frame_reaches_every_peer() {
     deterministic::Runner::default().start(|mut context| async move {
