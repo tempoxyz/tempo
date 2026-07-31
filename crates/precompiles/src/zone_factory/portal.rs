@@ -101,6 +101,10 @@ impl ZonePortalStorage {
         zone_id: u32,
         params: &IZoneFactory::CreateZoneParams,
     ) -> Result<()> {
+        if self.initialized.read()? {
+            return Err(ZoneFactoryError::already_initialized().into());
+        }
+
         self.storage.set_code(
             self.address,
             Bytecode::new_legacy(Bytes::from_static(&ZONE_PORTAL_PROXY_RUNTIME)),

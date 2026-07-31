@@ -114,6 +114,8 @@ crate::sol! {
         error NotOwner();
         error InvalidAdmin();
         error InvalidSequencerSet();
+        error AlreadyInitialized();
+
         function owner() external view returns (address);
         function transferOwnership(address newOwner) external;
         function createZone(CreateZoneParams calldata params)
