@@ -170,7 +170,7 @@ impl<TUpstream> Config<TUpstream> {
         // No broadcast is needed in follow mode.
         let broadcast = stubs::null_broadcast(context.child("broadcast"), self.mailbox_size);
 
-        let (driver, driver_mailbox) = driver::try_init(
+        let (driver, driver_mailbox, _progress) = driver::try_init(
             context.child("driver"),
             driver::Config {
                 execution_provider: self.execution_node.provider.clone(),
@@ -178,6 +178,7 @@ impl<TUpstream> Config<TUpstream> {
                 network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox,
+                executor: executor_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )

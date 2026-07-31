@@ -1,7 +1,8 @@
 //! Follower finalization driver.
 //!
-//! Validates finalized blocks received from upstream and reports them to marshal.
-//! Marshal's finalized tip updates independently drive the consensus feed.
+//! Validates finalized blocks received from upstream and certificates received
+//! through gossip, then reports verified finalizations to marshal. Marshal's
+//! finalized-tip updates independently drive the consensus feed.
 
 use std::future::Future;
 
@@ -32,16 +33,18 @@ use crate::{
 
 mod actor;
 mod ingress;
+mod progress;
 
 #[cfg(test)]
 mod test;
 
 pub(super) use actor::Driver;
 pub(super) use ingress::Mailbox;
+pub(crate) use progress::FollowerProgress;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(super) struct Config<P, M> {
+pub(super) struct Config<P, M, E = crate::follow::executor::Mailbox> {
     pub(super) execution_provider: P,
     pub(super) scheme_provider: SchemeProvider,
     pub(super) network_identity: NetworkIdentity,
@@ -49,18 +52,27 @@ pub(super) struct Config<P, M> {
     pub(super) last_finalized_height: Height,
 
     pub(super) marshal: M,
+    pub(super) executor: E,
 
     pub(super) epoch_strategy: FixedEpocher,
 }
 
-pub(super) fn try_init<TContext, P, M>(
+/// A driver, its mailbox, and a read-only progress handle.
+///
+/// The driver owns the progress because it is the only writer. Other components
+/// receive a clone that they can read.
+pub(super) type Initialized<TContext, P, M, E> =
+    (Driver<TContext, P, M, E>, Mailbox, FollowerProgress);
+
+pub(super) fn try_init<TContext, P, M, E>(
     context: TContext,
-    config: Config<P, M>,
-) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
+    config: Config<P, M, E>,
+) -> eyre::Result<Initialized<TContext, P, M, E>>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    E: Executor + 'static,
 {
     actor::try_init(context, config)
 }
@@ -69,6 +81,12 @@ where
 pub(super) trait ExecutionProvider: Send + Sync {
     fn finalized_block_number(&self) -> eyre::Result<u64>;
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>>;
+}
+
+/// Execution updates requested by the follower driver.
+pub(super) trait Executor: Send + Sync {
+    /// Uses a certificate's block as the forkchoice target.
+    fn finalization(&self, round: Round, digest: Digest);
 }
 
 /// Marshal operations used by the follower driver.
@@ -90,6 +108,12 @@ where
 
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>> {
         HeaderProvider::header_by_number(self, number).map_err(eyre::Report::new)
+    }
+}
+
+impl Executor for crate::follow::executor::Mailbox {
+    fn finalization(&self, round: Round, digest: Digest) {
+        Self::finalization(self, round, digest);
     }
 }
 
