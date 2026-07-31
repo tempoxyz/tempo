@@ -34,6 +34,9 @@ pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
 /// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
 pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 
+const INVALID_CREATE_CALL_POSITION: &str =
+    "only one CREATE call is allowed per transaction, and it must be the first call of the batch";
+
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -186,6 +189,30 @@ impl Decodable for Call {
     }
 }
 
+/// Decodes calls and rejects an invalid CREATE position before it can fill the output vector.
+fn decode_calls(buf: &mut &[u8]) -> alloy_rlp::Result<Vec<Call>> {
+    let header = alloy_rlp::Header::decode(buf)?;
+    if !header.list {
+        return Err(alloy_rlp::Error::UnexpectedString);
+    }
+    if header.payload_length > buf.len() {
+        return Err(alloy_rlp::Error::InputTooShort);
+    }
+
+    let mut calls_buf = &buf[..header.payload_length];
+    let mut calls = Vec::new();
+    while !calls_buf.is_empty() {
+        let call = Call::decode(&mut calls_buf)?;
+        if !calls.is_empty() && call.to.is_create() {
+            return Err(alloy_rlp::Error::Custom(INVALID_CREATE_CALL_POSITION));
+        }
+        calls.push(call);
+    }
+
+    buf.advance(header.payload_length);
+    Ok(calls)
+}
+
 /// Tempo transaction following the Tempo spec.
 ///
 /// This transaction type supports:
@@ -304,9 +331,7 @@ pub fn validate_calls(calls: &[Call], has_authorization_list: bool) -> Result<()
     // All subsequent calls must be CALL.
     for call in calls_iter {
         if call.to.is_create() {
-            return Err(
-                "only one CREATE call is allowed per transaction, and it must be the first call of the batch",
-            );
+            return Err(INVALID_CREATE_CALL_POSITION);
         }
     }
 
@@ -546,7 +571,7 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls = Decodable::decode(buf)?;
+        let calls = decode_calls(buf)?;
         let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
