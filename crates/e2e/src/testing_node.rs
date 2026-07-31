@@ -294,9 +294,12 @@ where
         let engine = self
             .consensus_config
             .clone()
-            .try_init(context.child(Box::leak(
-                format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
-            )))
+            .try_init(
+                context.child(Box::leak(
+                    format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
+                )),
+                None,
+            )
             .await
             .expect("must be able to start the engine");
 
