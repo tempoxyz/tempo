@@ -47,9 +47,8 @@ use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
-        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
-        LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
-        SpawnBlocking, Trace,
+        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
+        LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
         bal::GetBlockAccessList,
         estimate::EstimateCall,
         pending_block::{BuildPendingEnv, PendingEnvBuilder},
@@ -472,7 +471,6 @@ where
 }
 
 impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
