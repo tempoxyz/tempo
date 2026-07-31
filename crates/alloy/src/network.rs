@@ -3,9 +3,11 @@ use std::fmt::Debug;
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
 use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_network::{
     BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkTransactionBuilder,
-    NetworkWallet, TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
+    NetworkWallet, TransactionBuilder, TransactionBuilder7702, TransactionBuilderError,
+    UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{ChainIdFiller, JoinFill, NonceFiller, RecommendedFillers};
@@ -135,6 +137,16 @@ impl TransactionBuilder for TempoTransactionRequest {
 
     fn set_access_list(&mut self, access_list: AccessList) {
         TransactionBuilder::set_access_list(&mut self.inner, access_list)
+    }
+}
+
+impl TransactionBuilder7702 for TempoTransactionRequest {
+    fn authorization_list(&self) -> Option<&Vec<SignedAuthorization>> {
+        TransactionBuilder7702::authorization_list(&self.inner)
+    }
+
+    fn set_authorization_list(&mut self, authorization_list: Vec<SignedAuthorization>) {
+        TransactionBuilder7702::set_authorization_list(&mut self.inner, authorization_list)
     }
 }
 
@@ -299,7 +311,6 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 mod tests {
     use super::*;
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
-    use alloy_eips::eip7702::SignedAuthorization;
     use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::{
@@ -457,6 +468,26 @@ mod tests {
             .to_string();
 
         assert_eq!(actual_error, expected_error);
+    }
+
+    #[test]
+    fn eip7702_builder_helpers_forward_to_inner_request() {
+        let authorization = SignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(1337),
+                address: Address::ZERO,
+                nonce: 0,
+            },
+            0,
+            U256::ZERO,
+            U256::ZERO,
+        );
+        let expected = vec![authorization];
+
+        let request = TempoTransactionRequest::default().with_authorization_list(expected.clone());
+
+        assert_eq!(request.inner.authorization_list, Some(expected.clone()));
+        assert_eq!(request.authorization_list(), Some(&expected));
     }
 
     #[test]
