@@ -12,7 +12,7 @@ pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
-pub(crate) mod gossip;
+pub mod gossip;
 pub mod metrics;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
@@ -53,6 +53,7 @@ pub async fn run_consensus_stack(
     config: Args,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -136,7 +137,16 @@ pub async fn run_consensus_stack(
 
         finalized_blocks_retention: config.finalized_blocks_retention,
     }
-    .try_init(context.child("engine"))
+    .try_init(
+        context.child("engine"),
+        gossip_transport.map(|transport| gossip::Config {
+            transport,
+            verify_rate: config.gossip_verify_rate,
+            strikes: config.gossip_strikes,
+            recent_frames: config.gossip_recent_frames,
+            relay: config.gossip_relay,
+        }),
+    )
     .await
     .wrap_err("failed initializing consensus engine")?;
 
@@ -177,6 +187,7 @@ pub async fn run_follow_stack(
     upstream_request_timeout: std::time::Duration,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    gossip_transport: Option<tempo_node::gossip::TransportHandle>,
 ) -> eyre::Result<()> {
     let chain_spec = execution_node.chain_spec();
 
@@ -202,7 +213,7 @@ pub async fn run_follow_stack(
     )
     .wrap_err("failed to initialize client to upstream node")?;
 
-    let config = follow::Config {
+    let follow_engine = follow::Config {
         execution_node,
         feed_state,
         upstream,
@@ -216,8 +227,17 @@ pub async fn run_follow_stack(
         finalized_blocks_retention: config.finalized_blocks_retention,
     };
 
-    let ret = config
-        .try_init(context.child("engine"))
+    let ret = follow_engine
+        .try_init(
+            context.child("engine"),
+            gossip_transport.map(|transport| gossip::Config {
+                transport,
+                verify_rate: config.gossip_verify_rate,
+                strikes: config.gossip_strikes,
+                recent_frames: config.gossip_recent_frames,
+                relay: config.gossip_relay,
+            }),
+        )
         .await
         .wrap_err("failed initializing follow engine")?
         .start()

@@ -242,7 +242,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
     let (mailbox, receiver) = super::channel();
     let actor = super::init(
         context.child("gossip"),
-        super::Config {
+        super::ActorConfig {
             verify_rate,
             strikes: 2,
             recent_frames: 64,

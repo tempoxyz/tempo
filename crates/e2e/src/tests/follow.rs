@@ -262,7 +262,10 @@ impl FollowerBuilder {
         };
 
         let handle = config
-            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
+            .try_init(
+                context.child(Box::leak(name.clone().into_boxed_str())),
+                None,
+            )
             .await
             .expect("failed to initialize follow engine")
             .start();
