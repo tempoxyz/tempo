@@ -24,13 +24,31 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{ConsensusActivity, ExecutionProvider, Marshal};
+use super::super::{ConsensusActivity, ExecutionProvider, Executor, Marshal};
 use crate::{
     consensus::{Block, Digest},
     test_support::make_certificate,
 };
 
-pub(super) use crate::test_support::dkg_fixture;
+pub(super) use crate::test_support::{DkgFixture, dkg_fixture};
+
+/// Records certified-tip updates sent to execution.
+#[derive(Clone, Default)]
+pub(super) struct StubExecutor {
+    certified_tips: Arc<Mutex<Vec<(Round, Digest)>>>,
+}
+
+impl StubExecutor {
+    pub(super) fn certified_tips(&self) -> Vec<(Round, Digest)> {
+        self.certified_tips.lock().clone()
+    }
+}
+
+impl Executor for StubExecutor {
+    fn certified_tip(&self, round: Round, digest: Digest) {
+        self.certified_tips.lock().push((round, digest));
+    }
+}
 
 pub(super) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
 

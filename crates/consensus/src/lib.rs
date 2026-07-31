@@ -12,6 +12,7 @@ pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
+pub(crate) mod gossip;
 pub mod metrics;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
