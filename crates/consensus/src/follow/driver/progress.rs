@@ -49,10 +49,6 @@ impl FollowerProgress {
         let _ = self.schemes.send(epoch);
     }
 
-    #[allow(
-        dead_code,
-        reason = "consumed by the gossip actor in a following commit"
-    )]
     pub(crate) fn schemes(&self) -> broadcast::Receiver<Epoch> {
         self.schemes.subscribe()
     }
