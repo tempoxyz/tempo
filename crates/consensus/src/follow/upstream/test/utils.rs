@@ -64,7 +64,11 @@ impl Connector for StubConnector {
     type Client = StubClient;
 
     fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)> {
-        self.inner.attempts.lock().push(attempts);
+        let connection_count = {
+            let mut recorded_attempts = self.inner.attempts.lock();
+            recorded_attempts.push(attempts);
+            recorded_attempts.len()
+        };
         let fail = self
             .inner
             .failures_remaining
@@ -72,7 +76,7 @@ impl Connector for StubConnector {
                 remaining.checked_sub(1)
             })
             .is_ok();
-        let client = if attempts > 1 || self.inner.attempts.lock().len() > 1 {
+        let client = if connection_count > 1 {
             self.inner
                 .replacement_client
                 .lock()
