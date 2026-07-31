@@ -26,9 +26,10 @@ pub(crate) fn init<TContext: Spawner>(
     context: TContext,
     marshal: marshal::Mailbox,
     state: FeedStateHandle,
+    gossip: Option<crate::gossip::Mailbox>,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox::new(tx);
-    let actor = Actor::new(context, marshal, rx, state);
+    let actor = Actor::new(context, marshal, rx, state, gossip);
     (actor, mailbox)
 }
