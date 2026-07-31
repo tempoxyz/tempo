@@ -44,10 +44,8 @@ use tempo_contracts::{
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        INITIAL_FACTORY_OWNER, IValidatorConfigV2, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS, createTokenCall,
+        INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
     },
-    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -206,6 +204,10 @@ pub(crate) struct GenesisArgs {
     /// T9 hardfork activation time.
     #[arg(long, default_value = "0")]
     t9_time: u64,
+
+    /// T10 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t10_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -556,7 +558,7 @@ impl GenesisArgs {
             },
         );
 
-        insert_zone_state_at_genesis(self.t9_time, &mut genesis_alloc);
+        insert_zone_state_at_genesis(self.t10_time, &mut genesis_alloc);
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,
@@ -637,6 +639,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t9Time".to_string(), self.t9_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t10Time".to_string(), self.t10_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -672,32 +677,20 @@ impl GenesisArgs {
     }
 }
 
-fn zone_factory_genesis_account() -> GenesisAccount {
-    let factory_config =
-        U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-    GenesisAccount {
-        code: Some(Bytes::from_static(&[0xef])),
-        storage: Some(BTreeMap::from([(B256::ZERO, factory_config.into())])),
-        ..Default::default()
-    }
-}
-
 fn insert_zone_state_at_genesis(
-    t9_time: u64,
+    t10_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
-    if t9_time == 0 {
-        println!("Initializing ZoneFactory and shared runtimes (T9 active at genesis)");
-        genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
-        for (destination, runtime) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
-        ] {
+    if t10_time == 0 {
+        println!("Initializing ZoneFactory and shared runtimes (T10 active at genesis)");
+        for account in initial_zone_factory_state(INITIAL_FACTORY_OWNER) {
             genesis_alloc.insert(
-                destination,
+                account.address,
                 GenesisAccount {
-                    code: Some(runtime),
+                    code: Some(account.code),
+                    storage: account.storage.map(|(slot, value)| {
+                        BTreeMap::from([(B256::from(slot.to_be_bytes()), value.into())])
+                    }),
                     ..Default::default()
                 },
             );
@@ -1241,9 +1234,16 @@ fn mint_pairwise_liquidity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempo_contracts::{
+        precompiles::{
+            ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+    };
 
     #[test]
-    fn t9_genesis_installs_factory_and_canonical_shared_runtimes() {
+    fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(0, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
@@ -1265,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn future_t9_does_not_install_zone_factory_at_genesis() {
+    fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
         insert_zone_state_at_genesis(1, &mut alloc);
 

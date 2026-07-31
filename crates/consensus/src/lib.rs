@@ -171,6 +171,7 @@ pub async fn run_follow_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
     upstream_url: String,
+    upstream_request_timeout: std::time::Duration,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
@@ -207,6 +208,7 @@ pub async fn run_follow_stack(
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(epoch_length),
         mailbox_size: config.mailbox_size,
+        upstream_request_timeout,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
         strict_startup: config.strict_startup,

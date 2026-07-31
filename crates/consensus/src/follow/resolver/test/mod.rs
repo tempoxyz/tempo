@@ -21,6 +21,7 @@ use utils::{StubBlockProvider, StubUpstream, make_block, make_certified_block};
 
 const WAIT_ATTEMPTS: usize = 100;
 const MAILBOX_SIZE: usize = 16;
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl FnMut() -> bool) {
     for _ in 0..WAIT_ATTEMPTS {
@@ -31,6 +32,18 @@ async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl Fn
     }
 
     assert!(cond(), "condition was not met before the test deadline");
+}
+
+fn metric_value(context: &impl commonware_runtime::Metrics, suffix: &str) -> u64 {
+    context
+        .encode()
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| {
+            let (name, value) = line.split_once(' ')?;
+            name.ends_with(suffix).then(|| value.parse().unwrap())
+        })
+        .unwrap_or(0)
 }
 
 async fn receive_delivery(
@@ -65,6 +78,7 @@ fn local_block_is_delivered_without_upstream_lookup() {
                     execution_provider: provider.clone(),
                     upstream: upstream.clone(),
                     mailbox_size: MAILBOX_SIZE,
+                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
                 },
             );
 
@@ -98,6 +112,7 @@ fn local_miss_falls_back_to_upstream_block() {
                     execution_provider: provider.clone(),
                     upstream: upstream.clone(),
                     mailbox_size: MAILBOX_SIZE,
+                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
                 },
             );
 
@@ -129,6 +144,7 @@ fn missing_block_retries_and_eventually_delivers() {
                     execution_provider: provider.clone(),
                     upstream: upstream.clone(),
                     mailbox_size: MAILBOX_SIZE,
+                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
                 },
             );
 
@@ -152,6 +168,53 @@ fn missing_block_retries_and_eventually_delivers() {
 }
 
 #[test_traced]
+fn timed_out_block_request_retries_with_growing_backoff() {
+    const TIMEOUT: Duration = Duration::from_millis(10);
+
+    deterministic::Runner::default().start(|context| async move {
+        let key = handler::Request::Block(Digest(B256::with_last_byte(1)));
+        let provider = StubBlockProvider::default();
+        let upstream = StubUpstream::default();
+        upstream.hang_block_reads();
+        let (actor, mut mailbox, _receiver) = try_init(
+            context.with_label("resolver"),
+            Config {
+                execution_provider: provider,
+                upstream: upstream.clone(),
+                mailbox_size: MAILBOX_SIZE,
+                upstream_request_timeout: TIMEOUT,
+            },
+        );
+
+        actor.start();
+        mailbox.fetch(key).await;
+        wait_until(&context, || upstream.block_reads() == 1).await;
+
+        context.sleep(TIMEOUT).await;
+        wait_until(&context, || {
+            metric_value(&context, "upstream_request_timeouts_total") == 1
+        })
+        .await;
+
+        context.sleep(Duration::from_millis(200)).await;
+        assert_eq!(upstream.block_reads(), 1);
+        context.sleep(Duration::from_millis(50)).await;
+        wait_until(&context, || upstream.block_reads() == 2).await;
+
+        context.sleep(TIMEOUT).await;
+        wait_until(&context, || {
+            metric_value(&context, "upstream_request_timeouts_total") == 2
+        })
+        .await;
+
+        context.sleep(Duration::from_millis(300)).await;
+        assert_eq!(upstream.block_reads(), 2);
+        context.sleep(Duration::from_millis(200)).await;
+        wait_until(&context, || upstream.block_reads() == 3).await;
+    });
+}
+
+#[test_traced]
 fn duplicate_block_fetch_is_coalesced() {
     deterministic::Runner::default()
         .start(|context| async move {
@@ -168,6 +231,7 @@ fn duplicate_block_fetch_is_coalesced() {
                     execution_provider: provider.clone(),
                     upstream: upstream.clone(),
                     mailbox_size: MAILBOX_SIZE,
+                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
                 },
             );
 
@@ -210,6 +274,7 @@ fn cancel_aborts_in_flight_block_fetch() {
                 execution_provider: provider,
                 upstream: upstream.clone(),
                 mailbox_size: MAILBOX_SIZE,
+                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
             },
         );
 
@@ -240,6 +305,7 @@ fn local_read_error_retries_without_querying_upstream() {
                 execution_provider: provider.clone(),
                 upstream: upstream.clone(),
                 mailbox_size: MAILBOX_SIZE,
+                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
             },
         );
 
@@ -272,6 +338,7 @@ fn finalized_request_delivers_certificate_and_block() {
                     execution_provider: provider.clone(),
                     upstream: upstream.clone(),
                     mailbox_size: MAILBOX_SIZE,
+                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
                 },
             );
 
@@ -304,6 +371,7 @@ fn missing_finalization_retries_and_eventually_delivers() {
                     execution_provider: provider,
                     upstream: upstream.clone(),
                     mailbox_size: MAILBOX_SIZE,
+                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
                 },
             );
 
@@ -341,6 +409,7 @@ fn malformed_finalization_is_not_retried() {
                 execution_provider: StubBlockProvider::default(),
                 upstream: upstream.clone(),
                 mailbox_size: MAILBOX_SIZE,
+                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
             },
         );
 
@@ -368,6 +437,7 @@ fn notarized_request_is_ignored() {
                 execution_provider: provider.clone(),
                 upstream: upstream.clone(),
                 mailbox_size: MAILBOX_SIZE,
+                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
             },
         );
 

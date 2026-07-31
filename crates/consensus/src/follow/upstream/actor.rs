@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
@@ -210,15 +210,15 @@ where
             match request {
                 super::ingress::Message::GetFinalization { height, response } => {
                     let client = client.clone();
-                    self.context
-                        .with_label("get_finalization")
-                        .spawn(move |_| get_finalization(client, height, response));
+                    self.context.with_label("get_finalization").spawn(move |_| {
+                        respond_until_closed(response, get_finalization(client, height))
+                    });
                 }
                 super::ingress::Message::GetBlock { digest, response } => {
                     let client = client.clone();
                     self.context
                         .with_label("get_block")
-                        .spawn(move |_| get_block(client, digest, response));
+                        .spawn(move |_| respond_until_closed(response, get_block(client, digest)));
                 }
             }
         }
@@ -274,30 +274,37 @@ fn random_jitter() -> Duration {
     Duration::from_millis(rand_08::thread_rng().gen_range(0..=max_jitter_millis))
 }
 
+/// Polls the request and sends its result while the receiver remains open.
+///
+/// Drops the request future if the receiver closes first.
+async fn respond_until_closed<T>(
+    mut response: oneshot::Sender<T>,
+    request: impl Future<Output = eyre::Result<T>>,
+) -> eyre::Result<()> {
+    select! {
+        biased;
+        () = response.closed() => Ok(()),
+        result = request => response
+            .send(result?)
+            .map_err(|_| eyre::eyre!("receiver went away")),
+    }
+}
+
 #[instrument(skip_all, fields(%height), err)]
 async fn get_finalization(
     client: Arc<WsClient>,
     height: Height,
-    response: oneshot::Sender<Option<CertifiedBlock>>,
-) -> eyre::Result<()> {
-    // TODO: right now, the response channel would just drop and an error
-    // emitted here. Should this failure be propagated upstream?
-    let finalization = client
+) -> eyre::Result<Option<CertifiedBlock>> {
+    client
         .get_finalization(Query::Height(height.get()))
         .await
-        .wrap_err("failed getting finalization")?;
-    response
-        .send(Some(finalization))
-        .map_err(|_| eyre::eyre!("receiver went away"))
+        .map(Some)
+        .wrap_err("failed getting finalization")
 }
 
 /// Fetches a full consensus block from the upstream node.
 #[instrument(skip_all, fields(%digest), err)]
-async fn get_block(
-    client: Arc<WsClient>,
-    digest: Digest,
-    response: oneshot::Sender<Option<Block>>,
-) -> eyre::Result<()> {
+async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option<Block>> {
     let block = client
         .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
             "eth_getBlockByHash",
@@ -320,14 +327,21 @@ async fn get_block(
         })
         .transpose()?;
 
-    response
-        .send(block)
-        .map_err(|_| eyre::eyre!("receiver went away"))
+    Ok(block)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropGuard(Arc<AtomicBool>);
+
+    impl Drop for DropGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn reconnect_backoff_linearly_increases_and_caps() {
@@ -339,5 +353,28 @@ mod tests {
         assert_eq!(reconnect_backoff(5), Duration::from_secs(10));
         assert_eq!(reconnect_backoff(10), RECONNECT_MAX_BACKOFF);
         assert_eq!(reconnect_backoff(u64::MAX), RECONNECT_MAX_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn closing_response_cancels_request() {
+        let (response, receiver) = oneshot::channel::<()>();
+        let (started_tx, started_rx) = oneshot::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let request_dropped = dropped.clone();
+
+        let task = tokio::spawn(async move {
+            let request = async move {
+                let _guard = DropGuard(request_dropped);
+                let _ = started_tx.send(());
+                std::future::pending::<eyre::Result<()>>().await
+            };
+            respond_until_closed(response, request).await
+        });
+
+        started_rx.await.unwrap();
+        drop(receiver);
+
+        task.await.unwrap().unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }
