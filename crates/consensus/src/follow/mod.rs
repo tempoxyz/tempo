@@ -11,3 +11,6 @@ mod stubs;
 pub mod upstream;
 
 pub use engine::Config;
+
+/// Follower state observed by the gossip actor.
+pub(crate) use driver::FollowerProgress;
