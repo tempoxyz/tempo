@@ -220,7 +220,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         0
     }
 
-    fn state_gas_used(&self) -> u64 {
+    fn state_gas_used(&self) -> i64 {
+        0
+    }
+
+    fn state_gas_spilled(&self) -> u64 {
         0
     }
 
