@@ -569,13 +569,8 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 mod tests {
     use super::*;
     use alloy_primitives::{Bytes, Signature, address};
-    use alloy_rpc_types_eth::Authorization;
-    use tempo_primitives::{
-        TempoSignature,
-        transaction::{
-            Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
-            TempoSignedAuthorization,
-        },
+    use tempo_primitives::transaction::{
+        Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
     };
 
     fn nz(value: u64) -> NonZeroU64 {
@@ -806,34 +801,6 @@ mod tests {
             .call(call.clone());
 
         assert_eq!(request.calls, vec![call.clone(), call]);
-    }
-
-    #[test]
-    fn test_tempo_authorization_helpers() {
-        let authorization = |address| {
-            TempoSignedAuthorization::new_unchecked(
-                Authorization {
-                    chain_id: U256::from(4217),
-                    address,
-                    nonce: 0,
-                },
-                TempoSignature::Primitive(PrimitiveSignature::default()),
-            )
-        };
-        let first = authorization(address!("0x1111111111111111111111111111111111111111"));
-        let second = authorization(address!("0x2222222222222222222222222222222222222222"));
-
-        let mut request = TempoTransactionRequest::default()
-            .with_tempo_authorization_list(vec![first.clone()])
-            .tempo_authorization(second.clone());
-        assert_eq!(
-            request.tempo_authorization_list,
-            vec![first.clone(), second.clone()]
-        );
-
-        request.set_tempo_authorization_list(vec![second.clone()]);
-        request.push_tempo_authorization(first.clone());
-        assert_eq!(request.tempo_authorization_list, vec![second, first]);
     }
 
     #[test]

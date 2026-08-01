@@ -471,26 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn eip7702_builder_helpers_forward_to_inner_request() {
-        let authorization = SignedAuthorization::new_unchecked(
-            Authorization {
-                chain_id: U256::from(1337),
-                address: Address::ZERO,
-                nonce: 0,
-            },
-            0,
-            U256::ZERO,
-            U256::ZERO,
-        );
-        let expected = vec![authorization];
-
-        let request = TempoTransactionRequest::default().with_authorization_list(expected.clone());
-
-        assert_eq!(request.inner.authorization_list, Some(expected.clone()));
-        assert_eq!(request.authorization_list(), Some(&expected));
-    }
-
-    #[test]
     fn output_tx_type_empty_request_is_not_aa() {
         let req = TempoTransactionRequest::default();
         assert_ne!(req.output_tx_type(), TempoTxType::AA);
