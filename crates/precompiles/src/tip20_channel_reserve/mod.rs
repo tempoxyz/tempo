@@ -166,7 +166,7 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
 
-        if self.storage.spec().is_t10() {
+        if self.storage.spec().is_t11() {
             token.ensure_transfer_authorized(msg_sender, Recipient::resolve(call.payee)?.target)?;
             token.channel_reserve_transfer(
                 msg_sender,
@@ -245,7 +245,7 @@ impl TIP20ChannelReserve {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
-        if self.storage.spec().is_t10() {
+        if self.storage.spec().is_t11() {
             token.ensure_transfer_authorized(
                 call.descriptor.payer,
                 Recipient::resolve(call.descriptor.payee)?.target,
@@ -262,7 +262,7 @@ impl TIP20ChannelReserve {
         } else {
             token.ensure_authorized_as(&[(call.descriptor.payer, AuthRole::Sender)])?;
 
-            // Preserve the pre-T10 fallible-operation order. Although a later transfer failure
+            // Preserve the pre-T11 fallible-operation order. Although a later transfer failure
             // reverts this write, moving it changes consensus-visible gas on legacy forks.
             state.settled = cumulative;
             self.channel_states[channel_id].write(state)?;
@@ -320,7 +320,7 @@ impl TIP20ChannelReserve {
 
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            if self.storage.spec().is_t10() {
+            if self.storage.spec().is_t11() {
                 token.ensure_transfer_authorized(
                     msg_sender,
                     Recipient::resolve(call.descriptor.payee)?.target,
@@ -447,7 +447,7 @@ impl TIP20ChannelReserve {
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
-        if self.storage.spec().is_t10() {
+        if self.storage.spec().is_t11() {
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
             if !delta.is_zero() {
                 token.ensure_transfer_authorized(
@@ -474,7 +474,7 @@ impl TIP20ChannelReserve {
             // rejections therefore leave the channel available for retry.
             self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
         } else {
-            // Preserve the pre-T10 fallible-operation order and gas behavior.
+            // Preserve the pre-T11 fallible-operation order and gas behavior.
             self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
@@ -537,7 +537,7 @@ impl TIP20ChannelReserve {
             .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
-        if self.storage.spec().is_t10() {
+        if self.storage.spec().is_t11() {
             if !refund.is_zero() {
                 let mut token = TIP20Token::from_address(call.descriptor.token)?;
                 token.channel_reserve_transfer(
@@ -551,7 +551,7 @@ impl TIP20ChannelReserve {
             // withdrawal has no fallible token delivery to wait for.
             self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
         } else {
-            // Preserve the pre-T10 fallible-operation order and gas behavior.
+            // Preserve the pre-T11 fallible-operation order and gas behavior.
             self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
             if !refund.is_zero() {
                 TIP20Token::from_address(call.descriptor.token)?.transfer(
@@ -1337,9 +1337,9 @@ mod tests {
     }
 
     #[test]
-    fn test_t10_recipient_restricted_token_supports_channel_capture_and_refund() -> eyre::Result<()>
+    fn test_t11_recipient_restricted_token_supports_channel_capture_and_refund() -> eyre::Result<()>
     {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -1466,8 +1466,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t10_blocked_capture_reverts_and_remains_retryable() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+    fn test_t11_blocked_capture_reverts_and_remains_retryable() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -1618,8 +1618,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t10_recipient_restricted_token_supports_unilateral_withdraw() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+    fn test_t11_recipient_restricted_token_supports_unilateral_withdraw() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let payer = Address::random();
         let payee = Address::random();
 
@@ -1682,8 +1682,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t10_blocked_refund_reverts_and_remains_retryable() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+    fn test_t11_blocked_refund_reverts_and_remains_retryable() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let payer = Address::random();
         let payee = Address::random();
 
@@ -1821,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t10_recipient_restricted_token_cannot_fund_reserve() -> eyre::Result<()> {
+    fn test_pre_t11_recipient_restricted_token_cannot_fund_reserve() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         let payer = Address::random();
         let payee = Address::random();
@@ -1853,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t10_settle_preserves_state_write_before_transfer_failure() -> eyre::Result<()> {
+    fn test_pre_t11_settle_preserves_state_write_before_transfer_failure() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
