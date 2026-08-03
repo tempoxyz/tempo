@@ -11,6 +11,7 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// the public TIP-20 ABI used by this informative Solidity reference. The precompile applies
 /// TIP-403 to the logical payer-payee path, bypasses TIP-403 only for descriptor-bound refunds,
 /// and reverts TIP-1028-rejected channel movements instead of creating guarded receipts.
+/// Funding checks the payee's current TIP-1028 policy, but does not lock it against later changes.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();
