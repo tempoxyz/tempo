@@ -27,7 +27,7 @@ use revm::{
     },
     inspector::{Inspector, InspectorHandler},
     interpreter::{
-        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas,
+        CallOutcome, CreateOutcome, FrameInput, Gas, InitialAndFloorGas,
         gas::{
             COLD_SLOAD_COST, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
             get_tokens_in_calldata_istanbul,
@@ -265,11 +265,13 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 /// while halts such as OOG consume the entire remaining transaction budget.
 ///
 /// NOTE: in AA batches, non-refundable state-gas charges that are known upfront, are already
-/// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure.
+/// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure
+/// plus the batch's intrinsic EIP-8037 CREATE state gas (`create_state_refund`).
 fn normalize_failed_batch_result_gas(
     frame_result: &mut FrameResult,
     final_gas_limit: u64,
     accumulated_state_gas_spent: i64,
+    create_state_refund: u64,
 ) {
     // Create new Gas with correct limit, because Gas does not have a set_limit method
     // (the frame_result limit only covers the failed step).
@@ -289,6 +291,13 @@ fn normalize_failed_batch_result_gas(
             .saturating_add_signed(accumulated_state_gas_spent)
             .saturating_add_signed(frame_result.gas().state_gas_spent()),
     );
+    // The AA intrinsic gas charged `create_state_gas` upfront for every CREATE
+    // call in the batch, and the batch failure rolled every deployment back —
+    // including successfully deployed calls and calls that never ran. Refund
+    // the whole batch's charge to the reservoir; the reservoir reconstruction
+    // above already canceled the failed step's own `last_frame_result` refund,
+    // so this cannot double-count.
+    corrected_gas.refill_reservoir(create_state_refund);
     *frame_result.gas_mut() = corrected_gas;
 }
 
@@ -571,9 +580,19 @@ where
     {
         // Create first frame action. `None` only happens when the EIP-2780
         // runtime gas phase runs out of gas, which Tempo keeps disabled.
-        let first_frame_input = self.first_frame_input(evm, gas)?.ok_or_else(|| {
+        let mut first_frame_input = self.first_frame_input(evm, gas)?.ok_or_else(|| {
             EVMError::Custom("first frame creation ran out of gas with EIP-2780 disabled".into())
         })?;
+
+        // Tempo charges the EIP-8037 CREATE state gas at the intrinsic phase
+        // (EIP-2780 stays disabled), so the upstream runtime phase never marks
+        // it as charged. Mark it here so `last_frame_result` refunds the
+        // charge via `FrameResult::refundable_state_gas` when the CREATE
+        // deploys nothing, matching the inner-frame CREATE refund and the
+        // revm 41.0.0 top-level behavior.
+        if let FrameInput::Create(inputs) = &mut first_frame_input.frame_input {
+            inputs.set_charged_create_state_gas(true);
+        }
 
         // Run execution loop (standard or inspector)
         let mut frame_result = run_loop(self, evm, first_frame_input)?;
@@ -634,6 +653,12 @@ where
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
 
+        // Intrinsic EIP-8037 CREATE state gas charged upfront for the whole
+        // batch (see `calculate_batch_intrinsic_gas`), refunded when the batch
+        // fails and every deployment is rolled back.
+        let create_state_refund = evm.ctx().cfg().gas_params().create_state_gas()
+            * calls.iter().filter(|call| call.to.is_create()).count() as u64;
+
         // Store original TxEnv values to restore after batch execution
         let original_kind = evm.ctx().tx().kind();
         let original_value = evm.ctx().tx().value();
@@ -651,6 +676,7 @@ where
                 &mut frame_result,
                 evm.ctx().tx().gas_limit(),
                 accumulated_state_gas_spent,
+                create_state_refund,
             );
             return Ok(frame_result);
         }
@@ -719,6 +745,7 @@ where
                     &mut frame_result,
                     evm.ctx().tx().gas_limit(),
                     accumulated_state_gas_spent,
+                    create_state_refund,
                 );
 
                 return Ok(frame_result);
