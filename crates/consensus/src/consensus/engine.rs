@@ -31,6 +31,7 @@ use crate::{
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
+    network::limit_channel,
     peer_manager, storage, subblocks,
 };
 
@@ -61,6 +62,7 @@ pub struct Builder<TBlocker, TPeerManager> {
 
     pub mailbox_size: usize,
     pub deque_size: usize,
+    pub max_message_size: u32,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
     ///
@@ -296,6 +298,7 @@ where
 
         Ok(Engine {
             context: ContextCell::new(context),
+            max_message_size: self.max_message_size,
 
             broadcast,
             broadcast_mailbox,
@@ -341,6 +344,7 @@ where
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
+    max_message_size: u32,
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
@@ -478,6 +482,17 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
+        let votes_channel = limit_channel(votes_channel, "votes", self.max_message_size);
+        let certificates_channel =
+            limit_channel(certificates_channel, "certificates", self.max_message_size);
+        let resolver_channel = limit_channel(resolver_channel, "resolver", self.max_message_size);
+        let broadcast_channel =
+            limit_channel(broadcast_channel, "broadcast", self.max_message_size);
+        let marshal_channel = limit_channel(marshal_channel, "marshal", self.max_message_size);
+        let dkg_channel = limit_channel(dkg_channel, "dkg", self.max_message_size);
+        let subblocks_channel =
+            limit_channel(subblocks_channel, "subblocks", self.max_message_size);
+
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
