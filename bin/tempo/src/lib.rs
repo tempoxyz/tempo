@@ -49,6 +49,9 @@ use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
     print_extensions_footer,
 };
+use alloy_genesis::GenesisAccount;
+use alloy_primitives::{Address, B256};
+use alloy_signer_local::MnemonicBuilder;
 use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
 use eyre::{OptionExt, WrapErr as _};
@@ -57,12 +60,13 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
+use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{sync::Arc, thread};
-use tempo_chainspec::spec::TempoChainSpec;
+use std::{collections::BTreeMap, sync::Arc, thread};
+use tempo_chainspec::spec::{DEV, TempoChainSpec};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
+use tempo_contracts::precompiles::initial_zone_factory_state;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
@@ -82,7 +86,10 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
-fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
+const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
+    alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+
+fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext
@@ -91,6 +98,40 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
     {
         node_cmd.engine.share_execution_cache_with_payload_builder = false;
     }
+
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.dev.dev
+        && node_cmd.chain.genesis_hash() == DEV.genesis_hash()
+    {
+        let owner = MnemonicBuilder::try_from_phrase_first(&node_cmd.dev.dev_mnemonic)
+            .wrap_err("failed to derive ZoneFactory owner from --dev.mnemonic")?
+            .address();
+        if owner != DEFAULT_DEV_ZONE_FACTORY_OWNER {
+            let mut genesis = node_cmd.chain.genesis().clone();
+            genesis.alloc.extend(zone_factory_genesis_alloc(owner));
+            node_cmd.chain = Arc::new(TempoChainSpec::from_genesis(genesis));
+        }
+    }
+
+    Ok(())
+}
+
+fn zone_factory_genesis_alloc(owner: Address) -> [(Address, GenesisAccount); 4] {
+    initial_zone_factory_state(owner).map(|account| {
+        (
+            account.address,
+            GenesisAccount {
+                code: Some(account.code),
+                storage: account.storage.map(|(slot, value)| {
+                    BTreeMap::from([(
+                        B256::from(slot.to_be_bytes()),
+                        B256::from(value.to_be_bytes()),
+                    )])
+                }),
+                ..Default::default()
+            },
+        )
+    })
 }
 
 /// Runs the Tempo node CLI.
@@ -201,7 +242,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Err(err) => err.exit(),
     };
 
-    apply_tempo_cli_overrides(&mut cli);
+    apply_tempo_cli_overrides(&mut cli)?;
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -355,6 +396,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     ctx.with_label("follow"),
                     args.consensus,
                     follow_url,
+                    args.follow_upstream_request_timeout.into_duration(),
                     Arc::new(node),
                     cl_feed_state_clone,
                 ))
@@ -592,14 +634,28 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Once, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Once},
+        time::Duration,
+    };
 
+    use alloy_genesis::GenesisAccount;
+    use alloy_primitives::{Address, B256, Bytes, U256, address};
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode, snapshot_download,
+        TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode,
+        snapshot_download,
     };
-    use reth_ethereum::cli::Commands;
+    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+    use tempo_contracts::{
+        precompiles::{
+            ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+    };
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
@@ -612,6 +668,96 @@ mod tests {
             panic!("expected node command");
         };
         node_cmd.ext.follow
+    }
+
+    fn apply_node_overrides(args: &[&str]) -> Arc<TempoChainSpec> {
+        init_defaults_once();
+
+        let mut cli = TempoCli::try_parse_from(args).unwrap();
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        node_cmd.chain
+    }
+
+    fn assert_zone_factory_alloc(chain_spec: &TempoChainSpec, owner: Address) {
+        let expected_factory = GenesisAccount {
+            code: Some(Bytes::from_static(&[0xef])),
+            storage: Some(BTreeMap::from([(
+                B256::ZERO,
+                B256::from(
+                    (U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS))
+                        .to_be_bytes(),
+                ),
+            )])),
+            ..Default::default()
+        };
+        assert_eq!(
+            chain_spec.genesis().alloc.get(&ZONE_FACTORY_ADDRESS),
+            Some(&expected_factory)
+        );
+
+        for (address, code) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(
+                chain_spec.genesis().alloc.get(&address),
+                Some(&GenesisAccount {
+                    code: Some(code),
+                    ..Default::default()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn default_dev_mnemonic_owns_zone_factory_genesis_alloc() {
+        let chain_spec = apply_node_overrides(&["tempo", "node", "--dev"]);
+
+        assert_eq!(chain_spec.genesis_hash(), super::DEV.genesis_hash());
+        assert_zone_factory_alloc(
+            &chain_spec,
+            address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+        );
+    }
+
+    #[test]
+    fn custom_dev_mnemonic_owns_zone_factory_genesis_alloc() {
+        let chain_spec = apply_node_overrides(&[
+            "tempo",
+            "node",
+            "--dev",
+            "--dev.mnemonic",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        ]);
+
+        assert_zone_factory_alloc(
+            &chain_spec,
+            address!("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"),
+        );
+    }
+
+    #[test]
+    fn non_dev_chains_are_not_modified() {
+        init_defaults_once();
+
+        let mut cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--chain=mainnet"]).unwrap();
+        let Commands::Node(node_cmd) = &cli.command else {
+            panic!("expected node command");
+        };
+        let original_chain = node_cmd.chain.clone();
+
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert_eq!(node_cmd.chain.genesis_hash(), original_chain.genesis_hash());
+        assert_eq!(node_cmd.chain.genesis(), original_chain.genesis());
     }
 
     #[test]
@@ -670,6 +816,49 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn follow_upstream_request_timeout_is_certified_follow_only() {
+        init_defaults_once();
+
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--follow.upstream-request-timeout",
+                "750ms",
+            ])
+            .is_err()
+        );
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--follow.upstream-request-timeout",
+                "750ms",
+            ])
+            .is_err()
+        );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--follow",
+            "--follow.upstream-request-timeout",
+            "750ms",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd.ext.follow_upstream_request_timeout.into_duration(),
+            Duration::from_millis(750)
+        );
     }
 
     #[test]
@@ -747,7 +936,7 @@ mod tests {
             "--engine.disable-execution-cache-sharing-with-builder",
         ])
         .unwrap();
-        apply_tempo_cli_overrides(&mut cli);
+        apply_tempo_cli_overrides(&mut cli).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };

@@ -124,6 +124,7 @@ struct StubUpstreamInner {
     block_reads: AtomicUsize,
     finalization_reads: AtomicUsize,
     block_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    hang_block_reads: AtomicBool,
 }
 
 impl StubUpstream {
@@ -148,14 +149,22 @@ impl StubUpstream {
         *self.inner.block_gate.lock() = Some(gate);
         release
     }
+
+    pub(super) fn hang_block_reads(&self) {
+        self.inner.hang_block_reads.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Upstream for StubUpstream {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         self.inner.block_reads.fetch_add(1, Ordering::SeqCst);
         let block = self.inner.blocks.lock().get(&digest).cloned();
         let gate = self.inner.block_gate.lock().take();
+        let hang = self.inner.hang_block_reads.load(Ordering::SeqCst);
         async move {
+            if hang {
+                std::future::pending::<()>().await;
+            }
             if let Some(gate) = gate {
                 let _ = gate.await;
             }
@@ -166,7 +175,7 @@ impl Upstream for StubUpstream {
     fn get_finalization(
         &self,
         height: Height,
-    ) -> impl Future<Output = Option<CertifiedBlock>> + Send {
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static {
         self.inner.finalization_reads.fetch_add(1, Ordering::SeqCst);
         let finalization = self.inner.finalizations.lock().get(&height.get()).cloned();
         async move { finalization }

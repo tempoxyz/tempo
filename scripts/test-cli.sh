@@ -54,5 +54,58 @@ if [[ $NODE_EXITED -eq 0 ]]; then
     fi
 fi
 
+kill "$NODE_PID" 2>/dev/null || true
+wait "$NODE_PID" 2>/dev/null || true
+rm -rf "$DATADIR" "$NODE_LOG"
+
+# --- node --dev: verify a custom mnemonic owns the native ZoneFactory ---
+echo "--- Test: tempo node --dev (custom mnemonic owns ZoneFactory)"
+DATADIR=$(mktemp -d)
+NODE_LOG=$(mktemp)
+DEV_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+EXPECTED_OWNER="0x9858effd232b4033e47d90003d41ec34ecaeda94"
+EXPECTED_FACTORY_OWNER="0x000000000000000000000000${EXPECTED_OWNER#0x}"
+RPC_URL="http://127.0.0.1:18546"
+$TEMPO node --dev --dev.mnemonic "$DEV_MNEMONIC" --datadir "$DATADIR" \
+    --http --http.port 18546 --http.api eth --disable-discovery --ipcdisable \
+    --port 0 --authrpc.port 0 --log.file.max-files 0 >"$NODE_LOG" 2>&1 &
+NODE_PID=$!
+
+RPC_READY=0
+for _ in $(seq 1 40); do
+    if ! kill -0 "$NODE_PID" 2>/dev/null; then
+        EC=0; wait "$NODE_PID" || EC=$?
+        dump_log "$NODE_LOG"
+        fail "dev node exited before RPC was ready (exit code $EC)"
+        break
+    fi
+    if curl -sf -H "content-type: application/json" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+        "$RPC_URL" >/dev/null; then
+        RPC_READY=1
+        break
+    fi
+    sleep 0.25
+done
+
+if [[ $RPC_READY -eq 0 && $FAILED -eq 0 ]]; then
+    dump_log "$NODE_LOG"
+    fail "dev node RPC did not become ready"
+elif [[ $RPC_READY -eq 1 ]]; then
+    ACCOUNTS=$(curl -sf -H "content-type: application/json" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_accounts","params":[]}' \
+        "$RPC_URL")
+    FACTORY_OWNER=$(curl -sf -H "content-type: application/json" \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x5af2000000000000000000000000000000000000","data":"0x8da5cb5b"},"latest"]}' \
+        "$RPC_URL")
+    if [[ "$ACCOUNTS" != *"\"result\":[\"$EXPECTED_OWNER\""* ||
+        "$FACTORY_OWNER" != *"\"result\":\"$EXPECTED_FACTORY_OWNER\""* ]]; then
+        dump_log "$NODE_LOG"
+        fail "custom mnemonic account zero does not own the ZoneFactory"
+    else
+        echo "PASS"
+    fi
+fi
+
 if [[ $FAILED -ne 0 ]]; then echo ""; echo "CLI smoke tests FAILED"; exit 1; fi
 echo ""; echo "All CLI tests passed!"

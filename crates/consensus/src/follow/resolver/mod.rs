@@ -3,10 +3,10 @@
 //! Implements [`commonware_resolver::Resolver`] for marshal's gap-repair machinery. Checks the
 //! local execution provider first and falls back to the upstream abstraction.
 
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 use commonware_consensus::{marshal::resolver::handler, types::Height};
-use commonware_runtime::{Clock, Spawner};
+use commonware_runtime::{Clock, Metrics, Spawner};
 use commonware_utils::channel::mpsc;
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::NodeTypesWithDBAdapter;
@@ -38,6 +38,7 @@ pub(crate) struct Config<
     /// For reading blocks and certificates from the connected node.
     pub(super) upstream: U,
     pub(super) mailbox_size: usize,
+    pub(super) upstream_request_timeout: Duration,
 }
 
 pub(crate) fn try_init<TContext, P, U>(
@@ -49,7 +50,7 @@ pub(crate) fn try_init<TContext, P, U>(
     mpsc::Receiver<handler::Message<Digest>>,
 )
 where
-    TContext: Clock + Spawner,
+    TContext: Clock + Metrics + Spawner,
     P: BlockProvider + Clone + 'static,
     U: Upstream + Clone + 'static,
 {
@@ -63,8 +64,11 @@ pub(crate) trait BlockProvider: Send + Sync {
 
 /// Upstream reads needed by the resolver.
 pub(crate) trait Upstream: Send + Sync {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send;
-    fn get_finalization(&self, h: Height) -> impl Future<Output = Option<CertifiedBlock>> + Send;
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static;
+    fn get_finalization(
+        &self,
+        h: Height,
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static;
 }
 
 impl<N> BlockProvider for BlockchainProvider<N>
@@ -80,7 +84,7 @@ where
 }
 
 impl Upstream for super::upstream::Mailbox {
-    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         let upstream = self.clone();
         async move { upstream.get_block(digest).await }
     }
@@ -88,7 +92,7 @@ impl Upstream for super::upstream::Mailbox {
     fn get_finalization(
         &self,
         height: Height,
-    ) -> impl Future<Output = Option<CertifiedBlock>> + Send {
+    ) -> impl Future<Output = Option<CertifiedBlock>> + Send + 'static {
         let upstream = self.clone();
         async move { upstream.get_finalization(height).await }
     }

@@ -22,6 +22,7 @@ const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
 const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
+const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.txt"
 
 def txgen-tip20-base-scenario [] {
     {
@@ -690,7 +691,9 @@ def txgen-run-preset-pipeline [
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
-        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
+        | append (if $clickhouse_url != "" {
+            ["--report" $"clickhouse:($clickhouse_url)" "--clickhouse-metrics-file" ([ (txgen-repo-root) $TXGEN_HELPER_CLICKHOUSE_METRICS_FILE ] | path join)]
+        } else { [] })
     let pr_number = ($env | get --optional BENCH_PR | default "")
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"

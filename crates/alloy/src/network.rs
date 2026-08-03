@@ -8,19 +8,19 @@ use alloy_network::{
     NetworkWallet, TransactionBuilder, TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use alloy_provider::fillers::{
-    ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
-};
+use alloy_provider::fillers::{ChainIdFiller, JoinFill, NonceFiller, RecommendedFillers};
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
+use crate::fillers::TempoGasFiller;
+
 /// Set of recommended fillers.
 ///
 /// `N` is a nonce filler.
-pub type TempoFillers<N> = JoinFill<N, JoinFill<GasFiller, ChainIdFiller>>;
+pub type TempoFillers<N> = JoinFill<N, JoinFill<TempoGasFiller, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]

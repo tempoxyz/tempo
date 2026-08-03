@@ -254,6 +254,7 @@ impl FollowerBuilder {
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
+            upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.

@@ -51,6 +51,15 @@ pub struct TempoArgs {
     #[arg(long = "follow.nocertify", requires = "follow")]
     pub(crate) follow_nocertify: bool,
 
+    /// Maximum time to wait for an upstream RPC request in certified follow mode.
+    #[arg(
+        long = "follow.upstream-request-timeout",
+        default_value = "2s",
+        requires = "follow",
+        conflicts_with = "follow_nocertify"
+    )]
+    pub(crate) follow_upstream_request_timeout: tempo_consensus::PositiveDuration,
+
     /// DEPRECATED. Certification is now enabled by default in follow mode. Use
     /// --follow.nocertify to disable. This argument is a no-op.
     #[arg(long = "follow.experimental.certify", requires = "follow", hide = true)]

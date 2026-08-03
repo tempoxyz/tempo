@@ -157,6 +157,12 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Builder-pattern method for appending one call to the Tempo call list.
+    pub fn call(mut self, call: Call) -> Self {
+        self.calls.push(call);
+        self
+    }
+
     /// Append one call to the Tempo call list.
     pub fn push_call(&mut self, call: Call) {
         self.calls.push(call);
@@ -750,6 +756,21 @@ mod tests {
         let mut request = TempoTransactionRequest::default();
         request.set_calls(vec![call.clone()]);
         request.push_call(call.clone());
+
+        assert_eq!(request.calls, vec![call.clone(), call]);
+    }
+
+    #[test]
+    fn test_call_builder() {
+        let call = Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::ZERO,
+            input: Bytes::from(vec![0xaa]),
+        };
+
+        let request = TempoTransactionRequest::default()
+            .with_calls(vec![call.clone()])
+            .call(call.clone());
 
         assert_eq!(request.calls, vec![call.clone(), call]);
     }
