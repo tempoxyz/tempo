@@ -19,11 +19,13 @@ pub(crate) mod marshal {
     };
     use commonware_storage::archive::{Archive as _, Identifier, immutable};
     use commonware_utils::acknowledgement::Exact;
-    use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
+    use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
     use rand_core::{CryptoRng, Rng};
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
-    use reth_provider::{BlockReader as _, HeaderProvider as _, providers::BlockchainProvider};
+    use reth_provider::{
+        BlockHashReader as _, BlockReader as _, HeaderProvider as _, providers::BlockchainProvider,
+    };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tracing::{info, instrument};
@@ -114,7 +116,7 @@ pub(crate) mod marshal {
         err(Display)
     )]
     pub(crate) async fn init<TContext>(
-        context: TContext,
+        mut context: TContext,
         page_cache: CacheRef,
         execution_node: Arc<TempoFullNode>,
         config: Config,
@@ -142,15 +144,20 @@ pub(crate) mod marshal {
             tip_digest = %finalized_tip.1,
             "selected finalized startup range"
         );
+
         let start =
             start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
                 .await?;
-        register_scheme_for_start(
-            &config.epoch_strategy,
-            &config.scheme_provider,
-            &execution_node,
-            &start,
-        )?;
+
+        if let marshal::Start::Floor(finalization) = &start {
+            register_scheme(
+                &mut context,
+                &config.epoch_strategy,
+                &config.scheme_provider,
+                &execution_node,
+                (finalized_floor.0, finalization),
+            )?;
+        }
 
         let finalized_blocks = storage::init_finalized_blocks(
             &context,
@@ -317,15 +324,24 @@ pub(crate) mod marshal {
         ))
     }
 
-    fn register_scheme_for_start(
+    fn register_scheme<R: CryptoRng>(
+        rng: &mut R,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
         execution_node: &TempoFullNode,
-        start: &marshal::Start<Scheme<PublicKey, MinSig>, Digest, Block>,
+        (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
     ) -> eyre::Result<()> {
-        let marshal::Start::Floor(finalization) = start else {
-            return Ok(());
-        };
+        let digest = execution_node
+            .provider
+            .block_hash(height.get())
+            .map_err(eyre::Report::new)
+            .wrap_err("failed reading finalized floor block hash")?
+            .ok_or_eyre("missing finalized floor block hash")?;
+
+        ensure!(
+            digest == finalization.proposal.payload.0,
+            "finalization digest does not match execution state"
+        );
 
         let epoch = finalization.epoch();
         let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
@@ -342,6 +358,12 @@ pub(crate) mod marshal {
             onchain_outcome.players().clone(),
             onchain_outcome.sharing().clone(),
         );
+
+        ensure!(
+            finalization.verify(rng, &scheme, &Sequential),
+            "finalized floor failed verification"
+        );
+
         scheme_provider.register(epoch, scheme);
         Ok(())
     }
