@@ -104,6 +104,12 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
         self
     }
 
+    /// Overrides the gas parameter table used by this storage provider.
+    pub fn with_gas_params(mut self, gas_params: evm2::version::GasParams) -> Self {
+        self.version.gas_params = gas_params;
+        self
+    }
+
     /// Sets the transaction-local non-creditable clear-slot context for this provider.
     pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
         self.non_creditable_slots = slots;
@@ -122,9 +128,7 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
 
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        self.gas_tracker
-            .spend_state(gas)
-            .map_err(|_| TempoPrecompileError::OutOfGas)
+        self.gas_tracker.deduct_state_gas(gas)
     }
 
     /// Performs a raw journaled SLOAD without metering gas or recording a storage action.
@@ -135,6 +139,7 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
+        self.state.account(&address, false)?.warm();
         let mut slot = self
             .state
             .storage(&address)
@@ -156,6 +161,7 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
         value: U256,
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
+        self.state.account(&address, false)?.warm();
         let mut slot = self
             .state
             .storage(&address)
@@ -256,8 +262,10 @@ impl<'state, 'gas, 'db> EvmPrecompileStorageProvider<'state, 'gas, 'db> {
         // Track state gas (cold SSTORE zero->non-zero only)
         self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
 
-        // refund gas.
-        self.refund_gas(self.version.gas_params.sstore_refund(true, &result));
+        // Native precompile storage did not surface SSTORE refunds before TIP-1016.
+        if self.spec.is_t4() {
+            self.refund_gas(self.version.gas_params.sstore_refund(true, &result));
+        }
 
         Ok(())
     }
@@ -275,6 +283,28 @@ pub trait EvmStorageExt {
 enum GasTrackerStorage<'a> {
     Borrowed(&'a mut GasTracker),
     Owned(GasTracker),
+}
+
+impl GasTrackerStorage<'_> {
+    #[inline]
+    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if self.remaining() < gas {
+            Err(TempoPrecompileError::OutOfGas)
+        } else {
+            self.spend(gas).map_err(|_| TempoPrecompileError::OutOfGas)
+        }
+    }
+
+    #[inline]
+    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        let spill = gas.saturating_sub(self.reservoir());
+        if self.remaining() < spill {
+            Err(TempoPrecompileError::OutOfGas)
+        } else {
+            self.spend_state(gas)
+                .map_err(|_| TempoPrecompileError::OutOfGas)
+        }
+    }
 }
 
 impl Deref for GasTrackerStorage<'_> {
@@ -430,15 +460,11 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
 
         if !self.spec.is_t4() {
-            self.gas_tracker
-                .spend(warm_storage_read_cost)
-                .map_err(|_| TempoPrecompileError::OutOfGas)?;
+            self.gas_tracker.deduct_gas(warm_storage_read_cost)?;
         }
 
         if is_cold {
-            self.gas_tracker
-                .spend(additional_cost)
-                .map_err(|_| TempoPrecompileError::OutOfGas)?;
+            self.gas_tracker.deduct_gas(additional_cost)?;
         }
 
         account.load_code()?;
@@ -571,9 +597,7 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
 
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        self.gas_tracker
-            .spend(gas)
-            .map_err(|_| TempoPrecompileError::OutOfGas)
+        self.gas_tracker.deduct_gas(gas)
     }
 
     #[inline]
@@ -873,6 +897,25 @@ mod tests {
     }
 
     #[test]
+    fn test_failed_account_info_charge_preserves_remaining_gas_before_t4() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T1);
+        let address = Address::random();
+        evm.state.prewarm(&address);
+
+        let warm_storage_read_cost = u64::from(evm.gas_params().get(GasId::WarmStorageReadCost));
+        let mut provider =
+            evm.provider_with_gas_limit(warm_storage_read_cost.saturating_sub(10), 0);
+
+        assert_eq!(
+            provider.with_account_info(address, &mut |_| {}),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+        assert_eq!(provider.gas_used(), 0);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_emit_event() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
@@ -1064,6 +1107,49 @@ mod tests {
             provider.keccak256(b"hello"),
             Err(TempoPrecompileError::OutOfGas)
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_failed_gas_charges_preserve_remaining_gas() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_with_gas_limit(100, 0);
+
+        assert_eq!(
+            provider.deduct_gas(101),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+        assert_eq!(provider.gas_used(), 0);
+
+        provider.deduct_gas(100)?;
+        assert_eq!(provider.gas_used(), 100);
+        std::mem::drop(provider);
+
+        let mut provider = evm.provider_with_gas_limit(100, 50);
+        assert_eq!(
+            provider.deduct_state_gas(151),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+        assert_eq!(provider.gas_used(), 0);
+        assert_eq!(provider.state_gas_used(), 0);
+        assert_eq!(provider.reservoir(), 50);
+
+        provider.deduct_state_gas(150)?;
+        assert_eq!(provider.gas_used(), 100);
+        assert_eq!(provider.state_gas_used(), 150);
+        assert_eq!(provider.reservoir(), 0);
+        std::mem::drop(provider);
+
+        let mut provider = evm.provider_with_gas_limit(100, 0);
+        assert_eq!(
+            crate::storage_credits::StorageCreditsBackend::charge_gas(&mut provider, 101),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+        assert_eq!(provider.gas_used(), 0);
+
+        crate::storage_credits::StorageCreditsBackend::charge_gas(&mut provider, 100)?;
+        assert_eq!(provider.gas_used(), 100);
 
         Ok(())
     }

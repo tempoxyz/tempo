@@ -871,88 +871,111 @@ fn apply_key_authorization(
     // unlimited gas also eliminates the OOG path that caused the CREATE
     // nonce replay vulnerability (protocol nonce not bumped on OOG).
     let metered = spec.is_t1() && !spec.is_t1b();
-    let (result, gas) = StorageCtx::enter_evm_without_tip1060_accounting_with_gas_limit(
-        host,
-        if metered { remaining_gas } else { u64::MAX },
-        // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
-        0,
-        || {
-            let mut keychain = AccountKeychain::new();
-            // Convert signature type to precompile SignatureType enum
-            // Use the key_type field which specifies the type of key being authorized
-            let signature_type: PrecompileSignatureType = authorization.key_type.into();
-            let restrictions = KeyRestrictions {
-                // Handle expiry: None means never expires (store as u64::MAX)
-                expiry: authorization.expiry.map_or(u64::MAX, |expiry| expiry.get()),
-                // Handle limits: None means unlimited spending (enforce_limits=false)
-                // Some([]) means no spending allowed (enforce_limits=true)
-                // Some([...]) means specific limits (enforce_limits=true)
-                enforceLimits: authorization.limits.is_some(),
-                limits: authorization
-                    .limits
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|limit| TokenLimit {
-                        token: limit.token,
-                        amount: limit.limit,
-                        period: limit.period,
-                    })
-                    .collect(),
-                allowAnyCalls: authorization.allowed_calls.is_none(),
-                allowedCalls: translate_allowed_calls_for_precompile(authorization),
-            };
-            // Call precompile to authorize the key (same phase as nonce increment).
-            if authorization.is_admin() {
-                keychain.authorize_admin_key(
-                    aa.signer(),
-                    authorization.key_id,
-                    signature_type,
-                    authorization.witness(),
-                )?;
-            } else {
-                keychain.authorize_key(
-                    aa.signer(),
-                    authorization.key_id,
-                    signature_type,
-                    restrictions,
-                    authorization.witness(),
-                )?;
-            }
-
-            // If this is a same tx auth+use, set the transient key_id to the newly authorized
-            // key and decrement the fee from its spending limit. Admin delegation must keep the
-            // actual signer as the transaction key.
-            if state.same_tx_authorization {
-                keychain.set_transaction_key(authorization.key_id)?;
-                if !fee.collected.is_zero() {
-                    keychain.authorize_transfer(fee.fee_payer, fee.fee_token, fee.collected)?;
+    let mut key_authorization_gas_params = host.version().gas_params;
+    if metered {
+        let sstore_set = key_authorization_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+        let warm_storage_read = key_authorization_gas_params.get(GasId::WarmStorageReadCost);
+        for index in 0..GasId::COUNT {
+            key_authorization_gas_params
+                .set(GasId::from_usize(index).expect("gas IDs are contiguous"), 0);
+        }
+        key_authorization_gas_params.set(GasId::SstoreSetWithoutLoadCost, sstore_set);
+        key_authorization_gas_params.set(GasId::WarmStorageReadCost, warm_storage_read);
+    }
+    let (result, gas) =
+        StorageCtx::enter_evm_without_tip1060_accounting_with_gas_limit_and_gas_params(
+            host,
+            if metered { remaining_gas } else { u64::MAX },
+            // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
+            0,
+            key_authorization_gas_params,
+            || {
+                let mut keychain = AccountKeychain::new();
+                // Convert signature type to precompile SignatureType enum
+                // Use the key_type field which specifies the type of key being authorized
+                let signature_type: PrecompileSignatureType = authorization.key_type.into();
+                let restrictions = KeyRestrictions {
+                    // Handle expiry: None means never expires (store as u64::MAX)
+                    expiry: authorization.expiry.map_or(u64::MAX, |expiry| expiry.get()),
+                    // Handle limits: None means unlimited spending (enforce_limits=false)
+                    // Some([]) means no spending allowed (enforce_limits=true)
+                    // Some([...]) means specific limits (enforce_limits=true)
+                    enforceLimits: authorization.limits.is_some(),
+                    limits: authorization
+                        .limits
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|limit| TokenLimit {
+                            token: limit.token,
+                            amount: limit.limit,
+                            period: limit.period,
+                        })
+                        .collect(),
+                    allowAnyCalls: authorization.allowed_calls.is_none(),
+                    allowedCalls: translate_allowed_calls_for_precompile(authorization),
+                };
+                // Call precompile to authorize the key (same phase as nonce increment).
+                if authorization.is_admin() {
+                    keychain.authorize_admin_key(
+                        aa.signer(),
+                        authorization.key_id,
+                        signature_type,
+                        authorization.witness(),
+                    )?;
+                } else {
+                    keychain.authorize_key(
+                        aa.signer(),
+                        authorization.key_id,
+                        signature_type,
+                        restrictions,
+                        authorization.witness(),
+                    )?;
                 }
-            }
-            Ok::<_, TempoPrecompileError>(())
-        },
-    );
+
+                Ok::<_, TempoPrecompileError>(())
+            },
+        );
 
     match result {
         Ok(()) => {
             // Cache inline key authorization expiry.
             host.ext_mut().key_expiry = authorization.expiry.map(|expiry| expiry.get());
+
+            // Same-transaction auth+use accounting is deliberately outside the
+            // historical T1/T1A metered authorization call. Admin delegation must
+            // keep the actual signer as the transaction key.
+            if state.same_tx_authorization {
+                let result = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.set_transaction_key(authorization.key_id)?;
+                    if !fee.collected.is_zero() {
+                        keychain.authorize_transfer(fee.fee_payer, fee.fee_token, fee.collected)?;
+                    }
+                    Ok::<_, TempoPrecompileError>(())
+                });
+                result.map_err(|error| match error {
+                    TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
+                    error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                    error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
+                        reason: error.to_string(),
+                    }),
+                })?;
+            }
+
             Ok(if metered { gas.spent() } else { 0 })
         }
         Err(TempoPrecompileError::OutOfGas) if metered => {
             host.state_mut().rollback(checkpoint, features);
             Ok(u64::MAX)
         }
-        Err(error) => {
-            host.state_mut().rollback(checkpoint, features);
-            Err(match error {
-                TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
-                error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
-                    reason: error.to_string(),
-                }),
-            })
-        }
+        Err(error) => Err(match error {
+            TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
+            error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+            error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
+                reason: error.to_string(),
+            }),
+        }),
     }
 }
 
