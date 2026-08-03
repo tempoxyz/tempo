@@ -67,7 +67,6 @@ use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec;
-use reth_provider::BlockHashReader as _;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -318,44 +317,21 @@ where
                 .last(prev)
                 .expect("epoch strategy valid for all epochs and heights")
         }) {
-            Some(boundary_height) => 'floor: {
-                if let Some(block) = self.config.marshal.get_block(boundary_height).await {
-                    break 'floor Floor::Genesis(block.digest());
-                }
-
-                let state = self
+            Some(boundary_height) => {
+                let (_, digest) = self
                     .config
-                    .execution_node
-                    .provider
-                    .canonical_in_memory_state();
-
-                ensure!(
-                    state
-                        .get_finalized_num_hash()
-                        .is_some_and(|watermark| watermark.number >= boundary_height.get()),
-                    "consensus layer does not have access to certificate or \
-                    block at boundary `{boundary_height}`, and execution layer \
-                    finalized watermark is below the boundary height, so a \
-                    consensus engine for epoch `{epoch}` cannot be started"
-                );
-
-                let hash = self
-                    .config
-                    .execution_node
-                    .provider
-                    .block_hash(boundary_height.get())
-                    .map_err(eyre::Report::new)?
+                    .marshal
+                    .get_info(boundary_height)
+                    .await
                     .ok_or_else(|| {
                         eyre!(
-                            "consensus layer does not have access to certificate or \
-                        block at boundary `{boundary_height}`, and execution layer \
-                        does not know about the finalized block hash corresponding \
-                        to it, so a consensus engine for epoch `{epoch}` cannot be \
-                        started"
+                            "marshal does not have finalized information for boundary \
+                            `{boundary_height}`, so a consensus engine for epoch \
+                            `{epoch}` cannot be started"
                         )
                     })?;
 
-                Floor::Genesis(Digest(hash))
+                Floor::Genesis(digest)
             }
             None => {
                 let genesis_hash = self.config.execution_node.chain_spec().genesis_hash();
