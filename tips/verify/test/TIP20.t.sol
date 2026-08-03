@@ -13,9 +13,6 @@ interface ITIP20Protocol is ITIP20 {
 
 }
 
-/// forge-config: default.hardfork = "tempo:T2"
-/// forge-config: next.hardfork = "tempo:T2"
-/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP20Test is TempoTest {
 
     ITIP20Token token;

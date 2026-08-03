@@ -17,9 +17,6 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 ///      TEMPO-1015-6: Built-in Policy Compatibility - compound policies can reference policies 0/1
 ///      TEMPO-1015-7: distributeReward requires both sender AND recipient authorization
 ///      TEMPO-1015-8: claimRewards uses correct directional authorization
-/// forge-config: default.hardfork = "tempo:T2"
-/// forge-config: next.hardfork = "tempo:T2"
-/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP1015InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
