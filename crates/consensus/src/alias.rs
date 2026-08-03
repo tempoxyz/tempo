@@ -300,17 +300,15 @@ pub(crate) mod marshal {
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
-        if !finalized_floor.0.is_zero()
-            && let Some(finalization) = archive
+        if !finalized_floor.0.is_zero() {
+            match archive
                 .get(Identifier::Index(finalized_floor.0.get()))
                 .await
                 .wrap_err("failed reading finalization")?
-        {
-            return Ok(marshal::Start::Floor(finalization));
-        }
-
-        if !finalized_floor.0.is_zero() {
-            bail!("finalized range floor missing from archive");
+            {
+                Some(finalization) => return Ok(marshal::Start::Floor(finalization)),
+                None => bail!("finalized range floor missing from archive"),
+            }
         }
 
         let genesis_hash = execution_node.chain_spec().genesis_hash();
