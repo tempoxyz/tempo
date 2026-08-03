@@ -1211,6 +1211,25 @@ impl TIP20Token {
         Ok(())
     }
 
+    /// Ensures `receiver` currently accepts this token from `sender` under TIP-1028.
+    ///
+    /// Receive policies remain mutable, so a later policy change can still block delivery.
+    pub(crate) fn ensure_receive_policy_authorized(
+        &self,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<()> {
+        if self.storage.spec().is_t6()
+            && TIP403Registry::new()
+                .validate_receive_policy(self.address, sender, receiver)?
+                .is_some()
+        {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        Ok(())
+    }
+
     /// Check whether users are authorized by the token's [`TIP403Registry`] policy for the given
     /// roles.
     ///
