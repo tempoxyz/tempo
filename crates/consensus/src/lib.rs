@@ -13,7 +13,6 @@ pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
 pub mod metrics;
-mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub mod storage;
@@ -117,7 +116,6 @@ pub async fn run_consensus_stack(
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
-        max_message_size: config.max_message_size_bytes,
 
         time_to_propose: config.wait_for_proposal.into_duration(),
         time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),

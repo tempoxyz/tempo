@@ -296,7 +296,6 @@ pub async fn setup_validators(
             signer: private_key.clone(),
             mailbox_size: 1024,
             deque_size: 10,
-            max_message_size: 1024 * 1024,
             time_to_propose: Duration::from_secs(2),
             time_to_collect_notarizations: Duration::from_secs(3),
             time_to_retry_nullify_broadcast: Duration::from_secs(10),
