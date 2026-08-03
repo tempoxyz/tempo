@@ -396,6 +396,6 @@ mod tests {
         );
         let updated = append_bench_hardfork(source, &variants, "T10", "T11").unwrap();
         assert!(updated.contains("['T9', 'T10', 'T11']"));
-        assert_eq!(updated.matches("T9|T10|T11").count(), 2);
+        assert_eq!(updated.matches("T9|T10|T11").count(), 4);
     }
 }
