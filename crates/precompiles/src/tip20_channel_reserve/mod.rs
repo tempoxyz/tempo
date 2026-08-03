@@ -172,7 +172,7 @@ impl TIP20ChannelReserve {
             token.ensure_receive_policy_authorized(msg_sender, payee)?;
             token.channel_reserve_transfer(
                 msg_sender,
-                self.address,
+                Recipient::direct(self.address),
                 U256::from(call.deposit),
                 msg_sender,
             )?;
@@ -248,13 +248,11 @@ impl TIP20ChannelReserve {
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
 
         if self.storage.spec().is_t11() {
-            token.ensure_transfer_authorized(
-                call.descriptor.payer,
-                Recipient::resolve(call.descriptor.payee)?.target,
-            )?;
+            let payee = Recipient::resolve(call.descriptor.payee)?;
+            token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
             token.channel_reserve_transfer(
                 self.address,
-                call.descriptor.payee,
+                payee,
                 U256::from(delta),
                 call.descriptor.payer,
             )?;
@@ -328,7 +326,7 @@ impl TIP20ChannelReserve {
                 token.ensure_receive_policy_authorized(msg_sender, payee)?;
                 token.channel_reserve_transfer(
                     msg_sender,
-                    self.address,
+                    Recipient::direct(self.address),
                     U256::from(call.additionalDeposit),
                     msg_sender,
                 )?;
@@ -451,13 +449,11 @@ impl TIP20ChannelReserve {
         if self.storage.spec().is_t11() {
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
             if !delta.is_zero() {
-                token.ensure_transfer_authorized(
-                    call.descriptor.payer,
-                    Recipient::resolve(call.descriptor.payee)?.target,
-                )?;
+                let payee = Recipient::resolve(call.descriptor.payee)?;
+                token.ensure_transfer_authorized(call.descriptor.payer, payee.target)?;
                 token.channel_reserve_transfer(
                     self.address,
-                    call.descriptor.payee,
+                    payee,
                     U256::from(delta),
                     call.descriptor.payer,
                 )?;
@@ -465,7 +461,7 @@ impl TIP20ChannelReserve {
             if !refund.is_zero() {
                 token.channel_reserve_transfer(
                     self.address,
-                    call.descriptor.payer,
+                    Recipient::resolve(call.descriptor.payer)?,
                     U256::from(refund),
                     self.address,
                 )?;
@@ -543,7 +539,7 @@ impl TIP20ChannelReserve {
                 let mut token = TIP20Token::from_address(call.descriptor.token)?;
                 token.channel_reserve_transfer(
                     self.address,
-                    call.descriptor.payer,
+                    Recipient::resolve(call.descriptor.payer)?,
                     U256::from(refund),
                     self.address,
                 )?;
@@ -1018,29 +1014,20 @@ mod tests {
     ) -> Result<()> {
         let mut registry = TIP403Registry::new();
         registry.initialize()?;
-        let recipient_policy = registry.create_policy(
+        let recipient_policy = registry.create_policy_with_accounts(
             admin,
-            ITIP403Registry::createPolicyCall {
+            ITIP403Registry::createPolicyWithAccountsCall {
                 admin,
                 policyType: ITIP403Registry::PolicyType::WHITELIST,
+                accounts: recipients.to_vec(),
             },
         )?;
-        for &recipient in recipients {
-            registry.modify_policy_whitelist(
-                admin,
-                ITIP403Registry::modifyPolicyWhitelistCall {
-                    policyId: recipient_policy,
-                    account: recipient,
-                    allowed: true,
-                },
-            )?;
-        }
         let compound_policy = registry.create_compound_policy(
             admin,
             ITIP403Registry::createCompoundPolicyCall {
-                senderPolicyId: 1,
+                senderPolicyId: ALLOW_ALL_POLICY_ID,
                 recipientPolicyId: recipient_policy,
-                mintRecipientPolicyId: 1,
+                mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
             },
         )?;
         token.change_transfer_policy_id(
@@ -1049,6 +1036,31 @@ mod tests {
                 newPolicyId: compound_policy,
             },
         )
+    }
+
+    fn install_receive_sender_blacklist(
+        receiver: Address,
+        blocked_sender: Address,
+    ) -> Result<(TIP403Registry, u64)> {
+        let mut registry = TIP403Registry::new();
+        registry.initialize()?;
+        let sender_policy = registry.create_policy_with_accounts(
+            receiver,
+            ITIP403Registry::createPolicyWithAccountsCall {
+                admin: receiver,
+                policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                accounts: vec![blocked_sender],
+            },
+        )?;
+        registry.set_receive_policy(
+            receiver,
+            ITIP403Registry::setReceivePolicyCall {
+                senderPolicyId: sender_policy,
+                tokenFilterId: ALLOW_ALL_POLICY_ID,
+                recoveryAuthority: Address::ZERO,
+            },
+        )?;
+        Ok((registry, sender_policy))
     }
 
     #[test]
@@ -1480,24 +1492,7 @@ mod tests {
             let mut reserve = TIP20ChannelReserve::new();
             reserve.initialize()?;
 
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let sender_policy = registry.create_policy(
-                payee,
-                ITIP403Registry::createPolicyCall {
-                    admin: payee,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            set_blacklisted(&mut registry, payee, sender_policy, payer, true)?;
-            registry.set_receive_policy(
-                payee,
-                ITIP403Registry::setReceivePolicyCall {
-                    senderPolicyId: sender_policy,
-                    tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAuthority: Address::ZERO,
-                },
-            )?;
+            let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
 
             let salt = B256::random();
             seed_expiring_nonce_hash(&mut reserve)?;
@@ -1603,24 +1598,7 @@ mod tests {
 
             // Receive policies remain mutable after funding. The payee now rejects only the
             // logical payer, while the physical reserve sender remains authorized.
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let sender_policy = registry.create_policy(
-                payee,
-                ITIP403Registry::createPolicyCall {
-                    admin: payee,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            set_blacklisted(&mut registry, payee, sender_policy, payer, true)?;
-            registry.set_receive_policy(
-                payee,
-                ITIP403Registry::setReceivePolicyCall {
-                    senderPolicyId: sender_policy,
-                    tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAuthority: Address::ZERO,
-                },
-            )?;
+            let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
 
             let cumulative = U96::from(40);
             let digest =
@@ -1828,30 +1806,8 @@ mod tests {
 
             // Originator recovery would make a guarded reserve-originated refund unclaimable.
             // Channel refunds reject the policy instead and leave channel state intact.
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let sender_policy = registry.create_policy(
-                payer,
-                ITIP403Registry::createPolicyCall {
-                    admin: payer,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            set_blacklisted(
-                &mut registry,
-                payer,
-                sender_policy,
-                TIP20_CHANNEL_RESERVE_ADDRESS,
-                true,
-            )?;
-            registry.set_receive_policy(
-                payer,
-                ITIP403Registry::setReceivePolicyCall {
-                    senderPolicyId: sender_policy,
-                    tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAuthority: Address::ZERO,
-                },
-            )?;
+            let (mut registry, sender_policy) =
+                install_receive_sender_blacklist(payer, TIP20_CHANNEL_RESERVE_ADDRESS)?;
 
             let close_result = reserve.close(
                 payee,
