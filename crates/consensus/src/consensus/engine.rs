@@ -542,7 +542,6 @@ where
         if let Some(subblocks) = self.subblocks {
             tasks.push(
                 self.context
-                    .as_present()
                     .child("subblocks_channel")
                     .spawn(|_| subblocks.run(subblocks_channel)),
             );
