@@ -60,6 +60,7 @@ where
     cache: BTreeMap<Epoch, Events>,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Opened<TContext>
 where
     TContext: commonware_runtime::Storage + Clock + Metrics,
@@ -517,7 +518,6 @@ impl Builder {
     pub(super) fn partition_prefix(self, partition_prefix: &str) -> Self {
         Self {
             partition_prefix: Some(partition_prefix.to_string()),
-            ..self
         }
     }
 
