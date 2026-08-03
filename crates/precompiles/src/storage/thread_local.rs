@@ -8,6 +8,7 @@ use evm2::{
     evm::precompile::PrecompileOutput,
     interpreter::GasTracker,
     precompiles::{PrecompileError, PrecompileResult},
+    version::GasParams,
 };
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
@@ -114,6 +115,32 @@ impl StorageCtx {
     {
         let mut gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
         let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f);
+        (result, gas)
+    }
+
+    /// Like [`Self::enter_evm_without_tip1060_accounting_with_gas_limit`], with an
+    /// explicit gas parameter table for historical metering compatibility.
+    pub fn enter_evm_without_tip1060_accounting_with_gas_limit_and_gas_params<T, R>(
+        evm: &mut Evm<'_, T>,
+        gas_limit: u64,
+        reservoir: u64,
+        gas_params: GasParams,
+        f: impl FnOnce() -> R,
+    ) -> (R, GasTracker)
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let mut gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+        let actions = evm.ext().storage_actions();
+        let non_creditable_slots = evm.ext().non_creditable_slots();
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
+            .with_actions(actions)
+            .with_non_creditable_slots(non_creditable_slots)
+            .with_gas_params(gas_params);
+        storage.set_tip1060_storage_credits(false);
+        let result = Self::enter(&mut storage, f);
         (result, gas)
     }
 
