@@ -927,37 +927,31 @@ impl TIP20Token {
     pub(crate) fn channel_reserve_transfer(
         &mut self,
         from: Address,
-        to: Address,
+        to: Recipient,
         amount: U256,
         receive_policy_sender: Address,
-    ) -> Result<bool> {
-        if from != TIP20_CHANNEL_RESERVE_ADDRESS && to != TIP20_CHANNEL_RESERVE_ADDRESS {
+    ) -> Result<()> {
+        if from != TIP20_CHANNEL_RESERVE_ADDRESS
+            && to.original_address() != TIP20_CHANNEL_RESERVE_ADDRESS
+        {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.storage.spec().is_t6() {
-            if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
-                return Err(ReceivePolicyGuardError::address_reserved().into());
-            }
-            if TIP403Registry::new()
-                .validate_receive_policy(self.address, receive_policy_sender, to.target)?
-                .is_some()
-            {
-                return Err(TIP20Error::policy_forbids().into());
-            }
+        if self.storage.spec().is_t6() && to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
         }
+        self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
 
         self._transfer(from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
 
-        Ok(true)
+        Ok(())
     }
 
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
@@ -1501,6 +1495,11 @@ impl Recipient {
         })
     }
 
+    /// Returns the original recipient address used by the transfer.
+    fn original_address(&self) -> Address {
+        self.virtual_addr.unwrap_or(self.target)
+    }
+
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
@@ -1516,7 +1515,7 @@ impl Recipient {
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
+        TIP20Event::transfer(from, self.original_address(), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
