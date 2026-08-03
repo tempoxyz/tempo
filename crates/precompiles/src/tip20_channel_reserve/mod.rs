@@ -1540,7 +1540,7 @@ mod tests {
             let result = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
-                    descriptor: descriptor.clone(),
+                    descriptor,
                     additionalDeposit: U96::from(1),
                 },
             );
