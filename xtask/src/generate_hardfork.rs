@@ -389,9 +389,12 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        let source = "const hardforkValues = new Set(['T9', 'T10']);\n\
-            [baseline-hardfork=T0|T8] [feature-hardfork=T0|T8]\n";
-        let updated = append_bench_hardfork(&source, &variants, "T10", "T11").unwrap();
+        let source = concat!(
+            "const hardforkValues = new Set(['T9', 'T10']);\n",
+            "[baseline-hardfork=T0|T8] [feature-hardfork=T0|T8]\n",
+            "[baseline-hardfork=T0|T8] [feature-hardfork=T0|T8]\n",
+        );
+        let updated = append_bench_hardfork(source, &variants, "T10", "T11").unwrap();
         assert!(updated.contains("['T9', 'T10', 'T11']"));
         assert_eq!(updated.matches("T0|T9|T10|T11").count(), 2);
     }
