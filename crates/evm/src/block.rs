@@ -30,7 +30,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -248,14 +248,43 @@ where
         Ok(())
     }
 
-    /// Installs and initializes the TIP-1091 ZoneFactory when T9 first becomes active.
-    ///
-    /// The code marker is the one-time activation sentinel. The owner and initial zone ID are
-    /// fixed T9 protocol constants.
+    /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])
+        let [factory, portal, verifier, messenger] =
+            initial_zone_factory_state(INITIAL_FACTORY_OWNER);
+
+        let runtime_state = {
+            let db = self.inner.evm.db_mut();
+            let factory_info = db
+                .basic(factory.address)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            // Genesis allocations are authoritative, and the marker also records a completed
+            // post-genesis installation.
+            if !factory_info.is_empty_code_hash() {
+                return Ok(());
+            }
+
+            let mut state = EvmState::default();
+            for account in [portal, verifier, messenger] {
+                let destination = account.address;
+                let code = Bytecode::new_legacy(account.code);
+                let info = db
+                    .basic(destination)
+                    .map_err(BlockExecutionError::other)?
+                    .unwrap_or_default();
+                let mut account = Account::from(info);
+                account.info.code_hash = code.hash_slow();
+                account.info.code = Some(code);
+                account.mark_touch();
+                state.insert(destination, account);
+            }
+            state
+        };
+
+        self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
+        self.inner.evm.db_mut().commit(runtime_state);
+        Ok(())
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
@@ -599,7 +628,7 @@ where
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
         }
-        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+        if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
 
@@ -822,9 +851,12 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{
-        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_MESSENGER_ADDRESS,
-        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    use tempo_contracts::{
+        precompiles::{
+            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
+            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -2028,13 +2060,16 @@ mod tests {
     }
 
     #[test]
-    fn test_deploy_zone_factory_at_boundary_installs_atomic_t9_state() {
+    fn test_deploy_zone_factory_at_boundary_installs_t10_state() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
+        let portal_runtime = Bytecode::new_legacy(ZONE_PORTAL_RUNTIME);
+        let verifier_runtime = Bytecode::new_legacy(ZONE_VERIFIER_RUNTIME);
+        let messenger_runtime = Bytecode::new_legacy(ZONE_MESSENGER_RUNTIME);
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
@@ -2068,9 +2103,27 @@ mod tests {
             factory.storage_slot(U256::ZERO),
             Some(expected_factory_config)
         );
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, portal_runtime),
+            (ZONE_VERIFIER_ADDRESS, verifier_runtime),
+            (ZONE_MESSENGER_ADDRESS, messenger_runtime),
+        ] {
+            let installed = db
+                .load_cache_account(destination)
+                .unwrap()
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap();
+            assert_eq!(installed, expected);
+        }
 
         let calls = hook_calls.lock().unwrap();
-        assert_eq!(calls.len(), 1, "T9 installation must be one atomic commit");
+        assert_eq!(
+            calls.len(),
+            2,
+            "T10 installation must dispatch both updates"
+        );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
@@ -2078,8 +2131,8 @@ mod tests {
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                !calls[0].contains_key(&address),
-                "shared runtimes are installed through the factory, not the T9 state hook"
+                calls[1].contains_key(&address),
+                "shared runtime must be installed in the runtime state hook"
             );
         }
     }

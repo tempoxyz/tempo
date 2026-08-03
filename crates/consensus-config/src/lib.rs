@@ -145,7 +145,20 @@ impl SigningKey {
         path: P,
         passphrase: SecretString,
     ) -> Result<(), SigningKeyError> {
-        let file = std::fs::File::create(path).map_err(SigningKeyErrorKind::Write)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+
+            // Apply restrictive permissions atomically when creating a new key file.
+            options.mode(0o600);
+        }
+
+        let file = options
+            .open(path.as_ref())
+            .map_err(SigningKeyErrorKind::Write)?;
         self.write_encrypted(file, passphrase)
     }
 

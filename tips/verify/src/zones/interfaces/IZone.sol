@@ -5,6 +5,8 @@ pragma solidity ^0.8.13;
 struct ZoneInfo {
     uint32 zoneId;
     address portal;
+    bool accessMode;
+    bool gatewayMode;
     address admin;
     address[] sequencers;
     uint8 threshold;
@@ -18,6 +20,10 @@ interface IZonePortalInitializer {
     function initialize(
         uint32 zoneId,
         address initialToken,
+        bool accessMode,
+        bool gatewayMode,
+        address[] calldata allowedAccounts,
+        address[] calldata zoneGateways,
         address messenger,
         address admin,
         address[] calldata sequencers,
@@ -35,6 +41,10 @@ interface IZoneFactory {
 
     struct CreateZoneParams {
         address initialToken;
+        bool accessMode;
+        bool gatewayMode;
+        address[] allowedAccounts;
+        address[] zoneGateways;
         address admin;
         address[] sequencers;
         uint8 threshold;
@@ -43,16 +53,12 @@ interface IZoneFactory {
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
-    event PortalUpdated(address indexed source, bytes32 indexed codeHash);
-
-    event MessengerUpdated(address indexed source, bytes32 indexed codeHash);
-
-    event VerifierUpdated(address indexed source, bytes32 indexed codeHash);
-
     event ZoneCreated(
         uint32 indexed zoneId,
         address indexed portal,
         address initialToken,
+        bool accessMode,
+        bool gatewayMode,
         address admin,
         address[] sequencers,
         uint8 threshold,
@@ -61,27 +67,13 @@ interface IZoneFactory {
 
     error InvalidToken();
     error TokenTransferPolicyNotSet();
+    error InvalidClosedLoopConfig();
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencerSet();
-    error InvalidPortalImplementation();
-    error InvalidZoneMessengerImplementation();
-    error InvalidVerifierImplementation();
-    error ImplementationUpdatesLocked();
-
     function owner() external view returns (address);
 
-    function implementationUpdatesLocked() external view returns (bool);
-
     function transferOwnership(address newOwner) external;
-
-    function lockImplementationUpdates() external;
-
-    function setPortalImplementation(address source) external;
-
-    function setZoneMessengerImplementation(address source) external;
-
-    function setVerifierImplementation(address source) external;
 
     function createZone(CreateZoneParams calldata params)
         external

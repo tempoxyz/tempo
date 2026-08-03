@@ -224,7 +224,7 @@ mod tests {
     fn test_is_precompile_address() {
         for &(address, activated) in SYSTEM_PRECOMPILES {
             assert!(address.is_precompile(activated));
-            assert!(address.is_precompile(TempoHardfork::T9));
+            assert!(address.is_precompile(TempoHardfork::T10));
 
             if activated != TempoHardfork::Genesis {
                 assert!(!address.is_precompile(TempoHardfork::Genesis));

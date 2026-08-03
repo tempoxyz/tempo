@@ -11,6 +11,14 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
+      cloud:
+        description: Cloud provider used for disposable benchmark infrastructure.
+        type: choice
+        required: true
+        default: aws
+        options:
+          - aws
+          - gcp
       force:
         description: Force a run when Tempo main has not changed.
         type: boolean
@@ -37,10 +45,10 @@ on:
         required: true
         default: "50"
       regions:
-        description: Comma-separated AWS regions.
+        description: Comma-separated cloud regions. Empty uses the selected cloud's defaults.
         type: string
-        required: true
-        default: "us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1"
+        required: false
+        default: ""
       tps:
         description: Target transactions per second.
         type: string
@@ -149,6 +157,7 @@ jobs:
       id-token: write
       packages: read
     with:
+      cloud: ${{ inputs.cloud || 'aws' }}
       baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature: ${{ needs.resolve-refs.outputs.feature-ref }}
@@ -156,14 +165,19 @@ jobs:
       duration: ${{ inputs.duration || '90' }}
       bloat: ${{ inputs.bloat || '100' }}
       validator-count: ${{ inputs['validator-count'] || '50' }}
-      regions: ${{ inputs.regions || 'us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1' }}
+      regions: ${{ inputs.regions || '' }}
       tps: ${{ inputs.tps || '50000' }}
       accounts: ${{ inputs.accounts || '1000' }}
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '100' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
+      clickhouse-run: feature-1
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
-      BENCH_METRICS_PUSH_URL: ${{ secrets.BENCH_METRICS_PUSH_URL }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}

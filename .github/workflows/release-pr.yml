@@ -11,6 +11,7 @@ permissions: {}
 jobs:
   release-pr:
     name: Release PR
+    if: ${{ github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
     environment: release-pr
     permissions: {}

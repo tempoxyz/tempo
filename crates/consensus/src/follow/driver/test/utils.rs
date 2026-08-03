@@ -36,7 +36,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{ConsensusActivity, ExecutionProvider, Feed, Marshal};
+use super::super::{ConsensusActivity, ExecutionProvider, Marshal};
 use crate::consensus::{Block, Digest};
 
 pub(super) const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
@@ -236,24 +236,6 @@ impl Marshal for StubMarshal {
 
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
         self.inner.reports.lock().push(activity);
-        async {}
-    }
-}
-
-#[derive(Clone, Default)]
-pub(super) struct StubFeed {
-    reports: Arc<Mutex<Vec<ConsensusActivity>>>,
-}
-
-impl StubFeed {
-    pub(super) fn report_count(&self) -> usize {
-        self.reports.lock().len()
-    }
-}
-
-impl Feed for StubFeed {
-    fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send {
-        self.reports.lock().push(activity);
         async {}
     }
 }

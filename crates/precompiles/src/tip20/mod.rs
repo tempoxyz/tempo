@@ -29,7 +29,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -1005,9 +1005,9 @@ impl TIP20Token {
         // Set default values
         self.supply_cap.write(U128_MAX)?;
         if StorageCtx.spec().is_t9() {
-            TIP403Registry::new().set_token_transfer_policy(self.address, 1)?;
+            TIP403Registry::new().set_token_transfer_policy(self.address, ALLOW_ALL_POLICY_ID)?;
         } else {
-            self.transfer_policy_id.write(1)?;
+            self.transfer_policy_id.write(ALLOW_ALL_POLICY_ID)?;
         }
 
         // Initialize roles system and grant admin role

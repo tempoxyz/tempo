@@ -31,13 +31,14 @@ use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
+    IFeeManager,
     IValidatorConfigV2::{self, Validator},
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
@@ -162,6 +163,8 @@ pub enum ConsensusSubcommand {
     SetValidatorIpAddress(SetValidatorIpAddress),
     /// Set the validator fee recipient
     SetValidatorFeeRecipient(SetValidatorFeeRecipient),
+    /// Set the validator fee token.
+    SetValidatorToken(SetValidatorToken),
     /// Transfer validator ownership
     TransferValidatorOwnership(TransferValidatorOwnership),
     /// Look up a validator by etheruem address, e25519 public key, or index.
@@ -182,6 +185,7 @@ impl ConsensusSubcommand {
             Self::CreateRotateValidatorSignature(args) => args.run().await,
             Self::SetValidatorIpAddress(args) => args.run().await,
             Self::SetValidatorFeeRecipient(args) => args.run().await,
+            Self::SetValidatorToken(args) => args.run().await,
             Self::EncryptSigningKey(args) => args.run(),
             Self::GenerateSigningKey(args) => args.run(),
             Self::ShowVerificationKey(args) => args.run(),
@@ -454,8 +458,16 @@ pub struct ValidatorTransactionArgs {
 
 impl ValidatorTransactionArgs {
     async fn call<T: SolCall + Serialize>(&self, call: &T) -> eyre::Result<()> {
+        self.call_to(VALIDATOR_CONFIG_V2_ADDRESS, call).await
+    }
+
+    async fn call_to<T: SolCall + Serialize>(
+        &self,
+        address: Address,
+        call: &T,
+    ) -> eyre::Result<()> {
         let tx = TransactionRequest::default()
-            .to(VALIDATOR_CONFIG_V2_ADDRESS)
+            .to(address)
             .input(call.abi_encode().into());
 
         let mut output: Box<dyn std::io::Write + Send> = if self.yes {
@@ -819,6 +831,152 @@ impl SetValidatorFeeRecipient {
 
         self.submit.call(&call).await?;
         Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false, args = ["token", "list"])]
+pub struct SetValidatorToken {
+    /// Token address, symbol, or name to use for validator fees.
+    #[arg(value_name = "TOKEN")]
+    token: Option<String>,
+
+    /// List the verified tokens available on the connected chain.
+    #[arg(long)]
+    list: bool,
+
+    /// Skip verified token metadata lookup. TOKEN must be an address.
+    #[arg(long, conflicts_with = "list")]
+    no_fetch_verified_tokens: bool,
+
+    #[command(flatten)]
+    submit: ValidatorTransactionArgs,
+}
+
+impl SetValidatorToken {
+    async fn run(self) -> eyre::Result<()> {
+        let provider = self.submit.provider().await?;
+        let chain_id = provider
+            .get_chain_id()
+            .await
+            .wrap_err("failed to get chain id")?;
+
+        if self.list {
+            let tokens = fetch_verified_tokens(chain_id)
+                .await
+                .wrap_err("failed to fetch the verified token list")?;
+            print_verified_tokens(tokens);
+            return Ok(());
+        }
+
+        let input = self.token.expect("clap requires either TOKEN or --list");
+        let token = match input.parse::<Address>() {
+            Ok(address) => {
+                if !self.no_fetch_verified_tokens {
+                    match fetch_verified_tokens(chain_id).await {
+                        Ok(tokens) => match tokens.iter().find(|token| token.address == address) {
+                            Some(token) => eprintln!(
+                                "resolved token: {} ({}) at {}",
+                                token.name, token.symbol, token.address
+                            ),
+                            None => eprintln!(
+                                "warning: token address {address} is not in the verified token list"
+                            ),
+                        },
+                        Err(error) => {
+                            eprintln!("warning: failed to look up token metadata: {error:#}")
+                        }
+                    }
+                }
+                address
+            }
+            Err(_) => {
+                if self.no_fetch_verified_tokens {
+                    return Err(eyre!(
+                        "`--no-fetch-verified-tokens` requires TOKEN to be an address"
+                    ));
+                }
+                let tokens = fetch_verified_tokens(chain_id)
+                    .await
+                    .wrap_err("failed to fetch the verified token list")?;
+                resolve_token_name(&input, &tokens)?
+            }
+        };
+
+        let call = IFeeManager::setValidatorTokenCall { token };
+        self.submit.call_to(TIP_FEE_MANAGER_ADDRESS, &call).await
+    }
+}
+
+fn print_verified_tokens(mut tokens: Vec<VerifiedToken>) {
+    tokens.sort_unstable_by(|a, b| {
+        a.symbol
+            .to_ascii_lowercase()
+            .cmp(&b.symbol.to_ascii_lowercase())
+            .then_with(|| a.address.cmp(&b.address))
+    });
+
+    println!("{:<16} {:<32} ADDRESS", "SYMBOL", "NAME");
+    for token in tokens {
+        println!("{:<16} {:<32} {}", token.symbol, token.name, token.address);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifiedToken {
+    address: Address,
+    name: String,
+    symbol: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifiedTokenList {
+    tokens: Vec<VerifiedToken>,
+}
+
+async fn fetch_verified_tokens(chain_id: u64) -> eyre::Result<Vec<VerifiedToken>> {
+    let url = format!("https://tokenlist.tempo.xyz/list/{chain_id}");
+    let response = reqwest::get(&url)
+        .await
+        .wrap_err_with(|| format!("failed to request `{url}`"))?
+        .error_for_status()
+        .wrap_err_with(|| format!("token list request failed for chain {chain_id}"))?
+        .json::<VerifiedTokenList>()
+        .await
+        .wrap_err("failed to decode token list response")?;
+    Ok(response.tokens)
+}
+
+fn resolve_token_name(input: &str, tokens: &[VerifiedToken]) -> eyre::Result<Address> {
+    let matches = tokens
+        .iter()
+        .filter(|token| {
+            token.symbol.eq_ignore_ascii_case(input) || token.name.eq_ignore_ascii_case(input)
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [] => Err(eyre!(
+            "no verified token found with symbol or name `{input}`"
+        )),
+        [token] => {
+            eprintln!(
+                "resolved token: {} ({}) at {}",
+                token.name, token.symbol, token.address
+            );
+            Ok(token.address)
+        }
+        _ => {
+            let addresses = matches
+                .iter()
+                .map(|token| token.address.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(eyre!(
+                "token `{input}` is ambiguous; matching addresses: {addresses}"
+            ))
+        }
     }
 }
 
@@ -1414,6 +1572,7 @@ mod tests {
 
     const TEST_VALIDATOR_ADDRESS: &str = "0x0000000000000000000000000000000000000001";
     const TEST_FEE_RECIPIENT: &str = "0x0000000000000000000000000000000000000002";
+    const TEST_VALIDATOR_TOKEN: &str = "0x0000000000000000000000000000000000000003";
     const TEST_PUBLIC_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
@@ -1434,6 +1593,99 @@ mod tests {
             cli.command,
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
         ));
+    }
+
+    #[test]
+    fn parse_set_validator_token() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "set-validator-token",
+            TEST_VALIDATOR_TOKEN,
+            "--dry-run",
+        ])
+        .unwrap();
+
+        let SetValidatorToken {
+            token,
+            list,
+            submit,
+            no_fetch_verified_tokens,
+        } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert_eq!(token.as_deref(), Some(TEST_VALIDATOR_TOKEN));
+        assert!(!list);
+        assert!(!no_fetch_verified_tokens);
+        assert!(submit.dry_run);
+    }
+
+    #[test]
+    fn parse_list_validator_tokens() {
+        let cli = TempoCli::try_parse_from(["tempo", "consensus", "set-validator-token", "--list"])
+            .unwrap();
+
+        let SetValidatorToken { token, list, .. } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert!(token.is_none());
+        assert!(list);
+    }
+
+    #[test]
+    fn parse_set_validator_token_without_verified_token_fetch() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "set-validator-token",
+            TEST_VALIDATOR_TOKEN,
+            "--no-fetch-verified-tokens",
+        ])
+        .unwrap();
+
+        let SetValidatorToken {
+            no_fetch_verified_tokens,
+            ..
+        } = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::SetValidatorToken(cmd),
+            )) => cmd,
+            other => panic!("expected SetValidatorToken, got `{other:?}`"),
+        };
+        assert!(no_fetch_verified_tokens);
+    }
+
+    #[test]
+    fn set_validator_token_requires_token_or_list() {
+        let error =
+            TempoCli::try_parse_from(["tempo", "consensus", "set-validator-token"]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn resolve_validator_token_by_symbol_or_name() {
+        let address = TEST_VALIDATOR_TOKEN.parse().unwrap();
+        let tokens = [VerifiedToken {
+            address,
+            name: "Example Dollar".to_owned(),
+            symbol: "xUSD".to_owned(),
+        }];
+
+        assert_eq!(resolve_token_name("xusd", &tokens).unwrap(), address);
+        assert_eq!(
+            resolve_token_name("example dollar", &tokens).unwrap(),
+            address
+        );
+        assert!(resolve_token_name("missing", &tokens).is_err());
     }
 
     #[test]
