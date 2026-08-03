@@ -3,6 +3,8 @@ name: Require pull request audit
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted]
   # Without this, PRs get stuck in the merge queue waiting for this status.
   merge_group:
 
@@ -15,7 +17,15 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request_target'
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (
+        github.event_name == 'pull_request_review' &&
+        github.event.review.user.id == 258930814 &&
+        contains(github.event.review.body, ':eye: **Cyclops Review**') &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login != 'dependabot[bot]'
+      )
     permissions:
       pull-requests: read
       statuses: write
@@ -29,17 +39,41 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
             });
-            const audited = pull.labels.some(label => label.name === 'cyclops-audited');
+
+            const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
+            const fork = pull.head.repo?.full_name !== repoFullName;
+            const dependabot = pull.user.login === 'dependabot[bot]';
+            let completedReview;
+
+            if (!fork && !dependabot) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pull.number,
+                per_page: 100,
+              });
+              completedReview = reviews.find(review =>
+                review.user?.id === 258930814 &&
+                review.body?.includes(':eye: **Cyclops Review**')
+              );
+            }
+
+            const passed = fork || dependabot || completedReview;
+            const description = fork
+              ? 'External fork PR is exempt from Cyclops audit'
+              : dependabot
+                ? 'Dependabot PR is exempt from Cyclops audit'
+                : completedReview
+                  ? 'A Cyclops audit completed for this pull request'
+                  : 'Waiting for a completed Cyclops audit';
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
               sha: pull.head.sha,
-              state: audited ? 'success' : 'pending',
+              state: passed ? 'success' : 'pending',
               context: 'Cyclops audit run',
-              description: audited
-                ? 'A Cyclops audit was run for this pull request'
-                : 'Run a Cyclops audit before merging',
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.payload.pull_request.number}`,
+              description,
+              target_url: completedReview?.html_url ?? pull.html_url,
             });
 
   merge-group:
