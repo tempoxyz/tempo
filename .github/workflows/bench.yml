@@ -624,6 +624,9 @@ jobs:
   bench-e2e:
     needs: tempo-bench-ack
     if: needs.tempo-bench-ack.outputs.mode == 'e2e'
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/bench-e2e.yml
     with:
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}
@@ -671,7 +674,6 @@ jobs:
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
-      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
