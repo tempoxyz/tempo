@@ -37,7 +37,10 @@ impl Policy for Message {
     type Overflow = VecDeque<Self>;
 
     fn handle(overflow: &mut Self::Overflow, message: Self) {
-        overflow.push_back(message);
+        match message {
+            Self::Broadcast(_) => {}
+            message => overflow.push_back(message),
+        }
     }
 }
 
@@ -166,7 +169,7 @@ mod tests {
     use crate::consensus::Digest;
 
     #[test]
-    fn broadcast_overflow_is_retained() {
+    fn broadcast_overflow_is_dropped() {
         deterministic::Runner::default().start(|context| async move {
             let (sender, mut receiver) = mailbox::new(context.child("mailbox"), NZUsize!(1));
             let mut mailbox = Mailbox::from_sender(sender);
@@ -190,12 +193,7 @@ mod tests {
             };
             assert_eq!(first_message.digest, first);
 
-            let Message::Broadcast(second_message) =
-                receiver.recv().await.expect("overflow broadcast missing")
-            else {
-                panic!("expected broadcast");
-            };
-            assert_eq!(second_message.digest, second);
+            assert!(receiver.try_recv().is_err());
         });
     }
 }

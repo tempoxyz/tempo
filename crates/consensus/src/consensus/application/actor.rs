@@ -200,12 +200,20 @@ where
                 });
             }
             Message::Propose(propose) => {
+                if propose.response.is_closed() {
+                    return;
+                }
+
                 self.context.child("propose").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
+                if verify.response.is_closed() {
+                    return;
+                }
+
                 self.context.child("verify").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_verify(*verify, context)
