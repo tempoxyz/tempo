@@ -68,10 +68,12 @@ jobs:
               pull_number: context.issue.number,
             });
             // A repo-scoped token can report a private org member as CONTRIBUTOR.
-            // If the already-trusted commenter authored the PR, do not reject
-            // that same user a second time based on the weaker fetched value.
+            // Once the commenter is trusted, allow PRs created in this repository;
+            // keep the author-association check for untrusted fork authors.
             const commenterIsPrAuthor = commenterUser.id != null && commenterUser.id === pr.user?.id;
-            if (!commenterIsPrAuthor && !allowed.has(pr.author_association)) {
+            const baseRepository = `${context.repo.owner}/${context.repo.repo}`;
+            const sameRepository = pr.head.repo?.full_name === baseRepository;
+            if (!commenterIsPrAuthor && !sameRepository && !allowed.has(pr.author_association)) {
               core.setFailed(`PR author @${pr.user.login} is not allowed to trigger Cyclops audits (${pr.author_association})`);
             }
 
