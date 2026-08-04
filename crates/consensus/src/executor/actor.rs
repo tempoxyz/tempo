@@ -886,7 +886,7 @@ async fn forward_finalized<TContext: Pacer>(
         .wrap_err("failed reading finalized block num hash from execution layer")?
         .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
-    let consensus_context = block.header().consensus_context.clone();
+    let consensus_context = block.header().consensus_context;
     let new_canonicalized = if block.height().get() <= execution_finalized.number {
         let canonical_hash = execution_node
             .provider

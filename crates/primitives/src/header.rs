@@ -8,7 +8,7 @@ use crate::ed25519::PublicKey;
 ///
 /// The `proposer` is validated as a valid Ed25519 public key during RLP
 /// decoding to reject malformed blocks at the network boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]

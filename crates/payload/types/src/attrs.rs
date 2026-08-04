@@ -151,7 +151,7 @@ impl TempoPayloadAttributes {
 
     /// Returns the consensus context
     pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
-        self.consensus_context.clone()
+        self.consensus_context
     }
 
     /// Returns the subblocks.
@@ -519,19 +519,19 @@ mod tests {
             epoch: 1,
             view: 1,
             parent_view: 0,
-            proposer: proposer.clone(),
+            proposer,
         }));
         let ctx_b = mk(Some(TempoConsensusContext {
             epoch: 1,
             view: 2,
             parent_view: 1,
-            proposer: proposer.clone(),
+            proposer,
         }));
         let ctx_c = mk(Some(TempoConsensusContext {
             epoch: 2,
             view: 1,
             parent_view: 0,
-            proposer: proposer.clone(),
+            proposer,
         }));
         let ctx_d = mk(Some(TempoConsensusContext {
             epoch: 1,
@@ -557,7 +557,7 @@ mod tests {
             epoch: 1,
             view: 1,
             parent_view: 0,
-            proposer: proposer.clone(),
+            proposer,
         }));
         assert_eq!(ctx_a, ctx_a_again);
 

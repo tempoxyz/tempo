@@ -1018,7 +1018,6 @@ async fn verify_header(
     let ctx = block
         .header()
         .consensus_context
-        .clone()
         .ok_or_eyre("missing consensus context")?;
 
     let expected_ctx = TempoConsensusContext {

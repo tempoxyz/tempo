@@ -205,10 +205,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: header
-                    .consensus_context
-                    .as_ref()
-                    .map(|ctx| ctx.proposer.clone()),
+                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
             },
         })
     }
@@ -263,10 +260,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: attributes
-                    .consensus_context
-                    .as_ref()
-                    .map(|ctx| ctx.proposer.clone()),
+                proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
             },
         })
     }
@@ -312,7 +306,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: block.header().shared_gas_limit,
             // Not available when we only have a block body.
             validator_set: None,
-            consensus_context: block.header().consensus_context.clone(),
+            consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
         })
     }
@@ -339,7 +333,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: attributes.shared_gas_limit,
             // Fine to not validate during block building.
             validator_set: None,
-            consensus_context: attributes.consensus_context.clone(),
+            consensus_context: attributes.consensus_context,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
@@ -413,7 +407,7 @@ mod tests {
                     epoch: 1,
                     view: 2,
                     parent_view: 1,
-                    proposer: proposer.clone(),
+                    proposer,
                 }),
                 ..header
             })
@@ -523,7 +517,7 @@ mod tests {
                         epoch: 1,
                         view: 2,
                         parent_view: 1,
-                        proposer: proposer.clone(),
+                        proposer,
                     }),
                     ..attributes
                 },

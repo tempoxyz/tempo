@@ -80,7 +80,7 @@ impl TempoBlockAssembler {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
-            consensus_context: consensus_context.clone(),
+            consensus_context,
         }))
     }
 }
@@ -302,7 +302,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             validator_set: None,
-            consensus_context: Some(ctx.clone()),
+            consensus_context: Some(ctx),
             subblock_fee_recipients: HashMap::new(),
         };
 
