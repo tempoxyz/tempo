@@ -43,7 +43,7 @@ on:
         description: Number of validators.
         type: string
         required: true
-        default: "50"
+        default: "10"
       regions:
         description: Comma-separated cloud regions. Empty uses the selected cloud's defaults.
         type: string
@@ -163,7 +163,7 @@ jobs:
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
       duration: ${{ inputs.duration || '90' }}
       bloat: ${{ inputs.bloat || '100' }}
-      validator-count: ${{ inputs['validator-count'] || '50' }}
+      validator-count: ${{ inputs['validator-count'] || '10' }}
       regions: ${{ inputs.regions || '' }}
       tps: ${{ inputs.tps || '50000' }}
       accounts: ${{ inputs.accounts || '1000' }}

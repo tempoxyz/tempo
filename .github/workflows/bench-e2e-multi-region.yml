@@ -34,7 +34,7 @@ on:
       validator-count:
         type: string
         required: false
-        default: "50"
+        default: "10"
       regions:
         type: string
         required: false
@@ -147,7 +147,7 @@ on:
         description: Number of validators.
         type: string
         required: true
-        default: "50"
+        default: "10"
       regions:
         description: Comma-separated cloud regions. Empty uses the selected cloud's five defaults.
         type: string
@@ -266,7 +266,7 @@ jobs:
       BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
       BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
-      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '50' }}
+      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
       BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
       BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
