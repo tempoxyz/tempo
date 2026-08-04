@@ -327,23 +327,16 @@ fn follower_bootstraps_from_validator() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, target_height).await;
-
-        while !matches!(
-            follower.feed.get_finalization(Query::Latest).await,
-            Response::Success(..)
-        ) {
-            context.sleep(Duration::from_millis(100)).await;
-        }
+        follower.feed.get_finalization(Query::Latest).await.unwrap();
 
         // The marshal floor only advances with actually processed blocks, so
         // the follower backfills the gap between its startup floor (genesis
         // for a fresh node) and the join point via gap repair.
-        while !matches!(
-            follower.feed.get_finalization(Query::Height(1)).await,
-            Response::Success(..)
-        ) {
-            context.sleep(Duration::from_millis(100)).await;
-        }
+        follower
+            .feed
+            .get_finalization(Query::Height(1))
+            .await
+            .unwrap();
     });
 }
 
@@ -496,12 +489,11 @@ fn follower_bootstraps_from_follower() {
 
         // Height progress can precede ordered delivery into the secondary's
         // consensus feed, so wait for the state this test actually asserts.
-        while !matches!(
-            follower_follower.feed.get_finalization(Query::Latest).await,
-            Response::Success(..)
-        ) {
-            context.sleep(Duration::from_millis(100)).await;
-        }
+        follower_follower
+            .feed
+            .get_finalization(Query::Latest)
+            .await
+            .unwrap();
     });
 }
 
