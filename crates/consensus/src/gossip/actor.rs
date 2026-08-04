@@ -562,6 +562,15 @@ where
         self.config.peer_control.penalize(peer);
         self.metrics.penalties.inc();
 
+        // Only accumulate strikes while the peer has a live session. A judgement
+        // can resolve after its peer disconnected; that peer owns no slot to
+        // strike, and its entry would never be cleared because no later `Down`
+        // matches it, so it would leak. The reputation penalty above still
+        // applies and persists across sessions.
+        if !self.peers.contains_key(&peer) {
+            return;
+        }
+
         let strikes = self.strikes.entry(peer).or_default();
         *strikes += 1;
         if *strikes >= self.config.strikes.max(1) {
