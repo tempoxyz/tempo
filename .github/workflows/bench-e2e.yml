@@ -464,6 +464,14 @@ jobs:
         with:
           policy: bench-e2e
 
+      - name: Fetch ValScope token via STS
+        id: valscope-sts
+        if: env.BENCH_VALSCOPE == 'true'
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
+        with:
+          scope: tempoxyz/valscope
+          policy: tempo-bench-e2e
+
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -503,7 +511,7 @@ jobs:
           ref: main
           path: valscope
           persist-credentials: false
-          token: ${{ steps.github-sts.outputs.token }}
+          token: ${{ steps.valscope-sts.outputs.token }}
 
       - name: Render txgen spec
         run: |
