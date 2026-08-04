@@ -4,16 +4,9 @@ use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
-use futures::{
-    FutureExt as _, StreamExt as _,
-    future::{BoxFuture, Either},
-    stream::{self, Fuse, FusedStream},
-};
+use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use jsonrpsee::{
-    core::{
-        client,
-        client::{ClientT as _, Subscription},
-    },
+    core::client::{ClientT as _, Subscription},
     rpc_params,
     ws_client::{PingConfig, WsClient, WsClientBuilder},
 };
@@ -34,8 +27,7 @@ use crate::{
     utils::OptionFuture,
 };
 
-pub(super) type EventStream =
-    Either<stream::Empty<Result<Event, serde_json::Error>>, Fuse<Subscription<Event>>>;
+use super::{Connector, EventStream, UpstreamClient};
 
 const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
@@ -55,22 +47,51 @@ const PING_MAX_FAILURES: usize = 1;
 ///
 /// This actor holds the websocket connection to the upstream node, reconnecting
 /// it if necessary.
-pub(crate) struct Actor<TContext> {
+pub(crate) struct Actor<TContext, TConnector = WebSocketConnector>
+where
+    TConnector: Connector,
+{
     pub(super) context: ContextCell<TContext>,
-    pub(super) connection: Option<Arc<WsClient>>,
+    pub(super) connector: TConnector,
+    pub(super) connection: Option<TConnector::Client>,
     pub(super) mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
-    pub(super) url: &'static Url,
-    pub(super) pending_connect: OptionFuture<BoxFuture<'static, (u64, eyre::Result<WsClient>)>>,
-    pub(super) pending_stream:
-        OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
-    pub(super) event_stream: EventStream,
+    pub(super) pending_connect:
+        OptionFuture<BoxFuture<'static, (u64, eyre::Result<TConnector::Client>)>>,
+    pub(super) pending_stream: OptionFuture<BoxFuture<'static, eyre::Result<EventStream>>>,
+    pub(super) event_stream: Option<EventStream>,
+    pub(super) reconnect_jitter: fn() -> Duration,
     /// Requests waiting for the actor to establish a connection.
     pub(super) waiters: Vec<super::ingress::Message>,
 }
 
-impl<TContext> Actor<TContext>
+pub(super) fn init<TContext, TConnector>(
+    context: TContext,
+    connector: TConnector,
+    reconnect_jitter: fn() -> Duration,
+) -> (Actor<TContext, TConnector>, super::Mailbox)
+where
+    TConnector: Connector,
+{
+    let (tx, rx) = mpsc::unbounded_channel();
+    let actor = Actor {
+        context: ContextCell::new(context),
+        connector,
+        connection: None,
+        mailbox: rx,
+        pending_connect: OptionFuture::none(),
+        pending_stream: OptionFuture::none(),
+        event_stream: None,
+        reconnect_jitter,
+        waiters: Vec::new(),
+    };
+
+    (actor, super::Mailbox::new(tx))
+}
+
+impl<TContext, TConnector> Actor<TContext, TConnector>
 where
     TContext: Clock + Metrics + Spawner,
+    TConnector: Connector,
 {
     pub(crate) fn start(
         mut self,
@@ -90,24 +111,23 @@ where
                 (attempts, client) = &mut self.pending_connect => {
                     match client {
                         Ok(client) => {
-                            let client = Arc::new(client);
                             self.connection.replace(client);
                         }
                         Err(reason) => {
-                            let reconnect_in = reconnect_delay(attempts);
+                            let reconnect_in = reconnect_backoff(attempts) + (self.reconnect_jitter)();
                             warn_span!("reconnect").in_scope(|| warn!(
                                 %reason,
                                 attempts,
                                 reconnect_in = %display_duration(reconnect_in),
-                                url = %self.url,
+                                url = %self.connector.endpoint(),
                                 "connecting to upstream node failed, attempting again",
                             ));
                             self.pending_connect.replace({
                                 let context = self.context.clone();
-                                let url = self.url;
+                                let connector = self.connector.clone();
                                 async move {
                                     context.sleep(reconnect_in).await;
-                                    connect(url, attempts.saturating_add(1)).await
+                                    connector.connect(attempts.saturating_add(1)).await
                                 }.boxed()
                             });
                         }
@@ -119,20 +139,20 @@ where
                         Ok(stream) => {
                         debug_span!("consensus_event_subscription")
                             .in_scope(|| debug!("subscription for consensus events established"));
-                            self.event_stream = active_event_stream(stream);
+                            self.event_stream = Some(stream);
                         }
                         Err(error) => {
                             warn_span!("event_subscription").in_scope(|| warn!(
-                                reason = %Report::new(error),
+                                reason = %error,
                                 "failed subscribing to events; reconnecting to upstream node"
                             ));
                             self.connection.take();
-                            self.event_stream = inactive_event_stream();
+                            self.event_stream = None;
                         }
                     }
                 }
 
-                event = self.event_stream.next(), if !self.event_stream.is_terminated() => {
+                event = next_event(&mut self.event_stream) => {
                     match event {
                         Some(Ok(event)) => {
                             debug_span!("consensus_event").in_scope(|| debug!(
@@ -145,19 +165,22 @@ where
                                 %error,
                                 "event stream encountered an error",
                             ));
-                            self.event_stream = inactive_event_stream();
+                            self.event_stream = None;
                         }
                         None => {
                             warn_span!("event_subscription").in_scope(|| warn!(
-                                url = %self.url,
+                                url = %self.connector.endpoint(),
                                 "event stream terminated",
                             ));
-                            self.event_stream = inactive_event_stream();
+                            self.event_stream = None;
                         }
                     }
                 }
 
-                Some(request) = self.mailbox.recv() => {
+                request = self.mailbox.recv() => {
+                    let Some(request) = request else {
+                        return;
+                    };
                     self.waiters.push(request);
                 }
             );
@@ -171,20 +194,20 @@ where
         }
 
         let Some(client) = self.connection.clone() else {
-            self.pending_connect.replace(connect(self.url, 1));
+            self.pending_connect.replace(self.connector.connect(1));
             return;
         };
 
-        if !self.event_stream.is_terminated() {
+        if self.event_stream.is_some() {
             return;
         }
 
         if client.is_connected() {
-            self.pending_stream.replace(subscribe(client));
+            self.pending_stream.replace(client.subscribe_events());
         } else {
-            warn!(url = %self.url, "upstream client disconnected, reconnecting");
+            warn!(url = %self.connector.endpoint(), "upstream client disconnected, reconnecting");
             self.connection.take();
-            self.pending_connect.replace(connect(self.url, 1));
+            self.pending_connect.replace(self.connector.connect(1));
         }
     }
 
@@ -194,7 +217,7 @@ where
     fn drain_waiters(&mut self) {
         if self.pending_connect.is_some()
             || self.pending_stream.is_some()
-            || self.event_stream.is_terminated()
+            || self.event_stream.is_none()
         {
             return;
         }
@@ -211,67 +234,104 @@ where
                 super::ingress::Message::GetFinalization { height, response } => {
                     let client = client.clone();
                     self.context.with_label("get_finalization").spawn(move |_| {
-                        respond_until_closed(response, get_finalization(client, height))
+                        respond_until_closed(response, client.get_finalization(height))
                     });
                 }
                 super::ingress::Message::GetBlock { digest, response } => {
                     let client = client.clone();
                     self.context
                         .with_label("get_block")
-                        .spawn(move |_| respond_until_closed(response, get_block(client, digest)));
+                        .spawn(move |_| respond_until_closed(response, client.get_block(digest)));
                 }
             }
         }
     }
 }
 
-fn connect(url: &'static Url, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<WsClient>)> {
-    async move {
-        (
-            attempts,
-            WsClientBuilder::default()
-                .enable_ws_ping(
-                    PingConfig::new()
-                        .ping_interval(PING_INTERVAL)
-                        .inactive_limit(PING_INACTIVE_LIMIT)
-                        .max_failures(PING_MAX_FAILURES),
-                )
-                .build(url)
-                .await
-                .map_err(Report::new),
-        )
+async fn next_event(stream: &mut Option<EventStream>) -> Option<eyre::Result<Event>> {
+    match stream {
+        Some(stream) => stream.next().await,
+        None => std::future::pending().await,
     }
-    .boxed()
 }
 
-fn subscribe(
-    client: Arc<WsClient>,
-) -> BoxFuture<'static, Result<Subscription<Event>, client::Error>> {
-    async move { client.subscribe_events().await }.boxed()
-}
-
-pub(super) fn inactive_event_stream() -> EventStream {
-    Either::Left(stream::empty())
-}
-
-fn active_event_stream(stream: Subscription<Event>) -> EventStream {
-    Either::Right(stream.fuse())
-}
-
-fn reconnect_delay(attempts: u64) -> Duration {
-    reconnect_backoff(attempts) + random_jitter()
-}
-
-fn reconnect_backoff(attempts: u64) -> Duration {
+pub(super) fn reconnect_backoff(attempts: u64) -> Duration {
     let backoff_secs = attempts.saturating_mul(RECONNECT_BACKOFF_FACTOR);
     let backoff = Duration::from_secs(backoff_secs);
 
     backoff.min(RECONNECT_MAX_BACKOFF)
 }
 
-fn random_jitter() -> Duration {
+pub(super) fn random_jitter() -> Duration {
     let max_jitter_millis = RECONNECT_JITTER.as_millis() as u64;
     Duration::from_millis(rand_08::thread_rng().gen_range(0..=max_jitter_millis))
+}
+
+#[derive(Clone)]
+pub(crate) struct WebSocketConnector {
+    url: Arc<Url>,
+}
+
+impl WebSocketConnector {
+    pub(super) fn new(url: Url) -> Self {
+        Self { url: Arc::new(url) }
+    }
+}
+
+impl Connector for WebSocketConnector {
+    type Client = Arc<WsClient>;
+
+    fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)> {
+        let url = self.url.clone();
+        async move {
+            let client = WsClientBuilder::default()
+                .enable_ws_ping(
+                    PingConfig::new()
+                        .ping_interval(PING_INTERVAL)
+                        .inactive_limit(PING_INACTIVE_LIMIT)
+                        .max_failures(PING_MAX_FAILURES),
+                )
+                .build(url.as_ref())
+                .await
+                .map(Arc::new)
+                .map_err(Report::new);
+            (attempts, client)
+        }
+        .boxed()
+    }
+
+    fn endpoint(&self) -> &Url {
+        &self.url
+    }
+}
+
+impl UpstreamClient for Arc<WsClient> {
+    fn is_connected(&self) -> bool {
+        WsClient::is_connected(self)
+    }
+
+    fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>> {
+        let client = self.clone();
+        async move {
+            let stream: Subscription<Event> =
+                TempoConsensusApiClient::subscribe_events(client.as_ref()).await?;
+            Ok(stream.map(|event| event.map_err(Report::new)).boxed())
+        }
+        .boxed()
+    }
+
+    fn get_finalization(
+        &self,
+        height: Height,
+    ) -> BoxFuture<'static, eyre::Result<Option<CertifiedBlock>>> {
+        let client = self.clone();
+        async move { get_finalization(client, height).await }.boxed()
+    }
+
+    fn get_block(&self, digest: Digest) -> BoxFuture<'static, eyre::Result<Option<Block>>> {
+        let client = self.clone();
+        async move { get_block(client, digest).await }.boxed()
+    }
 }
 
 /// Polls the request and sends its result while the receiver remains open.
@@ -295,8 +355,7 @@ async fn get_finalization(
     client: Arc<WsClient>,
     height: Height,
 ) -> eyre::Result<Option<CertifiedBlock>> {
-    client
-        .get_finalization(Query::Height(height.get()))
+    TempoConsensusApiClient::get_finalization(client.as_ref(), Query::Height(height.get()))
         .await
         .map(Some)
         .wrap_err("failed getting finalization")
