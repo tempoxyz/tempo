@@ -1,0 +1,162 @@
+name: Add hardfork
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      hardfork:
+        description: "New hardfork identifier, for example T11"
+        required: true
+        type: string
+      dry_run:
+        description: "Generate and validate changes without opening PRs"
+        default: false
+        type: boolean
+
+concurrency:
+  group: add-hardfork-${{ inputs.hardfork }}
+  cancel-in-progress: false
+
+jobs:
+  add-hardfork:
+    name: Add ${{ inputs.hardfork }} hardfork
+    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    runs-on: depot-ubuntu-latest-4
+    environment: release-pr
+    permissions: {}
+    steps:
+      - name: Mint scoped app token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: tempoxyz
+          repositories: tempo,workflows
+          permission-contents: write
+          permission-pull-requests: write
+          permission-metadata: read
+
+      - name: Checkout Tempo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Checkout workflows
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: tempoxyz/workflows
+          ref: main
+          path: workflows
+          fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: nightly
+
+      - name: Generate Tempo hardfork plumbing
+        id: hardfork
+        env:
+          HARDFORK: ${{ inputs.hardfork }}
+        run: |
+          set -euo pipefail
+          metadata=$(cargo run --quiet --locked -p tempo-xtask -- add-hardfork --hardfork "$HARDFORK" --json)
+          echo "metadata=$metadata" >> "$GITHUB_OUTPUT"
+          echo "$metadata"
+          cargo +nightly fmt --all -- --check
+          git diff --check
+
+      - name: Generate coordinated workflows changes
+        id: matrix
+        env:
+          HARDFORK: ${{ inputs.hardfork }}
+          METADATA: ${{ steps.hardfork.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          matrix=$(python3 scripts/update-hardfork-workflows.py \
+            --workflows-root workflows \
+            --hardfork "$HARDFORK" \
+            --metadata "$METADATA")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+          git -C workflows diff --check
+
+      - name: Validate generated changes
+        env:
+          HARDFORK: ${{ inputs.hardfork }}
+        run: |
+          set -euo pipefail
+          test -n "$(git status --short)"
+          test -n "$(git -C workflows status --short)"
+          grep -q "hardfork = \"tempo:$HARDFORK\"" tips/verify/foundry.toml
+          grep -q "\"hardfork\":\"$HARDFORK\"" workflows/manifests/tempo-tests.yaml
+          grep -q "\"hardfork\":\"$HARDFORK\"" workflows/manifests/invariant-tests.yaml
+
+      - name: Open coordinated pull requests
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HARDFORK: ${{ inputs.hardfork }}
+          MATRIX: ${{ steps.matrix.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+
+          suffix=$(printf '%s' "$HARDFORK" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+          branch="automation/add-hardfork-$suffix"
+
+          existing_tempo=$(gh pr list --repo tempoxyz/tempo --head "$branch" --state open --json number,url --jq '.[0] // empty')
+          existing_workflows=$(gh pr list --repo tempoxyz/workflows --head "$branch" --state open --json number,url --jq '.[0] // empty')
+          if [ -n "$existing_tempo" ] || [ -n "$existing_workflows" ]; then
+            echo "An open coordinated PR already exists for $HARDFORK"
+            echo "$existing_tempo"
+            echo "$existing_workflows"
+            exit 1
+          fi
+
+          git config user.name "tempo-release-bot[bot]"
+          git config user.email "tempo-release-bot[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A -- . ':(exclude)workflows'
+          git commit -m "feat(hardfork): add $HARDFORK plumbing"
+          git push origin "$branch"
+
+          tempo_pr=$(gh pr create \
+            --repo tempoxyz/tempo \
+            --base main \
+            --head "$branch" \
+            --draft \
+            --title "feat(hardfork): add $HARDFORK plumbing" \
+            --body "Generated by the Add hardfork workflow. This PR adds mechanical $HARDFORK plumbing and rotates the default/next Foundry profiles.")
+          tempo_pr_number=$(gh pr view "$tempo_pr" --repo tempoxyz/tempo --json number --jq .number)
+
+          git -C workflows config user.name "tempo-release-bot[bot]"
+          git -C workflows config user.email "tempo-release-bot[bot]@users.noreply.github.com"
+          git -C workflows checkout -b "$branch"
+          git -C workflows add -A
+          git -C workflows commit -m "feat(hardfork): test $HARDFORK lanes"
+          git -C workflows push origin "$branch"
+
+          workflows_body=$(mktemp)
+          cat > "$workflows_body" <<EOF
+          Updates the current/next hardfork lanes to match tempoxyz/tempo#$tempo_pr_number. Merge the Tempo plumbing PR before merging this workflow PR.
+
+          Generated by the Add hardfork workflow.
+
+          Matrix: $MATRIX
+          EOF
+
+          gh pr create \
+            --repo tempoxyz/workflows \
+            --base main \
+            --head "$branch" \
+            --draft \
+            --title "feat(hardfork): test $HARDFORK lanes" \
+            --body-file "$workflows_body"
