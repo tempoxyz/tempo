@@ -11,12 +11,21 @@ const BENCH_WORKFLOW: &str = ".github/workflows/bench.yml";
 const DEV_GENESIS: &str = "crates/chainspec/src/genesis/dev.json";
 const TEST_GENESIS: &str = "crates/node/tests/assets/test-genesis.json";
 const SNAPSHOT_DIR: &str = "crates/evm/src/snapshots";
+const FUTURE_TIMESTAMP: u64 = 4_102_444_800;
+
+#[derive(Debug, Serialize)]
+struct HardforkLane {
+    hardfork: String,
+    #[serde(rename = "genesisArgs")]
+    genesis_args: String,
+}
 
 #[derive(Debug, Serialize)]
 struct HardforkMetadata {
     current: String,
     next: String,
     ordered: Vec<String>,
+    hardforks: Vec<HardforkLane>,
 }
 
 /// Add mechanical plumbing for a new Tempo hardfork.
@@ -128,11 +137,37 @@ fn build_metadata(
     let mut ordered = variants[start..].to_vec();
     ordered.push(next.to_owned());
 
+    let current_args = build_genesis_args(&ordered, Some(next));
+    let next_args = build_genesis_args(&ordered, None);
+
     HardforkMetadata {
         current: next_current.to_owned(),
         next: next.to_owned(),
         ordered,
+        hardforks: vec![
+            HardforkLane {
+                hardfork: next_current.to_owned(),
+                genesis_args: current_args,
+            },
+            HardforkLane {
+                hardfork: next.to_owned(),
+                genesis_args: next_args,
+            },
+        ],
     }
+}
+
+fn build_genesis_args(ordered: &[String], future_hardfork: Option<&str>) -> String {
+    ordered
+        .iter()
+        .map(|hardfork| {
+            let timestamp = (future_hardfork != Some(hardfork.as_str()))
+                .then_some(0)
+                .unwrap_or(FUTURE_TIMESTAMP);
+            format!("--{}-time={timestamp}", hardfork.to_ascii_lowercase())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn validate_name(hardfork: &str) -> eyre::Result<()> {
@@ -424,9 +459,19 @@ mod tests {
             metadata.ordered,
             vec!["T9".to_owned(), "T10".to_owned(), "T11".to_owned()]
         );
+        assert_eq!(metadata.hardforks[0].hardfork, "T10");
+        assert_eq!(
+            metadata.hardforks[0].genesis_args,
+            "--t9-time=0 --t10-time=0 --t11-time=4102444800"
+        );
+        assert_eq!(metadata.hardforks[1].hardfork, "T11");
+        assert_eq!(
+            metadata.hardforks[1].genesis_args,
+            "--t9-time=0 --t10-time=0 --t11-time=0"
+        );
         assert_eq!(
             serde_json::to_string(&metadata).unwrap(),
-            r#"{"current":"T10","next":"T11","ordered":["T9","T10","T11"]}"#
+            r#"{"current":"T10","next":"T11","ordered":["T9","T10","T11"],"hardforks":[{"hardfork":"T10","genesisArgs":"--t9-time=0 --t10-time=0 --t11-time=4102444800"},{"hardfork":"T11","genesisArgs":"--t9-time=0 --t10-time=0 --t11-time=0"}]}"#
         );
     }
 
