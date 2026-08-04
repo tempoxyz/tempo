@@ -161,9 +161,11 @@ fn build_genesis_args(ordered: &[String], future_hardfork: Option<&str>) -> Stri
     ordered
         .iter()
         .map(|hardfork| {
-            let timestamp = (future_hardfork != Some(hardfork.as_str()))
-                .then_some(0)
-                .unwrap_or(FUTURE_TIMESTAMP);
+            let timestamp = if future_hardfork == Some(hardfork.as_str()) {
+                FUTURE_TIMESTAMP
+            } else {
+                0
+            };
             format!("--{}-time={timestamp}", hardfork.to_ascii_lowercase())
         })
         .collect::<Vec<_>>()
