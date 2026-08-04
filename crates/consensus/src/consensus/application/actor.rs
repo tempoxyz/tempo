@@ -22,7 +22,7 @@ use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     marshal::core::DigestFallback,
-    simplex::Plan,
+    simplex::{Plan, types::Context},
     types::{Epoch, Epocher as _, FixedEpocher, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
@@ -35,7 +35,6 @@ use commonware_runtime::{
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::future::try_join;
 use rand_core::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
@@ -276,6 +275,17 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
+        // The parent handed to us by consensus must be notarized; let the
+        // executor know so that it can keep driving the execution layer even
+        // if this proposal is aborted.
+        if let Err(error) = self.executor.parent_notarized(Context {
+            round,
+            leader: leader.clone(),
+            parent: (parent_view, parent_digest),
+        }) {
+            warn!(%error, "failed informing executor of the notarized proposal parent");
+        }
+
         let proposal_block = {
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
@@ -415,11 +425,7 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
-        let VerifyResult {
-            result,
-            block,
-            parent,
-        } = select!(
+        let VerifyResult { result, block } = select!(
             () = response.closed() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
@@ -436,7 +442,7 @@ impl Inner<Init> {
             warn!("received dropped channel before verification result could be returned");
         }
         // Keep large block drops out of the pre-response path.
-        drop((block, parent));
+        drop(block);
 
         Ok(())
     }
@@ -638,7 +644,7 @@ impl Inner<Init> {
         let payload = self
             .state
             .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)?
+            .canonicalize_and_build(round, parent.height(), parent.digest(), attrs)?
             .await
             .wrap_err(
                 "executor dropped the payload channel: the build failed (the \
@@ -707,30 +713,29 @@ impl Inner<Init> {
     )]
     async fn verify<TContext: Pacer>(
         self,
-        context: TContext,
+        _context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<VerifyResult> {
-        let (block, parent) = try_join(
-            subscribe(&self.execution_node, round, payload, &self.marshal),
-            subscribe(
-                &self.execution_node,
-                Round::new(round.epoch(), parent_view),
-                parent_digest,
-                &self.marshal,
-            ),
-        )
-        .await
-        .wrap_err("failed getting required blocks")?;
+        // The parent handed to us by consensus must be notarized; let the
+        // executor know so that it can keep driving the execution layer even
+        // if this verification is aborted.
+        if let Err(error) = self.executor.parent_notarized(Context {
+            round,
+            leader: proposer.clone(),
+            parent: (parent_view, parent_digest),
+        }) {
+            warn!(%error, "failed informing executor of the notarized verify parent");
+        }
+
+        let block = subscribe(&self.execution_node, round, payload, &self.marshal)
+            .await
+            .wrap_err("failed getting proposal block")?;
 
         // Can only repropose at the end of an epoch.
         //
-        // NOTE: fetching block and parent twice (in the case block == parent)
-        // seems wasteful, but both run concurrently, should finish almost
-        // immediately, and happen very rarely. It's better to optimize for the
-        // general case.
         if payload == parent_digest {
             let epoch_info = self
                 .epoch_strategy
@@ -743,13 +748,11 @@ impl Inner<Init> {
                 return Ok(VerifyResult {
                     result: true,
                     block: None,
-                    parent: Some(parent),
                 });
             } else {
                 return Ok(VerifyResult {
                     result: false,
                     block: Some(block),
-                    parent: Some(parent),
                 });
             }
         }
@@ -768,32 +771,13 @@ impl Inner<Init> {
             return Ok(VerifyResult {
                 result: false,
                 block: Some(block),
-                parent: Some(parent),
             });
         }
 
-        if let Err(error) = self
-            .state
-            .executor
-            .canonicalize_head(parent.height(), parent.digest())
-            .await
-        {
-            tracing::warn!(
-                %error,
-                parent.height = %parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent; trying to go on",
-            );
-        }
-
-        let validation_duration = verify_block(
-            &context,
-            round.epoch(),
+        let validation_duration = verify_block_via_executor(
+            round,
             &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            &self.state.executor,
             &block,
             parent_digest,
             &self.scheme_provider,
@@ -814,33 +798,21 @@ impl Inner<Init> {
         }
         let is_good = validation_duration.is_some();
 
-        let block_height = block.height();
-        let block_digest = block.digest();
-
         if is_good {
-            // Persist the block in the marshal actor and execution layer.
+            // Persist the verified block in the marshal actor.
             if !self.marshal.verified(round, block).await {
                 bail!("marshal actor refused to persist verified block");
             }
 
-            // FIXME: move this into the certification step?
-            self.state
-                .executor
-                .canonicalize_head(block_height, block_digest)
-                .await
-                .wrap_err("failed making the verified proposal the head of the canonical chain")?;
-
             return Ok(VerifyResult {
                 result: true,
                 block: None,
-                parent: Some(parent),
             });
         }
 
         Ok(VerifyResult {
             result: false,
             block: Some(block),
-            parent: Some(parent),
         })
     }
 }
@@ -899,8 +871,6 @@ struct VerifyResult {
     result: bool,
     /// The proposed block when it was not moved into the verified marshal state.
     block: Option<Block>,
-    /// The parent block fetched to verify the proposal.
-    parent: Option<Block>,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -996,6 +966,48 @@ async fn verify_block<TContext: Pacer>(
             );
         }
     }
+}
+
+async fn verify_block_via_executor(
+    round: Round,
+    epoch_strategy: &FixedEpocher,
+    executor: &crate::executor::Mailbox,
+    block: &Block,
+    parent_digest: Digest,
+    scheme_provider: &SchemeProvider,
+) -> eyre::Result<Option<Duration>> {
+    let epoch = round.epoch();
+    let epoch_info = epoch_strategy
+        .containing(block.height())
+        .expect("epoch strategy is for all heights");
+    if epoch_info.epoch() != epoch {
+        info!("block does not belong to this epoch");
+        return Ok(None);
+    }
+    if block.parent_hash() != *parent_digest {
+        info!(
+            "parent digest stored in block must match the digest of the parent \
+            argument but doesn't"
+        );
+        return Ok(None);
+    }
+
+    // Scheme registration precedes engine creation, so the scheme must exist
+    let scheme = scheme_provider
+        .scheme(epoch)
+        .ok_or_eyre("cannot determine participants in the current epoch")?;
+
+    let validator_set = Some(
+        scheme
+            .participants()
+            .into_iter()
+            .map(|p| B256::from_slice(p))
+            .collect(),
+    );
+
+    executor
+        .validate_block(round, block.clone(), validator_set)
+        .await
 }
 
 #[instrument(skip_all, err(Display))]

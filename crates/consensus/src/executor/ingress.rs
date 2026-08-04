@@ -1,7 +1,15 @@
+use alloy_primitives::B256;
 use commonware_actor::Feedback;
-use commonware_consensus::{Reporter, marshal::Update, types::Height};
+use commonware_consensus::{
+    Reporter,
+    marshal::Update,
+    simplex::types::Context,
+    types::{Height, Round},
+};
+use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
+use std::{sync::Arc, time::Duration};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
 
@@ -13,27 +21,51 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    /// Requests the agent to update the head of the canonical chain to `digest`.
-    pub(crate) async fn canonicalize_head(
+    /// Informs the agent that the parent in `context` is notarized (the
+    /// context itself is not).
+    ///
+    /// Consensus only hands out propose/verify contexts whose parent is
+    /// notarized, so every context doubles as evidence of its parent's
+    /// notarization.
+    pub(crate) fn parent_notarized(&self, context: Context<Digest, PublicKey>) -> eyre::Result<()> {
+        self.inner
+            .unbounded_send(Message::in_current_span(ParentNotarized { context }))
+            .wrap_err("failed sending notarization info to agent, this means it exited")
+    }
+
+    /// Requests the agent to validate the block proposed in `round` against
+    /// the execution layer.
+    ///
+    /// The block is validated via a single new-payload request, which requires
+    /// the execution layer to already know the block's parent. If it does not,
+    /// the request fails (the executor drops the response channel) and the
+    /// executor repairs the gap in the background instead.
+    ///
+    /// The round arbitrates the slot shared with build requests: only a
+    /// request from a newer round replaces a queued one.
+    pub(crate) async fn validate_block(
         &self,
-        height: Height,
-        digest: Digest,
-    ) -> eyre::Result<()> {
+        round: Round,
+        block: Block,
+        validator_set: Option<Vec<B256>>,
+    ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(CanonicalizeHead {
-                height,
-                digest,
+            .unbounded_send(Message::in_current_span(ValidateBlock {
+                round,
+                block: Arc::new(block),
+                validator_set,
                 response,
             }))
-            .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
+            .wrap_err("failed sending validate-block request to agent, this means it exited")?;
         rx.await.wrap_err(
-            "executor dropped the response channel: the forkchoice update \
-            failed (the executor logs the cause) or the executor shut down",
+            "executor dropped the validation response channel: the request was \
+            superseded or stale, validation failed, or the executor shut down",
         )
     }
 
-    /// Canonicalizes the given head and requests a new payload to be built.
+    /// Canonicalizes the given head and requests a new payload to be built
+    /// for the proposal of `round`.
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
@@ -42,8 +74,12 @@ impl Mailbox {
     ///
     /// Conversely, the executor dropping its sender means the build failed;
     /// the executor logs the cause.
+    ///
+    /// The round arbitrates the slot shared with validation requests: only a
+    /// request from a newer round replaces a queued one.
     pub(crate) fn canonicalize_and_build(
         &self,
+        round: Round,
         height: Height,
         digest: Digest,
         attributes: TempoPayloadAttributes,
@@ -51,6 +87,7 @@ impl Mailbox {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
+                round,
                 height,
                 digest,
                 attributes: Box::new(attributes),
@@ -80,38 +117,53 @@ impl Message {
 
 #[derive(Debug)]
 pub(super) enum Command {
-    /// Requests the agent to set the head of the canonical chain to `digest`.
-    CanonicalizeHead(CanonicalizeHead),
     /// Requests the agent to canonicalize the head and build a new payload.
     CanonicalizeAndBuild(CanonicalizeAndBuild),
+    /// Requests the agent to validate a block against the execution layer.
+    ValidateBlock(Box<ValidateBlock>),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
+    /// Informs the agent that the parent of the contained context is notarized.
+    ParentNotarized(ParentNotarized),
 }
 
 #[derive(Debug)]
-pub(super) struct CanonicalizeHead {
-    pub(super) height: Height,
-    pub(super) digest: Digest,
-    pub(super) response: oneshot::Sender<()>,
+pub(super) struct ParentNotarized {
+    pub(super) context: Context<Digest, PublicKey>,
+}
+
+impl From<ParentNotarized> for Command {
+    fn from(value: ParentNotarized) -> Self {
+        Self::ParentNotarized(value)
+    }
 }
 
 #[derive(Debug)]
 pub(super) struct CanonicalizeAndBuild {
+    pub(super) round: Round,
     pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
 }
 
-impl From<CanonicalizeHead> for Command {
-    fn from(value: CanonicalizeHead) -> Self {
-        Self::CanonicalizeHead(value)
-    }
+#[derive(Debug)]
+pub(super) struct ValidateBlock {
+    pub(super) round: Round,
+    pub(super) block: Arc<Block>,
+    pub(super) validator_set: Option<Vec<B256>>,
+    pub(super) response: oneshot::Sender<Option<Duration>>,
 }
 
 impl From<CanonicalizeAndBuild> for Command {
     fn from(value: CanonicalizeAndBuild) -> Self {
         Self::CanonicalizeAndBuild(value)
+    }
+}
+
+impl From<ValidateBlock> for Command {
+    fn from(value: ValidateBlock) -> Self {
+        Self::ValidateBlock(Box::new(value))
     }
 }
 
