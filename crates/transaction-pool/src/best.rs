@@ -12,7 +12,6 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -159,7 +158,7 @@ where
 
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+    pub fn on_new_result(&mut self, result: &impl TxResult) {
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
                 continue;
@@ -250,14 +249,20 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_evm::{
+        eth::EthTxResult,
+        revm::context_interface::result::{
+            ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason,
+        },
+    };
+    use alloy_primitives::{Address, Bytes};
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
+    use std::{convert::Infallible, sync::Arc};
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -347,6 +352,27 @@ mod tests {
             aa_2d_best_transactions(aa_2d_txs),
             TEMPO_T1_BASE_FEE,
         )
+    }
+
+    #[test]
+    fn state_aware_transactions_accept_any_tx_result() {
+        let execution_result: ExecutionResult<Infallible> = ExecutionResult::Success {
+            reason: SuccessReason::Return,
+            gas: ResultGas::default(),
+            logs: Vec::new(),
+            output: Output::Call(Bytes::new()),
+        };
+        let result = EthTxResult {
+            result: ResultAndState::new(execution_result, Default::default()),
+            blob_gas_used: 0,
+            tx_type: (),
+        };
+        let mut best_txs =
+            StateAwareBestTransactions::new(merged_best_transactions(Vec::new(), Vec::new()));
+
+        best_txs.on_new_result(&result);
+
+        assert!(best_txs.decreased_balances.is_empty());
     }
 
     #[test]
