@@ -291,7 +291,7 @@ jobs:
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
 
     steps:
-      - name: Exchange GitHub STS token
+      - name: Fetch GitHub token via STS
         id: github-sts
         uses: tempoxyz/gh-actions/actions/github-sts@3eb17e98d2e8d6bc8280bf477272ff899c0b6b00
         with:
