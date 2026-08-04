@@ -181,7 +181,7 @@ where
             self.context.child("vote_mux"),
             vote_sender,
             vote_receiver,
-            self.config.mailbox_size,
+            self.config.mailbox_size.into(),
         )
         .with_backup()
         .build();
@@ -191,7 +191,7 @@ where
             self.context.child("certificate_mux"),
             certificate_sender,
             certificate_receiver,
-            self.config.mailbox_size,
+            self.config.mailbox_size.into(),
         )
         .build();
         mux.start();
@@ -200,7 +200,7 @@ where
             self.context.child("resolver_mux"),
             resolver_sender,
             resolver_receiver,
-            self.config.mailbox_size,
+            self.config.mailbox_size.into(),
         );
         mux.start();
 
@@ -373,8 +373,8 @@ where
                 activity_timeout: self.config.views_to_track,
                 skip_timeout: self.config.views_until_leader_skip,
 
-                mailbox_size: NZUsize!(self.config.mailbox_size),
-                fetch_concurrent: NZUsize!(crate::config::NUMBER_CONCURRENT_FETCHES),
+                mailbox_size: self.config.mailbox_size,
+                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
                 forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
             },
         );

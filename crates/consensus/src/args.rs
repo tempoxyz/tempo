@@ -1,7 +1,7 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{
     net::SocketAddr,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -89,8 +89,8 @@ pub struct Args {
 
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
-    #[arg(long = "consensus.mailbox-size", default_value_t = 16_384)]
-    pub mailbox_size: usize,
+    #[arg(long = "consensus.mailbox-size", default_value = "16_384")]
+    pub mailbox_size: NonZeroUsize,
 
     /// The maximum number of blocks that will be buffered per peer. Used to
     /// send and receive blocks over the network of the consensus layer.

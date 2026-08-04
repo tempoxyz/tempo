@@ -26,7 +26,6 @@ use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
-use commonware_utils::NZUsize;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -207,7 +206,7 @@ pub async fn run_follow_stack(
         network_identity,
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(epoch_length),
-        mailbox_size: NZUsize!(config.mailbox_size),
+        mailbox_size: config.mailbox_size,
         upstream_request_timeout,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
@@ -241,7 +240,7 @@ async fn instantiate_network(
         crypto: signing_key,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
-        mailbox_size: NZUsize!(config.mailbox_size),
+        mailbox_size: config.mailbox_size,
         send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,

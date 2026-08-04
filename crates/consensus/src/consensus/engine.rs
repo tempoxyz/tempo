@@ -59,7 +59,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub signer: PrivateKey,
     pub share: Option<Share>,
 
-    pub mailbox_size: usize,
+    pub mailbox_size: NonZeroUsize,
     pub deque_size: usize,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
@@ -139,7 +139,6 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
-        let mailbox_size = NZUsize!(self.mailbox_size);
 
         let alias::marshal::Initialized {
             actor: marshal,
@@ -151,7 +150,7 @@ where
             page_cache_ref.clone(),
             execution_node.clone(),
             alias::marshal::Config {
-                mailbox_size,
+                mailbox_size: self.mailbox_size,
                 partition_prefix: self.partition_prefix.clone(),
                 view_retention_timeout: ViewDelta::new(
                     self.views_to_track
@@ -194,7 +193,7 @@ where
             context.child("broadcast"),
             buffered::Config {
                 public_key: self.signer.public_key(),
-                mailbox_size,
+                mailbox_size: self.mailbox_size,
                 deque_size: self.deque_size,
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
@@ -208,7 +207,7 @@ where
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
             peer_provider: peer_manager_mailbox.clone(),
-            mailbox_size,
+            mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),

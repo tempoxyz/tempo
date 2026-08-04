@@ -294,7 +294,7 @@ pub async fn setup_validators(
             partition_prefix: uid.clone(),
             share,
             signer: private_key.clone(),
-            mailbox_size: 1024,
+            mailbox_size: commonware_utils::NZUsize!(1024),
             deque_size: 10,
             time_to_propose: Duration::from_secs(2),
             time_to_collect_notarizations: Duration::from_secs(3),

@@ -1,7 +1,7 @@
 mod actor;
 pub(super) mod ingress;
 
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 pub(crate) use actor::Actor;
 use commonware_cryptography::ed25519::PublicKey;
@@ -25,7 +25,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
-    pub(crate) mailbox_size: usize,
+    pub(crate) mailbox_size: NonZeroUsize,
     pub(crate) subblocks: Option<subblocks::Mailbox>,
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,

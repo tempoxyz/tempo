@@ -231,7 +231,7 @@ where
             self.context.child("dkg_mux"),
             sender,
             receiver,
-            self.config.mailbox_size,
+            self.config.mailbox_size.into(),
         );
         mux.start();
 

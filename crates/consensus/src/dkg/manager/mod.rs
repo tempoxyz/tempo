@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PrivateKey};
@@ -45,7 +45,7 @@ pub(crate) struct Config {
 
     pub(crate) me: PrivateKey,
 
-    pub(crate) mailbox_size: usize,
+    pub(crate) mailbox_size: NonZeroUsize,
 
     /// The mailbox to the marshal actor. Used to determine if an epoch
     /// can be started at startup.

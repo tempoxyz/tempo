@@ -11,7 +11,6 @@
 //! layer calls to complete.
 
 use std::{
-    num::NonZeroUsize,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
@@ -108,10 +107,7 @@ where
         + commonware_runtime::Metrics,
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
-        let mailbox_size =
-            NonZeroUsize::new(config.mailbox_size).expect("application mailbox size is non-zero");
-
-        let (tx, rx) = mailbox::new(config.context.child("mailbox"), mailbox_size);
+        let (tx, rx) = mailbox::new(config.context.child("mailbox"), config.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
         let metrics = Metrics::init(&config.context);

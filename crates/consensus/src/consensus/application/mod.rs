@@ -3,7 +3,7 @@
 //! The application actor implements the [`commonware_consensus::Automaton`]
 //! trait to propose and verify blocks.
 
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::PublicKey;
@@ -44,7 +44,7 @@ pub(super) struct Config<TContext> {
 
     /// Number of messages held in the application mailbox's ready queue
     /// before subsequent messages are retained in overflow.
-    pub(super) mailbox_size: usize,
+    pub(super) mailbox_size: NonZeroUsize,
 
     /// For subscribing to blocks distributed via the consensus p2p network.
     pub(super) marshal: crate::alias::marshal::Mailbox,
