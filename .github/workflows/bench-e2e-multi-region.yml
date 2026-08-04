@@ -76,10 +76,6 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
-      GH_STS_PRD_CLIENT_CERT:
-        required: true
-      GH_STS_PRD_CLIENT_KEY:
-        required: true
       VICTORIALOGS_URL:
         required: false
       VICTORIAMETRICS_URL:
@@ -301,8 +297,6 @@ jobs:
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
-          client-cert: ${{ secrets.GH_STS_PRD_CLIENT_CERT }}
-          client-key: ${{ secrets.GH_STS_PRD_CLIENT_KEY }}
 
       - name: Check org membership
         if: github.event_name != 'schedule'
