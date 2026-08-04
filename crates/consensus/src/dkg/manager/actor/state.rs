@@ -27,7 +27,7 @@ use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
-use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
+use futures::StreamExt as _;
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
@@ -58,6 +58,46 @@ where
 
     current: State,
     cache: BTreeMap<Epoch, Events>,
+}
+
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Opened<TContext>
+where
+    TContext: commonware_runtime::Storage + Clock + Metrics,
+{
+    Existing(Storage<TContext>),
+    Empty(EmptyStorage<TContext>),
+}
+
+pub(super) struct EmptyStorage<TContext>
+where
+    TContext: commonware_runtime::Storage + Clock + Metrics,
+{
+    states: metadata::Metadata<TContext, u64, State>,
+    events: segmented::variable::Journal<TContext, Event>,
+}
+
+impl<TContext> EmptyStorage<TContext>
+where
+    TContext: commonware_runtime::Storage + Clock + Metrics,
+{
+    #[instrument(skip_all, err)]
+    pub(super) async fn set_initial_state(
+        mut self,
+        state: State,
+    ) -> eyre::Result<Storage<TContext>> {
+        self.states
+            .put_sync(state.epoch.get(), state.clone())
+            .await
+            .wrap_err("unable to write initial state to metadata")?;
+
+        Ok(Storage {
+            states: self.states,
+            events: self.events,
+            current: state,
+            cache: BTreeMap::new(),
+        })
+    }
 }
 
 impl<TContext> Storage<TContext>
@@ -471,45 +511,29 @@ where
 
 #[derive(Default)]
 pub(super) struct Builder {
-    initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
 }
 
 impl Builder {
-    pub(super) fn initial_state(
-        self,
-        initial_state: impl Future<Output = eyre::Result<State>> + Send + 'static,
-    ) -> Self {
-        Self {
-            initial_state: Some(initial_state.boxed()),
-            ..self
-        }
-    }
-
     pub(super) fn partition_prefix(self, partition_prefix: &str) -> Self {
         Self {
             partition_prefix: Some(partition_prefix.to_string()),
-            ..self
         }
     }
 
     #[instrument(skip_all, err)]
-    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
+    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Opened<TContext>>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
-        let Self {
-            initial_state,
-            partition_prefix,
-        } = self;
+        let Self { partition_prefix } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
         let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-
-        let mut states = metadata::Metadata::init(
+        let states: metadata::Metadata<TContext, u64, State> = metadata::Metadata::init(
             context.with_label("states"),
             metadata::Config {
                 partition: states_metadata_partition,
@@ -519,33 +543,12 @@ impl Builder {
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
 
-        if states.keys().max().is_none() {
-            let initial_state = match initial_state {
-                None => {
-                    return Err(eyre!(
-                        "states metadata was empty and initializer was not set"
-                    ));
-                }
-                Some(initial_state) => initial_state
-                    .await
-                    .wrap_err("failed constructing initial state to populate storage")?,
-            };
+        let current = states.keys().max().map(|epoch| {
             states
-                .put_sync(initial_state.epoch.get(), initial_state)
-                .await
-                .wrap_err("unable to write initial state to metadata")?;
-        }
-
-        let current = states
-            .keys()
-            .max()
-            .map(|epoch| {
-                states
-                    .get(epoch)
-                    .expect("state at keys iterator must exist")
-                    .clone()
-            })
-            .expect("states storage must contain a state after initialization");
+                .get(epoch)
+                .expect("state at keys iterator must exist")
+                .clone()
+        });
 
         let events = segmented::variable::Journal::init(
             context.with_label("events"),
@@ -578,12 +581,18 @@ impl Builder {
             }
         }
 
-        Ok(Storage {
-            states,
-            events,
-            current,
-            cache,
-        })
+        match current {
+            Some(current) => Ok(Opened::Existing(Storage {
+                states,
+                events,
+                current,
+                cache,
+            })),
+            None if cache.is_empty() => Ok(Opened::Empty(EmptyStorage { states, events })),
+            None => Err(eyre!(
+                "DKG states metadata is empty, but the events journal contains retained events"
+            )),
+        }
     }
 }
 
@@ -1309,5 +1318,78 @@ mod tests {
 
         let share = shares.into_iter().next().unwrap().1;
         assert_roundtrip(&ShareState::Plaintext(Some(share)));
+    }
+
+    #[test]
+    fn empty_storage_requires_an_initial_state() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let opened = builder()
+                .partition_prefix("empty_storage_requires_an_initial_state")
+                .init(context.with_label("initial"))
+                .await
+                .unwrap();
+            let Opened::Empty(empty) = opened else {
+                panic!("new storage must be empty");
+            };
+
+            let state = make_test_state(&mut context, 0);
+            let storage = empty.set_initial_state(state.clone()).await.unwrap();
+            assert_eq!(storage.current(), state);
+            drop(storage);
+
+            let reopened = builder()
+                .partition_prefix("empty_storage_requires_an_initial_state")
+                .init(context.with_label("reopened"))
+                .await
+                .unwrap();
+            let Opened::Existing(storage) = reopened else {
+                panic!("storage with an initial state must reopen as existing");
+            };
+            assert_eq!(storage.current(), state);
+        });
+    }
+
+    #[test]
+    fn empty_states_reject_retained_events() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let opened = builder()
+                .partition_prefix("empty_states_reject_retained_events")
+                .init(context.with_label("initial"))
+                .await
+                .unwrap();
+            let Opened::Empty(mut empty) = opened else {
+                panic!("new storage must be empty");
+            };
+
+            empty
+                .events
+                .append(
+                    0,
+                    &Event::Finalized {
+                        digest: Digest(alloy_primitives::B256::with_last_byte(1)),
+                        parent: Digest(alloy_primitives::B256::ZERO),
+                        height: Height::zero(),
+                    },
+                )
+                .await
+                .unwrap();
+            empty.events.sync(0).await.unwrap();
+            drop(empty);
+
+            let result = builder()
+                .partition_prefix("empty_states_reject_retained_events")
+                .init(context.with_label("reopened"))
+                .await;
+            let Err(error) = result else {
+                panic!("retained events without state metadata must be rejected");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("states metadata is empty, but the events journal contains")
+            );
+        });
     }
 }

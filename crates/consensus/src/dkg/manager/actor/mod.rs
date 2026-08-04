@@ -178,32 +178,28 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let Ok(mut storage) = state::builder()
+        let Ok(opened) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
-            .initial_state({
-                let mut context = self.context.clone();
-                let execution_node = self.config.execution_node.clone();
-                let initial_share = self.config.initial_share.clone();
-                let epoch_strategy = self.config.epoch_strategy.clone();
-                let last_finalized_height = self.config.last_finalized_height;
-                let mut marshal = self.config.marshal.clone();
-                async move {
-                    establish_initial_state(
-                        &mut context,
-                        &execution_node,
-                        initial_share.clone(),
-                        &epoch_strategy,
-                        last_finalized_height,
-                        &mut marshal,
-                    )
-                    .await
-                }
-            })
             .init(self.context.with_label("state"))
             .await
         else {
             // NOTE: Builder::init emits en error event.
             return;
+        };
+
+        let mut storage = match opened {
+            state::Opened::Existing(storage) => storage,
+            state::Opened::Empty(storage) => {
+                // The following emit error events
+                let Ok(initial_state) = self.establish_initial_state().await else {
+                    return;
+                };
+                let Ok(storage) = storage.set_initial_state(initial_state).await else {
+                    return;
+                };
+
+                storage
+            }
         };
 
         if let Err(reason) = self
@@ -254,7 +250,6 @@ where
         let state = storage.current();
 
         self.metrics.reset();
-
         self.metrics.dealers.set(state.dealers().len() as i64);
         self.metrics.players.set(state.players().len() as i64);
 
@@ -1224,59 +1219,194 @@ where
             .exit(state.epoch)
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
-}
 
-#[instrument(skip_all, err)]
-async fn establish_initial_state<TContext>(
-    context: &mut TContext,
-    node: &TempoFullNode,
-    share: Option<Share>,
-    epoch_strategy: &FixedEpocher,
-    last_finalized_height: Height,
-    marshal: &mut crate::alias::marshal::Mailbox,
-) -> eyre::Result<State>
-where
-    TContext: Clock + CryptoRngCore,
-{
-    let latest_boundary = latest_boundary_at_or_before(epoch_strategy, last_finalized_height);
-    info!(
-        %latest_boundary,
-        last_finalized = %last_finalized_height,
-        "marshal reported finalized floor at startup, reading on-chain DKG \
-        outcome from last boundary height"
-    );
+    #[instrument(skip_all, err)]
+    async fn establish_initial_state(&mut self) -> eyre::Result<State> {
+        let latest_boundary = latest_boundary_at_or_before(
+            &self.config.epoch_strategy,
+            self.config.last_finalized_height,
+        );
+        info!(
+            %latest_boundary,
+            last_finalized = %self.config.last_finalized_height,
+            "marshal reported finalized floor at startup, reading on-chain DKG \
+            outcome from last boundary height"
+        );
 
-    let onchain_outcome = read_outcome_from_boundary(node, marshal, latest_boundary).await?;
+        let onchain_outcome = read_outcome_from_boundary(
+            &self.config.execution_node,
+            &self.config.marshal,
+            latest_boundary,
+        )
+        .await?;
 
-    let share = state::ShareState::Plaintext('verify_initial_share: {
-        let Some(share) = share else {
-            break 'verify_initial_share None;
+        let share = state::ShareState::Plaintext('verify_initial_share: {
+            let Some(share) = self.config.initial_share.clone() else {
+                break 'verify_initial_share None;
+            };
+            let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
+                warn!(
+                    "the index of the provided share exceeds the polynomial of the \
+                    on-chain DKG outcome; ignoring the share"
+                );
+                break 'verify_initial_share None;
+            };
+            if share.public::<MinSig>() != partial {
+                warn!(
+                    "the provided share does not match the polynomial of the \
+                    on-chain DKG outcome; ignoring the share"
+                );
+                break 'verify_initial_share None;
+            }
+            Some(share)
+        });
+
+        let mut state = State {
+            epoch: onchain_outcome.epoch,
+            seed: Summary::random(&mut self.context),
+            output: onchain_outcome.output.clone(),
+            share,
+            players: onchain_outcome.next_players,
+            is_full_dkg: onchain_outcome.is_next_full_dkg,
         };
-        let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
-            warn!(
-                "the index of the provided share exceeds the polynomial of the \
-                on-chain DKG outcome; ignoring the share"
-            );
-            break 'verify_initial_share None;
-        };
-        if share.public::<MinSig>() != partial {
-            warn!(
-                "the provided share does not match the polynomial of the \
-                on-chain DKG outcome; ignoring the share"
-            );
-            break 'verify_initial_share None;
+
+        if let state::ShareState::Plaintext(None) = &state.share
+            && let Ok(Some(share)) = self.maybe_recover_revealed_share(&state).await
+        {
+            info!(epoch = %state.epoch, "recovered share from public dealings");
+            state.share = state::ShareState::Plaintext(Some(share));
         }
-        Some(share)
-    });
 
-    Ok(State {
-        epoch: onchain_outcome.epoch,
-        seed: Summary::random(context),
-        output: onchain_outcome.output.clone(),
-        share,
-        players: onchain_outcome.next_players,
-        is_full_dkg: onchain_outcome.is_next_full_dkg,
-    })
+        Ok(state)
+    }
+
+    /// Attempts to reconstruct our current threshold share from dealer logs finalized during the
+    /// previous epoch.
+    ///
+    /// This is only called while initializing an empty DKG partition, so all dealer logs are read
+    /// from finalized block headers.
+    #[instrument(skip_all, fields(epoch = %state.epoch), err)]
+    async fn maybe_recover_revealed_share(&mut self, state: &State) -> eyre::Result<Option<Share>> {
+        let public_key = self.config.me.public_key();
+        if state.output.players().position(&public_key).is_none()
+            || state.output.revealed().position(&public_key).is_none()
+        {
+            return Ok(None);
+        }
+
+        let Some(ceremony_epoch) = state.epoch.previous() else {
+            return Ok(None);
+        };
+
+        let ceremony_boundary = ceremony_epoch.previous().map_or(Height::zero(), |epoch| {
+            self.config
+                .epoch_strategy
+                .last(epoch)
+                .expect("epoch strategy is valid for all epochs")
+        });
+
+        let ceremony_outcome = read_outcome_from_boundary(
+            &self.config.execution_node,
+            &self.config.marshal,
+            ceremony_boundary,
+        )
+        .await
+        .wrap_err("failed reading outcome for ceremony boundary")?;
+
+        ensure!(
+            ceremony_outcome.epoch == ceremony_epoch,
+            "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
+            ceremony_outcome.epoch,
+        );
+
+        // A failed ceremony carries its input output forward. In that case, the current share was
+        // produced by an older ceremony, not by the dealer logs from the immediately previous epoch.
+        // Do not attempt an unbounded search through earlier epochs here.
+        if ceremony_outcome.output == state.output {
+            return Ok(None);
+        }
+
+        let ceremony_state = State {
+            epoch: ceremony_outcome.epoch,
+            seed: state.seed,
+            output: ceremony_outcome.output,
+            share: state::ShareState::Plaintext(None),
+            players: ceremony_outcome.next_players,
+            is_full_dkg: ceremony_outcome.is_next_full_dkg,
+        };
+
+        let round = state::Round::from_state(&ceremony_state, &self.config.namespace);
+        ensure!(
+            round.players().position(&public_key).is_some(),
+            "our identity is in the current output but was not a player in ceremony epoch \
+        `{ceremony_epoch}`"
+        );
+
+        let selected_dealers = state.output.dealers();
+        let first = self
+            .config
+            .epoch_strategy
+            .first(ceremony_epoch)
+            .ok_or_eyre("ceremony epoch has no first height")?;
+        let last = self
+            .config
+            .epoch_strategy
+            .last(ceremony_epoch)
+            .ok_or_eyre("ceremony epoch has no last height")?;
+
+        // Honest dealers do not finalize logs before the midpoint, but block validation does not
+        // enforce that timing, so scan the entire ceremony epoch.
+        let mut height = first;
+        let mut dealer_logs = BTreeMap::new();
+        while height < last && dealer_logs.len() < selected_dealers.len() {
+            let header = get_header(&self.config.execution_node, &self.config.marshal, height)
+                .await
+                .wrap_err("failed reading finalized header")?;
+
+            if !header.extra_data().is_empty()
+                && let Ok((dealer, log)) = read_dealer_log(header.extra_data().as_ref(), &round)
+                && selected_dealers.position(&dealer).is_some()
+            {
+                dealer_logs.entry(dealer).or_insert(log);
+            }
+
+            height = height.next();
+        }
+
+        ensure!(
+            dealer_logs.len() == selected_dealers.len(),
+            "found only {} of {} selected dealer logs in finalized headers for ceremony epoch `{ceremony_epoch}`",
+            dealer_logs.len(),
+            selected_dealers.len(),
+        );
+
+        let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+        for (dealer, log) in dealer_logs {
+            logs.record(dealer, log);
+        }
+
+        let player = state::Player::new(
+            dkg::Player::new(round.info().clone(), self.config.me.clone())
+                .wrap_err("failed creating player to recover revealed share")?,
+        );
+
+        let (recovered_output, share) = match player.finalize(&mut self.context, logs, &Sequential)
+        {
+            Ok(recovered) => recovered,
+            Err(dkg::Error::MissingPlayerDealing) => return Ok(None),
+            Err(error) => {
+                return Err(eyre::Report::new(error))
+                    .wrap_err("failed finalizing revealed share from dealer logs");
+            }
+        };
+
+        ensure!(
+            recovered_output == state.output,
+            "recovered output does not match the on-chain output"
+        );
+
+        Ok(Some(share))
+    }
 }
 
 fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -> Height {
