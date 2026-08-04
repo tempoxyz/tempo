@@ -325,9 +325,10 @@ where
                     .await
                     .ok_or_else(|| {
                         eyre!(
-                            "marshal does not have finalized information for boundary \
-                            `{boundary_height}`, so a consensus engine for epoch \
-                            `{epoch}` cannot be started"
+                            "cannot start a consensus for epoch `{epoch}`, \
+                            because we do not have information on the \
+                            finalized block of its boundary height \
+                            `{boundary_height}`"
                         )
                     })?;
 
