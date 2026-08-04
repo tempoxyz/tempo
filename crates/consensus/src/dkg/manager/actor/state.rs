@@ -1297,8 +1297,8 @@ mod tests {
 
     #[test]
     fn share_state_roundtrip_plaintext_some() {
-        use rand_10::SeedableRng as _;
-        let mut rng = rand_10::rngs::StdRng::seed_from_u64(42);
+        use rand::SeedableRng as _;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         let keys = std::iter::repeat_with(|| PrivateKey::random(&mut rng))
             .take(3)

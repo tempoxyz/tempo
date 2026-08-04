@@ -114,13 +114,13 @@ mod tests {
     };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand_10::SeedableRng as _;
+    use rand::SeedableRng as _;
 
     use super::OnchainDkgOutcome;
 
     #[test]
     fn onchain_dkg_outcome_roundtrip() {
-        let mut rng = rand_10::rngs::StdRng::seed_from_u64(42);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(10)

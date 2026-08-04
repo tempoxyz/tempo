@@ -22,7 +22,7 @@ use commonware_runtime::{Runner as _, Supervisor as _};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::{NZU32, ordered};
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
-use rand_10::SeedableRng as _;
+use rand::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};
 use reth_db_api::{
     cursor::{DbCursorRO as _, DbCursorRW as _, DbDupCursorRO as _, DbDupCursorRW as _},
@@ -1116,7 +1116,7 @@ fn seed_consensus_state(
                     states.clear();
                 }
 
-                let mut rng = rand_10::rngs::StdRng::seed_from_u64(seed);
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
                     epoch: outcome.epoch,
                     seed: Summary::random(&mut rng),

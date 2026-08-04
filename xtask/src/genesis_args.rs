@@ -20,8 +20,8 @@ use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
+use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
-use rand_10::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -1188,7 +1188,7 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand_10::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())

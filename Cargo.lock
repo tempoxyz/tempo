@@ -8557,6 +8557,7 @@ dependencies = [
  "chacha20 0.10.0",
  "getrandom 0.4.3",
  "rand_core 0.10.1",
+ "serde",
 ]
 
 [[package]]
@@ -13842,7 +13843,7 @@ dependencies = [
  "p256 0.13.2",
  "proptest",
  "proptest-arbitrary-interop",
- "rand 0.9.4",
+ "rand 0.10.2",
  "reth-codecs",
  "reth-db-api",
  "reth-ethereum-primitives",

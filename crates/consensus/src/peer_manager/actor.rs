@@ -505,7 +505,7 @@ mod tests {
         ed25519::PrivateKey,
     };
     use commonware_utils::{N3f1, TryFromIterator as _};
-    use rand_10::SeedableRng as _;
+    use rand::SeedableRng as _;
     use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
     use reth_node_builder::ConfigureEvm as _;
     use reth_provider::{
@@ -661,7 +661,7 @@ mod tests {
         players: impl IntoIterator<Item = PublicKey>,
         next_players: impl IntoIterator<Item = PublicKey>,
     ) -> eyre::Result<OnchainDkgOutcome> {
-        let mut rng = rand_10::rngs::StdRng::seed_from_u64(42);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let (output, _) = dkg::deal::<MinSig, _, N3f1>(
             &mut rng,
             Mode::NonZeroCounter,

@@ -296,8 +296,8 @@ prometheus-client = "0.24.0"
 sysinfo = { version = "0.38.4", default-features = false, features = ["disk", "system"] }
 proptest = "1.9"
 proptest-arbitrary-interop = "0.1.0"
-rand = "0.9"
-rand_10 = { package = "rand", version = "0.10" }
+rand = "0.10"
+rand_09 = { package = "rand", version = "0.9" }
 rand_08 = { package = "rand", version = "0.8.5" }
 rand_core = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

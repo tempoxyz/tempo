@@ -13,7 +13,7 @@ use commonware_runtime::{
 };
 use commonware_utils::NZU64;
 use futures::future::join_all;
-use rand_10::RngExt as _;
+use rand::RngExt as _;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use tracing::debug;
