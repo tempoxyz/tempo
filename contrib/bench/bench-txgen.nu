@@ -206,7 +206,7 @@ def "main run" [
     --tps: int = 10000
     --duration: int = 30
     --accounts: int = 1000
-    --max-concurrent-requests: int = 100
+    --max-concurrent-requests: int = 5000
     --samply
     --samply-args: string = ""
     --loud
