@@ -655,7 +655,41 @@ fn same_epoch_known_descendant_drives_forkchoice_after_restart() {
 }
 
 #[test_traced]
-fn same_epoch_noncanonical_certified_tip_stops_executor() {
+fn same_epoch_known_noncanonical_descendant_drives_forkchoice_after_restart() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let certified = Digest(B256::with_last_byte(15));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(certified.0, BlockLocation::NonCanonical(15));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        assert_eq!(provider.forkchoices()[0].head_block_hash, certified.0);
+    });
+}
+
+#[test_traced]
+fn same_epoch_noncanonical_ancestor_stops_executor() {
     deterministic::Runner::default().start(|context| async move {
         let execution_digest = Digest(B256::with_last_byte(12));
         let certified = Digest(B256::with_last_byte(19));
@@ -689,13 +723,81 @@ fn same_epoch_noncanonical_certified_tip_stops_executor() {
 }
 
 #[test_traced]
-fn certified_round_must_match_known_block_epoch() {
+fn same_epoch_noncanonical_block_at_execution_tip_stops_executor() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let certified = Digest(B256::with_last_byte(19));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(certified.0, BlockLocation::NonCanonical(12));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        let handle = actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+        handle.await.expect("executor should stop cleanly");
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn canonical_block_epoch_must_match_certified_round() {
     deterministic::Runner::default().start(|context| async move {
         let execution_digest = Digest(B256::with_last_byte(12));
         let certified = Digest(B256::with_last_byte(22));
         let provider = StubExecutionProvider::default();
         provider.set_finalized(12, execution_digest.0);
         provider.set_block_location(certified.0, BlockLocation::Canonical(22));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        let handle = actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+        handle.await.expect("executor should stop cleanly");
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn noncanonical_block_epoch_must_match_certified_round() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let certified = Digest(B256::with_last_byte(22));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(certified.0, BlockLocation::NonCanonical(22));
 
         let (actor, mailbox) = init(
             context.child("follower_executor"),
