@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --profile ${RUST_PROFILE} \
         --bin tempo --features "${RUST_FEATURES}" \
+        --bin tempo-localnet --features "${RUST_FEATURES}" \
         --bin tempo-sidecar \
         --bin tempo-xtask
 
@@ -34,6 +35,16 @@ FROM base AS tempo
 ARG RUST_PROFILE=profiling
 COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
 ENTRYPOINT ["/usr/local/bin/tempo"]
+
+# tempo-localnet
+FROM base AS tempo-localnet
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-localnet /usr/local/bin/tempo-localnet
+EXPOSE 8545
+VOLUME ["/data"]
+HEALTHCHECK --interval=1s --timeout=2s --start-period=60s --retries=5 CMD ["/usr/local/bin/tempo-localnet", "--health"]
+ENTRYPOINT ["/usr/local/bin/tempo-localnet"]
 
 # tempo-sidecar
 FROM base AS tempo-sidecar

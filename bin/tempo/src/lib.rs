@@ -86,6 +86,9 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
+// Used by the tempo-localnet binary in this package.
+use nix as _;
+
 const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 

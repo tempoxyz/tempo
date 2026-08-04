@@ -1,0 +1,11 @@
+services:
+  tempo:
+    image: ghcr.io/tempoxyz/tempo-localnet:latest
+    command: ["--block-time", "200ms"]
+    ports:
+      - "8545:8545"
+    volumes:
+      - tempo-localnet-data:/data
+
+volumes:
+  tempo-localnet-data:
