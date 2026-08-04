@@ -14,7 +14,7 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 
-use super::{Config, init};
+use super::{BlockLocation, Config, init};
 use crate::consensus::Digest;
 use utils::{StubExecutionProvider, StubMarshal, make_block};
 
@@ -554,7 +554,41 @@ fn later_epoch_certified_tip_drives_forkchoice_after_restart() {
 }
 
 #[test_traced]
-fn same_epoch_certified_tip_does_not_regress_roundless_execution_tip() {
+fn same_epoch_canonical_ancestor_does_not_regress_roundless_execution_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let ancestor = Digest(B256::with_last_byte(11));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(ancestor.0, BlockLocation::Canonical(11));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: ancestor,
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), ancestor);
+        context.sleep(Duration::from_millis(5)).await;
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn same_epoch_unknown_certified_tip_drives_forkchoice_after_restart() {
     deterministic::Runner::default().start(|context| async move {
         let execution_digest = Digest(B256::with_last_byte(12));
         let provider = StubExecutionProvider::default();
@@ -578,8 +612,144 @@ fn same_epoch_certified_tip_does_not_regress_roundless_execution_tip() {
         );
         actor.start();
 
+        let certified = Digest(B256::with_last_byte(19));
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        assert_eq!(provider.forkchoices()[0].head_block_hash, certified.0);
+    });
+}
+
+#[test_traced]
+fn same_epoch_known_descendant_drives_forkchoice_after_restart() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let certified = Digest(B256::with_last_byte(15));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(certified.0, BlockLocation::Canonical(15));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+
+        wait_until(&context, || !provider.forkchoices().is_empty()).await;
+        assert_eq!(provider.forkchoices()[0].head_block_hash, certified.0);
+    });
+}
+
+#[test_traced]
+fn same_epoch_noncanonical_certified_tip_stops_executor() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let certified = Digest(B256::with_last_byte(19));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(certified.0, BlockLocation::NonCanonical(11));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        let handle = actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+        handle.await.expect("executor should stop cleanly");
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn certified_round_must_match_known_block_epoch() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let certified = Digest(B256::with_last_byte(22));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.set_block_location(certified.0, BlockLocation::Canonical(22));
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        let handle = actor.start();
+
+        mailbox.certified_tip(epoch_round(1, 9), certified);
+        handle.await.expect("executor should stop cleanly");
+
+        assert!(provider.forkchoices().is_empty());
+    });
+}
+
+#[test_traced]
+fn same_epoch_block_location_error_stops_executor() {
+    deterministic::Runner::default().start(|context| async move {
+        let execution_digest = Digest(B256::with_last_byte(12));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(12, execution_digest.0);
+        provider.fail_block_location_reads();
+
+        let (actor, mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                startup_tip: crate::alias::marshal::StartupTip {
+                    round: Some(epoch_round(1, 1)),
+                    height: Height::new(11),
+                    digest: Digest(B256::with_last_byte(11)),
+                },
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        let handle = actor.start();
+
         mailbox.certified_tip(epoch_round(1, 9), Digest(B256::with_last_byte(19)));
-        context.sleep(Duration::from_millis(5)).await;
+        handle.await.expect("executor should stop cleanly");
 
         assert!(provider.forkchoices().is_empty());
     });

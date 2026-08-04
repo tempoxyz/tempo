@@ -6,7 +6,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::{
-    Setup, TestingNode, connect_execution_peers,
+    Setup, TestingNode, connect_execution_peers, connect_execution_to_peers,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
     metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
@@ -23,9 +23,9 @@ use commonware_runtime::{
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
-use reth_ethereum::provider::BlockIdReader as _;
+use reth_ethereum::{provider::BlockIdReader as _, rpc::types::engine::ForkchoiceState};
 use tempo_consensus::{feed::FeedStateHandle, follow};
-use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
+use tempo_node::rpc::consensus::{CertifiedBlock, ConsensusFeed as _, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
 
@@ -94,6 +94,10 @@ trait FeedStateProvider {
     fn feed_state(&self) -> FeedStateHandle;
 
     fn execution_node(&self) -> Arc<tempo_node::TempoFullNode>;
+
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
@@ -129,6 +133,38 @@ impl<T: FeedStateProvider> FeedStateProvider for &T {
     fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
         (*self).execution_node()
     }
+
+    fn is_available(&self) -> bool {
+        (*self).is_available()
+    }
+}
+
+struct UnavailableUpstream {
+    feed: FeedStateHandle,
+    execution_node: Arc<tempo_node::TempoFullNode>,
+}
+
+impl UnavailableUpstream {
+    fn new(upstream: &impl FeedStateProvider) -> Self {
+        Self {
+            feed: FeedStateHandle::new(),
+            execution_node: upstream.execution_node(),
+        }
+    }
+}
+
+impl FeedStateProvider for UnavailableUpstream {
+    fn feed_state(&self) -> FeedStateHandle {
+        self.feed.clone()
+    }
+
+    fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
+        self.execution_node.clone()
+    }
+
+    fn is_available(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -137,6 +173,7 @@ struct FollowerBuilder {
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
+    epoch_length: Option<u64>,
     gossip: bool,
 }
 
@@ -159,6 +196,13 @@ impl FollowerBuilder {
     fn with_gossip(self) -> Self {
         Self {
             gossip: true,
+            ..self
+        }
+    }
+
+    fn epoch_length(self, epoch_length: u64) -> Self {
+        Self {
+            epoch_length: Some(epoch_length),
             ..self
         }
     }
@@ -199,6 +243,7 @@ impl FollowerBuilder {
             partition_prefix,
             runtime,
             donor,
+            epoch_length,
             gossip,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
@@ -214,6 +259,7 @@ impl FollowerBuilder {
         let feed_state = FeedStateHandle::new();
         let upstream_execution_node = upstream.execution_node();
         let upstream_feed_state = upstream.feed_state();
+        let upstream_available = upstream.is_available();
 
         let config = crate::ExecutionNodeConfig {
             secret_key: alloy_primitives::B256::random(),
@@ -237,7 +283,6 @@ impl FollowerBuilder {
             let db = reth_db::init_db(db_path, test_db_args()).expect("reth db init");
             (name.clone(), db, None)
         };
-
         let node = runtime
             .spawn_node(&spawn_name, config, db, rocksdb)
             .await
@@ -248,6 +293,7 @@ impl FollowerBuilder {
             in_process::Config {
                 execution_node: upstream_execution_node,
                 feed: upstream_feed_state,
+                available: upstream_available,
             },
         );
 
@@ -265,7 +311,12 @@ impl FollowerBuilder {
             execution_node: node.node.clone().into(),
             feed_state: feed_state.clone(),
             partition_prefix,
-            epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
+            epoch_strategy: FixedEpocher::new(
+                epoch_length
+                    .unwrap_or(EPOCH_LENGTH)
+                    .try_into()
+                    .expect("epoch length must be nonzero"),
+            ),
             mailbox_size: commonware_utils::NZUsize!(16_384),
             upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
@@ -350,6 +401,110 @@ impl MetricScope for Follower {
     fn metric_prefix(&self) -> String {
         self.name.clone()
     }
+}
+
+async fn finalization_at<T: Clock>(
+    context: &T,
+    upstream: &impl FeedStateProvider,
+    height: u64,
+) -> CertifiedBlock {
+    loop {
+        if let Response::Success(certified) = upstream
+            .feed_state()
+            .get_finalization(Query::Height(height))
+            .await
+        {
+            return certified;
+        }
+        context.sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn gossip_certificate<T>(context: &T, follower: &Follower, certified: &CertifiedBlock)
+where
+    T: Clock + RuntimeMetrics,
+{
+    let gossip = follower.gossip.as_ref().expect("gossip is enabled");
+    let admitted_before = context
+        .to_metrics()
+        .for_scope(follower)
+        .value::<u64>("gossip_admitted_total")
+        .unwrap_or(0);
+    let peer = alloy_primitives::B512::with_last_byte(1);
+    let (outbound, _relayed) = tokio::sync::mpsc::channel(8);
+    gossip
+        .control
+        .send(tempo_node::gossip::SessionEvent::Up {
+            peer,
+            generation: 0,
+            outbound,
+        })
+        .expect("actor is running");
+
+    let frame: alloy_primitives::Bytes = tempo_node::gossip::wire::encode(
+        &alloy_primitives::hex::decode(&certified.certificate).expect("the feed encodes valid hex"),
+    )
+    .freeze()
+    .into();
+    gossip
+        .frames
+        .send(tempo_node::gossip::Frame {
+            peer,
+            generation: 0,
+            frame,
+        })
+        .await
+        .expect("actor is running");
+
+    for _ in 0..200 {
+        if context
+            .to_metrics()
+            .for_scope(follower)
+            .value::<u64>("gossip_admitted_total")
+            .unwrap_or(0)
+            > admitted_before
+        {
+            return;
+        }
+        context.sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!("certificate was not admitted before the test deadline");
+}
+
+fn execution_finalized_height(follower: &Follower) -> u64 {
+    follower
+        .execution_node
+        .node
+        .provider
+        .finalized_block_number()
+        .expect("failed reading follower finalized height")
+        .unwrap_or(0)
+}
+
+async fn wait_for_execution_height<T: Clock>(context: &T, follower: &Follower, target_height: u64) {
+    for _ in 0..10_000 {
+        if execution_finalized_height(follower) >= target_height {
+            return;
+        }
+        context.sleep(Duration::from_millis(1)).await;
+    }
+
+    panic!(
+        "follower execution stopped at height {} before target {target_height}",
+        execution_finalized_height(follower),
+    );
+}
+
+async fn latest_archived_height<T: Clock>(context: &T, follower: &Follower) -> u64 {
+    for _ in 0..200 {
+        if let Response::Success(certified) = follower.feed.get_finalization(Query::Latest).await {
+            return certified.block.number();
+        }
+        context.sleep(Duration::from_millis(1)).await;
+    }
+
+    panic!("follower archive did not expose its startup finalization");
 }
 
 /// Sends a validator certificate through the consensus transport channels and
@@ -453,6 +608,104 @@ fn gossiped_certificate_is_verified_and_applied_by_a_follower() {
         // With peers, the follower goes on to converge normally.
         follower.connect_peers(&validators).await;
         wait_for_height(&context, &follower, target_height).await;
+    });
+}
+
+#[test_traced]
+fn same_epoch_gossip_resumes_p2p_sync_when_execution_is_ahead_of_archive() {
+    let _ = tempo_eyre::install();
+
+    let epoch_length = 30;
+    let donor_height = 5;
+    let first_target = 10;
+    let second_target = 15;
+    let setup = Setup::new().how_many_signers(4).epoch_length(epoch_length);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(
+            validators
+                .iter_mut()
+                .map(|validator| validator.start(&context)),
+        )
+        .await;
+        connect_execution_peers(&validators).await;
+
+        wait_for_height(&context, &validators[0], donor_height).await;
+        let mut donor = validators.remove(0);
+        donor.stop().await;
+
+        wait_for_height(&context, &validators[0], second_target).await;
+        let first_certificate = finalization_at(&context, &validators[0], first_target).await;
+        let second_certificate = finalization_at(&context, &validators[0], second_target).await;
+        join_all(
+            validators
+                .iter_mut()
+                .map(|validator| validator.stop_consensus()),
+        )
+        .await;
+
+        donor.start_execution().await;
+        connect_execution_to_peers(&donor, &validators).await;
+        let first_target_hash = first_certificate.digest;
+        let forkchoice = ForkchoiceState {
+            head_block_hash: first_target_hash,
+            safe_block_hash: first_target_hash,
+            finalized_block_hash: first_target_hash,
+        };
+        let response = donor
+            .execution()
+            .add_ons_handle
+            .beacon_engine_handle
+            .fork_choice_updated(forkchoice, None)
+            .await
+            .expect("execution node must accept the P2P sync target");
+        assert!(!response.is_invalid());
+
+        for _ in 0..10_000 {
+            if donor
+                .execution_provider()
+                .finalized_block_number()
+                .expect("failed reading donor finalized height")
+                .unwrap_or(0)
+                >= first_target
+            {
+                break;
+            }
+            context.sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            donor
+                .execution_provider()
+                .finalized_block_number()
+                .expect("failed reading donor finalized height")
+                .unwrap_or(0)
+                >= first_target,
+            "donor execution did not reach the first P2P target",
+        );
+        donor.stop_execution().await;
+
+        let unavailable_upstream = UnavailableUpstream::new(&validators[0]);
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .donor(donor)
+            .epoch_length(epoch_length)
+            .with_gossip()
+            .follow(&mut context, &unavailable_upstream)
+            .await;
+        follower.connect_peers(&validators).await;
+
+        /*
+         * The follower knows the execution height but not its consensus round.
+         * Both values are in the same epoch, so the certificate has no height
+         * that the follower can compare with the execution tip.
+         */
+        assert!(execution_finalized_height(&follower) >= first_target);
+        assert!(latest_archived_height(&context, &follower).await < first_target);
+        gossip_certificate(&context, &follower, &second_certificate).await;
+        wait_for_execution_height(&context, &follower, second_target).await;
     });
 }
 

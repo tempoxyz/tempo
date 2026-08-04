@@ -227,7 +227,7 @@ where
     /// # Panics
     /// Panics if execution node is already running.
     #[instrument(skip_all, fields(last_db_block = self.last_db_block_on_stop))]
-    async fn start_execution(&mut self) {
+    pub(crate) async fn start_execution(&mut self) {
         assert!(
             self.execution_node.is_none(),
             "execution node is already running for {}",
@@ -395,7 +395,7 @@ where
     /// # Panics
     /// Panics if execution node is not running.
     #[instrument(skip_all)]
-    async fn stop_execution(&mut self) {
+    pub(crate) async fn stop_execution(&mut self) {
         debug!(%self.uid, "stopping execution node for testing node");
         let execution_node = self.execution_node.take().unwrap_or_else(|| {
             panic!(
