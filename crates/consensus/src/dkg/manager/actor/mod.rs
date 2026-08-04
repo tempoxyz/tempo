@@ -1001,9 +1001,13 @@ where
                         true,
                     );
 
-                    if sent.is_empty() {
-                        bail!("failed returning ACK to dealer");
-                    }
+                    // Follows the doc on the return value of of Sender::send.
+                    ensure!(
+                        !sent.is_empty(),
+                        "failed returning ACK to dealer because it was rate \
+                        limited, the connection was closed, or the message \
+                        otherwise rejected",
+                    );
 
                     info!("returned ACK to dealer");
                     self.metrics.acks_sent.metric().inc();
