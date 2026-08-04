@@ -45,3 +45,28 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for S
         Ok(tx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloy_provider::{SendableTx, fillers::TxFiller};
+
+    use super::*;
+    use crate::TempoNetwork;
+
+    #[tokio::test]
+    async fn defers_the_invalid_marker_until_after_async_preparation() {
+        let filler = SponsorFiller;
+        let mut tx = SendableTx::Builder(TempoTransactionRequest::default());
+
+        <SponsorFiller as TxFiller<TempoNetwork>>::fill_sync(&filler, &mut tx);
+        assert!(tx.as_builder().unwrap().fee_payer_signature.is_none());
+
+        let tx = <SponsorFiller as TxFiller<TempoNetwork>>::fill(&filler, (), tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            tx.as_builder().unwrap().fee_payer_signature,
+            Some(FEE_PAYER_SIGNATURE_MARKER)
+        );
+    }
+}

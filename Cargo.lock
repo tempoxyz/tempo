@@ -4489,7 +4489,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6104,7 +6104,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -12179,7 +12179,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -12259,7 +12259,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.7",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -13219,7 +13219,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -13324,6 +13324,7 @@ dependencies = [
  "alloy-network",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-rlp",
  "alloy-rpc-client",
  "alloy-rpc-types-eth",
  "alloy-serde",
@@ -13332,11 +13333,14 @@ dependencies = [
  "alloy-sol-types",
  "alloy-transport",
  "async-trait",
+ "base64 0.22.1",
  "dashmap",
  "derive_more",
+ "dirs-next",
  "eyre",
  "futures",
  "http 1.4.0",
+ "p256 0.13.2",
  "reqwest 0.13.3",
  "reth-evm",
  "reth-primitives-traits",
@@ -13344,12 +13348,14 @@ dependencies = [
  "reth-rpc-eth-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
  "tempo-primitives",
  "tempo-revm",
  "test-case",
+ "thiserror 2.0.18",
  "tokio",
  "tower",
  "tracing",
@@ -13426,7 +13432,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
- "serde_json",
  "tempfile",
  "tempo-chainspec",
  "tempo-consensus-config",
@@ -15297,7 +15302,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

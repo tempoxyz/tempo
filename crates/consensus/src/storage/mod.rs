@@ -203,7 +203,6 @@ where
 
     archive
 }
-
 /// Finds the latest finalization certificate backed by finalized execution storage.
 ///
 /// Searches backwards from the execution provider's finalized tip. At

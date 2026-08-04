@@ -381,7 +381,7 @@ mod tests {
                     sequencers: vec![SEQUENCER_A, SEQUENCER_B],
                     threshold: 2,
                     verifier: ZONE_VERIFIER_ADDRESS,
-                    rpcUrl: params.rpcUrl,
+                    rpcUrl: params.rpcUrl.clone(),
                 }
             );
 
@@ -393,7 +393,7 @@ mod tests {
                 ZONE_PORTAL_PROXY_RUNTIME.as_slice()
             );
 
-            let portal = ZonePortalStorage::new(created.portal);
+            let mut portal = ZonePortalStorage::new(created.portal);
             assert_eq!(portal.admin.read()?, ADMIN);
             assert_eq!(portal.block_hash.read()?, B256::ZERO);
             assert_eq!(
@@ -465,6 +465,12 @@ mod tests {
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(24))?,
                 U256::from(CREATION_BLOCK)
+            );
+
+            // Ensure portal can't be re-initialized
+            assert_eq!(
+                portal.initialize(1, &params),
+                Err(ZoneFactoryError::already_initialized().into())
             );
             Ok(())
         })
