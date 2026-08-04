@@ -89,7 +89,7 @@ pub struct Args {
 
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
-    #[arg(long = "consensus.mailbox-size", default_value = "16_384")]
+    #[arg(long = "consensus.mailbox-size", default_value = "16384")]
     pub mailbox_size: NonZeroUsize,
 
     /// The maximum number of blocks that will be buffered per peer. Used to
