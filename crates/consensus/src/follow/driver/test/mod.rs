@@ -162,7 +162,7 @@ fn valid_finalization_is_certified_and_reported() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         let certified = marshal.certified();
@@ -217,7 +217,7 @@ fn network_identity_registers_verified_fallback_for_floor_installation() {
             seen: 0,
         };
         let mut reporter = mailbox.to_event_reporter();
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         assert_eq!(marshal.report_count(), 1);
@@ -274,7 +274,7 @@ fn invalid_finalization_hints_current_epoch_boundary() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || !marshal.hints().is_empty()).await;
 
         assert_eq!(marshal.hints(), vec![expected_boundary]);
@@ -320,7 +320,7 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
         context.sleep(Duration::from_millis(1)).await;
 
         assert!(marshal.certified().is_empty());
@@ -335,7 +335,7 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
             seen: 0,
         };
 
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         assert_eq!(marshal.certified()[0].1, block);
@@ -387,7 +387,7 @@ fn scheme_before_network_identity_epoch_is_required() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
         context.sleep(Duration::from_millis(1)).await;
 
         assert!(marshal.certified().is_empty());
@@ -433,7 +433,7 @@ fn boundary_update_registers_scheme_before_acknowledging() {
         let (ack, waiter) = Exact::handle();
         let mut reporter = mailbox.to_marshal_reporter();
 
-        let _ = reporter.report(Update::Block(block.into(), ack));
+        assert!(reporter.report(Update::Block(block.into(), ack)).accepted());
         waiter
             .await
             .expect("boundary update should be acknowledged");
@@ -471,7 +471,7 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
         let block = make_block(1, None);
         let (ack, waiter) = Exact::handle();
         let mut reporter = mailbox.to_marshal_reporter();
-        let _ = reporter.report(Update::Block(block.into(), ack));
+        assert!(reporter.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("block should be acknowledged");
 
         assert!(schemes.scoped(Epoch::new(1)).is_none());
@@ -561,7 +561,7 @@ fn non_finalized_events_are_ignored() {
             seen: 0,
         };
         let mut reporter = mailbox.to_event_reporter();
-        let _ = reporter.report(event);
+        assert!(reporter.report(event).accepted());
 
         context.sleep(Duration::from_millis(1)).await;
 

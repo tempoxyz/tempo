@@ -61,17 +61,21 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
         actor.start();
 
         for height in [expected_floor, expected_floor + 1, finalized_height] {
-            let _ = mailbox.report(Update::Tip(
-                Round::zero(),
-                Height::new(height),
-                Digest(B256::with_last_byte(height as u8)),
-            ));
+            assert!(
+                mailbox
+                    .report(Update::Tip(
+                        Round::zero(),
+                        Height::new(height),
+                        Digest(B256::with_last_byte(height as u8)),
+                    ))
+                    .accepted()
+            );
         }
 
         let block = make_block(block_height, B256::with_last_byte(20));
         let block_hash = block.block_hash();
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(block.into(), ack));
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("valid payload should be acknowledged");
 
         wait_until(&context, || marshal.floor() == Height::new(expected_floor)).await;
@@ -112,38 +116,54 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
         actor.start();
 
         for height in [9, 18] {
-            let _ = mailbox.report(Update::Tip(
-                Round::zero(),
-                Height::new(height),
-                Digest(B256::with_last_byte(height as u8)),
-            ));
+            assert!(
+                mailbox
+                    .report(Update::Tip(
+                        Round::zero(),
+                        Height::new(height),
+                        Digest(B256::with_last_byte(height as u8)),
+                    ))
+                    .accepted()
+            );
         }
 
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(
-            make_block(19, B256::with_last_byte(18)).into(),
-            ack,
-        ));
+        assert!(
+            mailbox
+                .report(Update::Block(
+                    make_block(19, B256::with_last_byte(18)).into(),
+                    ack,
+                ))
+                .accepted()
+        );
         waiter.await.expect("valid payload should be acknowledged");
         context.sleep(Duration::from_millis(1)).await;
         assert_eq!(marshal.floor(), Height::zero());
 
         provider.set_finalized(19, B256::with_last_byte(19));
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(
-            make_block(20, B256::with_last_byte(19)).into(),
-            ack,
-        ));
+        assert!(
+            mailbox
+                .report(Update::Block(
+                    make_block(20, B256::with_last_byte(19)).into(),
+                    ack,
+                ))
+                .accepted()
+        );
         waiter.await.expect("valid payload should be acknowledged");
         wait_until(&context, || marshal.floor() == Height::new(9)).await;
 
         provider.set_finalized(39, B256::with_last_byte(39));
         provider.set_durable(29, B256::with_last_byte(29));
-        let _ = mailbox.report(Update::Tip(
-            Round::zero(),
-            Height::new(29),
-            Digest(B256::with_last_byte(29)),
-        ));
+        assert!(
+            mailbox
+                .report(Update::Tip(
+                    Round::zero(),
+                    Height::new(29),
+                    Digest(B256::with_last_byte(29)),
+                ))
+                .accepted()
+        );
         wait_until(&context, || marshal.floor() == Height::new(29)).await;
     });
 }
@@ -171,7 +191,7 @@ fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
 
         let block = make_block(finalized_height - 1, B256::with_last_byte(10));
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(block.into(), ack));
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("valid payload should be acknowledged");
 
         assert_eq!(provider.payload_count(), 1);
@@ -203,20 +223,28 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
         actor.start();
 
         let floor_candidate = finalized_height - EPOCH_LENGTH.get();
-        let _ = mailbox.report(Update::Tip(
-            Round::zero(),
-            Height::new(floor_candidate),
-            Digest(B256::with_last_byte(floor_candidate as u8)),
-        ));
-        let _ = mailbox.report(Update::Tip(
-            Round::zero(),
-            Height::new(finalized_height),
-            Digest(B256::with_last_byte(finalized_height as u8)),
-        ));
+        assert!(
+            mailbox
+                .report(Update::Tip(
+                    Round::zero(),
+                    Height::new(floor_candidate),
+                    Digest(B256::with_last_byte(floor_candidate as u8)),
+                ))
+                .accepted()
+        );
+        assert!(
+            mailbox
+                .report(Update::Tip(
+                    Round::zero(),
+                    Height::new(finalized_height),
+                    Digest(B256::with_last_byte(finalized_height as u8)),
+                ))
+                .accepted()
+        );
 
         let block = make_block(block_height, B256::with_last_byte(20));
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(block.into(), ack));
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("valid payload should be acknowledged");
         context.sleep(Duration::from_millis(1)).await;
 
@@ -246,7 +274,7 @@ fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
 
         let block = make_block(1, B256::with_last_byte(1));
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(block.into(), ack));
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
 
         assert!(waiter.await.is_err(), "invalid payload must cancel its ack");
         actor_handle
@@ -279,7 +307,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
 
         let block = make_block(1, B256::with_last_byte(1));
         let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(block.into(), ack));
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
 
         assert!(waiter.await.is_err(), "rejected FCU must cancel the ack");
         actor_handle
@@ -313,7 +341,7 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
 
         let first_digest = Digest(B256::with_last_byte(1));
         let first_tip = Update::Tip(Round::zero(), Height::new(1), first_digest);
-        let _ = mailbox.report(first_tip);
+        assert!(mailbox.report(first_tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         let highest_digest = Digest(B256::with_last_byte(4));
@@ -322,17 +350,17 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
             Height::new(3),
             Digest(B256::with_last_byte(3)),
         );
-        let _ = mailbox.report(higher_tip);
+        assert!(mailbox.report(higher_tip).accepted());
 
         let lower_tip = Update::Tip(
             Round::zero(),
             Height::new(2),
             Digest(B256::with_last_byte(2)),
         );
-        let _ = mailbox.report(lower_tip);
+        assert!(mailbox.report(lower_tip).accepted());
 
         let highest_tip = Update::Tip(Round::zero(), Height::new(4), highest_digest);
-        let _ = mailbox.report(highest_tip);
+        assert!(mailbox.report(highest_tip).accepted());
 
         context.sleep(Duration::from_millis(1)).await;
         assert_eq!(provider.forkchoices().len(), 1);
@@ -372,7 +400,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
 
         let digest = Digest(B256::with_last_byte(1));
         let tip = Update::Tip(Round::zero(), Height::new(1), digest);
-        let _ = mailbox.report(tip);
+        assert!(mailbox.report(tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         context.sleep(Duration::from_millis(1)).await;
@@ -407,7 +435,7 @@ fn heartbeat_waits_for_in_flight_execution() {
 
         let digest = Digest(B256::with_last_byte(1));
         let tip = Update::Tip(Round::zero(), Height::new(1), digest);
-        let _ = mailbox.report(tip);
+        assert!(mailbox.report(tip).accepted());
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         context.sleep(HEARTBEAT_INTERVAL * 2).await;
@@ -450,7 +478,7 @@ fn durable_block_read_failure_does_not_exit_actor() {
         for block_height in [finalized_height + 1, finalized_height + 2] {
             let block = make_block(block_height, B256::with_last_byte(20));
             let (ack, waiter) = Exact::handle();
-            let _ = mailbox.report(Update::Block(block.into(), ack));
+            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
 
             waiter
                 .await

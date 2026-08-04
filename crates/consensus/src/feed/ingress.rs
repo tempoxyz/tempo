@@ -107,7 +107,11 @@ mod tests {
             assert_eq!(tip.digest, block.digest());
 
             let (acknowledgement, acknowledged) = Exact::handle();
-            let _ = mailbox.report(Update::Block(block.into(), acknowledgement));
+            assert!(
+                mailbox
+                    .report(Update::Block(block.into(), acknowledgement))
+                    .accepted()
+            );
 
             acknowledged
                 .await
