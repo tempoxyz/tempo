@@ -32,10 +32,6 @@ pub use subblock::{
 
 extern crate alloc;
 
-// Reth's codec test macro generates imports from `rand`, and currently targets rand 0.9.
-#[cfg(test)]
-extern crate rand_09 as rand;
-
 use once_cell as _;
 
 /// Tempo block.

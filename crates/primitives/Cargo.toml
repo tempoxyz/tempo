@@ -69,8 +69,10 @@ alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 alloy-signer-local.workspace = true
 commonware-cryptography = { workspace = true, features = ["arbitrary"] }
-rand_09.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# `reth_codecs::add_arbitrary_tests` generates imports from rand 0.9 under this name.
+rand = "0.9"
 
 [features]
 default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
@@ -116,7 +118,7 @@ serde = [
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
 	"p256/serde",
-	"rand_09/serde",
+	"rand/serde",
 	"tracing-subscriber/serde",
 	"revm?/serde",
 	"tempo-contracts/serde",
