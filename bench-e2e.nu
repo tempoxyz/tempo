@@ -1134,7 +1134,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else {
         ""
     }
-    let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+    let metrics_urls = [
+        "node=a;layer=execution@http://127.0.0.1:9001/metrics"
+        "node=a;layer=consensus@http://127.0.0.1:8002/metrics"
+        "node=b;layer=execution@http://127.0.0.1:9101/metrics"
+        "node=b;layer=consensus@http://127.0.0.1:8102/metrics"
+    ]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
