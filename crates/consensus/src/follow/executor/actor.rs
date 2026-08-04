@@ -221,18 +221,8 @@ where
             .wrap_err("failed locating certified block in execution")?
         {
             BlockLocation::Canonical(height) => {
-                let height = Height::new(height);
-                let block_epoch = self
-                    .epoch_strategy
-                    .containing(height)
-                    .expect("strategy is valid for all heights and epochs")
-                    .epoch();
-                ensure!(
-                    block_epoch == candidate_round.epoch(),
-                    "certified block `{digest}` is canonical at height `{height}` in epoch \
-                     `{block_epoch}`, but its certificate is from epoch `{}`",
-                    candidate_round.epoch(),
-                );
+                let height =
+                    self.validate_certified_height(candidate_round, candidate.digest, height)?;
                 ensure!(
                     height != current_height,
                     "certified block `{digest}` and execution tip `{}` are different canonical \
@@ -242,10 +232,20 @@ where
                 self.observe(Target::finalized(candidate_round, height, candidate.digest));
             }
             BlockLocation::NonCanonical(height) => {
-                return Err(eyre!(
+                let height =
+                    self.validate_certified_height(candidate_round, candidate.digest, height)?;
+
+                // Under consensus safety, a verified block above the finalized tip must extend
+                // the finalized chain. Its certificate can select a side branch above that tip.
+                // A block at or below the tip conflicts with finality.
+                ensure!(
+                    height > current_height,
                     "verified certificate names noncanonical execution block `{digest}` at height \
-                     `{height}`"
-                ));
+                     `{height}`, which is not above finalized execution tip `{}` at height \
+                     `{current_height}`",
+                    current.digest,
+                );
+                self.observe(Target::finalized(candidate_round, height, candidate.digest));
             }
             BlockLocation::Unknown => {
                 // A stale block must already be in the canonical chain. Therefore, a verified
@@ -255,6 +255,27 @@ where
         }
 
         Ok(())
+    }
+
+    fn validate_certified_height(
+        &self,
+        round: Round,
+        digest: Digest,
+        height: u64,
+    ) -> eyre::Result<Height> {
+        let height = Height::new(height);
+        let block_epoch = self
+            .epoch_strategy
+            .containing(height)
+            .expect("strategy is valid for all heights and epochs")
+            .epoch();
+        ensure!(
+            block_epoch == round.epoch(),
+            "certified block `{digest}` is at height `{height}` in epoch `{block_epoch}`, but its \
+             certificate is from epoch `{}`",
+            round.epoch(),
+        );
+        Ok(height)
     }
 
     fn should_send_forkchoice(&self) -> bool {
