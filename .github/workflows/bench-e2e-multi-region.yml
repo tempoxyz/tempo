@@ -293,7 +293,7 @@ jobs:
     steps:
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@3eb17e98d2e8d6bc8280bf477272ff899c0b6b00
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
