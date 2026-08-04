@@ -307,7 +307,9 @@ pub(crate) mod marshal {
                 .wrap_err("failed reading finalization")?
             {
                 Some(finalization) => return Ok(marshal::Start::Floor(finalization)),
-                None => bail!("finalized range floor missing from archive"),
+                None => {
+                    bail!("finalized range floor missing from archive");
+                }
             }
         }
 
