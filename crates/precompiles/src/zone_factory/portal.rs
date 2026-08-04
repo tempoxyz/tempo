@@ -40,7 +40,7 @@ pub struct PortalEncryptionKeyEntry {
 pub struct PortalWithdrawalQueue {
     head: U256,
     tail: U256,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     slots: Mapping<U256, B256>,
 }
 

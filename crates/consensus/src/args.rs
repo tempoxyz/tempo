@@ -492,10 +492,10 @@ mod tests {
         // binary's CLI struct; we re-declare them here just so clap can
         // resolve the references during parse-time validation.
         #[arg(long = "follow")]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         follow: Option<String>,
         #[arg(long = "dev")]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         dev: bool,
 
         #[command(flatten)]

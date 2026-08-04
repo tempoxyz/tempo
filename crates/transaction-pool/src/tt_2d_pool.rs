@@ -1143,7 +1143,7 @@ impl AA2dPool {
 
         if evict_pending {
             // For pending eviction, consider both regular 2D txs and expiring nonce txs
-            for _ in 0..count {
+            while self.pending_count > self.config.pending_limit.max_txs {
                 if let Some(tx) = self.evict_one_pending() {
                     removed.push(tx);
                 } else {
@@ -4971,6 +4971,98 @@ mod tests {
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 3, "Pending should be capped at 3");
         assert_eq!(queued, 0, "No queued transactions");
+        pool.assert_invariants();
+    }
+
+    /// Evicting a pending transaction can demote its entire nonce chain. Once those demotions
+    /// restore the pending limit, eviction must stop instead of removing unrelated transactions.
+    #[test]
+    fn test_pending_eviction_stops_after_descendant_demotion() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 5,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+        };
+        let mut pool = AA2dPool::new(config);
+        let max_fee = 30_000_000_000u128;
+
+        // Fill the pending pool with higher-priority transactions from unrelated senders.
+        let mut victim_hashes = Vec::new();
+        for i in 0..5usize {
+            let sender = Address::from_word(B256::from(U256::from(100 + i)));
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(100 + i))
+                .max_fee(max_fee)
+                .max_priority_fee(5_000_000_000)
+                .build();
+            victim_hashes.push(*tx.hash());
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // Stage a low-priority nonce chain with its root missing, so all descendants are queued.
+        let attacker = Address::from_word(B256::from(U256::from(1)));
+        let nonce_key = U256::from(1);
+        for nonce in 1..=4 {
+            let tx = TxBuilder::aa(attacker)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .max_fee(max_fee)
+                .max_priority_fee(1)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // Filling the gap promotes all five attacker transactions. Evicting the root then demotes
+        // its four descendants, which is sufficient to restore the pending limit by itself.
+        let root = TxBuilder::aa(attacker)
+            .nonce_key(nonce_key)
+            .max_fee(max_fee)
+            .max_priority_fee(1)
+            .build();
+        let root_hash = *root.hash();
+        let added = pool
+            .add_transaction(
+                Arc::new(wrap_valid_tx(root, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        let discarded = &added.as_pending().unwrap().discarded;
+
+        assert_eq!(
+            discarded.len(),
+            1,
+            "only the attacker root should be evicted"
+        );
+        assert_eq!(*discarded[0].hash(), root_hash);
+        assert!(!pool.contains(&root_hash));
+        for hash in victim_hashes {
+            assert!(
+                pool.contains(&hash),
+                "unrelated pending tx was over-evicted"
+            );
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 5);
+        assert_eq!(queued, 4);
         pool.assert_invariants();
     }
 
