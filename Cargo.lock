@@ -13125,7 +13125,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
- "serde_json",
  "tempfile",
  "tempo-chainspec",
  "tempo-consensus-config",

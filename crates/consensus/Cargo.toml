@@ -71,7 +71,6 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 
-serde_json.workspace = true
 thiserror.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }

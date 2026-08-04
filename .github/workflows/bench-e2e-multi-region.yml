@@ -76,8 +76,6 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
-      DEREK_BENCH_TOKEN:
-        required: false
       VICTORIALOGS_URL:
         required: false
       VICTORIAMETRICS_URL:
@@ -293,11 +291,18 @@ jobs:
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
 
     steps:
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+
       - name: Check org membership
         if: github.event_name != 'schedule'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const org = 'tempoxyz';
             const username = context.actor;
@@ -339,12 +344,10 @@ jobs:
           repository: tempoxyz/tempo-multi-region-benchmark
           ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
-          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
       - name: Validate Tempo commit ancestry
-        env:
-          GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           resolve_tempo_ref() {
             local ref="${1:-main}"
@@ -510,10 +513,7 @@ jobs:
       - name: Install txgen
         if: steps.fetch_tempo_binaries.outcome == 'success'
         env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 

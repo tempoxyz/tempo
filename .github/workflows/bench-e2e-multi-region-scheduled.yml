@@ -93,7 +93,6 @@ jobs:
           ref: main
           fetch-depth: 0
           path: tempo
-          token: ${{ github.token }}
           persist-credentials: false
 
       - name: Resolve nightly refs
@@ -178,7 +177,6 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
 
