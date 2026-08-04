@@ -16,12 +16,19 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+/// Loopback RPC endpoint used by the bootstrapper and container health check.
 const RPC_URL: &str = "http://127.0.0.1:8545";
+/// Marker written only after the selected localnet bootstrap has completed.
 const READY_FILE: &str = "/tmp/tempo-localnet-ready";
+/// Well-known first Anvil development key used only for local bootstrap transactions.
 const DEV_PRIVATE_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+/// Amount of each canonical token, in base units, issued by one faucet request.
 const FAUCET_AMOUNT: u128 = 1_000_000_000_000_000;
+/// Validator-token liquidity, in base units, seeded into each fee AMM pool.
 const FEE_LIQUIDITY: u128 = 1_000_000_000;
+/// Liquidity, in base units, seeded on each side of every DEX market.
 const DEX_LIQUIDITY: u128 = 100_000_000_000;
+/// Canonical localnet tokens: pathUSD, AlphaUSD, BetaUSD, and ThetaUSD.
 const TOKENS: [Address; 4] = [
     address!("0x20c0000000000000000000000000000000000000"),
     address!("0x20c0000000000000000000000000000000000001"),
@@ -224,7 +231,7 @@ async fn wait_for_rpc(provider: &impl Provider) -> Result<()> {
         }
         sleep(Duration::from_millis(500)).await;
     }
-    bail!("timed out waiting for Tempo localnet RPC")
+    Err(eyre!("timed out waiting for Tempo localnet RPC"))
 }
 
 async fn wait_for_receipt(provider: &impl Provider, hash: B256) -> Result<()> {
@@ -237,7 +244,7 @@ async fn wait_for_receipt(provider: &impl Provider, hash: B256) -> Result<()> {
         }
         sleep(Duration::from_millis(500)).await;
     }
-    bail!("timed out waiting for bootstrap transaction {hash}")
+    Err(eyre!("timed out waiting for bootstrap transaction {hash}"))
 }
 
 async fn health() -> Result<()> {
