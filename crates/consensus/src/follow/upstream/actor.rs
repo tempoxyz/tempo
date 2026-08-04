@@ -60,6 +60,7 @@ where
     pub(super) pending_stream: OptionFuture<BoxFuture<'static, eyre::Result<EventStream>>>,
     pub(super) event_stream: Option<EventStream>,
     pub(super) reconnect_jitter: fn() -> Duration,
+    pub(super) retry_attempt: u64,
     /// Requests waiting for the actor to establish a connection.
     pub(super) waiters: Vec<super::ingress::Message>,
 }
@@ -82,6 +83,7 @@ where
         pending_stream: OptionFuture::none(),
         event_stream: None,
         reconnect_jitter,
+        retry_attempt: 1,
         waiters: Vec::new(),
     };
 
@@ -109,12 +111,13 @@ where
                 biased;
 
                 (attempts, client) = &mut self.pending_connect => {
+                    self.retry_attempt = attempts;
                     match client {
                         Ok(client) => {
                             self.connection.replace(client);
                         }
                         Err(reason) => {
-                            let reconnect_in = reconnect_backoff(attempts) + (self.reconnect_jitter)();
+                            let reconnect_in = self.retry_connection();
                             warn_span!("reconnect").in_scope(|| warn!(
                                 %reason,
                                 attempts,
@@ -122,14 +125,6 @@ where
                                 url = %self.connector.endpoint(),
                                 "connecting to upstream node failed, attempting again",
                             ));
-                            self.pending_connect.replace({
-                                let sleep = self.context.sleep(reconnect_in);
-                                let connector = self.connector.clone();
-                                async move {
-                                    sleep.await;
-                                    connector.connect(attempts.saturating_add(1)).await
-                                }.boxed()
-                            });
                         }
                     }
                 }
@@ -142,12 +137,14 @@ where
                             self.event_stream = Some(stream);
                         }
                         Err(error) => {
-                            warn_span!("event_subscription").in_scope(|| warn!(
-                                reason = %error,
-                                "failed subscribing to events; reconnecting to upstream node"
-                            ));
                             self.connection.take();
                             self.event_stream = None;
+                            let reconnect_in = self.retry_connection();
+                            warn_span!("event_subscription").in_scope(|| warn!(
+                                reason = %error,
+                                reconnect_in = %display_duration(reconnect_in),
+                                "failed subscribing to events; reconnecting to upstream node",
+                            ));
                         }
                     }
                 }
@@ -155,24 +152,28 @@ where
                 event = next_event(&mut self.event_stream) => {
                     match event {
                         Some(Ok(event)) => {
+                            // A handshake and subscription response alone do not prove recovery.
+                            self.retry_attempt = 0;
                             debug_span!("consensus_event").in_scope(|| debug!(
                                 ?event, "received consensus event, forwarding to reporter"
                             ));
                             let _ = reporter.report(event);
                         }
                         Some(Err(error)) => {
+                            let reconnect_in = self.retry_event_stream();
                             warn_span!("event").in_scope(|| warn!(
                                 %error,
+                                reconnect_in = %display_duration(reconnect_in),
                                 "event stream encountered an error",
                             ));
-                            self.event_stream = None;
                         }
                         None => {
+                            let reconnect_in = self.retry_event_stream();
                             warn_span!("event_subscription").in_scope(|| warn!(
                                 url = %self.connector.endpoint(),
+                                reconnect_in = %display_duration(reconnect_in),
                                 "event stream terminated",
                             ));
-                            self.event_stream = None;
                         }
                     }
                 }
@@ -194,7 +195,9 @@ where
         }
 
         let Some(client) = self.connection.clone() else {
-            self.pending_connect.replace(self.connector.connect(1));
+            self.retry_attempt = self.retry_attempt.max(1);
+            self.pending_connect
+                .replace(self.connector.connect(self.retry_attempt));
             return;
         };
 
@@ -205,10 +208,67 @@ where
         if client.is_connected() {
             self.pending_stream.replace(client.subscribe_events());
         } else {
-            warn!(url = %self.connector.endpoint(), "upstream client disconnected, reconnecting");
             self.connection.take();
-            self.pending_connect.replace(self.connector.connect(1));
+            let reconnect_in = self.retry_connection();
+            warn!(
+                url = %self.connector.endpoint(),
+                reconnect_in = %display_duration(reconnect_in),
+                "upstream client disconnected, reconnecting",
+            );
         }
+    }
+
+    fn retry_event_stream(&mut self) -> Duration {
+        self.event_stream = None;
+        let Some(client) = self.connection.clone() else {
+            return self.retry_connection();
+        };
+
+        if client.is_connected() {
+            self.retry_subscription(client)
+        } else {
+            self.connection.take();
+            self.retry_connection()
+        }
+    }
+
+    fn retry_connection(&mut self) -> Duration {
+        let reconnect_in = self.begin_retry();
+        let sleep = self.context.sleep(reconnect_in);
+        let connector = self.connector.clone();
+        let attempts = self.retry_attempt;
+        self.pending_connect.replace(
+            async move {
+                sleep.await;
+                connector.connect(attempts).await
+            }
+            .boxed(),
+        );
+        reconnect_in
+    }
+
+    fn retry_subscription(&mut self, client: TConnector::Client) -> Duration {
+        let reconnect_in = self.begin_retry();
+        let sleep = self.context.sleep(reconnect_in);
+        self.pending_stream.replace(
+            async move {
+                sleep.await;
+                client.subscribe_events().await
+            }
+            .boxed(),
+        );
+        reconnect_in
+    }
+
+    fn begin_retry(&mut self) -> Duration {
+        let reconnect_in = reconnect_backoff(self.retry_attempt);
+        let reconnect_in = if reconnect_in.is_zero() {
+            reconnect_in
+        } else {
+            reconnect_in + (self.reconnect_jitter)()
+        };
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
+        reconnect_in
     }
 
     /// Drains the waiters by fetching the data they are waiting for.

@@ -120,9 +120,16 @@ fn subscription_failure_reconnects_and_subscribes_again() {
             actor::init(context.child("upstream"), connector.clone(), no_jitter);
         actor.start(StubReporter::default());
 
+        wait_until(&context, || client.subscriptions() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+
+        assert_eq!(client.subscriptions(), 1);
+        assert_eq!(connector.attempts(), vec![1]);
+
+        context.sleep(actor::reconnect_backoff(1)).await;
         wait_until(&context, || client.subscriptions() == 2).await;
 
-        assert_eq!(connector.attempts(), vec![1, 1]);
+        assert_eq!(connector.attempts(), vec![1, 2]);
     });
 }
 
@@ -142,6 +149,12 @@ fn terminated_event_stream_is_resubscribed() {
             actor::init(context.child("upstream"), connector.clone(), no_jitter);
         actor.start(reporter.clone());
 
+        wait_until(&context, || client.subscriptions() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+
+        assert_eq!(client.subscriptions(), 1);
+
+        context.sleep(actor::reconnect_backoff(1)).await;
         wait_until(&context, || client.subscriptions() == 2).await;
         wait_until(&context, || reporter.events().len() == 1).await;
 
@@ -160,6 +173,12 @@ fn event_stream_error_resubscribes_without_reconnecting() {
             actor::init(context.child("upstream"), connector.clone(), no_jitter);
         actor.start(StubReporter::default());
 
+        wait_until(&context, || client.subscriptions() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+
+        assert_eq!(client.subscriptions(), 1);
+
+        context.sleep(actor::reconnect_backoff(1)).await;
         wait_until(&context, || client.subscriptions() == 2).await;
 
         assert_eq!(connector.attempts(), vec![1]);
@@ -185,8 +204,42 @@ fn disconnected_client_reconnects_before_resubscribing() {
         terminate_stream
             .send(())
             .expect("event stream should still be active");
+        context.sleep(Duration::from_millis(1)).await;
+
+        assert_eq!(replacement_client.subscriptions(), 0);
+        assert_eq!(connector.attempts(), vec![1]);
+
+        context.sleep(actor::reconnect_backoff(1)).await;
         wait_until(&context, || replacement_client.subscriptions() == 1).await;
 
-        assert_eq!(connector.attempts(), vec![1, 1]);
+        assert_eq!(connector.attempts(), vec![1, 2]);
+    });
+}
+
+#[test_traced]
+fn repeated_stream_terminations_escalate_backoff() {
+    deterministic::Runner::default().start(|context| async move {
+        let client = StubClient::connected();
+        client.queue_terminated_subscription();
+        client.queue_terminated_subscription();
+        client.queue_subscription();
+        let connector = StubConnector::new(client.clone());
+        let (actor, _mailbox) =
+            actor::init(context.child("upstream"), connector.clone(), no_jitter);
+        actor.start(StubReporter::default());
+
+        wait_until(&context, || client.subscriptions() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(client.subscriptions(), 1);
+
+        context.sleep(actor::reconnect_backoff(1)).await;
+        wait_until(&context, || client.subscriptions() == 2).await;
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(client.subscriptions(), 2);
+
+        context.sleep(actor::reconnect_backoff(2)).await;
+        wait_until(&context, || client.subscriptions() == 3).await;
+
+        assert_eq!(connector.attempts(), vec![1]);
     });
 }
