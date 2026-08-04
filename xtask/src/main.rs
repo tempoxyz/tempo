@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 
 use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
-    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
-    identity_transitions::GetIdentityTransitions,
+    deploy_zone_runtimes::DeployZoneRuntimes, generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis, generate_localnet::GenerateLocalnet,
+    generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
+    get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -16,6 +16,7 @@ use eyre::Context;
 
 mod bootstrap_shadowfork;
 mod check_abi;
+mod deploy_zone_runtimes;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -57,6 +58,9 @@ async fn main() -> eyre::Result<()> {
             .run()
             .await
             .wrap_err("failed to generate state bloat file"),
+        Action::DeployZoneRuntimes(args) => {
+            args.run().await.wrap_err("failed to deploy zone runtimes")
+        }
     }
 }
 
@@ -82,6 +86,7 @@ enum Action {
     BootstrapShadowfork(BootstrapShadowfork),
     GenerateAddPeer(GenerateAddPeer),
     GenerateStateBloat(GenerateStateBloat),
+    DeployZoneRuntimes(DeployZoneRuntimes),
 }
 
 #[derive(Debug, clap::Args)]
