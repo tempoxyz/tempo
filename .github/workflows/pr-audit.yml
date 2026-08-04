@@ -51,7 +51,7 @@ jobs:
         id: github-sts
         uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
         with:
-          policy: cyclops-audit
+          policy: pr-audit
 
       - name: Check org membership
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
