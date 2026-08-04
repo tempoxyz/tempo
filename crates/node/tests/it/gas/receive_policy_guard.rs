@@ -22,7 +22,29 @@ use crate::utils::TestNodeBuilder;
 struct BlockedTransfer {
     receiver: Address,
     receipt: Bytes,
+    blocked_at: u64,
     gas_used: u64,
+}
+
+/// Normalizes the variable calldata cost of the wall-clock `blockedAt` field.
+///
+/// Unix timestamps currently fit in four bytes. The snapshot uses the canonical cost of four
+/// non-zero bytes; any zero among them lowers intrinsic calldata cost by 12 gas and would otherwise
+/// make the snapshot depend on test start time.
+fn normalize_claim_gas_for_blocked_at(gas_used: u64, blocked_at: u64) -> u64 {
+    const CANONICAL_NONZERO_BYTES: usize = 4;
+    const NONZERO_BYTE_SURCHARGE: u64 = 12;
+
+    let nonzero_bytes = blocked_at
+        .to_be_bytes()
+        .into_iter()
+        .filter(|byte| *byte != 0)
+        .count();
+    if nonzero_bytes < CANONICAL_NONZERO_BYTES {
+        gas_used + (CANONICAL_NONZERO_BYTES - nonzero_bytes) as u64 * NONZERO_BYTE_SURCHARGE
+    } else {
+        gas_used - (nonzero_bytes - CANONICAL_NONZERO_BYTES) as u64 * NONZERO_BYTE_SURCHARGE
+    }
 }
 
 async fn create_token<P>(provider: P, admin: Address, salt: B256) -> eyre::Result<Address>
@@ -127,6 +149,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     Ok(BlockedTransfer {
         receiver,
         receipt: receipt_bytes,
+        blocked_at: decoded_receipt.blockedAt,
         gas_used: receipt.gas_used,
     })
 }
@@ -152,6 +175,13 @@ async fn create_allowed_transfer<P: Provider + Clone>(
     Ok(receipt.gas_used)
 }
 
+#[test]
+fn test_normalize_claim_gas_for_blocked_at() {
+    assert_eq!(normalize_claim_gas_for_blocked_at(100, 0x1234_5678), 100);
+    assert_eq!(normalize_claim_gas_for_blocked_at(88, 0x1234_0078), 100);
+    assert_eq!(normalize_claim_gas_for_blocked_at(112, 0x01_1234_5678), 100);
+}
+
 async fn claim_blocked<P: Provider + Clone>(
     guard: &IReceivePolicyGuard::IReceivePolicyGuardInstance<P>,
     to: Address,
@@ -166,7 +196,10 @@ async fn claim_blocked<P: Provider + Clone>(
         .await?;
     assert!(receipt.status(), "claim failed");
 
-    Ok(receipt.gas_used)
+    Ok(normalize_claim_gas_for_blocked_at(
+        receipt.gas_used,
+        blocked.blocked_at,
+    ))
 }
 
 fn transfer_blocked(
