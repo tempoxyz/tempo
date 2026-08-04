@@ -76,8 +76,10 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
-      DEREK_BENCH_TOKEN:
-        required: false
+      GH_STS_PRD_CLIENT_CERT:
+        required: true
+      GH_STS_PRD_CLIENT_KEY:
+        required: true
       VICTORIALOGS_URL:
         required: false
       VICTORIAMETRICS_URL:
@@ -293,11 +295,20 @@ jobs:
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
 
     steps:
+      - name: Exchange GitHub STS token
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@3eb17e98d2e8d6bc8280bf477272ff899c0b6b00
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+          client-cert: ${{ secrets.GH_STS_PRD_CLIENT_CERT }}
+          client-key: ${{ secrets.GH_STS_PRD_CLIENT_KEY }}
+
       - name: Check org membership
         if: github.event_name != 'schedule'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const org = 'tempoxyz';
             const username = context.actor;
@@ -339,12 +350,10 @@ jobs:
           repository: tempoxyz/tempo-multi-region-benchmark
           ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
-          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
       - name: Validate Tempo commit ancestry
-        env:
-          GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           resolve_tempo_ref() {
             local ref="${1:-main}"
@@ -510,10 +519,7 @@ jobs:
       - name: Install txgen
         if: steps.fetch_tempo_binaries.outcome == 'success'
         env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 
