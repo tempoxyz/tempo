@@ -1,6 +1,7 @@
 use std::{fs, path::Path};
 
 use eyre::{Context as _, ensure};
+use serde::Serialize;
 
 const HARDFORK_SOURCE: &str = "crates/hardfork/src/lib.rs";
 const CHAINSPEC_SOURCE: &str = "crates/chainspec/src/spec.rs";
@@ -10,6 +11,13 @@ const BENCH_WORKFLOW: &str = ".github/workflows/bench.yml";
 const DEV_GENESIS: &str = "crates/chainspec/src/genesis/dev.json";
 const TEST_GENESIS: &str = "crates/node/tests/assets/test-genesis.json";
 const SNAPSHOT_DIR: &str = "crates/evm/src/snapshots";
+
+#[derive(Debug, Serialize)]
+struct HardforkMetadata {
+    current: String,
+    next: String,
+    ordered: Vec<String>,
+}
 
 /// Add mechanical plumbing for a new Tempo hardfork.
 ///
@@ -21,15 +29,27 @@ pub(crate) struct AddHardfork {
     /// New hardfork identifier, for example `T11` or `T1A`.
     #[arg(long, value_name = "HARDFORK")]
     hardfork: String,
+    /// Emit machine-readable transition metadata instead of a summary.
+    #[arg(long)]
+    json: bool,
 }
 
 impl AddHardfork {
     pub(crate) fn run(self) -> eyre::Result<()> {
-        add_hardfork(Path::new("."), &self.hardfork)
+        let metadata = add_hardfork(Path::new("."), &self.hardfork)?;
+        if self.json {
+            println!("{}", serde_json::to_string(&metadata)?);
+        } else {
+            println!(
+                "Added {} plumbing; rotated Foundry profiles -> {}/{}",
+                metadata.next, metadata.current, metadata.next
+            );
+        }
+        Ok(())
     }
 }
 
-fn add_hardfork(root: &Path, hardfork: &str) -> eyre::Result<()> {
+fn add_hardfork(root: &Path, hardfork: &str) -> eyre::Result<HardforkMetadata> {
     validate_name(hardfork)?;
 
     let hardfork_path = root.join(HARDFORK_SOURCE);
@@ -46,6 +66,8 @@ fn add_hardfork(root: &Path, hardfork: &str) -> eyre::Result<()> {
     let current = variants
         .get(variants.len().saturating_sub(2))
         .expect("TempoHardfork always has a current hardfork");
+
+    let metadata = build_metadata(&variants, current, previous, hardfork);
 
     let foundry_path = root.join(FOUNDRY_CONFIG);
     let foundry = read(&foundry_path)?;
@@ -90,10 +112,27 @@ fn add_hardfork(root: &Path, hardfork: &str) -> eyre::Result<()> {
 
     copy_snapshot(root, previous, hardfork)?;
 
-    println!(
-        "Added {hardfork} plumbing; rotated Foundry profiles {current}/{previous} -> {previous}/{hardfork}"
-    );
-    Ok(())
+    Ok(metadata)
+}
+
+fn build_metadata(
+    variants: &[String],
+    current: &str,
+    next_current: &str,
+    next: &str,
+) -> HardforkMetadata {
+    let start = variants
+        .iter()
+        .position(|variant| variant == current)
+        .expect("current hardfork must be in the variants");
+    let mut ordered = variants[start..].to_vec();
+    ordered.push(next.to_owned());
+
+    HardforkMetadata {
+        current: next_current.to_owned(),
+        next: next.to_owned(),
+        ordered,
+    }
 }
 
 fn validate_name(hardfork: &str) -> eyre::Result<()> {
@@ -369,6 +408,26 @@ mod tests {
         let rotated = rotate_profiles(source, "T10", "T11").unwrap();
         assert!(rotated.contains("[profile.default]\nhardfork = \"tempo:T10\""));
         assert!(rotated.contains("[profile.next]\nhardfork = \"tempo:T11\""));
+    }
+
+    #[test]
+    fn builds_machine_readable_transition_metadata() {
+        let variants = ["Genesis", "T8", "T9", "T10"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let metadata = build_metadata(&variants, "T9", "T10", "T11");
+
+        assert_eq!(metadata.current, "T10");
+        assert_eq!(metadata.next, "T11");
+        assert_eq!(
+            metadata.ordered,
+            vec!["T9".to_owned(), "T10".to_owned(), "T11".to_owned()]
+        );
+        assert_eq!(
+            serde_json::to_string(&metadata).unwrap(),
+            r#"{"current":"T10","next":"T11","ordered":["T9","T10","T11"]}"#
+        );
     }
 
     #[test]
