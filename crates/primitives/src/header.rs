@@ -205,7 +205,7 @@ mod tests {
             parent_view: 4,
         };
 
-        let encoded = alloy_rlp::encode(&ctx);
+        let encoded = alloy_rlp::encode(ctx);
         let decoded = TempoConsensusContext::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(ctx, decoded);
     }
