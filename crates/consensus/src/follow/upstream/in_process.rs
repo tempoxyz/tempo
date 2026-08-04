@@ -33,6 +33,7 @@ use super::ingress::{Mailbox, Message};
 pub struct Config {
     pub execution_node: Arc<TempoFullNode>,
     pub feed: FeedStateHandle,
+    pub available: bool,
 }
 
 pub fn init<TContext>(context: TContext, config: Config) -> (Actor<TContext>, Mailbox) {
@@ -73,18 +74,22 @@ where
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {
         let feed = self.config.feed.clone();
         let context = self.context.child("subscription");
-        let mut pending_subscription = OptionFuture::some(
-            async move {
-                loop {
-                    if let Some(subscription) = feed.subscribe().await {
-                        break subscription;
+        let mut pending_subscription = if self.config.available {
+            OptionFuture::some(
+                async move {
+                    loop {
+                        if let Some(subscription) = feed.subscribe().await {
+                            break subscription;
+                        }
+                        info!("feed state not yet ready, retrying in 1s");
+                        context.sleep(Duration::from_secs(1)).await;
                     }
-                    info!("feed state not yet ready, retrying in 1s");
-                    context.sleep(Duration::from_secs(1)).await;
                 }
-            }
-            .boxed(),
-        );
+                .boxed(),
+            )
+        } else {
+            OptionFuture::none()
+        };
         let mut connected = false;
         loop {
             select!(

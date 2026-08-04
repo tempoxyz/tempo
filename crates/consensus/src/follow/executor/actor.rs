@@ -15,7 +15,7 @@ use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
-    types::{Epocher as _, FixedEpocher, Height},
+    types::{Epocher as _, FixedEpocher, Height, Round},
 };
 use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
@@ -25,7 +25,8 @@ use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
 use super::{
-    Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message, target::Target,
+    BlockLocation, Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message,
+    target::Target,
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -155,7 +156,10 @@ where
                             self.observe(Target::finalized(round, height, digest));
                         }
                         Message::CertifiedTip { round, digest } => {
-                            self.observe(Target::certified(round, digest));
+                            if let Err(error) = self.observe_certified(round, digest) {
+                                error!(%error, %round, %digest, "failed ordering certified tip");
+                                break;
+                            }
                         }
                     }
                 }
@@ -179,6 +183,78 @@ where
             self.last_fcu.height = self.last_fcu.height.or(candidate.height);
             self.last_fcu.round = self.last_fcu.round.or(candidate.round);
         }
+    }
+
+    fn observe_certified(&mut self, round: Round, digest: Digest) -> eyre::Result<()> {
+        let candidate = Target::certified(round, digest);
+        let current = self.latest_tip;
+
+        if candidate.digest == current.digest {
+            self.observe(candidate);
+            return Ok(());
+        }
+
+        let (Some(candidate_round), None, None, Some(current_height)) = (
+            candidate.round,
+            candidate.height,
+            current.round,
+            current.height,
+        ) else {
+            self.observe(candidate);
+            return Ok(());
+        };
+
+        let current_epoch = self
+            .epoch_strategy
+            .containing(current_height)
+            .expect("strategy is valid for all heights and epochs")
+            .epoch();
+
+        if candidate_round.epoch() != current_epoch {
+            self.observe(candidate);
+            return Ok(());
+        }
+
+        match self
+            .execution_provider
+            .locate_block(candidate.digest.0)
+            .wrap_err("failed locating certified block in execution")?
+        {
+            BlockLocation::Canonical(height) => {
+                let height = Height::new(height);
+                let block_epoch = self
+                    .epoch_strategy
+                    .containing(height)
+                    .expect("strategy is valid for all heights and epochs")
+                    .epoch();
+                ensure!(
+                    block_epoch == candidate_round.epoch(),
+                    "certified block `{digest}` is canonical at height `{height}` in epoch \
+                     `{block_epoch}`, but its certificate is from epoch `{}`",
+                    candidate_round.epoch(),
+                );
+                ensure!(
+                    height != current_height,
+                    "certified block `{digest}` and execution tip `{}` are different canonical \
+                     blocks at height `{height}`",
+                    current.digest,
+                );
+                self.observe(Target::finalized(candidate_round, height, candidate.digest));
+            }
+            BlockLocation::NonCanonical(height) => {
+                return Err(eyre!(
+                    "verified certificate names noncanonical execution block `{digest}` at height \
+                     `{height}`"
+                ));
+            }
+            BlockLocation::Unknown => {
+                // A stale block must already be in the canonical chain. Therefore, a verified
+                // certificate for an unknown block is ahead unless consensus safety failed.
+                self.latest_tip = candidate;
+            }
+        }
+
+        Ok(())
     }
 
     fn should_send_forkchoice(&self) -> bool {

@@ -23,7 +23,7 @@ use tempo_node::TempoExecutionData;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::super::{ExecutionEngine, FinalizedBlockProvider, Marshal};
+use super::super::{BlockLocation, ExecutionEngine, FinalizedBlockProvider, Marshal};
 use crate::consensus::block::Block;
 
 pub(super) fn make_block(height: u64, parent_hash: B256) -> Block {
@@ -53,6 +53,8 @@ struct StubExecutionProviderInner {
     finalized: Mutex<BlockNumHash>,
     durable: Mutex<HashMap<u64, B256>>,
     fail_durable_reads: AtomicBool,
+    block_locations: Mutex<HashMap<B256, BlockLocation>>,
+    fail_block_location_reads: AtomicBool,
     payloads: AtomicUsize,
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
@@ -71,6 +73,16 @@ impl StubExecutionProvider {
 
     pub(super) fn fail_durable_reads(&self) {
         self.inner.fail_durable_reads.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn set_block_location(&self, hash: B256, location: BlockLocation) {
+        self.inner.block_locations.lock().insert(hash, location);
+    }
+
+    pub(super) fn fail_block_location_reads(&self) {
+        self.inner
+            .fail_block_location_reads
+            .store(true, Ordering::SeqCst);
     }
 
     pub(super) fn reject_payloads(&self) {
@@ -106,6 +118,19 @@ impl FinalizedBlockProvider for StubExecutionProvider {
             eyre::bail!("durable block read failed");
         }
         Ok(self.inner.durable.lock().get(&height).copied())
+    }
+
+    fn locate_block(&self, hash: B256) -> eyre::Result<BlockLocation> {
+        if self.inner.fail_block_location_reads.load(Ordering::SeqCst) {
+            eyre::bail!("block location read failed");
+        }
+        Ok(self
+            .inner
+            .block_locations
+            .lock()
+            .get(&hash)
+            .copied()
+            .unwrap_or(BlockLocation::Unknown))
     }
 }
 
