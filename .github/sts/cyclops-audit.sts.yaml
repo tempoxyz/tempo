@@ -1,0 +1,9 @@
+# Allow issue-comment workflows in Tempo to mint a short-lived token for the
+# GitHub API calls made by the Cyclops audit command.
+subject_pattern: repo:tempoxyz(@211589300)?/tempo(@994992847)?:ref:refs/heads/.+
+claim_pattern:
+  event_name: issue_comment
+permissions:
+  issues: write
+  members: read
+  pull_requests: write
