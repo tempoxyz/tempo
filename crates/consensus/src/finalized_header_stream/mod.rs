@@ -26,9 +26,9 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::rpc::consensus::{CertifiedBlock, Query};
 use tempo_primitives::TempoHeader;
-use tracing::warn;
+use tracing::{instrument, warn};
 
-use crate::finalization::{FinalizationVerificationError, FinalizationVerifier};
+use crate::finalization_verifier::{Error as VerificationError, FinalizationVerifier};
 
 #[cfg(test)]
 mod test;
@@ -39,7 +39,7 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Configuration for an RPC-backed finalized block stream.
 #[derive(Clone, Debug)]
-pub struct FinalizedBlockStreamConfig {
+pub struct Config {
     /// Hash of the last block already processed by the consumer. The stream starts at the next block.
     pub start_after: B256,
     /// Authoritative network identity to try before deriving one from `start_after`.
@@ -54,7 +54,7 @@ pub struct FinalizedBlockStreamConfig {
     pub poll_interval: Duration,
 }
 
-impl FinalizedBlockStreamConfig {
+impl Config {
     /// Create a stream configuration with conservative fetching defaults.
     pub const fn new(
         start_after: B256,
@@ -76,29 +76,19 @@ impl FinalizedBlockStreamConfig {
 ///
 /// The stream polls the latest sparse finalization certificate, verifies it, authenticates the
 /// complete intervening hash chain, and yields every newly finalized header in ascending order.
-pub struct FinalizedBlockStream {
-    inner: Pin<
-        Box<dyn Stream<Item = Result<SealedHeader<TempoHeader>, FinalizedBlockStreamError>> + Send>,
-    >,
+pub struct FinalizedHeaderStream {
+    inner: Pin<Box<dyn Stream<Item = Result<SealedHeader<TempoHeader>, Error>> + Send>>,
 }
 
-impl FinalizedBlockStream {
-    /// Create a stream backed by an Alloy Tempo provider over HTTP or WebSocket.
-    pub async fn new<P>(
-        provider: P,
-        config: FinalizedBlockStreamConfig,
-    ) -> Result<Self, FinalizedBlockStreamError>
+impl FinalizedHeaderStream {
+    /// Initialize a stream backed by an Alloy Tempo provider over HTTP or WebSocket.
+    pub async fn init<P>(provider: P, config: Config) -> Result<Self, Error>
     where
         P: Provider<TempoNetwork> + Send + Sync + 'static,
     {
         let state = State::initialize(provider, config).await?;
         let stream = stream::try_unfold(state, |mut state| async move {
-            let header = state.next_header().await.inspect_err(|error| {
-                warn!(
-                    error = %error,
-                    "Finalized block stream error"
-                );
-            })?;
+            let header = state.next_header().await?;
             Ok(Some((header, state)))
         });
         Ok(Self {
@@ -107,8 +97,8 @@ impl FinalizedBlockStream {
     }
 }
 
-impl Stream for FinalizedBlockStream {
-    type Item = Result<SealedHeader<TempoHeader>, FinalizedBlockStreamError>;
+impl Stream for FinalizedHeaderStream {
+    type Item = Result<SealedHeader<TempoHeader>, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.get_mut().inner.as_mut().poll_next(cx)
@@ -128,7 +118,7 @@ struct State<P> {
     cursor: BlockNumHash,
     chunk_size: u64,
     poll_interval: Duration,
-    plan: Option<VecDeque<Chunk>>,
+    plan: VecDeque<Chunk>,
     pending: VecDeque<SealedHeader<TempoHeader>>,
     rng: StdRng,
 }
@@ -137,10 +127,8 @@ impl<P> State<P>
 where
     P: Provider<TempoNetwork> + Send + Sync + 'static,
 {
-    async fn initialize(
-        provider: P,
-        config: FinalizedBlockStreamConfig,
-    ) -> Result<Self, FinalizedBlockStreamError> {
+    #[instrument(skip_all, err)]
+    async fn initialize(provider: P, config: Config) -> Result<Self, Error> {
         let epoch_strategy = FixedEpocher::new(config.epoch_length);
         let fetch_concurrency = config.fetch_concurrency.max(1);
         let chunk_size = config.chunk_size.max(1);
@@ -171,9 +159,9 @@ where
                     // does not verify against the initial identity, always fetch identity via the start block.
                     if latest_finalization.block.number() < start_after.number
                         || verifier
-                            .verify(&mut rng, &latest_finalization)
-                            .is_err_and(|err| {
-                                matches!(err, FinalizationVerificationError::InvalidCertificate)
+                            .decode_and_verify(&mut rng, &latest_finalization)
+                            .is_err_and(|error| {
+                                matches!(error, VerificationError::VerificationFailed)
                             })
                     {
                         verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
@@ -208,15 +196,13 @@ where
             cursor: start_after,
             chunk_size,
             poll_interval: config.poll_interval,
-            plan: None,
+            plan: VecDeque::new(),
             pending: VecDeque::new(),
             rng,
         })
     }
 
-    async fn next_header(
-        &mut self,
-    ) -> Result<SealedHeader<TempoHeader>, FinalizedBlockStreamError> {
+    async fn next_header(&mut self) -> Result<SealedHeader<TempoHeader>, Error> {
         loop {
             if let Some(header) = self.pending.pop_front() {
                 self.cursor = header.num_hash();
@@ -235,19 +221,19 @@ where
                 continue;
             }
 
-            match self.verifier.verify(&mut self.rng, &certified) {
+            match self.verifier.decode_and_verify(&mut self.rng, &certified) {
                 Ok(_) => {
                     // If we can verify the latest finalization, trust it as the new chain tip.
-                    self.plan = Some(self.plan_to(certified.block.num_hash()).await?);
+                    self.plan = self.plan_to(certified.block.num_hash()).await?;
                 }
-                Err(FinalizationVerificationError::InvalidCertificate) => {
+                Err(VerificationError::VerificationFailed) => {
                     // If we can't verify the finalization, attempt to sync to the first epoch transition we can verify.
                     let epoch = self
                         .epoch_strategy
                         .containing(Height::new(certified.block.number()))
                         .expect("fixed epoch strategy supports every block height")
                         .epoch();
-                    self.plan = Some(self.plan_to_transition(epoch).await?);
+                    self.plan = self.plan_to_transition(epoch).await?;
                 }
                 // If the certificate is malformed, treat this as fatal error.
                 Err(error) => return Err(error.into()),
@@ -255,12 +241,8 @@ where
         }
     }
 
-    async fn load_next_chunk(&mut self) -> Result<bool, FinalizedBlockStreamError> {
-        let Some(plan) = &mut self.plan else {
-            return Ok(false);
-        };
-        let Some(chunk) = plan.pop_front() else {
-            self.plan = None;
+    async fn load_next_chunk(&mut self) -> Result<bool, Error> {
+        let Some(chunk) = self.plan.pop_front() else {
             return Ok(false);
         };
 
@@ -274,22 +256,19 @@ where
     }
 
     /// Registers boundaries for the provided headers in [`Self::verifier`].
-    fn register_boundaries(
-        &self,
-        headers: &[SealedHeader<TempoHeader>],
-    ) -> Result<(), FinalizedBlockStreamError> {
+    fn register_boundaries(&self, headers: &[SealedHeader<TempoHeader>]) -> Result<(), Error> {
         for header in headers {
             let info = self
                 .epoch_strategy
                 .containing(Height::new(header.number()))
-                .ok_or(FinalizedBlockStreamError::RangeOverflow)?;
+                .ok_or(Error::RangeOverflow)?;
             if info.last().get() != header.number() {
                 continue;
             }
             let onchain_outcome = self
                 .verifier
-                .register_boundary(header.extra_data().as_ref())
-                .map_err(|error| FinalizedBlockStreamError::MalformedBoundary {
+                .decode_dkg_outcome_and_register_boundary(header.extra_data().as_ref())
+                .map_err(|error| Error::MalformedBoundary {
                     height: header.number(),
                     reason: error.to_string(),
                 })?;
@@ -310,17 +289,14 @@ where
         Ok(())
     }
 
-    /// Fetches block from the current cursor up to the target block in reverse
+    /// Fetches headers from the current cursor up to the target block in reverse
     /// while verifying the chain integrity and saves the chunks to `self.plan`.
-    async fn plan_to(
-        &self,
-        target: BlockNumHash,
-    ) -> Result<VecDeque<Chunk>, FinalizedBlockStreamError> {
+    async fn plan_to(&self, target: BlockNumHash) -> Result<VecDeque<Chunk>, Error> {
         let first = self
             .cursor
             .number
             .checked_add(1)
-            .ok_or(FinalizedBlockStreamError::RangeOverflow)?;
+            .ok_or(Error::RangeOverflow)?;
         let mut to = target;
         let mut chunks = VecDeque::new();
 
@@ -335,7 +311,7 @@ where
 
             if from == first {
                 if parent_hash != self.cursor.hash {
-                    return Err(FinalizedBlockStreamError::ParentHashMismatch {
+                    return Err(Error::ParentHashMismatch {
                         number: from,
                         expected: self.cursor.hash,
                         actual: parent_hash,
@@ -354,18 +330,18 @@ where
     async fn plan_to_transition(
         &mut self,
         mut certificate_epoch: Epoch,
-    ) -> Result<VecDeque<Chunk>, FinalizedBlockStreamError> {
+    ) -> Result<VecDeque<Chunk>, Error> {
         loop {
-            let previous_epoch = certificate_epoch.previous().ok_or(
-                FinalizedBlockStreamError::MissingPreviousEpoch(certificate_epoch.get()),
-            )?;
+            let previous_epoch = certificate_epoch
+                .previous()
+                .ok_or(Error::MissingPreviousEpoch(certificate_epoch.get()))?;
             let boundary = self
                 .epoch_strategy
                 .last(previous_epoch)
-                .ok_or(FinalizedBlockStreamError::RangeOverflow)?
+                .ok_or(Error::RangeOverflow)?
                 .get();
             if boundary <= self.cursor.number {
-                return Err(FinalizedBlockStreamError::TransitionNotAhead {
+                return Err(Error::TransitionNotAhead {
                     boundary,
                     checkpoint: self.cursor.number,
                 });
@@ -375,27 +351,25 @@ where
                 .rpc
                 .finalization(Query::Height(boundary))
                 .await
-                .map_err(
-                    |source| FinalizedBlockStreamError::MissingTransitionCertificate {
-                        height: boundary,
-                        source,
-                    },
-                )?;
+                .map_err(|source| Error::MissingTransitionCertificate {
+                    height: boundary,
+                    source,
+                })?;
             let actual = certified.block.number();
             if actual != boundary {
-                return Err(FinalizedBlockStreamError::TransitionHeightMismatch {
+                return Err(Error::TransitionHeightMismatch {
                     expected: boundary,
                     actual,
                 });
             }
 
-            match self.verifier.verify(&mut self.rng, &certified) {
+            match self.verifier.decode_and_verify(&mut self.rng, &certified) {
                 Ok(_) => {
                     return self
                         .plan_to(BlockNumHash::new(boundary, certified.block.hash()))
                         .await;
                 }
-                Err(FinalizationVerificationError::InvalidCertificate) => {
+                Err(VerificationError::VerificationFailed) => {
                     certificate_epoch = previous_epoch;
                 }
                 Err(error) => return Err(error.into()),
@@ -410,7 +384,7 @@ async fn verifier_from_start<P>(
     rpc: &Rpc<P>,
     strategy: &FixedEpocher,
     start: BlockNumHash,
-) -> Result<FinalizationVerifier, FinalizedBlockStreamError>
+) -> Result<FinalizationVerifier, Error>
 where
     P: Provider<TempoNetwork>,
 {
@@ -422,7 +396,7 @@ where
     let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
         &mut boundary_header.extra_data().as_ref(),
     )
-    .map_err(|error| FinalizedBlockStreamError::MalformedBoundary {
+    .map_err(|error| Error::MalformedBoundary {
         height: boundary_header.number(),
         reason: error.to_string(),
     })?;
@@ -436,13 +410,10 @@ where
     ))
 }
 
-fn latest_boundary_at_or_before(
-    strategy: &FixedEpocher,
-    height: u64,
-) -> Result<u64, FinalizedBlockStreamError> {
+fn latest_boundary_at_or_before(strategy: &FixedEpocher, height: u64) -> Result<u64, Error> {
     let info = strategy
         .containing(Height::new(height))
-        .ok_or(FinalizedBlockStreamError::RangeOverflow)?;
+        .ok_or(Error::RangeOverflow)?;
     if info.last().get() == height {
         return Ok(height);
     }
@@ -452,7 +423,7 @@ fn latest_boundary_at_or_before(
     strategy
         .last(previous)
         .map(Height::get)
-        .ok_or(FinalizedBlockStreamError::RangeOverflow)
+        .ok_or(Error::RangeOverflow)
 }
 
 struct Rpc<P> {
@@ -470,17 +441,14 @@ where
             .await
     }
 
-    async fn header_by_hash(
-        &self,
-        expected: B256,
-    ) -> Result<SealedHeader<TempoHeader>, FinalizedBlockStreamError> {
+    async fn header_by_hash(&self, expected: B256) -> Result<SealedHeader<TempoHeader>, Error> {
         let Some(response) = self.provider.get_header_by_hash(expected).await? else {
-            return Err(FinalizedBlockStreamError::MissingStartHeader(expected));
+            return Err(Error::MissingStartHeader(expected));
         };
 
         let header = SealedHeader::seal_slow(response.inner.inner);
         if header.hash() != expected {
-            return Err(FinalizedBlockStreamError::StartHashMismatch {
+            return Err(Error::StartHashMismatch {
                 expected,
                 actual: header.hash(),
             });
@@ -491,7 +459,7 @@ where
     async fn header_by_number(
         &self,
         number: u64,
-    ) -> Result<Option<SealedHeader<TempoHeader>>, FinalizedBlockStreamError> {
+    ) -> Result<Option<SealedHeader<TempoHeader>>, Error> {
         let Some(response) = self
             .provider
             .get_header_by_number(BlockNumberOrTag::Number(number))
@@ -503,7 +471,7 @@ where
         let reported_hash = response.inner.hash;
         let header = SealedHeader::seal_slow(response.inner.inner);
         if header.hash() != reported_hash {
-            return Err(FinalizedBlockStreamError::HeaderHashMismatch {
+            return Err(Error::HeaderHashMismatch {
                 number,
                 reported: reported_hash,
                 actual: header.hash(),
@@ -516,16 +484,16 @@ where
         &self,
         from: u64,
         to: BlockNumHash,
-    ) -> Result<Vec<SealedHeader<TempoHeader>>, FinalizedBlockStreamError> {
+    ) -> Result<Vec<SealedHeader<TempoHeader>>, Error> {
         if from > to.number {
-            return Err(FinalizedBlockStreamError::RangeOverflow);
+            return Err(Error::RangeOverflow);
         }
 
         let headers = stream::iter(from..=to.number)
             .map(|number| async move {
                 self.header_by_number(number)
                     .await?
-                    .ok_or(FinalizedBlockStreamError::MissingHeader(number))
+                    .ok_or(Error::MissingHeader(number))
             })
             .buffered(self.fetch_concurrency)
             .try_collect::<Vec<_>>()
@@ -535,9 +503,9 @@ where
         for (offset, header) in headers.iter().enumerate() {
             let expected = from
                 .checked_add(offset as u64)
-                .ok_or(FinalizedBlockStreamError::RangeOverflow)?;
+                .ok_or(Error::RangeOverflow)?;
             if header.number() != expected {
-                return Err(FinalizedBlockStreamError::HeaderNumberMismatch {
+                return Err(Error::HeaderNumberMismatch {
                     expected,
                     actual: header.number(),
                 });
@@ -545,7 +513,7 @@ where
             if let Some(parent) = expected_parent
                 && header.parent_hash() != parent
             {
-                return Err(FinalizedBlockStreamError::ParentHashMismatch {
+                return Err(Error::ParentHashMismatch {
                     number: expected,
                     expected: parent,
                     actual: header.parent_hash(),
@@ -559,7 +527,7 @@ where
             .expect("a non-empty inclusive range always returns a header")
             .hash();
         if actual_tip != to.hash {
-            return Err(FinalizedBlockStreamError::TipHashMismatch {
+            return Err(Error::TipHashMismatch {
                 expected: to.hash,
                 actual: actual_tip,
             });
@@ -568,9 +536,9 @@ where
     }
 }
 
-/// Error emitted by [`FinalizedBlockStream`].
+/// Error emitted by [`FinalizedHeaderStream`].
 #[derive(Debug, thiserror::Error)]
-pub enum FinalizedBlockStreamError {
+pub enum Error {
     /// An RPC request failed.
     #[error("RPC request failed: {0}")]
     Rpc(#[from] TransportError),
@@ -608,7 +576,7 @@ pub enum FinalizedBlockStreamError {
     MalformedBoundary { height: u64, reason: String },
     /// Certificate verification failed.
     #[error(transparent)]
-    Verification(#[from] FinalizationVerificationError),
+    Verification(#[from] VerificationError),
     /// An identity-changing epoch transition could not be retrieved.
     #[error("transition certificate at boundary `{height}` is unavailable: {source}")]
     MissingTransitionCertificate {

@@ -23,16 +23,14 @@ use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
 #[cfg(test)]
 mod test;
 
-/// A decoded Tempo finalization certificate.
-pub type TempoFinalization = Finalization<Scheme<PublicKey, MinSig>, Digest>;
-
 /// Verifies finalization certificates against a trusted network identity.
 ///
 /// A caller following the chain should pass each finalized epoch-boundary block to
-/// [`Self::register_boundary`] before verifying certificates from the next epoch.
+/// [`Self::decode_dkg_outcome_and_register_boundary`] before verifying certificates from the next
+/// epoch.
 #[derive(Clone)]
 pub struct FinalizationVerifier {
-    schemes: SchemeProvider,
+    scheme_provider: SchemeProvider,
     network_identity: NetworkIdentity,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
     epoch_strategy: FixedEpocher,
@@ -41,23 +39,22 @@ pub struct FinalizationVerifier {
 impl FinalizationVerifier {
     /// Create a verifier anchored at the supplied network identity.
     pub fn new(network_identity: NetworkIdentity, epoch_strategy: FixedEpocher) -> Self {
-        Self::with_scheme_provider(network_identity, SchemeProvider::new(), epoch_strategy)
-    }
-
-    pub(crate) fn with_scheme_provider(
-        network_identity: NetworkIdentity,
-        schemes: SchemeProvider,
-        epoch_strategy: FixedEpocher,
-    ) -> Self {
         let network_scheme = Arc::new(Scheme::certificate_verifier(
             NAMESPACE,
             network_identity.identity,
         ));
         Self {
-            schemes,
+            scheme_provider: SchemeProvider::new(),
             network_identity,
             network_scheme,
             epoch_strategy,
+        }
+    }
+
+    pub(crate) fn with_scheme_provider(self, scheme_provider: SchemeProvider) -> Self {
+        Self {
+            scheme_provider,
+            ..self
         }
     }
 
@@ -70,12 +67,12 @@ impl FinalizationVerifier {
     ///
     /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
     /// authenticated by a previously verified finalization.
-    pub fn register_boundary(
+    pub fn decode_dkg_outcome_and_register_boundary(
         &self,
         mut extra_data: &[u8],
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
-        self.schemes.register(
+        self.scheme_provider.register(
             outcome.epoch,
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
         );
@@ -83,20 +80,20 @@ impl FinalizationVerifier {
     }
 
     /// Decode and verify a certified block returned by the Tempo consensus RPC.
-    pub fn verify(
+    pub fn decode_and_verify(
         &self,
         rng: &mut impl CryptoRng,
         certified: &CertifiedBlock,
-    ) -> Result<TempoFinalization, FinalizationVerificationError> {
-        let bytes = alloy_primitives::hex::decode(&certified.certificate).map_err(|error| {
-            FinalizationVerificationError::MalformedCertificate(error.to_string())
-        })?;
-        let finalization = TempoFinalization::decode(&*bytes).map_err(|error| {
-            FinalizationVerificationError::MalformedCertificate(error.to_string())
-        })?;
+    ) -> Result<Finalization<Scheme<PublicKey, MinSig>, Digest>, Error> {
+        // TODO: Decode certificates when constructing `CertifiedBlock` instead of keeping their
+        // bytes opaque and decoding them at each consumer.
+        let bytes = alloy_primitives::hex::decode(&certified.certificate)
+            .map_err(|error| Error::MalformedCertificate(error.into()))?;
+        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes)
+            .map_err(|error| Error::MalformedCertificate(error.into()))?;
 
         if finalization.proposal.payload.0 != certified.block.hash() {
-            return Err(FinalizationVerificationError::BlockDigestMismatch);
+            return Err(Error::BlockDigestMismatch);
         }
 
         let epoch = finalization.epoch();
@@ -107,20 +104,20 @@ impl FinalizationVerifier {
             .expect("fixed epoch strategy supports every block height")
             .epoch();
         if epoch != expected_epoch {
-            return Err(FinalizationVerificationError::EpochMismatch {
+            return Err(Error::EpochMismatch {
                 height,
                 expected: expected_epoch.get(),
                 actual: epoch.get(),
             });
         }
 
-        let (scheme, used_network_identity) = match self.schemes.scheme(epoch) {
+        let (scheme, used_network_identity) = match self.scheme_provider.scheme(epoch) {
             Some(scheme) => (scheme, false),
             None if epoch.get() >= self.network_identity.from_epoch => {
                 (self.network_scheme.clone(), true)
             }
             None => {
-                return Err(FinalizationVerificationError::IdentityUnavailable {
+                return Err(Error::IdentityUnavailable {
                     epoch: epoch.get(),
                     identity_from_epoch: self.network_identity.from_epoch,
                 });
@@ -128,13 +125,13 @@ impl FinalizationVerifier {
         };
 
         if !finalization.verify(rng, scheme.as_ref(), &Sequential) {
-            return Err(FinalizationVerificationError::InvalidCertificate);
+            return Err(Error::VerificationFailed);
         }
 
         // Marshal verifies the certificate again while installing a floor, so retain a
         // successfully used network-identity fallback under the certificate's epoch.
         if used_network_identity {
-            self.schemes.register(epoch, (*scheme).clone());
+            self.scheme_provider.register(epoch, (*scheme).clone());
         }
 
         Ok(finalization)
@@ -143,10 +140,10 @@ impl FinalizationVerifier {
 
 /// An error returned while verifying a Tempo finalization certificate.
 #[derive(Debug, thiserror::Error)]
-pub enum FinalizationVerificationError {
+pub enum Error {
     /// The certificate was not valid hex or did not decode as a Tempo finalization.
-    #[error("malformed finalization certificate: {0}")]
-    MalformedCertificate(String),
+    #[error("malformed finalization certificate")]
+    MalformedCertificate(#[source] MalformedCertificateError),
     /// The certificate did not finalize the block included in the RPC response.
     #[error("finalization and block digest mismatch")]
     BlockDigestMismatch,
@@ -168,6 +165,15 @@ pub enum FinalizationVerificationError {
         identity_from_epoch: u64,
     },
     /// The threshold signature did not verify against the trusted identity.
-    #[error("invalid finalization certificate")]
-    InvalidCertificate,
+    #[error("finalization certificate verification failed")]
+    VerificationFailed,
+}
+
+/// The concrete decoding error for a malformed finalization certificate.
+#[derive(Debug, thiserror::Error)]
+pub enum MalformedCertificateError {
+    #[error("invalid hex encoding")]
+    Hex(#[from] alloy_primitives::hex::FromHexError),
+    #[error(transparent)]
+    Codec(#[from] commonware_codec::Error),
 }

@@ -15,7 +15,7 @@ use tracing::{debug, instrument, warn};
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
     consensus::Block,
-    finalization::{FinalizationVerificationError, FinalizationVerifier},
+    finalization_verifier::{Error as VerificationError, FinalizationVerifier},
 };
 
 pub(super) fn try_init<TContext, P, M>(
@@ -53,11 +53,11 @@ where
         Height::zero()
     };
 
-    let verifier = FinalizationVerifier::with_scheme_provider(
+    let verifier = FinalizationVerifier::new(
         config.network_identity.clone(),
-        config.scheme_provider.clone(),
         config.epoch_strategy.clone(),
-    );
+    )
+    .with_scheme_provider(config.scheme_provider.clone());
     let boundary_header = config
         .execution_provider
         .finalized_header_by_number(startup_execution_boundary.get())
@@ -70,7 +70,7 @@ where
             )
         })?;
     let onchain_outcome = verifier
-        .register_boundary(boundary_header.extra_data().as_ref())
+        .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
         .wrap_err_with(|| {
             format!(
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
@@ -180,7 +180,9 @@ where
 
             let onchain_outcome = self
                 .verifier
-                .register_boundary(boundary_block.header().extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(
+                    boundary_block.header().extra_data().as_ref(),
+                )
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -205,9 +207,12 @@ where
         err(Display)
     )]
     async fn process_event(&mut self, certified: CertifiedBlock) -> eyre::Result<()> {
-        let finalization = match self.verifier.verify(&mut self.context, &certified) {
+        let finalization = match self
+            .verifier
+            .decode_and_verify(&mut self.context, &certified)
+        {
             Ok(finalization) => finalization,
-            Err(error @ FinalizationVerificationError::InvalidCertificate) => {
+            Err(error @ VerificationError::VerificationFailed) => {
                 debug!(%error, "failed to verify finalization certificate");
 
                 // This network may have rotated identity, so hint the boundary of
@@ -257,7 +262,7 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .register_boundary(block.header().extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
                 .expect("boundary blocks must contain DKG outcomes");
 
             let network_identity = self.verifier.network_identity();

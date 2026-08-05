@@ -7,7 +7,7 @@ use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_alloy::{TempoNetwork, rpc::TempoHeaderResponse};
 use tempo_chainspec::NetworkIdentity;
 
-use super::{FinalizedBlockStream, FinalizedBlockStreamConfig, FinalizedBlockStreamError};
+use super::{Config, Error, FinalizedHeaderStream};
 use crate::{
     consensus::Block,
     follow::test_utils::{
@@ -64,9 +64,9 @@ async fn expands_a_sparse_tip_certificate() {
     push_reverse_chunk_headers(&asserter, &[block_1.clone(), block_2.clone()], 1);
     push_headers(&asserter, [&block_1, &block_2]);
 
-    let mut config = FinalizedBlockStreamConfig::new(genesis.block_hash(), None, EPOCH_LENGTH);
+    let mut config = Config::new(genesis.block_hash(), None, EPOCH_LENGTH);
     config.chunk_size = 1;
-    let mut stream = FinalizedBlockStream::new(mock_provider(asserter.clone()), config)
+    let mut stream = FinalizedHeaderStream::init(mock_provider(asserter.clone()), config)
         .await
         .expect("stream should initialize");
 
@@ -116,9 +116,9 @@ async fn bridges_a_full_dkg_boundary() {
     push_header(&asserter, tip);
 
     let genesis = &blocks[0];
-    let mut config = FinalizedBlockStreamConfig::new(genesis.block_hash(), None, EPOCH_LENGTH);
+    let mut config = Config::new(genesis.block_hash(), None, EPOCH_LENGTH);
     config.chunk_size = 3;
-    let mut stream = FinalizedBlockStream::new(mock_provider(asserter.clone()), config)
+    let mut stream = FinalizedHeaderStream::init(mock_provider(asserter.clone()), config)
         .await
         .expect("stream should initialize");
 
@@ -164,10 +164,9 @@ async fn uses_authoritative_identity_for_initial_backfill() {
         from_epoch: authoritative.outcome.epoch.get(),
         identity: *authoritative.outcome.network_identity(),
     };
-    let mut config =
-        FinalizedBlockStreamConfig::new(genesis.block_hash(), Some(network_identity), EPOCH_LENGTH);
+    let mut config = Config::new(genesis.block_hash(), Some(network_identity), EPOCH_LENGTH);
     config.chunk_size = 4;
-    let mut stream = FinalizedBlockStream::new(mock_provider(asserter.clone()), config)
+    let mut stream = FinalizedHeaderStream::init(mock_provider(asserter.clone()), config)
         .await
         .expect("stream should initialize");
 
@@ -218,9 +217,9 @@ async fn falls_back_to_identity_anchored_by_start() {
         from_epoch: old.outcome.epoch.get(),
         identity: *old.outcome.network_identity(),
     };
-    let mut stream = FinalizedBlockStream::new(
+    let mut stream = FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        FinalizedBlockStreamConfig::new(start.block_hash(), Some(stale_identity), EPOCH_LENGTH),
+        Config::new(start.block_hash(), Some(stale_identity), EPOCH_LENGTH),
     )
     .await
     .expect("stream should initialize");
@@ -255,9 +254,9 @@ async fn applies_transition_from_start_boundary() {
         from_epoch: current.outcome.epoch.get(),
         identity: *current.outcome.network_identity(),
     };
-    let mut stream = FinalizedBlockStream::new(
+    let mut stream = FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        FinalizedBlockStreamConfig::new(start.block_hash(), Some(network_identity), EPOCH_LENGTH),
+        Config::new(start.block_hash(), Some(network_identity), EPOCH_LENGTH),
     )
     .await
     .expect("stream should initialize from the trusted boundary");
@@ -287,9 +286,9 @@ async fn does_not_resolve_start_identity_when_caught_up() {
         from_epoch: fixture.outcome.epoch.get(),
         identity: *fixture.outcome.network_identity(),
     };
-    FinalizedBlockStream::new(
+    FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        FinalizedBlockStreamConfig::new(start.block_hash(), Some(network_identity), EPOCH_LENGTH),
+        Config::new(start.block_hash(), Some(network_identity), EPOCH_LENGTH),
     )
     .await
     .expect("caught-up stream should initialize without fetching start ancestry");
@@ -311,9 +310,9 @@ async fn rejects_mismatched_start_header() {
         from_epoch: fixture.outcome.epoch.get(),
         identity: *fixture.outcome.network_identity(),
     };
-    let error = FinalizedBlockStream::new(
+    let error = FinalizedHeaderStream::init(
         mock_provider(asserter.clone()),
-        FinalizedBlockStreamConfig::new(B256::ZERO, Some(network_identity), EPOCH_LENGTH),
+        Config::new(B256::ZERO, Some(network_identity), EPOCH_LENGTH),
     )
     .await
     .err()
@@ -321,7 +320,7 @@ async fn rejects_mismatched_start_header() {
 
     assert!(matches!(
         error,
-        FinalizedBlockStreamError::StartHashMismatch {
+        Error::StartHashMismatch {
             expected: B256::ZERO,
             actual,
         } if actual == start.block_hash()

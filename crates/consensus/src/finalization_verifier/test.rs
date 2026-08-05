@@ -4,7 +4,7 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use tempo_chainspec::NetworkIdentity;
 
-use super::{FinalizationVerificationError, FinalizationVerifier};
+use super::{Error, FinalizationVerifier};
 use crate::follow::test_utils::{
     EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
 };
@@ -26,18 +26,18 @@ fn tracks_boundary_identity() {
         let finalization = make_finalization(&boundary, Epoch::zero(), &current.schemes);
         let certified = make_certified_block(boundary.clone(), &finalization);
         verifier
-            .verify(&mut context, &certified)
+            .decode_and_verify(&mut context, &certified)
             .expect("current identity should verify the boundary");
 
         verifier
-            .register_boundary(boundary.header().extra_data().as_ref())
+            .decode_dkg_outcome_and_register_boundary(boundary.header().extra_data().as_ref())
             .expect("boundary should install the next identity");
 
         let block = make_block(EPOCH_LENGTH.get(), None);
         let finalization = make_finalization(&block, Epoch::new(1), &next.schemes);
         let certified = make_certified_block(block, &finalization);
         verifier
-            .verify(&mut context, &certified)
+            .decode_and_verify(&mut context, &certified)
             .expect("installed identity should verify the next epoch");
     });
 }
@@ -58,8 +58,8 @@ fn rejects_epoch_mismatching_block_height() {
         let finalization = make_finalization(&block, Epoch::zero(), &fixture.schemes);
         let certified = make_certified_block(block, &finalization);
         assert!(matches!(
-            verifier.verify(&mut context, &certified),
-            Err(FinalizationVerificationError::EpochMismatch {
+            verifier.decode_and_verify(&mut context, &certified),
+            Err(Error::EpochMismatch {
                 height,
                 expected: 1,
                 actual: 0,
