@@ -222,7 +222,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      pull-requests: write
+      id-token: write
     with:
       chain: ${{ needs.resolve-refs.outputs.chain }}
       pr: ""
@@ -240,7 +240,6 @@ jobs:
       slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
       run-label: ${{ github.event_name == 'schedule' && 'Replay Nightly' || 'Replay Bench' }}
     secrets:
-      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}

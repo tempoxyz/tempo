@@ -150,8 +150,6 @@ on:
         required: false
         default: "Replay Bench"
     secrets:
-      DEREK_BENCH_TOKEN:
-        required: false
       DEREK_TOKEN:
         required: false
       TEMPO_TELEMETRY_URL:
@@ -181,7 +179,7 @@ env:
 
 permissions:
   contents: read
-  pull-requests: write
+  id-token: write
 
 jobs:
   bench-replay:
@@ -254,6 +252,12 @@ jobs:
             printf 'GRAFANA_TEMPO=%s\n' "$GRAFANA_TEMPO_SECRET" >> "$GITHUB_ENV"
           fi
 
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
+        with:
+          policy: bench-replay
+
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -267,7 +271,7 @@ jobs:
           INPUT_FEATURE_FEATURES: ${{ inputs.feature-features }}
           INPUT_REF: ${{ github.ref }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
               // Auto-discover PR for the current branch
@@ -331,7 +335,7 @@ jobs:
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -462,7 +466,7 @@ jobs:
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running replay benchmark...'});
@@ -472,7 +476,7 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+          BENCH_GH_TOKEN: ${{ steps.github-sts.outputs.token }}
           CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
           CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
@@ -602,7 +606,7 @@ jobs:
           PUSH_CHARTS_SHA: ${{ steps.push-charts.outputs.sha }}
           PUSH_CHARTS_PATH: ${{ steps.push-charts.outputs.path }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const fs = require('fs');
 
@@ -705,7 +709,7 @@ jobs:
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -750,7 +754,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({

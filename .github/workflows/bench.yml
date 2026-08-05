@@ -688,6 +688,9 @@ jobs:
   bench-replay:
     needs: tempo-bench-ack
     if: needs.tempo-bench-ack.outputs.mode == 'replay'
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/bench-replay.yml
     with:
       chain: ${{ needs.tempo-bench-ack.outputs.chain }}
@@ -711,7 +714,6 @@ jobs:
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
-      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
