@@ -21,6 +21,13 @@ FOUNDRY_ROOT="${2:?Usage: $0 <tempo_root> <foundry_root>}"
 TEMPO_CARGO="$TEMPO_ROOT/Cargo.toml"
 FOUNDRY_CARGO="$FOUNDRY_ROOT/Cargo.toml"
 
+# Foundry's current MPP revision pins tokio-tungstenite 0.28 in
+# alloy-transport-mpp, but Alloy 2.3 uses tokio-tungstenite 0.29. Retarget the
+# two MPP workspace dependencies to the upstream compatibility fix. Match the
+# broken revision exactly so this becomes a no-op once Foundry updates its pin.
+BROKEN_MPP_REV="9808dede7ad8d388d519fbaeb8aadedfbe7e7ec8"
+FIXED_MPP_REV="cc95fb153e1848f844f6d5110a8a62ac7dc34b9b"
+
 if [[ ! -f "$TEMPO_CARGO" ]]; then
   echo "ERROR: Tempo Cargo.toml not found at $TEMPO_CARGO" >&2
   exit 1
@@ -29,6 +36,10 @@ if [[ ! -f "$FOUNDRY_CARGO" ]]; then
   echo "ERROR: Foundry Cargo.toml not found at $FOUNDRY_CARGO" >&2
   exit 1
 fi
+
+sed -i \
+  "/git = \"https:\/\/github.com\/tempoxyz\/mpp-rs\"/s/rev = \"$BROKEN_MPP_REV\"/rev = \"$FIXED_MPP_REV\"/" \
+  "$FOUNDRY_CARGO"
 
 has_tempo_git_patch=false
 if grep -q '^\[patch\."https://github.com/tempoxyz/tempo"\]' "$FOUNDRY_CARGO"; then
