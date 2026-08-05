@@ -1,14 +1,20 @@
-//! Per-connection transport for `tempo/1`.
+//! Peer-keyed transport for `tempo/1`.
 //!
-//! The transport passes bytes between reth and consensus. It limits frame size
-//! and inbound rate for each connection. Consensus decodes frames, removes
-//! duplicates, enforces fairness, verifies certificates, and manages peer
-//! reputation.
+//! Consensus sees one logical connection per [`PeerId`]. It receives lifecycle
+//! events and inbound frames keyed only by the peer, and sends outbound frames
+//! the same way. Physical connection identities are not part of this interface.
 //!
-//! Reth polls each [`Connection`] on its own task. A separate coordinator task
-//! serializes connection membership and outbound routing. Neither part inspects
-//! payloads or uses consensus types, which lets the transport stay in the node
-//! crate.
+//! Normally, that logical connection is backed by one RLPx connection. As a
+//! short-lived edge case, reth can expose both sides of a duplicate-connection
+//! race before it selects the survivor. The coordinator hides this window by
+//! accepting at most two equivalent physical connections: inbound frames from
+//! either use the same peer ID, while outbound frames are offered to both. Reth
+//! remains responsible for selecting and closing the duplicate.
+//!
+//! Reth polls each physical [`Connection`] from its RLPx session task. The
+//! transport limits frame size and inbound rate per connection but otherwise
+//! treats frames as opaque bytes. Consensus decodes them, removes replays,
+//! enforces fairness, verifies certificates, and manages peer reputation.
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -54,9 +60,13 @@ const MAX_CONNECTIONS_PER_PEER: usize = 2;
 /// [`PeerEvent::Down`] would leave stale peer state in consensus.
 #[derive(Debug)]
 pub enum PeerEvent {
-    /// The first `tempo/1` connection to a peer opened.
+    /// A peer gained its first accepted `tempo/1` connection.
+    ///
+    /// Always balanced with [`PeerEvent::Down`] events.
     Up(PeerId),
-    /// The last `tempo/1` connection to a peer ended.
+    /// A peer lost its last accepted `tempo/1` connection.
+    ///
+    /// Always balanced with [`PeerEvent::Up`] events.
     Down(PeerId),
 }
 
@@ -72,7 +82,7 @@ pub struct Frame {
 type SendResult = Result<(), mpsc::error::TrySendError<Bytes>>;
 type SendFrame = dyn Fn(PeerId, Bytes) -> SendResult + Send + Sync;
 
-/// Queues a frame for routing to every current connection for a peer.
+/// Allows sending frames to the specified peers.
 #[derive(Clone)]
 pub struct TransportSender {
     send: Arc<SendFrame>,
@@ -91,7 +101,10 @@ impl TransportSender {
 
     /// Queues a frame for `peer`.
     ///
-    /// Returns success when the transport coordinator accepts the frame.
+    /// Success means the coordinator queue accepted the frame. It does not
+    /// acknowledge delivery: the peer may have no route when the frame is
+    /// processed, and each physical connection can independently drop it if its
+    /// queue is full or closed.
     pub fn try_send(&self, peer: PeerId, frame: Bytes) -> SendResult {
         (self.send)(peer, frame)
     }
@@ -122,7 +135,9 @@ pub struct Config {
     pub outbound_queue: usize,
 }
 
-/// The consensus layer's end of the transport.
+/// The consensus-facing, peer-keyed view of the transport.
+///
+/// This interface intentionally exposes no physical connection identity.
 #[derive(Debug)]
 pub struct TransportHandle {
     /// Logical peer lifecycle events.
@@ -133,7 +148,8 @@ pub struct TransportHandle {
     pub sender: TransportSender,
 }
 
-/// Creates both ends of the transport and starts its coordinator task.
+/// Creates both ends of the transport and starts the required coordinator as a
+/// critical Reth task.
 pub fn init(config: Config, tasks: &TaskExecutor) -> (GossipProtocolHandler, TransportHandle) {
     let (protocol_handler, coordinator, transport) = build(config);
     tasks.spawn_critical_task("tempo gossip coordinator", coordinator.run());
@@ -240,6 +256,13 @@ impl Shared {
     }
 }
 
+/// Implements the logical peer abstraction over physical connections.
+///
+/// A peer normally has one connection. The second slot exists only for reth's
+/// transient duplicate-reconciliation edge case. Both slots are equivalent:
+/// outbound frames are offered to both, [`PeerEvent::Up`] is emitted for the
+/// first, and [`PeerEvent::Down`] for the last. Any further connection is
+/// rejected.
 #[derive(Debug)]
 struct TransportCoordinator {
     commands: mpsc::UnboundedReceiver<ConnectionCommand>,
@@ -256,7 +279,9 @@ impl TransportCoordinator {
                 Some(command) = self.commands.recv() => self.on_command(command),
                 Some(outbound) = self.outbound.recv() => self.on_outbound(outbound),
                 else => {
-                    warn!("Gossip transport coordinator inputs closed");
+                    // Critical tasks report panics, not normal completion. Keep
+                    // this unexpected teardown visible until executor shutdown.
+                    warn!("Gossip transport coordinator inputs closed; waiting for shutdown");
                     std::future::pending::<()>().await;
                 }
             }
@@ -298,6 +323,9 @@ impl TransportCoordinator {
             }
         };
 
+        // The actor prioritizes lifecycle events over frames. Enqueueing `Up`
+        // before accepting registration ensures it creates peer state before
+        // this connection can forward inbound bytes.
         if first {
             let _ = self.peer_events.send(PeerEvent::Up(peer));
         }
@@ -435,7 +463,11 @@ impl ConnectionHandler for GossipProtocolHandler {
     }
 }
 
-/// A single `tempo/1` connection, polled by reth.
+/// A physical `tempo/1` connection polled by reth.
+///
+/// Its underlying stream remains unpolled until the coordinator accepts its
+/// registration. Rejection ends this satellite stream and therefore the
+/// containing RLPx connection.
 #[derive(Debug)]
 pub struct Connection<S = ProtocolConnection> {
     peer: PeerId,
@@ -443,7 +475,8 @@ pub struct Connection<S = ProtocolConnection> {
     state: ConnectionState,
     shared: Arc<Shared>,
     conn: S,
-    // Set to `None` when all outbound senders close. Inbound remains active.
+    // Set to `None` when the coordinator drops this connection's sender.
+    // Inbound remains active.
     outbound: Option<mpsc::Receiver<Bytes>>,
     admission: Admission,
 }
@@ -504,9 +537,9 @@ where
         let me = self.get_mut();
 
         if !ready!(me.poll_registration(cx)) {
-            // Ending any installed satellite protocol ends the containing RLPx
-            // connection. The coordinator rejects a third connection before
-            // this stream starts processing frames.
+            // Reth closes the containing RLPx connection when an installed
+            // satellite ends. This rejects an excess connection without
+            // processing any of its frames.
             return Poll::Ready(None);
         }
 
@@ -566,7 +599,6 @@ impl Admission {
         }
     }
 
-    /// Attempts to consume a token from the bucket, returning `true` if successful.
     fn allow(&mut self, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.updated).as_secs_f64();
         self.updated = now;

@@ -1,9 +1,10 @@
 //! Consensus-side half of the `tempo/1` subprotocol.
 //!
-//! The transport in `tempo-node` only moves bytes. Consensus decides what each
-//! frame means. This module defines the types shared by the transport-facing
-//! actor and follower driver. The driver owns the epoch schemes, so only the
-//! driver can verify a certificate.
+//! The transport in `tempo-node` treats frame payloads as opaque and presents a
+//! logical peer lifecycle. Consensus decides what each frame means. This module
+//! defines the types shared by the transport-facing actor and follower driver.
+//! The driver owns the epoch schemes, so only the driver can verify a
+//! certificate.
 
 mod actor;
 mod ingress;

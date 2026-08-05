@@ -48,7 +48,7 @@ struct Slot {
 }
 
 struct Peer {
-    /// Highest round this peer claimed or this node queued successfully.
+    /// Highest round this peer claimed or this node accepted for outbound routing.
     seen_round: Option<Round>,
 }
 
@@ -59,8 +59,9 @@ impl Peer {
 
     /// Offers a certificate if the peer has not seen its round or a later one.
     ///
-    /// Returns `true` when the frame was queued. A failed send does not advance
-    /// `seen_round`, so a later call can offer the publication again.
+    /// Returns `true` when the coordinator queue accepts the frame. Delivery to
+    /// physical connections is best effort and is not reported here. A failed
+    /// enqueue does not advance `seen_round`, so a later call can try again.
     fn offer(
         &mut self,
         sender: &TransportSender,
@@ -332,9 +333,10 @@ where
         match message {
             Message::Publish { round, frame } => {
                 // Keep one publication for the latest round. Repeating that round
-                // retries only peers whose earlier send failed because `offer`
-                // skips peers that saw it. Reuse the cached bytes so another
-                // frame for the same round cannot replace what we advertised.
+                // retries only peers whose coordinator enqueue failed because
+                // `offer` skips attempts accepted by the coordinator. Reuse the
+                // cached bytes so another frame for the same round cannot replace
+                // what we advertised.
                 if let Some(latest) = &self.latest {
                     if latest.round > round {
                         return;
