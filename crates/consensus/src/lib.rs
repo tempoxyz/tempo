@@ -145,7 +145,6 @@ pub async fn run_consensus_stack(
         gossip_transport.map(|transport| gossip::Config {
             transport,
             verify_rate: config.gossip_verify_rate,
-            strikes: config.gossip_strikes,
             recent_frames: config.gossip_recent_frames,
             relay: config.gossip_relay,
         }),
@@ -236,7 +235,6 @@ pub async fn run_follow_stack(
             gossip_transport.map(|transport| gossip::Config {
                 transport,
                 verify_rate: config.gossip_verify_rate,
-                strikes: config.gossip_strikes,
                 recent_frames: config.gossip_recent_frames,
                 relay: config.gossip_relay,
             }),

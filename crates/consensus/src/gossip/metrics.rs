@@ -19,7 +19,7 @@ pub(super) struct Metrics {
     pub(super) relay_dropped: Counter,
     pub(super) penalties: Counter,
     pub(super) schemes_installed: Counter,
-    pub(super) dropped_stale_session: Counter,
+    pub(super) dropped_disconnected_peer: Counter,
     pub(super) dropped_replay: Counter,
     pub(super) dropped_malformed: Counter,
     pub(super) dropped_stale: Counter,
@@ -63,8 +63,10 @@ impl Metrics {
                 "schemes_installed",
                 "scheme-channel events that triggered retry scans",
             ),
-            dropped_stale_session: context
-                .counter("dropped_stale_session", "frames from a superseded session"),
+            dropped_disconnected_peer: context.counter(
+                "dropped_disconnected_peer",
+                "frames received after their logical peer disconnected",
+            ),
             dropped_replay: context
                 .counter("dropped_replay", "frames already settled or published"),
             dropped_malformed: context.counter("dropped_malformed", "frames that did not decode"),

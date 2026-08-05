@@ -19,10 +19,10 @@ use futures::{
     FutureExt as _, StreamExt as _,
     stream::{self, BoxStream},
 };
-use tempo_node::gossip::{Frame, PeerControl, SessionEvent, TransportHandle, wire};
+use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, TransportSender, wire};
 use tokio::{select, sync::mpsc};
 use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::{CertSink, Certificate, Outcome, ingress::Message, metrics::Metrics};
 use crate::{follow::FollowerProgress, utils::OptionFuture};
@@ -47,24 +47,24 @@ struct Slot {
     blocked_until: Option<Epoch>,
 }
 
-struct Session {
-    generation: u64,
-    outbound: mpsc::Sender<Bytes>,
-    /// Highest round this session claimed or this node queued successfully.
+struct Peer {
+    /// Highest round this peer claimed or this node queued successfully.
     seen_round: Option<Round>,
 }
 
-impl Session {
+impl Peer {
     fn observe(&mut self, round: Round) {
         self.seen_round = Some(self.seen_round.map_or(round, |seen| seen.max(round)));
     }
 
-    /// Offers a certificate if the session has not seen its round or a later one.
+    /// Offers a certificate if the peer has not seen its round or a later one.
     ///
     /// Returns `true` when the frame was queued. A failed send does not advance
     /// `seen_round`, so a later call can offer the publication again.
     fn offer(
         &mut self,
+        sender: &TransportSender,
+        peer: PeerKey,
         round: Round,
         frame: &Bytes,
     ) -> Result<bool, mpsc::error::TrySendError<Bytes>> {
@@ -72,7 +72,7 @@ impl Session {
             return Ok(false);
         }
 
-        self.outbound.try_send(frame.clone())?;
+        sender.try_send(peer, frame.clone())?;
         self.observe(round);
         Ok(true)
     }
@@ -121,8 +121,6 @@ pub(crate) struct Config<K> {
     /// blocks to marshal. This limit bounds how much a flood can delay block
     /// import. Initialization treats zero as one.
     pub(crate) verify_rate: u32,
-    /// Invalid-certificate strikes that trigger a peer disconnect.
-    pub(crate) strikes: u32,
     /// Frames remembered as already settled or published.
     pub(crate) recent_frames: usize,
     /// Whether to forward certificates verified from a peer.
@@ -134,7 +132,7 @@ pub(crate) struct Config<K> {
     pub(crate) transport: TransportHandle,
     /// Certificates published after the feed confirms their blocks are stored.
     pub(crate) mailbox: mpsc::UnboundedReceiver<Message>,
-    /// Reputation and connection control for peers that misbehave.
+    /// Reputation control for peers that misbehave.
     pub(crate) peer_control: Arc<dyn PeerControl>,
     /// Judges certificates. A publish-only node uses a sink with no outcome.
     pub(crate) sink: K,
@@ -165,7 +163,6 @@ where
         slots: HashMap::new(),
         recent,
         latest: None,
-        strikes: HashMap::new(),
         pending: OptionFuture::none(),
         budget_wakeup: OptionFuture::none(),
         schemes,
@@ -178,11 +175,10 @@ pub(crate) struct Actor<TContext: Clock, K> {
     context: ContextCell<TContext>,
     config: Config<K>,
 
-    peers: HashMap<PeerKey, Session>,
+    peers: HashMap<PeerKey, Peer>,
     slots: HashMap<PeerKey, Slot>,
     recent: Recent,
     latest: Option<Published>,
-    strikes: HashMap<PeerKey, u32>,
 
     pending: OptionFuture<futures::future::BoxFuture<'static, (Pending, Option<Outcome>)>>,
     budget_wakeup: OptionFuture<futures::future::BoxFuture<'static, ()>>,
@@ -219,7 +215,7 @@ where
                     self.on_judged(pending, result).await;
                 }
 
-                Some(event) = self.config.transport.control.recv() => self.on_session(event),
+                Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
                 Some(message) = self.config.mailbox.recv() => self.on_message(message),
 
@@ -238,21 +234,22 @@ where
         }
     }
 
-    fn on_session(&mut self, event: SessionEvent) {
+    fn on_peer(&mut self, event: PeerEvent) {
         match event {
-            SessionEvent::Up {
-                peer,
-                generation,
-                outbound,
-            } => {
-                let mut connection = Session {
-                    generation,
-                    outbound,
-                    seen_round: None,
-                };
+            PeerEvent::Up(peer) => {
+                if self.peers.contains_key(&peer) {
+                    return;
+                }
+
+                let mut state = Peer { seen_round: None };
 
                 if let Some(latest) = &self.latest {
-                    match connection.offer(latest.round, &latest.frame) {
+                    match state.offer(
+                        &self.config.transport.sender,
+                        peer,
+                        latest.round,
+                        &latest.frame,
+                    ) {
                         Ok(true) => {
                             self.metrics.relayed.inc();
                         }
@@ -263,38 +260,24 @@ where
                     }
                 }
 
-                self.peers.insert(peer, connection);
+                self.peers.insert(peer, state);
                 self.metrics.peers.set(self.peers.len() as i64);
             }
-            SessionEvent::Down { peer, generation } => {
-                // An old teardown must not remove the replacement session.
-                if self
-                    .peers
-                    .get(&peer)
-                    .is_some_and(|known| known.generation == generation)
-                {
-                    self.peers.remove(&peer);
+            PeerEvent::Down(peer) => {
+                if self.peers.remove(&peer).is_some() {
                     self.slots.remove(&peer);
-                    self.strikes.remove(&peer);
                     self.metrics.peers.set(self.peers.len() as i64);
+                    self.metrics.slots.set(self.slots.len() as i64);
                 }
             }
         }
     }
 
     fn on_frame(&mut self, frame: Frame) {
-        let Frame {
-            peer,
-            generation,
-            frame,
-        } = frame;
+        let Frame { peer, frame } = frame;
 
-        if self
-            .peers
-            .get(&peer)
-            .is_none_or(|known| known.generation != generation)
-        {
-            self.metrics.dropped_stale_session.inc();
+        if !self.peers.contains_key(&peer) {
+            self.metrics.dropped_disconnected_peer.inc();
             return;
         }
 
@@ -302,7 +285,7 @@ where
         if let Some(round) = self.recent.round(&id) {
             self.peers
                 .get_mut(&peer)
-                .expect("session was checked above")
+                .expect("peer was checked above")
                 .observe(round);
             self.metrics.dropped_replay.inc();
             return;
@@ -317,7 +300,7 @@ where
         let round = certificate.round();
         self.peers
             .get_mut(&peer)
-            .expect("session was checked above")
+            .expect("peer was checked above")
             .observe(round);
 
         if round <= self.watermark() {
@@ -349,8 +332,8 @@ where
         match message {
             Message::Publish { round, frame } => {
                 // Keep one publication for the latest round. Repeating that round
-                // retries only sessions whose earlier send failed because `offer`
-                // skips sessions that saw it. Reuse the cached bytes so another
+                // retries only peers whose earlier send failed because `offer`
+                // skips peers that saw it. Reuse the cached bytes so another
                 // frame for the same round cannot replace what we advertised.
                 if let Some(latest) = &self.latest {
                     if latest.round > round {
@@ -531,11 +514,11 @@ where
     fn relay(&mut self, round: Round, frame: &Bytes, exclude: Option<PeerKey>) {
         let mut sent = 0u64;
         let mut full = 0u64;
-        for (peer, connection) in &mut self.peers {
+        for (peer, state) in &mut self.peers {
             if Some(*peer) == exclude {
                 continue;
             }
-            match connection.offer(round, frame) {
+            match state.offer(&self.config.transport.sender, *peer, round, frame) {
                 Ok(true) => sent += 1,
                 Ok(false) => {}
                 Err(_) => full += 1,
@@ -566,23 +549,6 @@ where
     fn penalize(&mut self, peer: PeerKey) {
         self.config.peer_control.penalize(peer);
         self.metrics.penalties.inc();
-
-        // Only accumulate strikes while the peer has a live session. A judgement
-        // can resolve after its peer disconnected; that peer owns no slot to
-        // strike, and its entry would never be cleared because no later `Down`
-        // matches it, so it would leak. The reputation penalty above still
-        // applies and persists across sessions.
-        if !self.peers.contains_key(&peer) {
-            return;
-        }
-
-        let strikes = self.strikes.entry(peer).or_default();
-        *strikes += 1;
-        if *strikes >= self.config.strikes.max(1) {
-            warn!(%peer, strikes, "disconnecting peer after repeated bad certificates");
-            self.config.peer_control.disconnect(peer);
-            self.strikes.remove(&peer);
-        }
     }
 }
 

@@ -16,7 +16,7 @@ use commonware_consensus::types::{Epoch, Round, View};
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use parking_lot::Mutex;
-use tempo_node::gossip::{self, Frame, PeerControl, SessionEvent};
+use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{CertSink, Certificate, Outcome};
@@ -121,16 +121,11 @@ impl CertSink for StubSink {
 #[derive(Clone, Default)]
 struct StubPeerControl {
     penalized: Arc<Mutex<Vec<B512>>>,
-    disconnected: Arc<Mutex<Vec<B512>>>,
 }
 
 impl StubPeerControl {
     fn penalized(&self) -> Vec<B512> {
         self.penalized.lock().clone()
-    }
-
-    fn disconnected(&self) -> Vec<B512> {
-        self.disconnected.lock().clone()
     }
 }
 
@@ -138,40 +133,35 @@ impl PeerControl for StubPeerControl {
     fn penalize(&self, peer: B512) {
         self.penalized.lock().push(peer);
     }
-
-    fn disconnect(&self, peer: B512) {
-        self.disconnected.lock().push(peer);
-    }
 }
 
 struct Rig {
-    control: mpsc::UnboundedSender<SessionEvent>,
+    control: mpsc::UnboundedSender<PeerEvent>,
     frames: mpsc::Sender<Frame>,
     mailbox: super::Mailbox,
     sink: StubSink,
     peer_control: StubPeerControl,
     progress: FollowerProgress,
+    routes: Arc<Mutex<HashMap<B512, mpsc::Sender<Bytes>>>>,
     outbound: HashMap<B512, mpsc::Receiver<Bytes>>,
     seen: HashMap<B512, Vec<Bytes>>,
     fixture: DkgFixture,
 }
 
 impl Rig {
-    fn connect(&mut self, peer: B512, generation: u64) {
+    fn connect(&mut self, peer: B512) {
         let (outbound, receiver) = mpsc::channel(8);
+        self.routes.lock().insert(peer, outbound);
         self.outbound.insert(peer, receiver);
         self.control
-            .send(SessionEvent::Up {
-                peer,
-                generation,
-                outbound,
-            })
+            .send(PeerEvent::Up(peer))
             .expect("actor is running");
     }
 
-    fn disconnect(&self, peer: B512, generation: u64) {
+    fn disconnect(&self, peer: B512) {
+        self.routes.lock().remove(&peer);
         self.control
-            .send(SessionEvent::Down { peer, generation })
+            .send(PeerEvent::Down(peer))
             .expect("actor is running");
     }
 
@@ -186,13 +176,9 @@ impl Rig {
         gossip::wire::encode(&certificate.encode()).freeze().into()
     }
 
-    async fn send(&self, peer: B512, generation: u64, frame: Bytes) {
+    async fn send(&self, peer: B512, frame: Bytes) {
         self.frames
-            .send(Frame {
-                peer,
-                generation,
-                frame,
-            })
+            .send(Frame { peer, frame })
             .await
             .expect("actor is running");
     }
@@ -231,9 +217,20 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
 
     let (control_tx, control_rx) = mpsc::unbounded_channel();
     let (frames_tx, frames_rx) = mpsc::channel(64);
+    let routes = Arc::new(Mutex::new(HashMap::<B512, mpsc::Sender<Bytes>>::new()));
+    let sender = TransportSender::new({
+        let routes = Arc::clone(&routes);
+        move |peer, frame| {
+            let Some(outbound) = routes.lock().get(&peer).cloned() else {
+                return Err(mpsc::error::TrySendError::Closed(frame));
+            };
+            outbound.try_send(frame)
+        }
+    });
     let transport = gossip::TransportHandle {
         control: control_rx,
         frames: frames_rx,
+        sender,
     };
 
     let sink = StubSink::new();
@@ -244,7 +241,6 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
         context.child("gossip"),
         super::ActorConfig {
             verify_rate,
-            strikes: 2,
             recent_frames: 64,
             relay,
             transport,
@@ -263,6 +259,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
         sink,
         peer_control,
         progress,
+        routes,
         outbound: HashMap::new(),
         seen: HashMap::new(),
         fixture,
@@ -294,14 +291,14 @@ fn scheduling_is_fair_across_peers() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.sink.always(Outcome::Invalid);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         // One peer claims a much higher round than the other.
         let liar = rig.frame(1_000_000);
         let honest = rig.frame(5);
-        rig.send(peer(1), 0, liar).await;
-        rig.send(peer(2), 0, honest).await;
+        rig.send(peer(1), liar).await;
+        rig.send(peer(2), honest).await;
 
         wait_until(&context, || rig.sink.requests().len() >= 2).await;
 
@@ -319,13 +316,13 @@ fn terminal_outcome_settles_frame_for_every_peer() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.sink.always(Outcome::Invalid);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         // Both peers relay the very same certificate.
         let shared = rig.frame(7);
-        rig.send(peer(1), 0, shared.clone()).await;
-        rig.send(peer(2), 0, shared).await;
+        rig.send(peer(1), shared.clone()).await;
+        rig.send(peer(2), shared).await;
 
         wait_until(&context, || !rig.sink.requests().is_empty()).await;
         context.sleep(Duration::from_millis(30)).await;
@@ -344,13 +341,13 @@ fn terminal_outcome_settles_frame_for_every_peer() {
 fn admitted_certificate_is_relayed_excluding_its_source() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         rig.sink.answer(Outcome::Admitted);
 
         let frame = rig.frame(9);
-        rig.send(peer(1), 0, frame).await;
+        rig.send(peer(1), frame).await;
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
 
         assert!(
@@ -360,27 +357,26 @@ fn admitted_certificate_is_relayed_excluding_its_source() {
     });
 }
 
-/// Sessions for one peer can overlap. An old teardown must not remove the
-/// replacement session.
+/// Frames received after the transport reports its logical peer down are ignored.
 #[test_traced]
-fn superseded_session_is_ignored() {
+fn disconnected_peer_is_ignored() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.sink.always(Outcome::Invalid);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(1), 1);
-        rig.disconnect(peer(1), 0);
+        rig.connect(peer(1));
+        rig.disconnect(peer(1));
 
-        let stale = rig.frame(3);
-        rig.send(peer(1), 0, stale).await;
+        let disconnected = rig.frame(3);
+        rig.send(peer(1), disconnected).await;
         context.sleep(Duration::from_millis(30)).await;
         assert!(
             rig.sink.requests().is_empty(),
-            "a frame from the dead session is ignored",
+            "a frame from the disconnected peer is ignored",
         );
 
+        rig.connect(peer(1));
         let current = rig.frame(4);
-        rig.send(peer(1), 1, current).await;
+        rig.send(peer(1), current).await;
         wait_until(&context, || !rig.sink.requests().is_empty()).await;
     });
 }
@@ -392,7 +388,7 @@ fn superseded_session_is_ignored() {
 fn certificate_awaiting_scheme_is_held_without_retrying() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
         rig.sink.answer(Outcome::NeedsScheme {
             epoch: Epoch::new(4),
@@ -400,7 +396,7 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
         rig.sink.always(Outcome::Invalid);
 
         let frame = rig.frame(11);
-        rig.send(peer(1), 0, frame).await;
+        rig.send(peer(1), frame).await;
         wait_until(&context, || !rig.sink.requests().is_empty()).await;
 
         context.sleep(Duration::from_millis(200)).await;
@@ -421,25 +417,23 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
     });
 }
 
-/// A peer is responsible for certificates that fail an installed scheme.
-/// Repeated failures disconnect that peer.
+/// Every certificate that fails an installed scheme is reported to reth.
 #[test_traced]
-fn repeated_invalid_certificates_disconnect_a_peer() {
+fn repeated_invalid_certificates_are_penalized() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.sink.always(Outcome::Invalid);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
         let first = rig.frame(21);
-        rig.send(peer(1), 0, first).await;
+        rig.send(peer(1), first).await;
         wait_until(&context, || rig.sink.requests().len() == 1).await;
 
         let second = rig.frame(22);
-        rig.send(peer(1), 0, second).await;
-        wait_until(&context, || !rig.peer_control.disconnected().is_empty()).await;
+        rig.send(peer(1), second).await;
+        wait_until(&context, || rig.peer_control.penalized().len() == 2).await;
 
         assert_eq!(rig.peer_control.penalized().len(), 2);
-        assert_eq!(rig.peer_control.disconnected(), vec![peer(1)]);
     });
 }
 
@@ -448,10 +442,9 @@ fn repeated_invalid_certificates_disconnect_a_peer() {
 fn malformed_frames_are_penalized_without_reaching_the_driver() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
-        rig.send(peer(1), 0, Bytes::from_static(&[0x00, 0xff]))
-            .await;
+        rig.send(peer(1), Bytes::from_static(&[0x00, 0xff])).await;
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
 
         assert!(rig.sink.requests().is_empty());
@@ -464,15 +457,15 @@ fn malformed_frames_are_penalized_without_reaching_the_driver() {
 fn only_the_verified_frame_is_relayed() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         // Hold the judgement open while the peer replaces its slot.
         let verified = rig.frame(70);
         let replacement = rig.frame(71);
-        rig.send(peer(1), 0, verified.clone()).await;
+        rig.send(peer(1), verified.clone()).await;
         wait_until(&context, || rig.sink.requests().len() == 1).await;
-        rig.send(peer(1), 0, replacement.clone()).await;
+        rig.send(peer(1), replacement.clone()).await;
         context.sleep(Duration::from_millis(10)).await;
 
         // Now answer the original.
@@ -497,15 +490,15 @@ fn shed_candidate_is_retried_when_budget_replenishes() {
         // One judgement per second, and the first frame consumes the burst.
         let mut rig = start_with_verify_rate(&mut context, 1);
         rig.sink.always(Outcome::Invalid);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
         let first = rig.frame(90);
-        rig.send(peer(1), 0, first).await;
+        rig.send(peer(1), first).await;
         wait_until(&context, || rig.sink.requests().len() == 1).await;
 
         // The second is rate limited, and no new message wakes the loop.
         let second = rig.frame(91);
-        rig.send(peer(1), 0, second).await;
+        rig.send(peer(1), second).await;
         context.sleep(Duration::from_millis(100)).await;
         assert_eq!(
             rig.sink.requests().len(),
@@ -529,13 +522,13 @@ fn shed_candidate_is_retried_when_budget_replenishes() {
 fn publishing_a_frame_already_relayed_is_suppressed() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         rig.sink.answer(Outcome::Admitted);
 
         let frame = rig.frame(50);
-        rig.send(peer(1), 0, frame.clone()).await;
+        rig.send(peer(1), frame.clone()).await;
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
         let after_ingest = rig.relayed(peer(2)).len();
 
@@ -556,15 +549,14 @@ fn publishing_a_frame_already_relayed_is_suppressed() {
 fn local_publication_takes_priority_over_peer_traffic() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
         context.sleep(Duration::from_millis(1)).await;
 
         let frame = rig.frame(51);
         rig.frames
             .try_send(Frame {
                 peer: peer(1),
-                generation: 0,
                 frame: frame.clone(),
             })
             .expect("frame queue has capacity");
@@ -584,7 +576,7 @@ fn local_publication_takes_priority_over_peer_traffic() {
 fn publishing_is_not_governed_by_forwarding() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start_without_forwarding(&mut context);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
         rig.mailbox.publish(round(61), rig.frame(61));
 
@@ -593,18 +585,18 @@ fn publishing_is_not_governed_by_forwarding() {
 }
 
 /// With forwarding off, a peer's verified certificate is not forwarded. Local
-/// publication still reaches eligible peers, but skips a session that claimed a
+/// publication still reaches eligible peers, but skips a peer that claimed a
 /// newer round.
 #[test_traced]
 fn verified_frame_is_not_forwarded_when_forwarding_is_off() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start_without_forwarding(&mut context);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         rig.sink.answer(Outcome::Admitted);
         let claimed = rig.frame(63);
-        rig.send(peer(1), 0, claimed).await;
+        rig.send(peer(1), claimed).await;
 
         wait_until(&context, || !rig.sink.requests().is_empty()).await;
         context.sleep(Duration::from_millis(10)).await;
@@ -619,19 +611,19 @@ fn verified_frame_is_not_forwarded_when_forwarding_is_off() {
         assert_eq!(rig.relayed(peer(2)), vec![published]);
         assert!(
             rig.relayed(peer(1)).is_empty(),
-            "the source session already claimed a newer round",
+            "the source peer already claimed a newer round",
         );
     });
 }
 
-/// A certificate produced locally or received by RPC is offered to each session
+/// A certificate produced locally or received by RPC is offered to each peer
 /// that has not claimed the same round or a later one.
 #[test_traced]
 fn publishing_an_unseen_frame_reaches_every_peer() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
-        rig.connect(peer(2), 0);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
 
         let frame = rig.frame(60);
         rig.mailbox.publish(round(60), frame);
@@ -641,13 +633,13 @@ fn publishing_an_unseen_frame_reaches_every_peer() {
     });
 }
 
-/// A publication remains useful after its first send. A session that connects
+/// A publication remains useful after its first send. A peer that connects
 /// later receives the newest certificate with a locally stored block.
 #[test_traced]
-fn new_session_receives_latest_publication() {
+fn new_peer_receives_latest_publication() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
         let first = rig.frame(63);
         rig.mailbox.publish(round(63), first);
@@ -657,19 +649,19 @@ fn new_session_receives_latest_publication() {
         rig.mailbox.publish(round(64), latest.clone());
         wait_until(&context, || rig.relayed(peer(1)).len() == 2).await;
 
-        rig.connect(peer(2), 0);
+        rig.connect(peer(2));
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
         assert_eq!(rig.relayed(peer(2)), vec![latest]);
     });
 }
 
 /// A full outbound queue does not mark the peer as having seen a publication.
-/// Publishing the same stored certificate again retries that session.
+/// Publishing the same stored certificate again retries that peer.
 #[test_traced]
 fn failed_publication_can_be_retried() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.connect(peer(1), 0);
+        rig.connect(peer(1));
 
         for view in 1..=8 {
             rig.mailbox.publish(round(view), rig.frame(view));

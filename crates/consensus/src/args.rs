@@ -340,10 +340,6 @@ pub struct Args {
     #[arg(long = "consensus.gossip.peer-frame-rate", default_value_t = 8)]
     pub gossip_peer_frame_rate: u32,
 
-    /// Invalid-certificate strikes that trigger a peer disconnect.
-    #[arg(long = "consensus.gossip.strikes", default_value_t = 3)]
-    pub gossip_strikes: u32,
-
     /// Frames remembered as already settled or published.
     #[arg(long = "consensus.gossip.recent-frames", default_value_t = 4_096)]
     pub gossip_recent_frames: usize,

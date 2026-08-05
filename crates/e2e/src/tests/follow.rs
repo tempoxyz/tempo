@@ -3,7 +3,12 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crate::{
     Setup, TestingNode, connect_execution_peers,
@@ -279,19 +284,41 @@ impl FollowerBuilder {
         let gossip = gossip.then(|| {
             let (control, control_rx) = tokio::sync::mpsc::unbounded_channel();
             let (frames, frames_rx) = tokio::sync::mpsc::channel(64);
+            let routes = Arc::new(Mutex::new(HashMap::<
+                alloy_primitives::B512,
+                tokio::sync::mpsc::Sender<alloy_primitives::Bytes>,
+            >::new()));
+            let sender = tempo_node::gossip::TransportSender::new({
+                let routes = Arc::clone(&routes);
+                move |peer, frame| {
+                    let Some(outbound) = routes
+                        .lock()
+                        .expect("gossip route mutex poisoned")
+                        .get(&peer)
+                        .cloned()
+                    else {
+                        return Err(tokio::sync::mpsc::error::TrySendError::Closed(frame));
+                    };
+                    outbound.try_send(frame)
+                }
+            });
             let transport = tempo_node::gossip::TransportHandle {
                 control: control_rx,
                 frames: frames_rx,
+                sender,
             };
             (
                 tempo_consensus::gossip::Config {
                     transport,
                     verify_rate: 64,
-                    strikes: 3,
                     recent_frames: 64,
                     relay: true,
                 },
-                GossipHandles { control, frames },
+                GossipHandles {
+                    control,
+                    frames,
+                    routes,
+                },
             )
         });
         let (gossip_config, gossip_handles) = match gossip {
@@ -320,8 +347,11 @@ impl FollowerBuilder {
 
 /// Test inputs for the consensus side of a `tempo/1` transport.
 struct GossipHandles {
-    control: tokio::sync::mpsc::UnboundedSender<tempo_node::gossip::SessionEvent>,
+    control: tokio::sync::mpsc::UnboundedSender<tempo_node::gossip::PeerEvent>,
     frames: tokio::sync::mpsc::Sender<tempo_node::gossip::Frame>,
+    routes: Arc<
+        Mutex<HashMap<alloy_primitives::B512, tokio::sync::mpsc::Sender<alloy_primitives::Bytes>>>,
+    >,
 }
 
 struct Follower {
@@ -385,12 +415,13 @@ fn gossiped_certificate_is_verified_and_applied_by_a_follower() {
         let peer = alloy_primitives::B512::with_last_byte(1);
         let (outbound, mut relayed) = tokio::sync::mpsc::channel(8);
         gossip
+            .routes
+            .lock()
+            .expect("gossip route mutex poisoned")
+            .insert(peer, outbound);
+        gossip
             .control
-            .send(tempo_node::gossip::SessionEvent::Up {
-                peer,
-                generation: 0,
-                outbound,
-            })
+            .send(tempo_node::gossip::PeerEvent::Up(peer))
             .expect("actor is running");
 
         // Use a certificate produced by the validator so the driver can verify it.
@@ -413,11 +444,7 @@ fn gossiped_certificate_is_verified_and_applied_by_a_follower() {
 
         gossip
             .frames
-            .send(tempo_node::gossip::Frame {
-                peer,
-                generation: 0,
-                frame,
-            })
+            .send(tempo_node::gossip::Frame { peer, frame })
             .await
             .expect("actor is running");
 

@@ -29,8 +29,6 @@ pub struct Config {
     pub transport: tempo_node::gossip::TransportHandle,
     /// Maximum driver judgements per second across all peers.
     pub verify_rate: u32,
-    /// Invalid-certificate strikes that trigger a peer disconnect.
-    pub strikes: u32,
     /// Frames remembered as already settled or published.
     pub recent_frames: usize,
     /// Whether to forward certificates verified from a peer.

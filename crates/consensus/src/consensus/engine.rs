@@ -260,7 +260,6 @@ where
                     context.child("gossip"),
                     crate::gossip::ActorConfig {
                         verify_rate: gossip_config.verify_rate,
-                        strikes: gossip_config.strikes,
                         recent_frames: gossip_config.recent_frames,
                         relay: gossip_config.relay,
                         transport: gossip_config.transport,
