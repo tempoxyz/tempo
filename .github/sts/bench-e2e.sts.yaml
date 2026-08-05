@@ -1,6 +1,6 @@
 # Allow branch and pull-request e2e benchmark workflows in Tempo to mint a
 # short-lived token for the GitHub API calls and private ValScope checkout.
-subject_pattern: repo:tempoxyz(@211589300)?/tempo(@994992847)?:((ref:refs/heads/.+)|pull_request)
+subject_pattern: repo:tempoxyz@211589300/tempo@994992847:((ref:refs/heads/.+)|pull_request)
 permissions:
   contents: read
   actions: read
