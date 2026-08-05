@@ -64,7 +64,7 @@ pub struct Frame {
 type SendResult = Result<(), mpsc::error::TrySendError<Bytes>>;
 type SendFrame = dyn Fn(PeerId, Bytes) -> SendResult + Send + Sync;
 
-/// Sends a frame through the transport's selected connection for a peer.
+/// Sends a frame through every current transport connection for a peer.
 #[derive(Clone)]
 pub struct TransportSender {
     send: Arc<SendFrame>,
@@ -81,7 +81,10 @@ impl TransportSender {
         }
     }
 
-    /// Queues a frame for the transport's selected connection to `peer`.
+    /// Queues a frame for `peer`.
+    ///
+    /// Returns success when at least one connection accepts the frame. If none
+    /// accept it, returns `Full` when any route is full and `Closed` otherwise.
     pub fn try_send(&self, peer: PeerId, frame: Bytes) -> SendResult {
         (self.send)(peer, frame)
     }
@@ -106,7 +109,7 @@ pub struct Config {
     pub peer_frame_rate: u32,
     /// Depth of the shared inbound queue to the consensus layer.
     pub frame_queue: usize,
-    /// Depth of each peer's outbound relay queue.
+    /// Depth of each connection's outbound relay queue.
     pub outbound_queue: usize,
 }
 
@@ -161,8 +164,6 @@ struct GossipMetrics {
     dropped_admission: Counter,
     /// tempo/1 frames dropped because the queue to the consensus layer was full.
     dropped_channel_full: Counter,
-    /// tempo/1 frames dropped because they arrived on a duplicate connection.
-    dropped_candidate: Counter,
     /// RLPx connections rejected after a peer reached its tempo/1 connection cap.
     rejected_excess_connections: Counter,
 }
@@ -173,7 +174,10 @@ struct Shared {
     frames: mpsc::Sender<Frame>,
     config: Config,
     next_connection: AtomicU64,
-    connections: Mutex<HashMap<PeerId, PeerConnections>>,
+    // Reth can briefly construct both sides of a duplicate-connection race, and
+    // either side may survive its reconciliation. Both slots are equivalent and
+    // removing either one does not change the logical peer lifecycle.
+    connections: Mutex<HashMap<PeerId, Vec<ConnectionSlot>>>,
     metrics: GossipMetrics,
 }
 
@@ -188,19 +192,15 @@ impl Shared {
 
         let admitted = match connections.entry(peer) {
             Entry::Vacant(entry) => {
-                entry.insert(PeerConnections {
-                    primary: ConnectionSlot {
-                        id,
-                        outbound: outbound_tx,
-                    },
-                    candidate: None,
-                });
+                entry.insert(vec![ConnectionSlot {
+                    id,
+                    outbound: outbound_tx,
+                }]);
                 let _ = self.control.send(PeerEvent::Up(peer));
                 true
             }
             Entry::Occupied(mut entry) if entry.get().len() < MAX_CONNECTIONS_PER_PEER => {
-                debug_assert!(entry.get().candidate.is_none());
-                entry.get_mut().candidate = Some(ConnectionSlot {
+                entry.get_mut().push(ConnectionSlot {
                     id,
                     outbound: outbound_tx,
                 });
@@ -227,85 +227,57 @@ impl Shared {
         ConnectionId(self.next_connection.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn is_primary(&self, peer: PeerId, id: ConnectionId) -> bool {
-        self.connections
-            .lock()
-            .expect("gossip connection mutex poisoned")
-            .get(&peer)
-            .is_some_and(|connections| connections.primary.id == id)
-    }
-
     fn remove_connection(&self, peer: PeerId, id: ConnectionId) {
         let mut connections = self
             .connections
             .lock()
             .expect("gossip connection mutex poisoned");
-        let Some(known) = connections.get_mut(&peer) else {
-            return;
+        let empty = {
+            let Some(known) = connections.get_mut(&peer) else {
+                return;
+            };
+            let Some(index) = known.iter().position(|slot| slot.id == id) else {
+                return;
+            };
+            known.swap_remove(index);
+            known.is_empty()
         };
 
-        if known
-            .candidate
-            .as_ref()
-            .is_some_and(|candidate| candidate.id == id)
-        {
-            known.candidate = None;
-            return;
-        }
-
-        if known.primary.id != id {
-            return;
-        }
-
-        if let Some(candidate) = known.candidate.take() {
-            known.primary = candidate;
-        } else {
+        if empty {
             connections.remove(&peer);
             let _ = self.control.send(PeerEvent::Down(peer));
         }
     }
 
-    fn primary_sender(&self, peer: PeerId) -> Option<(ConnectionId, mpsc::Sender<Bytes>)> {
-        self.connections
-            .lock()
-            .expect("gossip connection mutex poisoned")
-            .get(&peer)
-            .map(|connections| (connections.primary.id, connections.primary.outbound.clone()))
-    }
-
     fn try_send(&self, peer: PeerId, frame: Bytes) -> SendResult {
-        let Some((id, outbound)) = self.primary_sender(peer) else {
+        let connections = self
+            .connections
+            .lock()
+            .expect("gossip connection mutex poisoned");
+        let Some(slots) = connections.get(&peer) else {
             return Err(mpsc::error::TrySendError::Closed(frame));
         };
 
-        match outbound.try_send(frame) {
-            Err(mpsc::error::TrySendError::Closed(frame)) => {
-                let Some((current, outbound)) = self.primary_sender(peer) else {
-                    return Err(mpsc::error::TrySendError::Closed(frame));
-                };
-                if current == id {
-                    return Err(mpsc::error::TrySendError::Closed(frame));
-                }
-                outbound.try_send(frame)
+        // The connection cap bounds this critical section to two non-blocking
+        // sends. Keeping the registry locked avoids cloning senders and gives
+        // the fanout one stable set of routes.
+        let mut sent = false;
+        let mut full = false;
+        for slot in slots {
+            match slot.outbound.try_send(frame.clone()) {
+                Ok(()) => sent = true,
+                Err(mpsc::error::TrySendError::Full(_)) => full = true,
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
             }
-            result => result,
         }
-    }
-}
 
-#[derive(Debug)]
-struct PeerConnections {
-    // Reth can briefly construct both sides of a duplicate-connection race, and
-    // either side may survive its reconciliation. Keep the first as the logical
-    // route and hold one silent candidate that can replace it without emitting a
-    // peer lifecycle change. A third connection is rejected.
-    primary: ConnectionSlot,
-    candidate: Option<ConnectionSlot>,
-}
-
-impl PeerConnections {
-    fn len(&self) -> usize {
-        1 + usize::from(self.candidate.is_some())
+        if sent {
+            Ok(())
+        } else if full {
+            Err(mpsc::error::TrySendError::Full(frame))
+        } else {
+            Err(mpsc::error::TrySendError::Closed(frame))
+        }
     }
 }
 
@@ -395,14 +367,6 @@ impl<S> Connection<S> {
 
         if !self.admission.allow(Instant::now()) {
             self.shared.metrics.dropped_admission.increment(1);
-            return;
-        }
-
-        let Some(id) = self.id else {
-            return;
-        };
-        if !self.shared.is_primary(self.peer, id) {
-            self.shared.metrics.dropped_candidate.increment(1);
             return;
         }
 
@@ -530,10 +494,10 @@ mod tests {
         let peer = PeerId::with_last_byte(1);
         let shared = Arc::clone(&handler.shared);
 
-        let primary = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
         assert!(matches!(transport.control.try_recv(), Ok(PeerEvent::Up(known)) if known == peer));
 
-        let candidate = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let second = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
         assert!(matches!(
             transport.control.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
@@ -542,7 +506,7 @@ mod tests {
         let mut rejected = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
         assert!(futures::executor::block_on(rejected.next()).is_none());
 
-        drop(candidate);
+        drop(second);
         assert!(matches!(
             transport.control.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
@@ -555,7 +519,7 @@ mod tests {
         ));
         drop(replacement);
 
-        drop(primary);
+        drop(first);
         assert!(
             matches!(transport.control.try_recv(), Ok(PeerEvent::Down(known)) if known == peer)
         );
@@ -566,50 +530,100 @@ mod tests {
     }
 
     #[test]
-    fn primary_failure_promotes_candidate_transparently() {
+    fn duplicate_connections_are_equivalent_routes() {
         let (handler, mut transport) = init(test_config());
         let peer = PeerId::with_last_byte(2);
         let shared = Arc::clone(&handler.shared);
-        let mut primary = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
-        let mut candidate = shared.connection(peer, stream::pending::<BytesMut>());
+        let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut second = shared.connection(peer, stream::pending::<BytesMut>());
         assert!(matches!(transport.control.try_recv(), Ok(PeerEvent::Up(known)) if known == peer));
 
-        let first = Bytes::from_static(b"first");
-        transport.sender.try_send(peer, first.clone()).unwrap();
-        assert_eq!(primary.outbound.as_mut().unwrap().try_recv(), Ok(first));
+        let outbound = Bytes::from_static(b"outbound");
+        transport.sender.try_send(peer, outbound.clone()).unwrap();
+        assert_eq!(
+            first.outbound.as_mut().unwrap().try_recv(),
+            Ok(outbound.clone())
+        );
+        assert_eq!(second.outbound.as_mut().unwrap().try_recv(), Ok(outbound));
 
-        candidate.on_inbound(BytesMut::from(&b"candidate"[..]));
-        assert!(matches!(
-            transport.frames.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
+        let from_first = BytesMut::from(&b"from-first"[..]);
+        let from_second = BytesMut::from(&b"from-second"[..]);
+        first.on_inbound(from_first.clone());
+        second.on_inbound(from_second.clone());
+        assert_eq!(
+            transport.frames.try_recv().unwrap().frame.as_ref(),
+            from_first.as_ref()
+        );
+        assert_eq!(
+            transport.frames.try_recv().unwrap().frame.as_ref(),
+            from_second.as_ref()
+        );
 
-        drop(primary);
+        drop(first);
         assert!(matches!(
             transport.control.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
 
-        let second = Bytes::from_static(b"second");
-        transport.sender.try_send(peer, second.clone()).unwrap();
-        assert_eq!(candidate.outbound.as_mut().unwrap().try_recv(), Ok(second));
+        let remaining = Bytes::from_static(b"remaining");
+        transport.sender.try_send(peer, remaining.clone()).unwrap();
+        assert_eq!(second.outbound.as_mut().unwrap().try_recv(), Ok(remaining));
 
-        let inbound = BytesMut::from(&b"promoted"[..]);
-        candidate.on_inbound(inbound.clone());
-        let frame = transport
-            .frames
-            .try_recv()
-            .expect("promoted connection forwards frames");
-        assert_eq!(frame.peer, peer);
-        assert_eq!(frame.frame.as_ref(), inbound.as_ref());
-
-        drop(candidate);
+        drop(second);
         assert!(
             matches!(transport.control.try_recv(), Ok(PeerEvent::Down(known)) if known == peer)
         );
         assert!(matches!(
             transport.control.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn outbound_send_succeeds_if_any_connection_accepts() {
+        let mut config = test_config();
+        config.outbound_queue = 1;
+        let (handler, transport) = init(config);
+        let peer = PeerId::with_last_byte(3);
+        let shared = Arc::clone(&handler.shared);
+        let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut second = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+
+        let blocked = Bytes::from_static(b"blocked");
+        shared.connections.lock().unwrap().get(&peer).unwrap()[0]
+            .outbound
+            .try_send(blocked.clone())
+            .unwrap();
+        let delivered = Bytes::from_static(b"delivered");
+        assert_eq!(transport.sender.try_send(peer, delivered.clone()), Ok(()));
+        assert_eq!(first.outbound.as_mut().unwrap().try_recv(), Ok(blocked));
+        assert_eq!(second.outbound.as_mut().unwrap().try_recv(), Ok(delivered));
+
+        for (slot, frame) in shared
+            .connections
+            .lock()
+            .unwrap()
+            .get(&peer)
+            .unwrap()
+            .iter()
+            .zip([b"first-full".as_slice(), b"second-full".as_slice()])
+        {
+            slot.outbound
+                .try_send(Bytes::copy_from_slice(frame))
+                .unwrap();
+        }
+        let full = Bytes::from_static(b"full");
+        assert!(matches!(
+            transport.sender.try_send(peer, full),
+            Err(mpsc::error::TrySendError::Full(frame)) if frame == Bytes::from_static(b"full")
+        ));
+
+        drop(first);
+        drop(second);
+        let closed = Bytes::from_static(b"closed");
+        assert!(matches!(
+            transport.sender.try_send(peer, closed),
+            Err(mpsc::error::TrySendError::Closed(frame)) if frame == Bytes::from_static(b"closed")
         ));
     }
 
