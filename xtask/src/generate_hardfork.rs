@@ -351,6 +351,7 @@ fn append_bench_hardfork(
         .iter()
         .skip(1)
         .map(String::as_str)
+        .chain(std::iter::once(hardfork))
         .collect::<Vec<_>>()
         .join("|");
 
@@ -491,7 +492,7 @@ mod tests {
 
     #[test]
     fn updates_benchmark_allowlist_and_usage() {
-        let variants = ["Genesis", "T9", "T10", "T11"]
+        let variants = ["Genesis", "T9", "T10"]
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
