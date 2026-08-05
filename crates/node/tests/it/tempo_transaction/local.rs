@@ -34,6 +34,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
+    nonce::expiring_nonce_max_expiry_secs,
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
@@ -1967,7 +1968,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     let current_timestamp = block.header.timestamp();
 
     // Create expiring nonce transaction
-    let valid_before = current_timestamp + 25;
+    let valid_before = current_timestamp + expiring_nonce_max_expiry_secs(setup.hardfork);
 
     let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
 
