@@ -455,14 +455,18 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         // Register before launch because each RLPx session negotiates its
         // subprotocols during the handshake. The startup channel passes the
         // consensus half of the transport to the consensus thread.
-        let (gossip_protocol_handler, gossip_transport) =
+        let (gossip_protocol_handler, gossip_coordinator, gossip_transport) =
             if args.has_gossip(builder.config().dev.dev) {
-                let (protocol_handler, transport) = tempo_node::gossip::init(
+                let (protocol_handler, coordinator, transport) = tempo_node::gossip::init(
                     args.consensus.gossip_transport(args.follow.is_some()),
                 );
-                (Some(protocol_handler), Some(transport))
+                (
+                    Some(protocol_handler),
+                    Some(coordinator),
+                    Some(transport),
+                )
             } else {
-                (None, None)
+                (None, None, None)
             };
 
         let faucet_args = args.faucet_args.clone();
@@ -564,6 +568,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
+
+        if let Some(coordinator) = gossip_coordinator {
+            node.tasks()
+                .spawn_critical_task("tempo gossip coordinator", coordinator.run());
+        }
 
         // Fetch bootnodes from the endpoint in a background task and inject
         // them into the already-running discovery services.

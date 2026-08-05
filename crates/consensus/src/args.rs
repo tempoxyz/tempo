@@ -24,7 +24,10 @@ const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5)
 /// creating unlimited pending work.
 const GOSSIP_FRAME_QUEUE: usize = 256;
 
-/// Capacity of each peer's outbound relay queue.
+/// Capacity of the queue carrying outbound frames to the transport coordinator.
+const GOSSIP_ROUTE_QUEUE: usize = 256;
+
+/// Capacity of each connection's outbound relay queue.
 const GOSSIP_OUTBOUND_QUEUE: usize = 8;
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
@@ -412,6 +415,7 @@ impl Args {
             ingest: self.gossip_ingest && following,
             peer_frame_rate: self.gossip_peer_frame_rate,
             frame_queue: GOSSIP_FRAME_QUEUE,
+            route_queue: GOSSIP_ROUTE_QUEUE,
             outbound_queue: GOSSIP_OUTBOUND_QUEUE,
         }
     }
