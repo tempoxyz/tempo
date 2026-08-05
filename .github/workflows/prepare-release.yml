@@ -1,0 +1,313 @@
+name: Prepare Release
+
+run-name: Prepare v${{ inputs.version }} from ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full commit SHA from the protected main branch
+        required: true
+        type: string
+      version:
+        description: Release version without the v prefix (for example, 1.9.0)
+        required: true
+        type: string
+
+# Each job grants only the permissions it needs.
+permissions: {}
+
+concurrency:
+  group: prepare-release-v${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release/v${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate inputs
+        id: release
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::This workflow must be dispatched from main"
+            exit 1
+          fi
+
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full, lowercase 40-character commit SHA"
+            exit 1
+          fi
+
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::version must be an X.Y.Z version without a v prefix"
+            exit 1
+          fi
+
+          echo "release_branch=release/v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the requested source commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release branch
+        id: branch
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checkout did not resolve to the requested source SHA"
+            exit 1
+          fi
+
+          # A valid Git commit is not necessarily an approved release source.
+          # Require it to be part of the protected main branch's history.
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
+            echo "::error::source_sha must be an ancestor of origin/main"
+            exit 1
+          fi
+
+          current_version="$(
+            sed -n -E \
+              '/^\[workspace\.package\]$/,/^\[/ s/^version = "([^"]+)"$/\1/p' \
+              Cargo.toml
+          )"
+          if [[ ! "$current_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Could not read an X.Y.Z version from [workspace.package]"
+            exit 1
+          fi
+          if [[ "$current_version" == "$VERSION" ]] ||
+             [[ "$(printf '%s\n%s\n' "$current_version" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+            echo "::error::version ${VERSION} must be greater than workspace version ${current_version}"
+            exit 1
+          fi
+
+          # Never prepare a version which has already been tagged.
+          set +e
+          git ls-remote --exit-code --tags origin \
+            "refs/tags/v${VERSION}" >/dev/null
+          tag_status=$?
+          set -e
+
+          case "$tag_status" in
+            0)
+              echo "::error::Tag v${VERSION} already exists"
+              exit 1
+              ;;
+            2)
+              ;;
+            *)
+              echo "::error::Could not determine whether tag v${VERSION} exists"
+              exit 1
+              ;;
+          esac
+
+          # An exact existing release branch is a successful retry. Record its
+          # commit now; its generated tree is verified before it is reused.
+          set +e
+          branch_ref="$(
+            git ls-remote --exit-code --heads origin \
+              "refs/heads/${RELEASE_BRANCH}"
+          )"
+          branch_status=$?
+          set -e
+
+          case "$branch_status" in
+            0)
+              read -r existing_commit _ <<< "$branch_ref"
+              git fetch --no-tags origin \
+                "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
+              fetched_commit="$(
+                git rev-parse "refs/remotes/origin/${RELEASE_BRANCH}"
+              )"
+              if [[ "$fetched_commit" != "$existing_commit" ]]; then
+                echo "::error::Branch ${RELEASE_BRANCH} changed while it was being inspected"
+                exit 1
+              fi
+
+              read -r -a ancestry <<< "$(
+                git rev-list --parents -n 1 "$existing_commit"
+              )"
+              if [[ "${#ancestry[@]}" -ne 2 ]] ||
+                 [[ "${ancestry[1]}" != "$SOURCE_SHA" ]]; then
+                echo "::error::Existing ${RELEASE_BRANCH} is not a single release commit on ${SOURCE_SHA}"
+                exit 1
+              fi
+
+              changed_files="$(
+                git diff --name-only "$SOURCE_SHA" "$existing_commit" |
+                  LC_ALL=C sort
+              )"
+              if [[ "$changed_files" != $'Cargo.lock\nCargo.toml' ]]; then
+                echo "::error::Existing ${RELEASE_BRANCH} changes files other than Cargo.toml and Cargo.lock"
+                printf '%s\n' "$changed_files"
+                exit 1
+              fi
+              ;;
+            2)
+              existing_commit=""
+              ;;
+            *)
+              echo "::error::Could not determine whether ${RELEASE_BRANCH} exists"
+              exit 1
+              ;;
+          esac
+
+          git switch --create "$RELEASE_BRANCH"
+          echo "existing_commit=${existing_commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Update workspace version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          sed -i -E \
+            "/^\[workspace\.package\]$/,/^\[/ s/^version = \"[^\"]+\"$/version = \"${VERSION}\"/" \
+            Cargo.toml
+
+      - name: Refresh Cargo.lock
+        shell: bash
+        run: cargo update -p tempo
+
+      - name: Verify release changes
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          cargo metadata --locked --no-deps --format-version 1 |
+            jq -e --arg version "$VERSION" \
+              '.packages | any(.name == "tempo" and .version == $version)'
+
+          for path in Cargo.toml Cargo.lock; do
+            if git diff --quiet -- "$path"; then
+              echo "::error::Expected ${path} to change"
+              exit 1
+            fi
+          done
+
+          unexpected="$(
+            git status --porcelain=v1 --untracked-files=all |
+              grep -Ev '^ M (Cargo\.toml|Cargo\.lock)$' || true
+          )"
+          if [[ -n "$unexpected" ]]; then
+            echo "::error::Release preparation changed unexpected files"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
+          git diff --check
+          git diff -- Cargo.toml Cargo.lock
+
+      - name: Reuse or commit release preparation
+        id: publish
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          EXISTING_COMMIT: ${{ steps.branch.outputs.existing_commit }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$EXISTING_COMMIT" ]]; then
+            if ! git diff --quiet "$EXISTING_COMMIT" --; then
+              echo "::error::Existing release branch does not exactly match the generated release changes"
+              git diff "$EXISTING_COMMIT" --
+              exit 1
+            fi
+
+            git reset --hard "$EXISTING_COMMIT"
+            echo "reused=true" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email \
+              "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore(release): prepare v${VERSION}"
+            echo "reused=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          release_commit="$(git rev-parse HEAD)"
+          echo "release_commit=${release_commit}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=sha-${release_commit:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Push release branch
+        if: steps.publish.outputs.reused == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+
+          gh auth setup-git
+          git push \
+            --force-with-lease="refs/heads/${RELEASE_BRANCH}:" \
+            origin \
+            "HEAD:refs/heads/${RELEASE_BRANCH}"
+
+      - name: Verify published release branch
+        shell: bash
+        env:
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ steps.publish.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          remote_ref="$(
+            git ls-remote --exit-code --heads origin \
+              "refs/heads/${RELEASE_BRANCH}"
+          )"
+          read -r remote_commit _ <<< "$remote_ref"
+          if [[ "$remote_commit" != "$RELEASE_COMMIT" ]]; then
+            echo "::error::Remote ${RELEASE_BRANCH} points to ${remote_commit}, expected ${RELEASE_COMMIT}"
+            exit 1
+          fi
+
+      - name: Summarize release preparation
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ steps.publish.outputs.release_commit }}
+          IMAGE_TAG: ${{ steps.publish.outputs.image_tag }}
+          REUSED: ${{ steps.publish.outputs.reused }}
+        run: |
+          {
+            echo "## Release v${VERSION} prepared"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Source commit | \`${SOURCE_SHA}\` |"
+            echo "| Release branch | \`${RELEASE_BRANCH}\` |"
+            echo "| Release commit | \`${RELEASE_COMMIT}\` |"
+            echo "| Expected image tag | \`${IMAGE_TAG}\` |"
+            echo "| Existing branch reused | \`${REUSED}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
