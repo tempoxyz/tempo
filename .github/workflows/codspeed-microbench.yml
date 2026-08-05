@@ -33,12 +33,12 @@ on:
       packages:
         description: "Cargo package(s) containing benchmark targets, separated by spaces"
         required: true
-        default: "tempo-evm"
+        default: "tempo-evm tempo-precompiles"
         type: string
       benchmarks:
         description: "Cargo bench target(s), separated by spaces; leave empty for every bench in the package(s)"
         required: false
-        default: "tip20_execution dex_execution"
+        default: "tip20_execution dex_execution stateless_precompiles"
         type: string
       filters:
         description: "Optional benchmark name filter passed to cargo codspeed run"
@@ -81,8 +81,8 @@ jobs:
       - name: Resolve cargo codspeed arguments
         id: args
         env:
-          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
-          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution dex_execution' }}
+          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm tempo-precompiles' }}
+          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution dex_execution stateless_precompiles' }}
           INPUT_FILTERS: ${{ inputs.filters }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |
