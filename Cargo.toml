@@ -400,12 +400,6 @@ reth-trie-db = { path = "../reth/crates/trie/db" }
 reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
-[patch."https://github.com/alloy-rs/evm2"]
-evm2 = { path = "../evm2/crates/evm2" }
-evm2-inspectors = { path = "../evm2/crates/inspectors" }
-evm2-jit = { path = "../evm2/crates/jit" }
-evm2-macros = { path = "../evm2/crates/macros" }
-
 [patch.crates-io]
 
 # Commonware at HEAD after PR #3588 was merged
