@@ -5,10 +5,10 @@
 //! duplicates, enforces fairness, verifies certificates, and manages peer
 //! reputation.
 //!
-//! Reth polls each [`Connection`] on its own task. A separate
-//! [`TransportCoordinator`] serializes connection membership and outbound
-//! routing. Neither part inspects payloads or uses consensus types, which lets
-//! the transport stay in the node crate.
+//! Reth polls each [`Connection`] on its own task. A separate coordinator task
+//! serializes connection membership and outbound routing. Neither part inspects
+//! payloads or uses consensus types, which lets the transport stay in the node
+//! crate.
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -29,12 +29,18 @@ use alloy_primitives::{
     bytes::{BufMut as _, BytesMut},
 };
 use futures::{Stream, StreamExt as _};
-use reth_ethereum::network::{
-    api::{Direction, PeerId},
-    eth_wire::{capability::SharedCapabilities, multiplex::ProtocolConnection, protocol::Protocol},
-    protocol::{ConnectionHandler, OnNotSupported, ProtocolHandler},
+use reth_ethereum::{
+    network::{
+        api::{Direction, PeerId},
+        eth_wire::{
+            capability::SharedCapabilities, multiplex::ProtocolConnection, protocol::Protocol,
+        },
+        protocol::{ConnectionHandler, OnNotSupported, ProtocolHandler},
+    },
+    tasks::TaskExecutor,
 };
 use reth_metrics::{Metrics, metrics::Counter};
+use reth_tracing::tracing::warn;
 use tokio::sync::{mpsc, oneshot};
 
 use super::wire;
@@ -127,8 +133,14 @@ pub struct TransportHandle {
     pub sender: TransportSender,
 }
 
-/// Creates the protocol handler, coordinator, and consensus transport handle.
-pub fn init(config: Config) -> (GossipProtocolHandler, TransportCoordinator, TransportHandle) {
+/// Creates both ends of the transport and starts its coordinator task.
+pub fn init(config: Config, tasks: &TaskExecutor) -> (GossipProtocolHandler, TransportHandle) {
+    let (protocol_handler, coordinator, transport) = build(config);
+    tasks.spawn_critical_task("tempo gossip coordinator", coordinator.run());
+    (protocol_handler, transport)
+}
+
+fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, TransportHandle) {
     let (peer_events_tx, peer_events_rx) = mpsc::unbounded_channel();
     let (frames_tx, frames_rx) = mpsc::channel(config.frame_queue);
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
@@ -228,9 +240,8 @@ impl Shared {
     }
 }
 
-/// Owns physical connection membership and outbound routing for `tempo/1`.
 #[derive(Debug)]
-pub struct TransportCoordinator {
+struct TransportCoordinator {
     commands: mpsc::UnboundedReceiver<ConnectionCommand>,
     outbound: mpsc::Receiver<OutboundFrame>,
     peers: HashMap<PeerId, Vec<ConnectionSlot>>,
@@ -239,13 +250,15 @@ pub struct TransportCoordinator {
 }
 
 impl TransportCoordinator {
-    /// Runs until every protocol handler and transport sender is dropped.
-    pub async fn run(mut self) {
+    async fn run(mut self) {
         loop {
             tokio::select! {
                 Some(command) = self.commands.recv() => self.on_command(command),
                 Some(outbound) = self.outbound.recv() => self.on_outbound(outbound),
-                else => return,
+                else => {
+                    warn!("Gossip transport coordinator inputs closed");
+                    std::future::pending::<()>().await;
+                }
             }
         }
     }
@@ -553,6 +566,7 @@ impl Admission {
         }
     }
 
+    /// Attempts to consume a token from the bucket, returning `true` if successful.
     fn allow(&mut self, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.updated).as_secs_f64();
         self.updated = now;
@@ -591,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_waits_for_registration_before_polling_frames() {
-        let (handler, mut coordinator, mut transport) = init(test_config());
+        let (handler, mut coordinator, mut transport) = build(test_config());
         let peer = PeerId::with_last_byte(0);
         let inbound = BytesMut::from(&b"inbound"[..]);
         let mut connection = handler
@@ -618,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_connections_share_one_peer_lifecycle() {
-        let (handler, coordinator, mut transport) = init(test_config());
+        let (handler, coordinator, mut transport) = build(test_config());
         let _coordinator = tokio::spawn(coordinator.run());
         let peer = PeerId::with_last_byte(1);
         let shared = Arc::clone(&handler.shared);
@@ -661,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_connections_are_equivalent_routes() {
-        let (handler, coordinator, mut transport) = init(test_config());
+        let (handler, coordinator, mut transport) = build(test_config());
         let _coordinator = tokio::spawn(coordinator.run());
         let peer = PeerId::with_last_byte(2);
         let shared = Arc::clone(&handler.shared);
@@ -724,7 +738,7 @@ mod tests {
     async fn coordinator_fans_out_independently_to_each_connection() {
         let mut config = test_config();
         config.outbound_queue = 1;
-        let (handler, mut coordinator, mut transport) = init(config);
+        let (handler, mut coordinator, mut transport) = build(config);
         let peer = PeerId::with_last_byte(3);
         let shared = Arc::clone(&handler.shared);
         let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
