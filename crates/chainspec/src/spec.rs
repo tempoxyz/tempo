@@ -503,6 +503,23 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cli")]
+    fn dev_genesis_contains_eip2935_history_storage() {
+        use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let history = chainspec
+            .genesis()
+            .alloc
+            .get(&HISTORY_STORAGE_ADDRESS)
+            .expect("dev genesis must install EIP-2935 history storage");
+
+        assert_eq!(history.nonce, Some(1));
+        assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
     fn test_tempo_chainspec_has_tempo_hardforks() {
         let chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
