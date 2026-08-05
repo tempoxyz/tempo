@@ -64,14 +64,14 @@ criterion.workspace = true
 eyre.workspace = true
 indexmap.workspace = true
 insta.workspace = true
-rand_08.workspace = true
+rand.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
 revm.workspace = true
 serde_json.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
-tempo-primitives = { workspace = true, features = ["arbitrary"] }
+tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tikv-jemallocator = "0.6.1"
 
 [features]

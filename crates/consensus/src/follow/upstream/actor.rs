@@ -123,10 +123,10 @@ where
                                 "connecting to upstream node failed, attempting again",
                             ));
                             self.pending_connect.replace({
-                                let context = self.context.clone();
+                                let sleep = self.context.sleep(reconnect_in);
                                 let connector = self.connector.clone();
                                 async move {
-                                    context.sleep(reconnect_in).await;
+                                    sleep.await;
                                     connector.connect(attempts.saturating_add(1)).await
                                 }.boxed()
                             });
@@ -158,7 +158,7 @@ where
                             debug_span!("consensus_event").in_scope(|| debug!(
                                 ?event, "received consensus event, forwarding to reporter"
                             ));
-                            reporter.report(event).await;
+                            let _ = reporter.report(event);
                         }
                         Some(Err(error)) => {
                             warn_span!("event").in_scope(|| warn!(
@@ -233,14 +233,14 @@ where
             match request {
                 super::ingress::Message::GetFinalization { height, response } => {
                     let client = client.clone();
-                    self.context.with_label("get_finalization").spawn(move |_| {
+                    self.context.child("get_finalization").spawn(move |_| {
                         respond_until_closed(response, client.get_finalization(height))
                     });
                 }
                 super::ingress::Message::GetBlock { digest, response } => {
                     let client = client.clone();
                     self.context
-                        .with_label("get_block")
+                        .child("get_block")
                         .spawn(move |_| respond_until_closed(response, client.get_block(digest)));
                 }
             }

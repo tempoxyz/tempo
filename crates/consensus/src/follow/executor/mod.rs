@@ -8,7 +8,13 @@ use std::future::Future;
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadStatus};
-use commonware_consensus::types::{FixedEpocher, Height};
+use commonware_consensus::{
+    simplex::{
+        scheme::bls12381_threshold::vrf::Scheme, types::Finalization as SimplexFinalization,
+    },
+    types::{FixedEpocher, Height},
+};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Pacer, Spawner};
 use futures::channel::mpsc;
 use reth_engine_primitives::ConsensusEngineHandle;
@@ -19,6 +25,8 @@ use reth_provider::{
 };
 use tempo_node::{TempoExecutionData, TempoPayloadTypes};
 use tempo_payload_types::TempoPayloadAttributes;
+
+use crate::consensus::Digest;
 
 mod actor;
 mod ingress;
@@ -80,7 +88,14 @@ pub(crate) trait ExecutionEngine: Send + Sync {
 
 /// Narrow marshal capability used by the follower executor.
 pub(crate) trait Marshal: Clone + Send + Sync {
-    fn set_floor(&self, height: Height) -> impl Future<Output = ()> + Send;
+    type Finalization: Send;
+
+    fn get_finalization(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Option<Self::Finalization>> + Send;
+
+    fn set_floor(&self, finalization: Self::Finalization);
 }
 
 impl<N> FinalizedBlockProvider for BlockchainProvider<N>
@@ -125,8 +140,17 @@ impl ExecutionEngine for ConsensusEngineHandle<TempoPayloadTypes> {
 }
 
 impl Marshal for crate::alias::marshal::Mailbox {
-    fn set_floor(&self, height: Height) -> impl Future<Output = ()> + Send {
+    type Finalization = SimplexFinalization<Scheme<PublicKey, MinSig>, Digest>;
+
+    fn get_finalization(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Option<Self::Finalization>> + Send {
         let mailbox = self.clone();
-        async move { mailbox.set_floor(height).await }
+        async move { mailbox.get_finalization(height).await }
+    }
+
+    fn set_floor(&self, finalization: Self::Finalization) {
+        Self::set_floor(self, finalization);
     }
 }

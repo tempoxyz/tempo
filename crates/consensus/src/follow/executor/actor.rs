@@ -19,7 +19,7 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure};
+use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
@@ -51,6 +51,8 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     latest_tip: FinalizedTip,
 
     block_queue: VecDeque<(Block, Exact)>,
+    floor_candidate: Option<Height>,
+
     execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
 
     fcu_heartbeat_interval: Duration,
@@ -99,6 +101,7 @@ where
             last_fcu: tip,
             latest_tip: tip,
             block_queue: VecDeque::new(),
+            floor_candidate: None,
             execution_task: OptionFuture::none(),
 
             fcu_heartbeat_interval,
@@ -140,9 +143,15 @@ where
                 Some(update) = self.mailbox.next() => {
                     match update {
                         Update::Block(block, ack) => {
-                            self.block_queue.push_back((block, ack));
+                            self.block_queue.push_back(((*block).clone(), ack));
                         }
+
+                        // Finalization certificates for Tip updates must be available
+                        // making them a good candidates for setting marshal's floor.
                         Update::Tip(_, height, digest) => {
+                            if self.floor_candidate.is_none() {
+                                self.floor_candidate = Some(height);
+                            }
                             if height > self.latest_tip.height {
                                 self.latest_tip = FinalizedTip { height, digest };
                             }
@@ -182,7 +191,7 @@ where
         };
 
         let last_fcu = self.last_fcu;
-        let context = self.context.clone();
+        let context = self.context.child("execute_request");
         let execution_engine = self.execution_engine.clone();
         self.execution_task
             .replace(execute_request(context, execution_engine, last_fcu, request).boxed());
@@ -199,24 +208,36 @@ where
             .expect("strategy is valid for all heights and epochs")
             .length();
 
-        let floor_height = finalized_height.saturating_sub(epoch_length);
-        if floor_height <= self.floor {
+        let Some(floor_height) = self.floor_candidate else {
+            return Ok(());
+        };
+
+        let floor_ceiling = finalized_height.saturating_sub(epoch_length);
+        if floor_height > floor_ceiling {
             return Ok(());
         }
 
-        let floor_digest = self
+        let Some(floor_digest) = self
             .execution_provider
             .durable_block_hash(floor_height.get())
-            .wrap_err("failed reading floor block hash")?;
-
-        let Some(floor_digest) = floor_digest else {
+            .wrap_err("failed reading floor block hash")?
+        else {
             debug!(%finalized_height, %floor_height, "floor not durable in execution");
             return Ok(());
         };
 
         debug!(%finalized_height, %floor_height, %floor_digest, "advancing marshal floor");
-        self.marshal.set_floor(floor_height).await;
+
+        let finalization = self
+            .marshal
+            .get_finalization(floor_height)
+            .await
+            .ok_or_else(|| eyre!("floor candidate `{floor_height}` missing finalization"))?;
+
+        self.marshal.set_floor(finalization);
+
         self.floor = floor_height;
+        self.floor_candidate = None;
 
         Ok(())
     }
@@ -233,7 +254,7 @@ enum ExecutionTaskResult {
 }
 
 async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
-    context: ContextCell<TContext>,
+    context: TContext,
     execution_engine: E,
     last_fcu: FinalizedTip,
     request: ExecutionRequest,

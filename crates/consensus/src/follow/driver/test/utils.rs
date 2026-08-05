@@ -23,14 +23,14 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{
     Signer as _,
-    bls12381::{dkg, primitives::variant::MinSig},
+    bls12381::{dkg::feldman_desmedt as dkg, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
 use commonware_parallel::Sequential;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use parking_lot::Mutex;
-use rand_08::{CryptoRng, Rng};
+use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::CertifiedBlock;
@@ -46,7 +46,7 @@ pub(super) struct DkgFixture {
     pub(super) schemes: Vec<Scheme<PublicKey, MinSig>>,
 }
 
-pub(super) fn dkg_fixture(rng: &mut (impl Rng + CryptoRng), epoch: Epoch) -> DkgFixture {
+pub(super) fn dkg_fixture(rng: &mut impl CryptoRng, epoch: Epoch) -> DkgFixture {
     let player_keys = repeat_with(|| PrivateKey::random(&mut *rng))
         .take(4)
         .collect::<Vec<_>>();

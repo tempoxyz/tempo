@@ -182,7 +182,6 @@ fn joins_from_snapshot() {
         )
         .await;
 
-        replacement.consensus_config.strict_startup = true;
         donor.adopt_identity_from(replacement);
 
         donor.start(&context).await;
@@ -370,7 +369,6 @@ fn can_restart_after_joining_from_snapshot() {
         )
         .await;
 
-        replacement.consensus_config.strict_startup = true;
         donor.adopt_identity_from(replacement);
 
         donor.start(&context).await;

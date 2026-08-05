@@ -1,466 +1,161 @@
-//! Standalone follower resolver actor tests.
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
+
+use commonware_codec::Encode as _;
+use commonware_consensus::{marshal::resolver::handler, types::Height};
+use commonware_macros::test_traced;
+use commonware_resolver::opaque::Fetcher as _;
+use commonware_runtime::{Metrics as _, Runner as _, deterministic};
+use futures::executor::block_on;
+use parking_lot::Mutex;
+use prometheus_client::metrics::counter::Counter;
+
+use super::{
+    Fetcher, MAX_RETRY_DELAY, RETRY_STATE_TTL, RetryState, resolve_block, resolve_finalized,
+};
 
 mod utils;
-
-use std::time::Duration;
-
-use alloy_primitives::B256;
-use commonware_codec::Encode as _;
-use commonware_consensus::{
-    marshal::resolver::handler,
-    types::{Epoch, Height, Round, View},
-};
-use commonware_macros::test_traced;
-use commonware_resolver::Resolver as _;
-use commonware_runtime::{Clock as _, Metrics as _, Runner as _, deterministic};
-use commonware_utils::channel::mpsc;
-
-use super::{Config, actor, try_init};
-use crate::consensus::Digest;
 use utils::{StubBlockProvider, StubUpstream, make_block, make_certified_block};
 
-const WAIT_ATTEMPTS: usize = 100;
-const MAILBOX_SIZE: usize = 16;
-const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-
-async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl FnMut() -> bool) {
-    for _ in 0..WAIT_ATTEMPTS {
-        if cond() {
-            return;
-        }
-        context.sleep(Duration::from_millis(1)).await;
-    }
-
-    assert!(cond(), "condition was not met before the test deadline");
-}
-
-fn metric_value(context: &impl commonware_runtime::Metrics, suffix: &str) -> u64 {
-    context
-        .encode()
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .find_map(|line| {
-            let (name, value) = line.split_once(' ')?;
-            name.ends_with(suffix).then(|| value.parse().unwrap())
-        })
-        .unwrap_or(0)
-}
-
-async fn receive_delivery(
-    receiver: &mut mpsc::Receiver<handler::Message<Digest>>,
-) -> eyre::Result<(handler::Request<Digest>, bytes::Bytes)> {
-    let message = receiver
-        .recv()
-        .await
-        .ok_or_else(|| eyre::eyre!("resolver stopped before delivering a value"))?;
-
-    match message {
-        handler::Message::Deliver { key, value, .. } => Ok((key, value)),
-        handler::Message::Produce { .. } => {
-            Err(eyre::eyre!("resolver unexpectedly requested a value"))
-        }
-    }
-}
-
-#[test_traced]
-fn local_block_is_delivered_without_upstream_lookup() {
-    deterministic::Runner::default()
-        .start(|context| async move {
-            let block = make_block(1);
-            let key = handler::Request::Block(block.digest());
-            let provider = StubBlockProvider::default();
-            provider.add_block(&block);
-
-            let upstream = StubUpstream::default();
-            let (actor, mut mailbox, mut receiver) = try_init(
-                context.with_label("resolver"),
-                Config {
-                    execution_provider: provider.clone(),
-                    upstream: upstream.clone(),
-                    mailbox_size: MAILBOX_SIZE,
-                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-                },
-            );
-
-            actor.start();
-
-            mailbox.fetch(key.clone()).await;
-            let (delivered_key, value) = receive_delivery(&mut receiver).await?;
-
-            assert_eq!(delivered_key, key);
-            assert_eq!(value, block.encode());
-            assert_eq!(provider.reads(), 1);
-            assert_eq!(upstream.block_reads(), 0);
-            Ok::<(), eyre::Report>(())
-        })
-        .expect("resolver test should succeed");
-}
-
-#[test_traced]
-fn local_miss_falls_back_to_upstream_block() {
-    deterministic::Runner::default()
-        .start(|context| async move {
-            let block = make_block(1);
-            let key = handler::Request::Block(block.digest());
-            let provider = StubBlockProvider::default();
-            let upstream = StubUpstream::default();
-            upstream.add_block(block.clone());
-
-            let (actor, mut mailbox, mut receiver) = try_init(
-                context.with_label("resolver"),
-                Config {
-                    execution_provider: provider.clone(),
-                    upstream: upstream.clone(),
-                    mailbox_size: MAILBOX_SIZE,
-                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-                },
-            );
-
-            actor.start();
-
-            mailbox.fetch(key.clone()).await;
-            let (delivered_key, value) = receive_delivery(&mut receiver).await?;
-
-            assert_eq!(delivered_key, key);
-            assert_eq!(value, block.encode());
-            assert_eq!(provider.reads(), 1);
-            assert_eq!(upstream.block_reads(), 1);
-            Ok::<(), eyre::Report>(())
-        })
-        .expect("resolver test should succeed");
-}
-
-#[test_traced]
-fn missing_block_retries_and_eventually_delivers() {
-    deterministic::Runner::default()
-        .start(|context| async move {
-            let block = make_block(1);
-            let key = handler::Request::Block(block.digest());
-            let provider = StubBlockProvider::default();
-            let upstream = StubUpstream::default();
-            let (actor, mut mailbox, mut receiver) = try_init(
-                context.with_label("resolver"),
-                Config {
-                    execution_provider: provider.clone(),
-                    upstream: upstream.clone(),
-                    mailbox_size: MAILBOX_SIZE,
-                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-                },
-            );
-
-            actor.start();
-
-            mailbox.fetch(key.clone()).await;
-            wait_until(&context, || upstream.block_reads() == 1).await;
-
-            upstream.add_block(block.clone());
-            context.sleep(actor::retry_delay(1)).await;
-
-            let (delivered_key, value) = receive_delivery(&mut receiver).await?;
-
-            assert_eq!(delivered_key, key);
-            assert_eq!(value, block.encode());
-            assert_eq!(provider.reads(), 2);
-            assert_eq!(upstream.block_reads(), 2);
-            Ok::<(), eyre::Report>(())
-        })
-        .expect("resolver test should succeed");
-}
-
-#[test_traced]
-fn timed_out_block_request_retries_with_growing_backoff() {
-    const TIMEOUT: Duration = Duration::from_millis(10);
-
-    deterministic::Runner::default().start(|context| async move {
-        let key = handler::Request::Block(Digest(B256::with_last_byte(1)));
+#[test]
+fn resolves_blocks_from_local_execution_first() {
+    block_on(async {
         let provider = StubBlockProvider::default();
         let upstream = StubUpstream::default();
-        upstream.hang_block_reads();
-        let (actor, mut mailbox, _receiver) = try_init(
-            context.with_label("resolver"),
-            Config {
-                execution_provider: provider,
-                upstream: upstream.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                upstream_request_timeout: TIMEOUT,
-            },
-        );
+        let block = make_block(3);
+        provider.add_block(&block);
 
-        actor.start();
-        mailbox.fetch(key).await;
-        wait_until(&context, || upstream.block_reads() == 1).await;
+        let resolved = resolve_block(&provider, &upstream, block.digest()).await;
 
-        context.sleep(TIMEOUT).await;
-        wait_until(&context, || {
-            metric_value(&context, "upstream_request_timeouts_total") == 1
-        })
-        .await;
-
-        context.sleep(Duration::from_millis(200)).await;
-        assert_eq!(upstream.block_reads(), 1);
-        context.sleep(Duration::from_millis(50)).await;
-        wait_until(&context, || upstream.block_reads() == 2).await;
-
-        context.sleep(TIMEOUT).await;
-        wait_until(&context, || {
-            metric_value(&context, "upstream_request_timeouts_total") == 2
-        })
-        .await;
-
-        context.sleep(Duration::from_millis(300)).await;
-        assert_eq!(upstream.block_reads(), 2);
-        context.sleep(Duration::from_millis(200)).await;
-        wait_until(&context, || upstream.block_reads() == 3).await;
-    });
-}
-
-#[test_traced]
-fn duplicate_block_fetch_is_coalesced() {
-    deterministic::Runner::default()
-        .start(|context| async move {
-            let block = make_block(1);
-            let key = handler::Request::Block(block.digest());
-            let provider = StubBlockProvider::default();
-            let upstream = StubUpstream::default();
-            upstream.add_block(block.clone());
-
-            let release = upstream.pause_next_block_read();
-            let (actor, mut mailbox, mut receiver) = try_init(
-                context.with_label("resolver"),
-                Config {
-                    execution_provider: provider.clone(),
-                    upstream: upstream.clone(),
-                    mailbox_size: MAILBOX_SIZE,
-                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-                },
-            );
-
-            actor.start();
-
-            mailbox.fetch(key.clone()).await;
-            wait_until(&context, || upstream.block_reads() == 1).await;
-
-            mailbox.fetch(key.clone()).await;
-            context.sleep(Duration::from_millis(1)).await;
-
-            assert_eq!(provider.reads(), 1);
-            assert_eq!(upstream.block_reads(), 1);
-
-            release
-                .send(())
-                .expect("block read should still be in flight");
-
-            let (delivered_key, value) = receive_delivery(&mut receiver).await?;
-            assert_eq!(delivered_key, key);
-            assert_eq!(value, block.encode());
-
-            Ok::<(), eyre::Report>(())
-        })
-        .expect("resolver test should succeed");
-}
-
-#[test_traced]
-fn cancel_aborts_in_flight_block_fetch() {
-    deterministic::Runner::default().start(|context| async move {
-        let block = make_block(1);
-        let key = handler::Request::Block(block.digest());
-        let provider = StubBlockProvider::default();
-        let upstream = StubUpstream::default();
-        upstream.add_block(block);
-        let _release = upstream.pause_next_block_read();
-        let (actor, mut mailbox, _receiver) = try_init(
-            context.with_label("resolver"),
-            Config {
-                execution_provider: provider,
-                upstream: upstream.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-            },
-        );
-
-        actor.start();
-
-        mailbox.fetch(key.clone()).await;
-        wait_until(&context, || upstream.block_reads() == 1).await;
-
-        mailbox.cancel(key.clone()).await;
-        context.sleep(Duration::from_millis(1)).await;
-
-        mailbox.fetch(key).await;
-        wait_until(&context, || upstream.block_reads() == 2).await;
-    });
-}
-
-#[test_traced]
-fn local_read_error_retries_without_querying_upstream() {
-    deterministic::Runner::default().start(|context| async move {
-        let key = handler::Request::Block(Digest(B256::with_last_byte(1)));
-        let provider = StubBlockProvider::default();
-        provider.fail_reads();
-
-        let upstream = StubUpstream::default();
-        let (actor, mut mailbox, _receiver) = try_init(
-            context.with_label("resolver"),
-            Config {
-                execution_provider: provider.clone(),
-                upstream: upstream.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-            },
-        );
-
-        actor.start();
-
-        mailbox.fetch(key).await;
-        wait_until(&context, || provider.reads() == 1).await;
-
-        context.sleep(actor::retry_delay(1)).await;
-        wait_until(&context, || provider.reads() == 2).await;
-
+        assert_eq!(resolved, Some(block.encode()));
+        assert_eq!(provider.reads(), 1);
         assert_eq!(upstream.block_reads(), 0);
-    });
-}
-
-#[test_traced]
-fn finalized_request_delivers_certificate_and_block() {
-    deterministic::Runner::default()
-        .start(|context| async move {
-            let height = Height::new(1);
-            let key = handler::Request::Finalized { height };
-            let (certified, expected) = make_certified_block(height);
-            let provider = StubBlockProvider::default();
-            let upstream = StubUpstream::default();
-            upstream.add_finalization(height, certified);
-
-            let (actor, mut mailbox, mut receiver) = try_init(
-                context.with_label("resolver"),
-                Config {
-                    execution_provider: provider.clone(),
-                    upstream: upstream.clone(),
-                    mailbox_size: MAILBOX_SIZE,
-                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-                },
-            );
-
-            actor.start();
-
-            mailbox.fetch(key.clone()).await;
-            let (delivered_key, value) = receive_delivery(&mut receiver).await?;
-
-            assert_eq!(delivered_key, key);
-            assert_eq!(value, expected);
-            assert_eq!(provider.reads(), 0);
-            assert_eq!(upstream.finalization_reads(), 1);
-            Ok::<(), eyre::Report>(())
-        })
-        .expect("resolver test should succeed");
-}
-
-#[test_traced]
-fn missing_finalization_retries_and_eventually_delivers() {
-    deterministic::Runner::default()
-        .start(|context| async move {
-            let height = Height::new(1);
-            let key = handler::Request::Finalized { height };
-            let (certified, expected) = make_certified_block(height);
-            let provider = StubBlockProvider::default();
-            let upstream = StubUpstream::default();
-            let (actor, mut mailbox, mut receiver) = try_init(
-                context.with_label("resolver"),
-                Config {
-                    execution_provider: provider,
-                    upstream: upstream.clone(),
-                    mailbox_size: MAILBOX_SIZE,
-                    upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-                },
-            );
-
-            actor.start();
-
-            mailbox.fetch(key.clone()).await;
-            wait_until(&context, || upstream.finalization_reads() == 1).await;
-            upstream.add_finalization(height, certified);
-            context.sleep(actor::retry_delay(1)).await;
-            let (delivered_key, value) = receive_delivery(&mut receiver).await?;
-
-            assert_eq!(delivered_key, key);
-            assert_eq!(value, expected);
-            assert_eq!(upstream.finalization_reads(), 2);
-            Ok::<(), eyre::Report>(())
-        })
-        .expect("resolver test should succeed");
-}
-
-#[test_traced]
-fn malformed_finalization_is_not_retried() {
-    deterministic::Runner::default().start(|context| async move {
-        let height = Height::new(1);
-        let key = handler::Request::Finalized { height };
-
-        let (mut certified, _) = make_certified_block(height);
-        certified.certificate = "not hex".into();
-
-        let upstream = StubUpstream::default();
-        upstream.add_finalization(height, certified);
-
-        let (actor, mut mailbox, mut receiver) = try_init(
-            context.with_label("resolver"),
-            Config {
-                execution_provider: StubBlockProvider::default(),
-                upstream: upstream.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-            },
-        );
-
-        actor.start();
-
-        mailbox.fetch(key).await;
-        wait_until(&context, || upstream.finalization_reads() == 1).await;
-        context
-            .sleep(actor::retry_delay(1) + Duration::from_millis(1))
-            .await;
-
-        assert_eq!(upstream.finalization_reads(), 1);
-        assert!(receiver.try_recv().is_err());
-    });
-}
-
-#[test_traced]
-fn notarized_request_is_ignored() {
-    deterministic::Runner::default().start(|context| async move {
-        let provider = StubBlockProvider::default();
-        let upstream = StubUpstream::default();
-        let (actor, mut mailbox, mut receiver) = try_init(
-            context.with_label("resolver"),
-            Config {
-                execution_provider: provider.clone(),
-                upstream: upstream.clone(),
-                mailbox_size: MAILBOX_SIZE,
-                upstream_request_timeout: UPSTREAM_REQUEST_TIMEOUT,
-            },
-        );
-
-        actor.start();
-
-        let round = Round::new(Epoch::zero(), View::new(1));
-        mailbox.fetch(handler::Request::Notarized { round }).await;
-        context.sleep(Duration::from_millis(1)).await;
-
-        assert_eq!(provider.reads(), 0);
-        assert_eq!(upstream.block_reads(), 0);
-        assert_eq!(upstream.finalization_reads(), 0);
-        assert!(receiver.try_recv().is_err());
     });
 }
 
 #[test]
-fn retry_delay_grows_exponentially_and_caps() {
-    assert_eq!(actor::retry_delay(0), Duration::ZERO);
-    assert_eq!(actor::retry_delay(1), Duration::from_millis(250));
-    assert_eq!(actor::retry_delay(2), Duration::from_millis(500));
-    assert_eq!(actor::retry_delay(3), Duration::from_secs(1));
-    assert_eq!(actor::retry_delay(7), Duration::from_secs(16));
-    assert_eq!(actor::retry_delay(8), actor::MAX_RETRY_DELAY);
-    assert_eq!(actor::retry_delay(u32::MAX), actor::MAX_RETRY_DELAY);
+fn falls_back_to_upstream_for_missing_blocks() {
+    block_on(async {
+        let provider = StubBlockProvider::default();
+        let upstream = StubUpstream::default();
+        let block = make_block(4);
+        upstream.add_block(block.clone());
+
+        let resolved = resolve_block(&provider, &upstream, block.digest()).await;
+
+        assert_eq!(resolved, Some(block.encode()));
+        assert_eq!(provider.reads(), 1);
+        assert_eq!(upstream.block_reads(), 1);
+    });
+}
+
+#[test]
+fn retries_after_local_provider_errors() {
+    block_on(async {
+        let provider = StubBlockProvider::default();
+        provider.fail_reads();
+        let upstream = StubUpstream::default();
+        let block = make_block(5);
+
+        assert_eq!(
+            resolve_block(&provider, &upstream, block.digest()).await,
+            None
+        );
+        assert_eq!(upstream.block_reads(), 0);
+    });
+}
+
+#[test]
+fn resolves_finalizations_from_upstream() {
+    block_on(async {
+        let upstream = StubUpstream::default();
+        let height = Height::new(6);
+        let (certified, encoded) = make_certified_block(height);
+        upstream.add_finalization(height, certified);
+
+        assert_eq!(resolve_finalized(&upstream, height).await, Some(encoded));
+        assert_eq!(upstream.finalization_reads(), 1);
+    });
+}
+
+#[test]
+fn malformed_finalization_is_retried() {
+    block_on(async {
+        let upstream = StubUpstream::default();
+        let height = Height::new(6);
+        let (mut certified, _) = make_certified_block(height);
+        certified.certificate = "not-hex".to_string();
+        upstream.add_finalization(height, certified);
+
+        assert_eq!(resolve_finalized(&upstream, height).await, None);
+        assert_eq!(upstream.finalization_reads(), 1);
+    });
+}
+
+#[test]
+fn retry_state_advances_resets_and_expires() {
+    let now = SystemTime::UNIX_EPOCH;
+    let first = handler::Key::Block(make_block(7).digest());
+    let second = handler::Key::Block(make_block(8).digest());
+    let mut retries = RetryState::default();
+
+    let mut delay = retries.begin(first, now);
+    assert_eq!(delay, Duration::ZERO);
+    for expected in [
+        Duration::from_millis(250),
+        Duration::from_millis(500),
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_secs(4),
+        Duration::from_secs(8),
+        Duration::from_secs(16),
+        MAX_RETRY_DELAY,
+        MAX_RETRY_DELAY,
+    ] {
+        retries.failed(first, delay, now);
+        delay = retries.begin(first, now);
+        assert_eq!(delay, expected);
+    }
+
+    retries.succeeded(&first);
+    assert_eq!(retries.begin(first, now), Duration::ZERO);
+    retries.failed(first, Duration::ZERO, now);
+
+    let expired = now + RETRY_STATE_TTL;
+    assert_eq!(retries.begin(second, expired), Duration::ZERO);
+    assert!(!retries.entries.contains_key(&first));
+}
+
+#[test_traced]
+fn timed_out_upstream_request_is_retried_with_backoff() {
+    const TIMEOUT: Duration = Duration::from_millis(10);
+
+    deterministic::Runner::default().start(|context| async move {
+        let upstream = StubUpstream::default();
+        upstream.hang_block_reads();
+        let timeouts = context.register(
+            "upstream_request_timeouts",
+            "number of upstream requests that exceeded their deadline",
+            Counter::default(),
+        );
+        let fetcher = Fetcher {
+            context: Arc::new(context),
+            execution_provider: StubBlockProvider::default(),
+            upstream: upstream.clone(),
+            upstream_request_timeout: TIMEOUT,
+            upstream_request_timeouts: timeouts.clone(),
+            retries: Arc::new(Mutex::new(RetryState::default())),
+        };
+        let key = handler::Key::Block(make_block(9).digest());
+
+        assert_eq!(fetcher.fetch(key).await, None);
+        assert_eq!(upstream.block_reads(), 1);
+        assert_eq!(timeouts.get(), 1);
+
+        assert_eq!(fetcher.fetch(key).await, None);
+        assert_eq!(upstream.block_reads(), 2);
+        assert_eq!(timeouts.get(), 2);
+    });
 }

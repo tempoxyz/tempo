@@ -17,7 +17,7 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
-use rand_08::{CryptoRng, Rng};
+use rand_core::{CryptoRng, Rng};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
@@ -249,9 +249,13 @@ where
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
-        let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
-            Some(scheme) => scheme,
-            None if can_use_network_identity_fallback => self.network_scheme.clone(),
+        let (scheme, used_network_identity_fallback) = match self
+            .config
+            .scheme_provider
+            .scheme(finalization_epoch)
+        {
+            Some(scheme) => (scheme, false),
+            None if can_use_network_identity_fallback => (self.network_scheme.clone(), true),
             None => {
                 bail!(
                     "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`",
@@ -261,7 +265,7 @@ where
         };
 
         let identity = scheme.identity();
-        if !finalization.verify(&mut self.context, &scheme, &Sequential) {
+        if !finalization.verify(&mut self.context, scheme.as_ref(), &Sequential) {
             debug!(
                 "failed to verify finalization {} against scheme: {identity}",
                 finalization.proposal.payload
@@ -285,6 +289,14 @@ where
             self.config.marshal.hint_finalized(boundary_height).await;
 
             return Ok(());
+        }
+
+        // Marshal re-verifies certificates when installing a floor, so
+        // retain the trusted fallback under the certificate's epoch.
+        if used_network_identity_fallback {
+            self.config
+                .scheme_provider
+                .register(finalization_epoch, (*scheme).clone());
         }
 
         let round = finalization.round();

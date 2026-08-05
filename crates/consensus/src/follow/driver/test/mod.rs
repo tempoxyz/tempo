@@ -11,7 +11,8 @@ use commonware_consensus::{
 };
 use commonware_cryptography::certificate::Provider as _;
 use commonware_macros::test_traced;
-use commonware_runtime::{Clock as _, Metrics as _, Runner as _, deterministic};
+use commonware_parallel::Sequential;
+use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::rpc::consensus::Event;
@@ -52,7 +53,7 @@ fn startup_uses_previous_execution_boundary() {
 
         let schemes = SchemeProvider::new();
         let result = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider.clone(),
                 scheme_provider: schemes.clone(),
@@ -80,7 +81,7 @@ fn startup_propagates_finalized_block_read_failure() {
         provider.fail_finalized_read();
 
         let result = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider.clone(),
                 scheme_provider: SchemeProvider::new(),
@@ -106,7 +107,7 @@ fn startup_requires_execution_boundary_header() {
         let provider = StubExecutionProvider::default();
 
         let result = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider.clone(),
                 scheme_provider: SchemeProvider::new(),
@@ -135,7 +136,7 @@ fn valid_finalization_is_certified_and_reported() {
 
         let marshal = StubMarshal::default();
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
@@ -161,7 +162,7 @@ fn valid_finalization_is_certified_and_reported() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         let certified = marshal.certified();
@@ -173,7 +174,7 @@ fn valid_finalization_is_certified_and_reported() {
 }
 
 #[test_traced]
-fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
+fn network_identity_registers_verified_fallback_for_floor_installation() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let network_fixture = dkg_fixture(&mut context, Epoch::new(2));
@@ -183,7 +184,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
         let marshal = StubMarshal::default();
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
@@ -216,11 +217,18 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
             seen: 0,
         };
         let mut reporter = mailbox.to_event_reporter();
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         assert_eq!(marshal.report_count(), 1);
         assert!(marshal.hints().is_empty());
+        let scheme = schemes
+            .scheme(network_fixture.outcome.epoch)
+            .expect("verified network identity fallback should be retained");
+        assert!(
+            finalization.verify(&mut context, scheme.as_ref(), &Sequential),
+            "registered fallback should verify the certificate during floor installation",
+        );
     });
 }
 
@@ -240,7 +248,7 @@ fn invalid_finalization_hints_current_epoch_boundary() {
             .expect("epoch zero has a boundary");
 
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
@@ -266,7 +274,7 @@ fn invalid_finalization_hints_current_epoch_boundary() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || !marshal.hints().is_empty()).await;
 
         assert_eq!(marshal.hints(), vec![expected_boundary]);
@@ -285,7 +293,7 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
@@ -312,7 +320,7 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
         context.sleep(Duration::from_millis(1)).await;
 
         assert!(marshal.certified().is_empty());
@@ -327,7 +335,7 @@ fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
             seen: 0,
         };
 
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
         wait_until(&context, || marshal.certified().len() == 1).await;
 
         assert_eq!(marshal.certified()[0].1, block);
@@ -347,7 +355,7 @@ fn scheme_before_network_identity_epoch_is_required() {
         let marshal = StubMarshal::default();
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
@@ -379,7 +387,7 @@ fn scheme_before_network_identity_epoch_is_required() {
         };
 
         let mut reporter = mailbox.to_event_reporter();
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
         context.sleep(Duration::from_millis(1)).await;
 
         assert!(marshal.certified().is_empty());
@@ -404,7 +412,7 @@ fn boundary_update_registers_scheme_before_acknowledging() {
             .expect("epoch zero has a boundary");
 
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
@@ -425,7 +433,7 @@ fn boundary_update_registers_scheme_before_acknowledging() {
         let (ack, waiter) = Exact::handle();
         let mut reporter = mailbox.to_marshal_reporter();
 
-        reporter.report(Update::Block(block, ack)).await;
+        assert!(reporter.report(Update::Block(block.into(), ack)).accepted());
         waiter
             .await
             .expect("boundary update should be acknowledged");
@@ -443,7 +451,7 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
         provider.add_header(&startup_block);
         let schemes = SchemeProvider::new();
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
@@ -463,7 +471,7 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
         let block = make_block(1, None);
         let (ack, waiter) = Exact::handle();
         let mut reporter = mailbox.to_marshal_reporter();
-        reporter.report(Update::Block(block, ack)).await;
+        assert!(reporter.report(Update::Block(block.into(), ack)).accepted());
         waiter.await.expect("block should be acknowledged");
 
         assert!(schemes.scoped(Epoch::new(1)).is_none());
@@ -496,7 +504,7 @@ fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
 
         let schemes = SchemeProvider::new();
         let (actor, _mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
@@ -530,7 +538,7 @@ fn non_finalized_events_are_ignored() {
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
         let (actor, mailbox) = try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             Config {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
@@ -553,7 +561,7 @@ fn non_finalized_events_are_ignored() {
             seen: 0,
         };
         let mut reporter = mailbox.to_event_reporter();
-        reporter.report(event).await;
+        assert!(reporter.report(event).accepted());
 
         context.sleep(Duration::from_millis(1)).await;
 

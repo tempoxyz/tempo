@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal::Update};
 use futures::channel::mpsc;
 
@@ -17,9 +18,11 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, update: Self::Activity) {
-        self.sender
-            .unbounded_send(update)
-            .expect("executor is present and ready to receive marshal updates");
+    fn report(&mut self, update: Self::Activity) -> Feedback {
+        if self.sender.unbounded_send(update).is_err() {
+            Feedback::Closed
+        } else {
+            Feedback::Ok
+        }
     }
 }

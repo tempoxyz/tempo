@@ -53,7 +53,7 @@ tempo-revm.workspace = true
 
 [features]
 default = ["rpc"]
-test-utils = ["alloy/getrandom"]
+test-utils = ["alloy/getrandom", "tempo-primitives/test-utils"]
 rpc = ["tempo-contracts/rpc"]
 
 [[test]]

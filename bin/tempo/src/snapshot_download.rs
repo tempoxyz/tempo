@@ -251,18 +251,9 @@ fn resolve_consensus_archive_source(
 
     match source {
         ManifestSource::Url(manifest_url) => {
-            let mut base = Url::parse(manifest_url)?;
+            let base = Url::parse(manifest_url)?;
             match base.scheme() {
-                "http" | "https" => {
-                    {
-                        let mut segments = base.path_segments_mut().map_err(|_| {
-                            eyre::eyre!("manifest URL must have a hierarchical path")
-                        })?;
-                        segments.pop_if_empty();
-                        segments.pop();
-                    }
-                    archive_source_from_url(base.join(archive_file)?)
-                }
+                "http" | "https" => archive_source_from_url(base.join(archive_file)?),
                 "file" => {
                     let mut path = base
                         .to_file_path()
@@ -623,6 +614,25 @@ mod tests {
                 assert_eq!(archive_path, dir.path().join("consensus.tar.zst"));
             }
             ConsensusArchiveSource::Url(_) => panic!("local manifest must resolve local archive"),
+        }
+    }
+
+    #[test]
+    fn consensus_archive_url_resolves_relative_to_remote_manifest() {
+        let manifest_json = serde_json::json!({});
+        let source = ManifestSource::Url(
+            "https://snapshots.example.com/tempo-4217-42/manifest.json".to_string(),
+        );
+
+        let archive =
+            resolve_consensus_archive_source(&manifest_json, &source, "consensus.tar.zst").unwrap();
+
+        match archive {
+            ConsensusArchiveSource::Url(url) => assert_eq!(
+                url,
+                "https://snapshots.example.com/tempo-4217-42/consensus.tar.zst"
+            ),
+            ConsensusArchiveSource::Path(_) => panic!("remote manifest must resolve a URL"),
         }
     }
 

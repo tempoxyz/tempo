@@ -152,7 +152,7 @@ pub(crate) struct Actor<TContext> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: Counter,
+    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
 }
 
 impl Metrics {
@@ -160,11 +160,10 @@ impl Metrics {
     where
         TContext: RuntimeMetrics,
     {
-        let finalized_blocks_proposed_by_self = Counter::default();
-        context.register(
+        let finalized_blocks_proposed_by_self = context.register(
             "finalized_blocks_proposed_by_self",
             "number of finalized blocks whose proposer matches this node's public key",
-            finalized_blocks_proposed_by_self.clone(),
+            Counter::default(),
         );
         Self {
             finalized_blocks_proposed_by_self,
@@ -270,7 +269,7 @@ where
                             if let Some(job) = payload_job {
                                 self.payload_jobs.push(
                                     run_payload_job(
-                                        self.context.clone(),
+                                        self.context.child("payload_job"),
                                         self.execution_node.clone(),
                                         job,
                                     )
@@ -339,7 +338,7 @@ where
             };
 
             if let Some(canonicalized) = forward_finalized(
-                &self.context,
+                self.context.as_present(),
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
@@ -431,7 +430,7 @@ where
                     self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(
                         FinalizedBlockRequest {
                             cause,
-                            block,
+                            block: (*block).clone(),
                             acknowledgment: acknowledgement,
                         },
                     )));
@@ -480,7 +479,7 @@ where
         let request = self.execution_queue.pop_front().expect("front exists");
 
         let task = execute_request(
-            self.context.clone(),
+            self.context.child("execute_request"),
             self.execution_node.clone(),
             self.public_key.clone(),
             self.metrics.clone(),
@@ -582,7 +581,7 @@ struct StartPayloadJob {
 }
 
 async fn execute_request<TContext>(
-    context: ContextCell<TContext>,
+    context: TContext,
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
@@ -971,8 +970,7 @@ async fn forward_finalized<TContext: Pacer>(
     };
 
     if let Some(public_key) = public_key.as_ref()
-        && consensus_context
-            .is_some_and(|context| &PublicKey::from(context.proposer.get()) == public_key)
+        && consensus_context.is_some_and(|context| context.proposer.to_inner() == *public_key)
     {
         metrics.finalized_blocks_proposed_by_self.inc();
     }

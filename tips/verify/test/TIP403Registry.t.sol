@@ -5,6 +5,7 @@ import "./TempoTest.t.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// forge-config: default.hardfork = "tempo:T2"
+/// forge-config: next.hardfork = "tempo:T2"
 /// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP403RegistryTest is TempoTest {
 
