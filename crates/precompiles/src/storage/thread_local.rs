@@ -7,7 +7,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::precompile::PrecompileOutput,
     interpreter::GasTracker,
-    precompiles::{PrecompileError, PrecompileResult},
+    precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     version::GasParams,
 };
 use scoped_tls::scoped_thread_local;
@@ -352,6 +352,42 @@ impl StorageCtx {
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
+    }
+
+    /// Executes a regular child call from the current precompile frame.
+    pub fn call(target: Address, input: Bytes, gas_limit: u64) -> PrecompileResult {
+        if !STORAGE.is_set() {
+            return Err(PrecompileHalt::Other(
+                "nested precompile calls require a live EVM context".into(),
+            )
+            .into());
+        }
+        STORAGE.with(|cell| {
+            let mut storage = cell.try_borrow_mut().map_err(|_| {
+                PrecompileHalt::Other(
+                    "nested precompile call attempted during a storage operation".into(),
+                )
+            })?;
+            (**storage).call(target, input, gas_limit)
+        })
+    }
+
+    /// Executes a static child call from the current precompile frame.
+    pub fn static_call(target: Address, input: Bytes, gas_limit: u64) -> PrecompileResult {
+        if !STORAGE.is_set() {
+            return Err(PrecompileHalt::Other(
+                "nested precompile calls require a live EVM context".into(),
+            )
+            .into());
+        }
+        STORAGE.with(|cell| {
+            let mut storage = cell.try_borrow_mut().map_err(|_| {
+                PrecompileHalt::Other(
+                    "nested precompile call attempted during a storage operation".into(),
+                )
+            })?;
+            (**storage).static_call(target, input, gas_limit)
+        })
     }
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.

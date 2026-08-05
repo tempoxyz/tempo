@@ -1,14 +1,16 @@
 use crate::{
-    error::TempoPrecompileError,
+    error::{Result as TempoResult, TempoPrecompileError},
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Bytes, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
+    env::TxEnv,
     evm::{SLoad, SStore, State},
-    interpreter::{GasTracker, gas},
+    interpreter::{GasTracker, Host, Message, MessageExt, MessageKind, gas},
+    precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     version::GasId,
 };
 use std::{
@@ -672,6 +674,301 @@ impl PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_> {
     #[inline]
     fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         self.tip1060_storage_credit_minting_enabled = enabled;
+    }
+}
+
+/// A frame-local precompile storage provider.
+///
+/// Unlike [`EvmPrecompileStorageProvider`], this type does not hold a borrow of the EVM state in a
+/// storage provider. It owns the frame borrows and creates a short-lived storage provider for each
+/// individual operation. A nested call can borrow the EVM only after the storage operation has
+/// released it.
+pub(crate) struct EvmPrecompileExecution<'evm, 'db, T: EvmTypes> {
+    evm: &'evm mut Evm<'db, T>,
+    gas: &'evm mut GasTracker,
+    tx_env: TxEnv<T>,
+    message: Message<T>,
+    version: Version,
+    block: TempoBlockEnv,
+    spec: TempoHardfork,
+    is_static: bool,
+    actions: StorageActions,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    tip1060_storage_credits_enabled: bool,
+    tip1060_storage_credit_minting_enabled: bool,
+}
+
+impl<'evm, 'db, T> EvmPrecompileExecution<'evm, 'db, T>
+where
+    T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+{
+    /// Creates a frame-local execution provider over the current EVM frame.
+    pub(crate) fn new(
+        evm: &'evm mut Evm<'db, T>,
+        gas: &'evm mut GasTracker,
+        tx_env: TxEnv<T>,
+        message: &Message<T>,
+        spec: TempoHardfork,
+        actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    ) -> Self {
+        let version = *evm.version();
+        let block = *evm.block();
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        Self {
+            evm,
+            gas,
+            tx_env,
+            message: message.clone(),
+            version,
+            block,
+            spec,
+            is_static,
+            actions,
+            non_creditable_slots,
+            tip1060_storage_credits_enabled: spec.is_t7(),
+            tip1060_storage_credit_minting_enabled: true,
+        }
+    }
+
+    fn with_provider<R>(
+        &mut self,
+        f: impl FnOnce(&mut EvmPrecompileStorageProvider<'_, '_, '_>) -> R,
+    ) -> R {
+        let actions = self.actions.clone();
+        let non_creditable_slots = self.non_creditable_slots.clone();
+        let tip1060_storage_credits_enabled = self.tip1060_storage_credits_enabled;
+        let tip1060_storage_credit_minting_enabled = self.tip1060_storage_credit_minting_enabled;
+        let mut provider =
+            EvmPrecompileStorageProvider::new(self.evm, self.gas, self.spec, self.is_static)
+                .with_actions(actions)
+                .with_non_creditable_slots(non_creditable_slots);
+        provider.set_tip1060_storage_credits(tip1060_storage_credits_enabled);
+        provider.set_tip1060_storage_credit_minting(tip1060_storage_credit_minting_enabled);
+        f(&mut provider)
+    }
+}
+
+impl<T> PrecompileStorageProvider for EvmPrecompileExecution<'_, '_, T>
+where
+    T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+{
+    fn chain_id(&self) -> u64 {
+        self.version.chain_id
+    }
+
+    fn block_env(&self) -> &TempoBlockEnv {
+        &self.block
+    }
+
+    fn set_code(&mut self, address: Address, code: Bytes) -> TempoResult<()> {
+        self.with_provider(|provider| provider.set_code(address, code))
+    }
+
+    fn with_account_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&evm2::evm::AccountInfo),
+    ) -> TempoResult<()> {
+        self.with_provider(|provider| provider.with_account_info(address, f))
+    }
+
+    fn account_code(&mut self, address: Address) -> TempoResult<(B256, Bytecode)> {
+        self.with_provider(|provider| provider.account_code(address))
+    }
+
+    fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
+        self.with_provider(|provider| PrecompileStorageProvider::sload(provider, address, key))
+    }
+
+    fn tload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
+        self.with_provider(|provider| PrecompileStorageProvider::tload(provider, address, key))
+    }
+
+    fn sstore(&mut self, address: Address, key: U256, value: U256) -> TempoResult<()> {
+        self.with_provider(|provider| {
+            PrecompileStorageProvider::sstore(provider, address, key, value)
+        })
+    }
+
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> TempoResult<()> {
+        self.with_provider(|provider| {
+            PrecompileStorageProvider::tstore(provider, address, key, value)
+        })
+    }
+
+    fn emit_event(&mut self, address: Address, event: LogData) -> TempoResult<()> {
+        self.with_provider(|provider| provider.emit_event(address, event))
+    }
+
+    fn deduct_gas(&mut self, gas: u64) -> TempoResult<()> {
+        self.with_provider(|provider| provider.deduct_gas(gas))
+    }
+
+    fn refund_gas(&mut self, gas: i64) {
+        self.with_provider(|provider| provider.refund_gas(gas));
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.gas.limit()
+    }
+
+    fn gas_used(&self) -> u64 {
+        self.gas.spent()
+    }
+
+    fn state_gas_used(&self) -> u64 {
+        self.gas.state_gas_spent() as u64
+    }
+
+    fn gas_refunded(&self) -> i64 {
+        self.gas.refunded()
+    }
+
+    fn reservoir(&self) -> u64 {
+        self.gas.reservoir()
+    }
+
+    fn spec(&self) -> TempoHardfork {
+        self.spec
+    }
+
+    fn storage_actions(&self) -> StorageActions {
+        self.actions.clone()
+    }
+
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.version.feature(EvmFeatures::EIP8037)
+    }
+
+    fn is_static(&self) -> bool {
+        self.is_static
+    }
+
+    fn checkpoint(&mut self) -> evm2::evm::StateCheckpoint {
+        self.with_provider(|provider| provider.checkpoint())
+    }
+
+    fn call(&mut self, target: Address, input: Bytes, gas_limit: u64) -> PrecompileResult {
+        self.execute_nested_call(MessageKind::Call, target, input, gas_limit)
+    }
+
+    fn static_call(&mut self, target: Address, input: Bytes, gas_limit: u64) -> PrecompileResult {
+        self.execute_nested_call(MessageKind::StaticCall, target, input, gas_limit)
+    }
+
+    fn checkpoint_commit(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
+        self.with_provider(|provider| provider.checkpoint_commit(checkpoint));
+    }
+
+    fn checkpoint_revert(&mut self, checkpoint: evm2::evm::StateCheckpoint) {
+        self.with_provider(|provider| provider.checkpoint_revert(checkpoint));
+    }
+
+    fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
+    }
+
+    fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+        self.tip1060_storage_credit_minting_enabled = enabled;
+    }
+}
+
+impl<T> EvmPrecompileExecution<'_, '_, T>
+where
+    T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+{
+    fn execute_nested_call(
+        &mut self,
+        kind: MessageKind,
+        target: Address,
+        input: Bytes,
+        gas_limit: u64,
+    ) -> PrecompileResult {
+        let caller = self.message.code_address;
+        let depth = self.message.depth.saturating_add(1);
+        let caller_is_static =
+            self.message.caller_is_static || self.message.kind == MessageKind::StaticCall;
+        let call_base_gas = if self.version.feature(EvmFeatures::EIP2929) {
+            100
+        } else if self.version.feature(EvmFeatures::EIP150) {
+            700
+        } else {
+            40
+        };
+        self.gas.spend(call_base_gas)?;
+
+        let cold_account_cost = self.version.gas_params.cold_account_additional_cost();
+        let skip_cold_load = self.gas.remaining() < cold_account_cost;
+        let loaded = Host::load_account(&mut *self.evm, &target, true, skip_cold_load)?;
+        if loaded.is_cold {
+            self.gas.spend(cold_account_cost)?;
+        }
+
+        let mut code = loaded.code;
+        let mut code_address = target;
+        let mut disable_precompiles = false;
+        if self.version.feature(EvmFeatures::EIP7702)
+            && let Some(delegated_address) = code.eip7702_address()
+        {
+            self.gas.spend(
+                self.version
+                    .gas_params
+                    .get(GasId::WarmStorageReadCost)
+                    .into(),
+            )?;
+            let skip_cold_load = self.gas.remaining() < cold_account_cost;
+            let delegated =
+                Host::load_account(&mut *self.evm, &delegated_address, true, skip_cold_load)?;
+            if delegated.is_cold {
+                self.gas.spend(cold_account_cost)?;
+            }
+            code = delegated.code;
+            code_address = delegated_address;
+            disable_precompiles = true;
+        }
+
+        let child_gas_limit = if self.version.features.contains(EvmFeatures::EIP150) {
+            self.version
+                .gas_params
+                .call_stipend_reduction(self.gas.remaining())
+                .min(gas_limit)
+        } else {
+            gas_limit
+        };
+        self.gas.spend(child_gas_limit)?;
+
+        let mut child = MessageExt {
+            kind,
+            depth,
+            gas_limit: child_gas_limit,
+            reservoir: self.gas.reservoir(),
+            destination: target,
+            caller,
+            input,
+            value: alloy::primitives::U256::ZERO,
+            code_address,
+            disable_precompiles,
+            caller_is_static,
+            ..MessageExt::default()
+        };
+
+        let result = Host::execute_message(&mut *self.evm, &self.tx_env, code, &mut child);
+        if result.stop.is_fatal() {
+            return Err(result.stop.into());
+        }
+        self.gas.merge_child_gas(result.gas, result.stop);
+
+        match result.stop {
+            stop if stop.is_success() => {
+                Ok(evm2::evm::precompile::PrecompileOutput::new(result.output))
+            }
+            stop if stop.is_revert() => Err(PrecompileError::Revert(result.output)),
+            stop if stop.is_fatal() => Err(stop.into()),
+            stop => Err(
+                PrecompileHalt::Other(format!("nested call halted with {stop:?}").into()).into(),
+            ),
+        }
     }
 }
 
