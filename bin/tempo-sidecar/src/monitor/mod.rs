@@ -23,6 +23,9 @@ use tempo_precompiles::{
 };
 use tracing::{debug, error, info, instrument};
 
+pub(crate) const USER_TOKEN_RESERVES_METRIC: &str = "tempo_fee_amm_user_token_reserves";
+pub(crate) const VALIDATOR_TOKEN_RESERVES_METRIC: &str = "tempo_fee_amm_validator_token_reserves";
+
 pub struct TIP20Token {
     decimals: u8,
     name: String,
@@ -273,22 +276,22 @@ impl Monitor {
             };
 
             gauge!(
-                "tempo_fee_amm_user_token_reserves",
+                USER_TOKEN_RESERVES_METRIC,
                 "token_a" => token_a_address.to_string(),
                 "token_b" => token_b_address.to_string(),
                 "token_a_name" => token_a.name.to_string(),
                 "token_b_name" => token_b.name.to_string()
             )
-            .set((token_a_balance / 10u128.pow(token_a.decimals as u32)) as f64);
+            .set(reserve_in_token_units(token_a_balance, token_a.decimals));
 
             gauge!(
-                "tempo_fee_amm_validator_token_reserves",
+                VALIDATOR_TOKEN_RESERVES_METRIC,
                 "token_a" => token_a_address.to_string(),
                 "token_b" => token_b_address.to_string(),
                 "token_a_name" => token_a.name.to_string(),
                 "token_b_name" => token_b.name.to_string()
             )
-            .set((token_b_balance / 10u128.pow(token_b.decimals as u32)) as f64);
+            .set(reserve_in_token_units(token_b_balance, token_b.decimals));
         }
     }
 
@@ -324,4 +327,20 @@ fn parse_mint_tokens(log: &Log) -> (Address, Address) {
         Address::from_word(log.topics()[2]),
         Address::from_word(log.topics()[3]),
     )
+}
+
+fn reserve_in_token_units(reserve: u128, decimals: u8) -> f64 {
+    reserve as f64 / 10_f64.powi(i32::from(decimals))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reserve_in_token_units;
+
+    #[test]
+    fn reserve_conversion_preserves_fractional_token_units() {
+        assert_eq!(reserve_in_token_units(1_500_000, 6), 1.5);
+        assert_eq!(reserve_in_token_units(500_000, 6), 0.5);
+        assert_eq!(reserve_in_token_units(42_000_000, 6), 42.0);
+    }
 }
