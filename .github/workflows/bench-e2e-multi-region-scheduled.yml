@@ -170,6 +170,7 @@ jobs:
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '100' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
       clickhouse-run: feature-1
+      otlp: true
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}

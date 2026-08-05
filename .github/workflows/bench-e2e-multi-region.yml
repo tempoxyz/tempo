@@ -63,6 +63,10 @@ on:
         type: string
         required: false
         default: "feature-1"
+      otlp:
+        type: boolean
+        required: false
+        default: true
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
