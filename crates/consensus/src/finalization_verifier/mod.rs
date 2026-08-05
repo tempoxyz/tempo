@@ -29,7 +29,7 @@ mod test;
 /// [`Self::decode_dkg_outcome_and_register_boundary`] before verifying certificates from the next
 /// epoch.
 #[derive(Clone)]
-pub struct FinalizationVerifier {
+pub(crate) struct FinalizationVerifier {
     scheme_provider: SchemeProvider,
     network_identity: NetworkIdentity,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
@@ -38,7 +38,7 @@ pub struct FinalizationVerifier {
 
 impl FinalizationVerifier {
     /// Create a verifier anchored at the supplied network identity.
-    pub fn new(network_identity: NetworkIdentity, epoch_strategy: FixedEpocher) -> Self {
+    pub(crate) fn new(network_identity: NetworkIdentity, epoch_strategy: FixedEpocher) -> Self {
         let network_scheme = Arc::new(Scheme::certificate_verifier(
             NAMESPACE,
             network_identity.identity,
@@ -59,7 +59,7 @@ impl FinalizationVerifier {
     }
 
     /// Return the verifier's authoritative network identity.
-    pub const fn network_identity(&self) -> &NetworkIdentity {
+    pub(crate) const fn network_identity(&self) -> &NetworkIdentity {
         &self.network_identity
     }
 
@@ -67,7 +67,7 @@ impl FinalizationVerifier {
     ///
     /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
     /// authenticated by a previously verified finalization.
-    pub fn decode_dkg_outcome_and_register_boundary(
+    pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
         mut extra_data: &[u8],
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
@@ -80,7 +80,7 @@ impl FinalizationVerifier {
     }
 
     /// Decode and verify a certified block returned by the Tempo consensus RPC.
-    pub fn decode_and_verify(
+    pub(crate) fn decode_and_verify(
         &self,
         rng: &mut impl CryptoRng,
         certified: &CertifiedBlock,
