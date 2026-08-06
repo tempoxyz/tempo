@@ -101,9 +101,11 @@ struct BlockEntry {
     /// Set when the execution layer failed to process the block for a reason
     /// that carries no evidence of divergence (unreachable, still syncing).
     /// Forwarding skips rejected blocks instead of retrying them in a tight
-    /// loop; the marker lasts until the advancing finalized tip expunges the
-    /// entry (the finalization pipeline retries the block with
-    /// fatal-on-failure semantics) or a re-recorded body clears it.
+    /// loop; the marker lasts until a quiet heartbeat interval lifts it
+    /// (see [`Actor::send_forkchoice_update_heartbeat`]), a re-recorded
+    /// body clears it, or the advancing finalized tip expunges the entry
+    /// (the finalization pipeline retries the block with fatal-on-failure
+    /// semantics).
     rejected: bool,
 }
 
@@ -336,10 +338,23 @@ impl NotarizedFactsDirectory {
     }
 
     /// Marks the block as rejected by the execution layer, excluding it from
-    /// forwarding until the entry is expunged or its body re-recorded.
+    /// forwarding until the rejection is cleared or the entry is expunged.
     fn mark_rejected(&mut self, digest: &Digest) {
         if let Some(entry) = self.blocks.get_mut(digest) {
             entry.rejected = true;
+        }
+    }
+
+    /// Clears all rejection markers, making rejected blocks eligible for
+    /// forwarding again.
+    ///
+    /// Markers are lifted wholesale: only the forwarding candidate can ever
+    /// be rejected, so at most one marker is load-bearing at a time, and a
+    /// prematurely cleared stale marker at worst permits one extra
+    /// new-payload request.
+    fn clear_rejections(&mut self) {
+        for entry in self.blocks.values_mut() {
+            entry.rejected = false;
         }
     }
 
@@ -386,8 +401,8 @@ impl NotarizedFactsDirectory {
     /// the cursor has a gap (the fetch machinery is repairing it, or the
     /// cursor is waiting to be re-rooted onto the path), when the cursor is
     /// at the latest notarization itself, or when the candidate was
-    /// rejected by the execution layer (forwarding halts until the entry is
-    /// expunged).
+    /// rejected by the execution layer (forwarding halts until the
+    /// rejection is cleared or the entry expunged).
     fn next_to_forward(&self) -> Option<&BlockEntry> {
         let (_, tip) = self.notarized.last_key_value()?;
         let mut digest = *tip;
@@ -522,7 +537,10 @@ pub(crate) struct Actor<TContext> {
 
     /// The timer for the next FCU heartbeat.
     ///
-    /// Armed only when no execution-layer work is active or queued.
+    /// Armed only when no execution-layer work is active or queued. Its
+    /// firing doubles as the retry trigger for notarized blocks withheld
+    /// from forwarding after the execution layer failed them (see
+    /// [`Self::send_forkchoice_update_heartbeat`]).
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
 
     /// Finalized blocks waiting to be forwarded to the execution layer.
@@ -716,8 +734,9 @@ where
                         ExecutionTaskResult::NotarizedBlockRejected { digest } => {
                             // The cause is logged by the task itself. The
                             // marker keeps the block from being retried in
-                            // a tight loop; the finalization pipeline
-                            // remains the fatal-on-failure backstop.
+                            // a tight loop until a quiet heartbeat interval
+                            // lifts it; the finalization pipeline remains
+                            // the fatal-on-failure backstop.
                             self.notarized_facts_directory.mark_rejected(&digest);
                         }
                         ExecutionTaskResult::Fatal { error } => {
@@ -836,6 +855,21 @@ where
         if !self.execution_task.is_none() {
             return;
         }
+
+        // A quiet heartbeat interval is the cue to retry a notarized block
+        // withheld from forwarding because the execution layer previously
+        // failed it: lift the rejections and let the scheduler pick the
+        // block up again. The retried forward replaces the plain heartbeat
+        // (on success it moves the head, which is a forkchoice update in
+        // itself); rejection markers are the only work a heartbeat can
+        // unlock, since the timer is disarmed whenever anything else is
+        // pending.
+        self.notarized_facts_directory.clear_rejections();
+        self.start_next_execution_task();
+        if !self.execution_task.is_none() {
+            return;
+        }
+
         let task = execute_heartbeat(
             self.context.child("heartbeat"),
             self.execution_node.clone(),
@@ -1226,8 +1260,9 @@ enum ExecutionTaskResult {
     /// evidence of consensus-execution divergence, for example because the
     /// execution layer was unreachable or reported that it was still syncing.
     /// The block should be marked rejected in the directory so that it is
-    /// withheld from forwarding instead of being retried in a tight loop;
-    /// the finalization pipeline retries it with fatal-on-failure semantics.
+    /// withheld from forwarding until a quiet heartbeat interval lifts the
+    /// rejection, instead of being retried in a tight loop; the
+    /// finalization pipeline retries it with fatal-on-failure semantics.
     /// An outright *invalid* verdict by the execution layer is
     /// [`ExecutionTaskResult::Fatal`] right away: a quorum of validators
     /// accepted the block, so rejecting it means we diverged.

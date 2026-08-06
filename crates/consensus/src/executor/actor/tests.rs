@@ -383,6 +383,13 @@ fn rejected_blocks_are_withheld_from_forwarding() {
     directory.record_execution_notarized(Height::new(11), a.digest());
     let next = directory.next_to_forward().expect("chain continues");
     assert_eq!(next.block.digest(), b.digest());
+
+    // The retry timer lifts rejections wholesale.
+    directory.mark_rejected(&b.digest());
+    assert!(directory.next_to_forward().is_none());
+    directory.clear_rejections();
+    let next = directory.next_to_forward().expect("rejection lifted");
+    assert_eq!(next.block.digest(), b.digest());
 }
 
 #[test]
