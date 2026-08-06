@@ -1,14 +1,16 @@
-name: Scan GitHub Actions
+name: Workflow Validation
 
 on:
   pull_request:
     paths:
       - ".github/**"
+      - ".pinact.yaml"
   push:
     branches:
       - main
     paths:
       - ".github/**"
+      - ".pinact.yaml"
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
@@ -16,9 +18,13 @@ on:
 permissions: {}
 
 jobs:
-  scan:
+  workflow-validation:
+    name: Workflow Validation
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@512158c4e90e42eef8aa7fc3fc3186a79b5b4648 # main
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@483bda4a2a4b5e04a51edff03768c1590d271f80 # main
     permissions:
       actions: read
       contents: read
+    with:
+      config: .github/zizmor.yml
+      pinact: true
