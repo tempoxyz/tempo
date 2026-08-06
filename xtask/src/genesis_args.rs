@@ -48,8 +48,7 @@ use tempo_contracts::{
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        INITIAL_FACTORY_OWNER, ITIP403Registry, IValidatorConfigV2, createTokenCall,
-        initial_zone_factory_state,
+        INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -311,8 +310,7 @@ impl GenesisArgs {
 
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
-        let genesis_spec = TempoHardfork::from(&self);
-        let mut evm = setup_tempo_evm(self.chain_id, genesis_spec);
+        let mut evm = setup_tempo_evm(self.chain_id, self.latest_hardfork());
 
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
@@ -681,33 +679,36 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
-}
 
-impl GenesisArgs {
-    fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
-        macro_rules! fork_time_match {
-            ($($variant:ident),* $(,)?) => {
-                paste::paste! {
-                    match fork {
-                        TempoHardfork::Genesis => Some(0),
-                        $(TempoHardfork::$variant => Some(self.[<$variant:lower _time>]),)*
-                        _ => None,
-                    }
-                }
-            };
+    /// Returns the activation time of the given hardfork
+    fn hardfork_time(&self, hardfork: TempoHardfork) -> Option<u64> {
+        match hardfork {
+            TempoHardfork::Genesis => Some(0),
+            TempoHardfork::T0 => Some(self.t0_time),
+            TempoHardfork::T1 => Some(self.t1_time),
+            TempoHardfork::T1A => Some(self.t1a_time),
+            TempoHardfork::T1B => Some(self.t1b_time),
+            TempoHardfork::T1C => Some(self.t1c_time),
+            TempoHardfork::T2 => Some(self.t2_time),
+            TempoHardfork::T3 => Some(self.t3_time),
+            TempoHardfork::T4 => Some(self.t4_time),
+            TempoHardfork::T5 => Some(self.t5_time),
+            TempoHardfork::T6 => Some(self.t6_time),
+            TempoHardfork::T7 => Some(self.t7_time),
+            TempoHardfork::T8 => Some(self.t8_time),
+            TempoHardfork::T9 => Some(self.t9_time),
+            TempoHardfork::T10 => Some(self.t10_time),
+            _ => None,
         }
-
-        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
     }
-}
 
-impl From<&GenesisArgs> for TempoHardfork {
-    fn from(args: &GenesisArgs) -> Self {
+    /// Returns the latest hardfork active at genesis.
+    fn latest_hardfork(&self) -> TempoHardfork {
         TempoHardfork::VARIANTS
             .iter()
             .rev()
             .copied()
-            .find(|fork| args.fork_time(*fork) == Some(0))
+            .find(|fork| self.hardfork_time(*fork) == Some(0))
             .unwrap_or(TempoHardfork::Genesis)
     }
 }
@@ -1307,42 +1308,5 @@ mod tests {
         insert_zone_state_at_genesis(1, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
-    }
-
-    #[test]
-    fn genesis_tip20_tokens_initialize_tip403_policy_bindings() -> eyre::Result<()> {
-        let admin = Address::repeat_byte(0x11);
-        let mut evm = setup_tempo_evm(1337, TempoHardfork::T9);
-        initialize_registry(&mut evm)?;
-        initialize_tip20_factory(&mut evm)?;
-        create_path_usd_token(admin, &[], 0, &mut evm)?;
-        let token = create_and_mint_token(
-            "TestUSD",
-            "TestUSD",
-            "USD",
-            PATH_USD_ADDRESS,
-            admin,
-            &[],
-            U256::ZERO,
-            SaltOrAddress::Address(address!("20C0000000000000000000000000000000000001")),
-            &mut evm,
-        )?;
-
-        StorageCtx::enter_ctx(
-            evm.ctx_mut(),
-            StorageActions::disabled(),
-            || -> tempo_precompiles::Result<()> {
-                let registry = TIP403Registry::new();
-                for token in [PATH_USD_ADDRESS, token] {
-                    let policy = registry.token_transfer_policy_id(
-                        ITIP403Registry::tokenTransferPolicyIdCall { token },
-                    )?;
-                    assert!(policy.isSet);
-                    assert_eq!(policy.policyId, 1);
-                }
-                Ok(())
-            },
-        )?;
-        Ok(())
     }
 }

@@ -14027,6 +14027,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
+ "tempo-hardfork",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",

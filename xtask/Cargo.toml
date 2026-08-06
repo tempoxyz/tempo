@@ -58,7 +58,6 @@ const-hex.workspace = true
 eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true
-paste.workspace = true
 rand_08.workspace = true
 rand.workspace = true
 rayon.workspace = true
