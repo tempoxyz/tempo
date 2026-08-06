@@ -64,8 +64,14 @@ impl Mailbox {
         )
     }
 
-    /// Canonicalizes the given head and requests a new payload to be built
-    /// for the proposal of `round`.
+    /// Requests a new payload to be built on top of `digest` for the
+    /// proposal of `round`.
+    ///
+    /// The build is only started if the execution layer's head already is
+    /// `digest` (or is about to become it because it is the next notarized
+    /// block to forward). If it is not, the request fails fast (the
+    /// executor drops the response channel) and the executor converges the
+    /// execution layer in the background instead.
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
@@ -86,7 +92,7 @@ impl Mailbox {
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
+            .unbounded_send(Message::in_current_span(Build {
                 round,
                 height,
                 digest,
@@ -118,7 +124,7 @@ impl Message {
 #[derive(Debug)]
 pub(super) enum Command {
     /// Requests the agent to canonicalize the head and build a new payload.
-    CanonicalizeAndBuild(CanonicalizeAndBuild),
+    Build(Build),
     /// Requests the agent to validate a block against the execution layer.
     ValidateBlock(Box<ValidateBlock>),
     /// Requests the agent to forward a finalization event to the execution layer.
@@ -139,7 +145,7 @@ impl From<ParentNotarized> for Command {
 }
 
 #[derive(Debug)]
-pub(super) struct CanonicalizeAndBuild {
+pub(super) struct Build {
     pub(super) round: Round,
     pub(super) height: Height,
     pub(super) digest: Digest,
@@ -155,9 +161,9 @@ pub(super) struct ValidateBlock {
     pub(super) response: oneshot::Sender<Option<Duration>>,
 }
 
-impl From<CanonicalizeAndBuild> for Command {
-    fn from(value: CanonicalizeAndBuild) -> Self {
-        Self::CanonicalizeAndBuild(value)
+impl From<Build> for Command {
+    fn from(value: Build) -> Self {
+        Self::Build(value)
     }
 }
 

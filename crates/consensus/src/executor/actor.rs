@@ -19,12 +19,12 @@
 //! proposal, then building one, then forwarding notarized blocks, then
 //! forwarding finalized blocks.
 //!
-//! Every forkchoice update that moves the head targets a notarized block:
-//! notarized-block forwarding does so by construction, and a build request
-//! does so because it canonicalizes the propose context's parent, which
-//! consensus guarantees to be notarized. A head left behind by an aborted
-//! request is thus always a valid — at worst stale — notarized-chain state
-//! to converge from (see [`Canonicalize`] for the build-specific leak).
+//! Only notarized-block forwarding and the finalization pipeline ever move
+//! the execution layer's head. A build request is dispatched if and only if
+//! the head already is the build's parent — its forkchoice update
+//! re-affirms the head to register the build rather than moving it — and is
+//! failed fast otherwise, so a build can never fight the notarized-chain
+//! convergence (see [`Actor::start_next_execution_task`]).
 //!
 //! The finalized tip of the *network* (reported by the marshal, possibly
 //! ahead of the finalized blocks delivered so far) marks an ownership
@@ -83,7 +83,7 @@ use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument
 
 use super::{
     Config,
-    ingress::{CanonicalizeAndBuild, Command, Message, ValidateBlock},
+    ingress::{Build, Command, Message, ValidateBlock},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -894,22 +894,11 @@ where
     fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeAndBuild(CanonicalizeAndBuild {
-                round,
-                height,
-                digest,
-                attributes,
-                response,
-            }) => {
+            Command::Build(build) => {
                 queue_consensus_request(
                     &mut self.pending_consensus_request,
-                    round,
-                    ConsensusRequest::Build(Box::new(Canonicalize {
-                        cause,
-                        height,
-                        digest,
-                        build_attributes: Some((*attributes, response)),
-                    })),
+                    build.round,
+                    ConsensusRequest::Build { cause, build },
                 );
             }
             Command::Finalize(finalized) => match *finalized {
@@ -1059,10 +1048,10 @@ where
 
         // Latency critical requests come first: consensus is waiting on
         // them to vote on or propose a block. One exception: if the next
-        // notarized block to forward is a validated block's parent, the
-        // validation is put back and falls through to the forwarding below,
-        // after which it can pass. Any deeper gap fails the validation fast
-        // and heals in the background instead.
+        // notarized block to forward is the request's parent, the request
+        // is put back and falls through to the forwarding below, after
+        // which it can pass. Any deeper gap fails the request fast and
+        // heals in the background instead.
         match self.pending_consensus_request.take() {
             Some((round, ConsensusRequest::Validate(request))) => {
                 let parent_is_next_notarized = self
@@ -1079,15 +1068,39 @@ where
                 }
                 self.pending_consensus_request = Some((round, ConsensusRequest::Validate(request)));
             }
-            Some((_, ConsensusRequest::Build(request))) => {
-                let task = execute_canonicalize(
-                    self.context.child("canonicalize_and_build"),
-                    self.execution_node.clone(),
-                    self.last_canonicalized,
-                    request,
-                );
-                self.execution_task.replace(task.boxed());
-                return;
+            Some((round, ConsensusRequest::Build { cause, build })) => {
+                // A build is registered via a forkchoice update that makes
+                // its parent the head, so running it with the head anywhere
+                // else would fight the notarized-chain convergence. Only
+                // run it when the head already is the parent (the parent's
+                // notarization fact is sent ahead of the build request, so
+                // convergence usually got there first) — otherwise fail
+                // fast: dropping the request drops its response channel,
+                // which signals the failure to the subscriber.
+                if self.last_canonicalized.forkchoice.head_block_hash == build.digest.0 {
+                    let task = execute_build(
+                        self.context.child("build"),
+                        self.execution_node.clone(),
+                        self.last_canonicalized,
+                        cause,
+                        build,
+                    );
+                    self.execution_task.replace(task.boxed());
+                    return;
+                }
+                let parent_is_next_notarized = self
+                    .next_notarized_forward()
+                    .is_some_and(|entry| entry.block.digest() == build.digest);
+                if parent_is_next_notarized {
+                    self.pending_consensus_request =
+                        Some((round, ConsensusRequest::Build { cause, build }));
+                } else {
+                    info!(
+                        execution.head_hash = %self.last_canonicalized.forkchoice.head_block_hash,
+                        build.parent = %build.digest,
+                        "not ready to build new block, dropping it",
+                    );
+                }
             }
             None => {}
         }
@@ -1209,7 +1222,7 @@ impl Future for PendingNotarizedBlock {
 /// asked to validate the round's proposal or to build it.
 enum ConsensusRequest {
     Validate(ValidateBlockRequest),
-    Build(Box<Canonicalize>),
+    Build { cause: Span, build: Build },
 }
 
 /// Queues `request` into `slot` unless the slot already holds a request from
@@ -1286,25 +1299,6 @@ enum ExecutionTaskResult {
     },
 }
 
-/// A request to make `digest` the head of the canonical chain, optionally
-/// registering a payload build on top of it.
-///
-/// The head update may outlive the build it was requested for (the Engine
-/// API only registers builds via forkchoice updates, so the two cannot be
-/// separated). That is safe: builds only ever target a notarized parent, so
-/// a leftover head is a valid — at worst stale — notarized-chain state, and
-/// the notarized block directory converges the head onwards from any
-/// position. Validations are unaffected either way: a new-payload request
-/// does not depend on where the head points.
-struct Canonicalize {
-    cause: Span,
-    height: Height,
-    digest: Digest,
-    /// Payload attributes to register a build job with the forkchoice
-    /// update, paired with the subscriber awaiting the built payload.
-    build_attributes: Option<(TempoPayloadAttributes, oneshot::Sender<TempoBuiltPayload>)>,
-}
-
 /// A payload build registered on the execution layer whose result still needs
 /// to be delivered to the subscriber that requested it.
 struct StartPayloadJob {
@@ -1340,17 +1334,18 @@ where
     }
 }
 
-async fn execute_canonicalize<TContext>(
+async fn execute_build<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
     canonicalized: LastCanonicalized,
-    request: Box<Canonicalize>,
+    cause: Span,
+    build: Build,
 ) -> ExecutionTaskResult
 where
     TContext: Pacer,
 {
     let (canonicalized, payload_job) =
-        run_canonicalize_task(&context, execution_node, canonicalized, *request).await;
+        run_build_task(&context, execution_node, canonicalized, cause, build).await;
     ExecutionTaskResult::Completed {
         canonicalized,
         payload_job,
@@ -1563,6 +1558,16 @@ where
     }
 }
 
+/// Registers the payload build on top of its parent (`digest`) via a
+/// forkchoice update.
+///
+/// The caller dispatches a build only when the execution layer's head
+/// already is the parent (see [`Actor::start_next_execution_task`]), so
+/// the forkchoice update re-affirms the head instead of moving it; the
+/// Engine API requires the update regardless, because builds can only be
+/// registered through forkchoice updates. The update is still submitted
+/// when the build is dropped as canceled or stale below — a no-op
+/// re-affirmation, doubling as a head refresh.
 #[instrument(
     skip_all,
     parent = &cause,
@@ -1571,19 +1576,22 @@ where
         %digest,
     ),
 )]
-async fn run_canonicalize_task<TContext: Pacer>(
+async fn run_build_task<TContext: Pacer>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
     canonicalized: LastCanonicalized,
-    Canonicalize {
-        cause,
+    cause: Span,
+    Build {
+        round: _,
         height,
         digest,
-        mut build_attributes,
-    }: Canonicalize,
+        attributes,
+        response,
+    }: Build,
 ) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
     let new_canonicalized = canonicalized.update_head(height, digest);
 
+    let mut build_attributes = Some((*attributes, response));
     if build_attributes
         .as_ref()
         .is_some_and(|(_, response)| response.is_canceled())

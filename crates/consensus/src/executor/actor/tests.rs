@@ -3,9 +3,11 @@ use commonware_consensus::types::{Epoch, Height, Round, View};
 use reth_node_core::primitives::SealedBlock;
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
-use commonware_consensus::CertifiableBlock as _;
+use commonware_consensus::{CertifiableBlock as _, Heightable as _};
 
-use super::{Canonicalize, ConsensusRequest, NotarizedFactsDirectory, queue_consensus_request};
+use super::{
+    ConsensusRequest, NotarizedFactsDirectory, ValidateBlockRequest, queue_consensus_request,
+};
 use crate::consensus::{Digest, block::Block};
 
 /// A directory whose observed finalized network tip is `finalized` at
@@ -409,33 +411,36 @@ fn reaffirmed_finalized_tip_needs_no_fetch() {
 
 #[test]
 fn consensus_requests_from_stale_rounds_are_dropped() {
-    fn build_request(height: u64) -> ConsensusRequest {
-        ConsensusRequest::Build(Box::new(Canonicalize {
+    // The queue logic is agnostic to the request kind; validation requests
+    // stand in for both.
+    fn validate_request(view: u64, height: u64) -> ConsensusRequest {
+        let (response, _rx) = futures::channel::oneshot::channel();
+        ConsensusRequest::Validate(ValidateBlockRequest {
             cause: tracing::Span::none(),
-            height: Height::new(height),
-            digest: Digest(B256::ZERO),
-            build_attributes: None,
-        }))
+            block: block(view, height, Digest(B256::ZERO)).into(),
+            validator_set: None,
+            response,
+        })
     }
 
     fn queued_height(slot: &Option<(Round, ConsensusRequest)>) -> Option<u64> {
         slot.as_ref().map(|(_, request)| match request {
-            ConsensusRequest::Build(canonicalize) => canonicalize.height.get(),
-            ConsensusRequest::Validate(_) => unreachable!("test only queues builds"),
+            ConsensusRequest::Validate(validate) => validate.block.height().get(),
+            ConsensusRequest::Build { .. } => unreachable!("test only queues validations"),
         })
     }
 
     let mut slot = None;
-    queue_consensus_request(&mut slot, round(2), build_request(2));
+    queue_consensus_request(&mut slot, round(2), validate_request(2, 2));
     assert_eq!(queued_height(&slot), Some(2));
 
     // Older and same rounds are dropped.
-    queue_consensus_request(&mut slot, round(1), build_request(1));
+    queue_consensus_request(&mut slot, round(1), validate_request(1, 1));
     assert_eq!(queued_height(&slot), Some(2));
-    queue_consensus_request(&mut slot, round(2), build_request(20));
+    queue_consensus_request(&mut slot, round(2), validate_request(2, 20));
     assert_eq!(queued_height(&slot), Some(2));
 
     // Newer rounds supersede.
-    queue_consensus_request(&mut slot, round(3), build_request(3));
+    queue_consensus_request(&mut slot, round(3), validate_request(3, 3));
     assert_eq!(queued_height(&slot), Some(3));
 }
