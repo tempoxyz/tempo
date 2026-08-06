@@ -545,14 +545,41 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            map_protocol_result(fee_manager.collect_fee_post_tx(
+            let checkpoint = host.state().checkpoint();
+            match fee_manager.collect_fee_post_tx(
                 host,
                 fee_payer,
                 actual_spending,
                 refund,
                 fee_token,
                 beneficiary,
-            ))?
+            ) {
+                Ok(validator_fee) => validator_fee,
+                Err(TempoPrecompileError::EvmError(code)) => {
+                    return Err(HandlerError::Fatal(code));
+                }
+                Err(error @ TempoPrecompileError::Fatal(_)) => {
+                    return Err(HandlerError::external(error));
+                }
+                Err(error) => {
+                    // A failed user execution already has the canonical receipt outcome. A
+                    // business error while refunding or settling its fee must not turn that
+                    // receipt into a block-fatal handler error. Roll back any partial post-tx
+                    // writes and retain the pre-tx fee reservation as the conservative charge.
+                    let features = host.version().features;
+                    host.state_mut().rollback(checkpoint, features);
+                    if !result.status {
+                        return Ok(result);
+                    }
+
+                    // A successful user execution cannot be rewound from this hook: EVM2 has
+                    // already committed its execution checkpoint. Keep the original execution
+                    // result, with the reserved fee retained, rather than reporting a divergent
+                    // block error for a protocol-level settlement failure.
+                    tracing::warn!(error = %error, "fee settlement failed after successful execution");
+                    U256::ZERO
+                }
+            }
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
