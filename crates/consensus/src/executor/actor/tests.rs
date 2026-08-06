@@ -5,10 +5,17 @@ use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
 use commonware_consensus::{CertifiableBlock as _, Heightable as _};
 
+use std::time::{Duration, SystemTime};
+
 use super::{
-    ConsensusRequest, NotarizedFactsDirectory, ValidateBlockRequest, queue_consensus_request,
+    ConsensusRequest, NOTARIZED_REJECTION_RETRY_DELAY, NotarizedFactsDirectory,
+    ValidateBlockRequest, queue_consensus_request,
 };
 use crate::consensus::{Digest, block::Block};
+
+/// The reference "now" for directory queries; tests state rejection times
+/// relative to it.
+const T0: SystemTime = SystemTime::UNIX_EPOCH;
 
 /// A directory whose observed finalized network tip is `finalized` at
 /// height 10, round 0, with the canonicalization cursor starting there
@@ -71,15 +78,15 @@ fn forwards_chain_on_top_of_finalized_tip_in_order() {
     record(&mut directory, &a);
     record(&mut directory, &b);
 
-    let next = directory.next_to_forward().expect("chain start");
+    let next = directory.next_to_forward(T0).expect("chain start");
     assert_eq!(next.block.digest(), a.digest());
 
     directory.record_execution_notarized(Height::new(11), a.digest());
-    let next = directory.next_to_forward().expect("chain continues");
+    let next = directory.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b.digest());
 
     directory.record_execution_notarized(Height::new(12), b.digest());
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 }
 
 #[test]
@@ -96,7 +103,7 @@ fn sibling_notarized_in_later_round_supersedes() {
     // ... but a notarization of its sibling re-roots the cursor to the
     // finalized tip, and the superseding sibling is forwarded next.
     record(&mut directory, &a2);
-    let next = directory.next_to_forward().expect("supersede fork");
+    let next = directory.next_to_forward(T0).expect("supersede fork");
     assert_eq!(next.block.digest(), a2.digest());
 }
 
@@ -113,7 +120,7 @@ fn fork_reroots_cursor_to_the_fork_point() {
     record(&mut directory, &n1);
     record(&mut directory, &n2);
     directory.record_execution_notarized(Height::new(13), n2.digest());
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 
     // ... when F - N0 - N1' - N3 becomes the canonical chain. The fact
     // arrives before the bodies; the cursor stays put until the fork is
@@ -121,13 +128,13 @@ fn fork_reroots_cursor_to_the_fork_point() {
     let n1p = block(4, 12, n0.digest());
     let n3 = block(5, 13, n1p.digest());
     directory.record_notarized(round(5), n3.digest());
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 
     // N3's body proves everything at or above its height forked out;
     // the cursor sinks below N2.
     directory.record_block(n3.clone().into());
     assert!(!directory.blocks.contains_key(&n2.digest()));
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 
     // N1' arrives via the fetch machinery, proving its sibling N1
     // forked out; the cursor sinks to the fork point N0.
@@ -139,10 +146,10 @@ fn fork_reroots_cursor_to_the_fork_point() {
 
     // The common trunk is not replayed: the fork branch is forwarded
     // directly.
-    let next = directory.next_to_forward().expect("fork branch");
+    let next = directory.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), n1p.digest());
     directory.record_execution_notarized(Height::new(12), n1p.digest());
-    let next = directory.next_to_forward().expect("fork tip");
+    let next = directory.next_to_forward(T0).expect("fork tip");
     assert_eq!(next.block.digest(), n3.digest());
 }
 
@@ -183,7 +190,7 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
         directory.first_missing_ancestor(),
         Some((round(3), n3.digest())),
     );
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 
     // The landed fetch restores N3's fact, deletes the forked-out
     // sibling N1, and sinks the cursor to the fork point F.
@@ -191,13 +198,13 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     assert_eq!(directory.notarized.get(&round(3)), Some(&n3.digest()));
     assert!(!directory.blocks.contains_key(&n1.digest()));
 
-    let next = directory.next_to_forward().expect("fork branch");
+    let next = directory.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), n3.digest());
     directory.record_execution_notarized(Height::new(11), n3.digest());
-    let next = directory.next_to_forward().expect("fork tip");
+    let next = directory.next_to_forward(T0).expect("fork tip");
     assert_eq!(next.block.digest(), n4.digest());
     directory.record_execution_notarized(Height::new(12), n4.digest());
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 }
 
 #[test]
@@ -216,7 +223,7 @@ fn stale_heads_do_not_advance_the_cursor() {
     // ignored; forwarding continues from the fork point a.
     directory.record_execution_notarized(Height::new(11), a.digest());
     directory.record_execution_notarized(Height::new(12), b1.digest());
-    let next = directory.next_to_forward().expect("chain continues");
+    let next = directory.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b2.digest());
 }
 
@@ -234,7 +241,7 @@ fn missing_body_caps_the_chain() {
     record(&mut directory, &c);
 
     directory.record_execution_notarized(Height::new(11), a.digest());
-    assert!(directory.next_to_forward().is_none());
+    assert!(directory.next_to_forward(T0).is_none());
 }
 
 #[test]
@@ -361,7 +368,7 @@ fn first_missing_ancestor_walks_the_latest_notarization_backwards() {
 }
 
 #[test]
-fn rejected_blocks_are_withheld_from_forwarding() {
+fn rejected_blocks_are_withheld_until_the_retry_delay_elapses() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut directory = empty_directory(finalized);
 
@@ -370,27 +377,28 @@ fn rejected_blocks_are_withheld_from_forwarding() {
     record(&mut directory, &a);
     record(&mut directory, &b);
 
-    // The rejected candidate halts forwarding.
-    directory.mark_rejected(&a.digest());
-    assert!(directory.next_to_forward().is_none());
+    // The rejected candidate halts forwarding until the retry delay has
+    // fully elapsed.
+    directory.mark_rejected(&a.digest(), T0);
+    assert!(directory.next_to_forward(T0).is_none());
+    let just_before_retry = T0 + NOTARIZED_REJECTION_RETRY_DELAY - Duration::from_millis(1);
+    assert!(directory.next_to_forward(just_before_retry).is_none());
+    let next = directory
+        .next_to_forward(T0 + NOTARIZED_REJECTION_RETRY_DELAY)
+        .expect("rejection expired");
+    assert_eq!(next.block.digest(), a.digest());
 
-    // Re-recording the body clears the marker.
+    // Re-recording the body clears the timestamp.
+    directory.mark_rejected(&a.digest(), T0);
     directory.record_block(a.clone().into());
-    let next = directory.next_to_forward().expect("marker cleared");
+    let next = directory.next_to_forward(T0).expect("timestamp cleared");
     assert_eq!(next.block.digest(), a.digest());
 
     // Blocks above the rejected one are unaffected once the cursor is
     // past it.
-    directory.mark_rejected(&a.digest());
+    directory.mark_rejected(&a.digest(), T0);
     directory.record_execution_notarized(Height::new(11), a.digest());
-    let next = directory.next_to_forward().expect("chain continues");
-    assert_eq!(next.block.digest(), b.digest());
-
-    // The retry timer lifts rejections wholesale.
-    directory.mark_rejected(&b.digest());
-    assert!(directory.next_to_forward().is_none());
-    directory.clear_rejections();
-    let next = directory.next_to_forward().expect("rejection lifted");
+    let next = directory.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b.digest());
 }
 
