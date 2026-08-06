@@ -17,11 +17,12 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # GitHub user ID 258930814 is tempoxyz-bot.
     if: >-
       github.event_name == 'pull_request_target' ||
       (
         github.event_name == 'pull_request_review' &&
-        github.event.review.user.login == 'tempoxyz-bot' &&
+        github.event.review.user.id == 258930814 &&
         startsWith(github.event.review.body, ':eye: **Cyclops Review**') &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.pull_request.user.login != 'dependabot[bot]'
@@ -41,7 +42,7 @@ jobs:
             });
 
             const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
-            const cyclopsBotLogin = 'tempoxyz-bot';
+            const cyclopsBotId = 258930814; // tempoxyz-bot
             const fork = pull.head.repo?.full_name !== repoFullName;
             const dependabot = pull.user.login === 'dependabot[bot]';
             let completedReview;
@@ -54,7 +55,7 @@ jobs:
                 per_page: 100,
               });
               completedReview = reviews.find(review =>
-                review.user?.login === cyclopsBotLogin &&
+                review.user?.id === cyclopsBotId &&
                 review.body?.startsWith(':eye: **Cyclops Review**')
               );
             }
