@@ -55,7 +55,7 @@ use tempo_precompiles::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{ContractStorage, StorageCtx, evm::EvmPrecompileStorageProvider},
+    storage::{ContractStorage, StorageCtx, evm::EvmPrecompileExecution},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -732,9 +732,14 @@ fn with_evm_storage<R>(evm: &mut TempoEvm<'_>, f: impl FnOnce() -> R) -> R {
     let actions = evm.ext().actions.clone();
     let non_creditable_slots = evm.ext().non_creditable_slots.clone();
     let mut gas = GasTracker::new(u64::MAX);
-    let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
-        .with_actions(actions)
-        .with_non_creditable_slots(non_creditable_slots);
+    let mut storage = EvmPrecompileExecution::new_storage(
+        evm,
+        &mut gas,
+        spec,
+        false,
+        actions,
+        non_creditable_slots,
+    );
     let result = StorageCtx::enter(&mut storage, f);
     drop(storage);
 

@@ -105,7 +105,7 @@ mod tests {
         nonce::NonceManager,
         storage::{
             ContractStorage, FromWord, Handler, StorageAction, StorageActions, StorageCtx,
-            StorageKey, evm::EvmPrecompileStorageProvider,
+            StorageKey, evm::EvmPrecompileExecution,
         },
         storage_credits::{CreditMode, StorageCredits},
         test_util::TIP20Setup,
@@ -1470,7 +1470,7 @@ mod tests {
         tempo_evm.set_block(block);
 
         let spec = tempo_evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut tempo_evm, spec);
+        let mut storage = EvmPrecompileExecution::new_max_gas(&mut tempo_evm, spec);
         _ = StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(Address::ZERO).apply())?;
         drop(storage);
 
@@ -1574,7 +1574,7 @@ mod tests {
         // Set up TIP20 using the storage context pattern
         {
             let spec = evm.config_spec_id();
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 TIP20Setup::path_usd(caller)
                     .with_issuer(caller)
@@ -1700,7 +1700,7 @@ mod tests {
 
         // Set up TIP20 first (required for fee token validation)
         let spec = evm.config_spec_id();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
         StorageCtx::enter(&mut provider, || {
             TIP20Setup::path_usd(caller)
@@ -1723,7 +1723,7 @@ mod tests {
         let tx_env1 = Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx1), caller).into();
 
         let spec = evm.config_spec_id();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
         let slot = StorageCtx::enter(&mut provider, || {
             TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -1737,7 +1737,7 @@ mod tests {
         assert_eq!(result1.tx_gas_used(), 28_671);
 
         let spec = evm.config_spec_id();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
         let slot = StorageCtx::enter(&mut provider, || {
             TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -1764,7 +1764,7 @@ mod tests {
         assert_eq!(result2.tx_gas_used(), 31_286);
 
         let spec = evm.config_spec_id();
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
         let slot = StorageCtx::enter(&mut provider, || {
             TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[caller].read()
@@ -1938,7 +1938,7 @@ mod tests {
         // Set up TIP20 for fee payment.
         {
             let spec = evm.config_spec_id();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
@@ -1987,7 +1987,7 @@ mod tests {
         let mut evm = create_funded_evm_t3(caller);
         {
             let spec = evm.config_spec_id();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
@@ -4821,7 +4821,7 @@ mod tests {
         // Set up TIP20 for fee payment
         {
             let spec = evm.config_spec_id();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
             StorageCtx::enter(&mut provider, || {
                 TIP20Setup::path_usd(caller)
@@ -4843,7 +4843,7 @@ mod tests {
         // Verify key does NOT exist before the transaction
         {
             let spec = evm.config_spec_id();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
             let key_exists = StorageCtx::enter(&mut provider, || {
                 let keychain = AccountKeychain::default();
@@ -4901,7 +4901,7 @@ mod tests {
         // This tests that storage changes are properly reverted on failure
         {
             let spec = evm.config_spec_id();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
             let key_after_fail = StorageCtx::enter(&mut provider, || {
                 let keychain = AccountKeychain::default();
@@ -4946,7 +4946,7 @@ mod tests {
         // Verify the key was authorized
         {
             let spec = evm.config_spec_id();
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
 
             let key_after_success = StorageCtx::enter(&mut provider, || {
                 let keychain = AccountKeychain::default();
@@ -4997,7 +4997,7 @@ mod tests {
                 // Use default cfg for TIP20 setup — the test infrastructure's
                 // `is_initialized` check uses an unsafe `as_hashmap()` cast that
                 // only works with default gas params.
-                let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+                let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
                 StorageCtx::enter(&mut provider, || {
                     TIP20Setup::path_usd(caller)
                         .with_issuer(caller)
@@ -5033,7 +5033,7 @@ mod tests {
 
             let key_expiry = {
                 let spec = evm.config_spec_id();
-                let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+                let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
                 let key = StorageCtx::enter(&mut provider, || {
                     AccountKeychain::default().keys[caller][access_key.address].read()
                 })?;
@@ -5093,7 +5093,7 @@ mod tests {
             fund_account(&mut evm, caller);
             {
                 let spec = evm.config_spec_id();
-                let mut provider = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+                let mut provider = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
                 StorageCtx::enter(&mut provider, || {
                     TIP20Setup::path_usd(caller)
                         .with_issuer(caller)
@@ -5337,7 +5337,7 @@ mod tests {
         let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
 
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
         StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(admin).apply()).unwrap();
         drop(storage);
 
@@ -5388,7 +5388,7 @@ mod tests {
         let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
 
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
         StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(admin).apply()).unwrap();
         drop(storage);
 

@@ -25,6 +25,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint},
     interpreter::gas::{KECCAK256, KECCAK256WORD},
+    precompiles::{PrecompileHalt, PrecompileResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoBlockEnv;
@@ -35,7 +36,7 @@ use crate::error::{Result, TempoPrecompileError};
 ///
 /// # Implementations
 ///
-/// - `EvmPrecompileStorageProvider` - Production EVM storage
+/// - `EvmPrecompileExecution` - Production EVM storage and execution
 /// - `HashMapStorageProvider` - Test storage
 ///
 /// # Sync with `[StorageCtx]`
@@ -148,6 +149,27 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Executes a regular child call from the current precompile frame.
+    fn call(&mut self, _target: Address, _input: Bytes, _gas_limit: u64) -> PrecompileResult {
+        Err(
+            PrecompileHalt::Other("nested precompile calls require a live EVM context".into())
+                .into(),
+        )
+    }
+
+    /// Executes a static child call from the current precompile frame.
+    fn static_call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+    ) -> PrecompileResult {
+        Err(
+            PrecompileHalt::Other("nested precompile calls require a live EVM context".into())
+                .into(),
+        )
+    }
 
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))

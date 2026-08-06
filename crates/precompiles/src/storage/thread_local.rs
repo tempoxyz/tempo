@@ -7,7 +7,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::precompile::PrecompileOutput,
     interpreter::GasTracker,
-    precompiles::{PrecompileError, PrecompileResult},
+    precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     version::GasParams,
 };
 use scoped_tls::scoped_thread_local;
@@ -19,7 +19,7 @@ use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
         PrecompileStorageProvider, StorageActions,
-        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
+        evm::{EvmPrecompileExecution, EvmStorageExt},
     },
 };
 
@@ -135,10 +135,15 @@ impl StorageCtx {
         let actions = evm.ext().storage_actions();
         let non_creditable_slots = evm.ext().non_creditable_slots();
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots)
-            .with_gas_params(gas_params);
+        let mut storage = EvmPrecompileExecution::new_storage(
+            evm,
+            &mut gas,
+            spec,
+            false,
+            actions,
+            non_creditable_slots,
+        )
+        .with_gas_params(gas_params);
         storage.set_tip1060_storage_credits(false);
         let result = Self::enter(&mut storage, f);
         (result, gas)
@@ -157,9 +162,14 @@ impl StorageCtx {
         let actions = evm.ext().storage_actions();
         let non_creditable_slots = evm.ext().non_creditable_slots();
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots);
+        let mut storage = EvmPrecompileExecution::new_storage(
+            evm,
+            gas,
+            spec,
+            false,
+            actions,
+            non_creditable_slots,
+        );
         storage.set_tip1060_storage_credits(tip1060_storage_credits);
         Self::enter(&mut storage, f)
     }
@@ -352,6 +362,42 @@ impl StorageCtx {
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
+    }
+
+    /// Executes a regular child call from the current precompile frame.
+    pub fn call(target: Address, input: Bytes, gas_limit: u64) -> PrecompileResult {
+        if !STORAGE.is_set() {
+            return Err(PrecompileHalt::Other(
+                "nested precompile calls require a live EVM context".into(),
+            )
+            .into());
+        }
+        STORAGE.with(|cell| {
+            let mut storage = cell.try_borrow_mut().map_err(|_| {
+                PrecompileHalt::Other(
+                    "nested precompile call attempted during a storage operation".into(),
+                )
+            })?;
+            (**storage).call(target, input, gas_limit)
+        })
+    }
+
+    /// Executes a static child call from the current precompile frame.
+    pub fn static_call(target: Address, input: Bytes, gas_limit: u64) -> PrecompileResult {
+        if !STORAGE.is_set() {
+            return Err(PrecompileHalt::Other(
+                "nested precompile calls require a live EVM context".into(),
+            )
+            .into());
+        }
+        STORAGE.with(|cell| {
+            let mut storage = cell.try_borrow_mut().map_err(|_| {
+                PrecompileHalt::Other(
+                    "nested precompile call attempted during a storage operation".into(),
+                )
+            })?;
+            (**storage).static_call(target, input, gas_limit)
+        })
     }
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.

@@ -40,7 +40,7 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, actions::StorageActions, evm::EvmPrecompileStorageProvider},
+    storage::{StorageCtx, actions::StorageActions, evm::EvmPrecompileExecution},
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
@@ -60,8 +60,9 @@ use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
+    env::TxEnv,
     evm::precompile::PrecompileProvider,
-    interpreter::{GasTracker, Message, MessageKind},
+    interpreter::{GasTracker, Message},
     precompiles::{PrecompileError, PrecompileResult},
 };
 
@@ -223,11 +224,16 @@ where
             )));
         }
 
-        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
-            .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
-        Some(StorageCtx::enter(&mut storage, || {
+        let mut execution = EvmPrecompileExecution::new(
+            evm,
+            gas,
+            TxEnv::<T>::default(),
+            message,
+            self.spec,
+            self.actions.clone(),
+            self.non_creditable_slots.clone(),
+        );
+        Some(StorageCtx::enter(&mut execution, || {
             self.call_tempo(message.code_address, &message.input, message.caller)
         }))
     }
@@ -253,18 +259,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::storage::{
+        StorageCtx, evm::EvmPrecompileExecution, hashmap::HashMapStorageProvider,
+    };
     use alloy::{
         primitives::{Bytes, U256, bytes},
-        sol_types::SolCall,
+        sol_types::{SolCall, SolValue},
     };
     use evm2::{
         BaseEvmConfigSelector, ExecutionConfig,
         bytecode::Bytecode,
         evm::{
             AccountInfo, InMemoryDB,
-            precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
+            precompile::{PrecompileOutput, PrecompileProvider},
         },
+        interpreter::MessageKind,
         registry::TxRegistry,
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
@@ -317,7 +326,7 @@ mod tests {
             TempoBlockEnv::default(),
             TxRegistry::new(),
             database,
-            NoPrecompiles::default(),
+            test_tempo_precompiles(spec),
         )
     }
 
@@ -438,6 +447,43 @@ mod tests {
             result.is_ok(),
             "view function should not revert in static context"
         );
+    }
+
+    #[test]
+    fn test_storage_context_calls_execute_nested_tempo_precompile() {
+        let spec = TempoHardfork::T3;
+        let mut evm = test_evm(spec, true);
+        let mut gas = GasTracker::new(1_000_000);
+        let mut execution = EvmPrecompileExecution::new(
+            &mut evm,
+            &mut gas,
+            TxEnv::<TestTypes>::default(),
+            &Message::<TestTypes> {
+                kind: MessageKind::Call,
+                destination: TIP20_FACTORY_ADDRESS,
+                code_address: TIP20_FACTORY_ADDRESS,
+                ..Default::default()
+            },
+            spec,
+            StorageActions::disabled(),
+            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+        );
+        let calldata = ITIP20::balanceOfCall {
+            account: Address::ZERO,
+        }
+        .abi_encode();
+        let (result, static_result) = StorageCtx::enter(&mut execution, || {
+            let result = StorageCtx::call(PATH_USD_ADDRESS, calldata.clone().into(), 500_000)
+                .expect("nested call should succeed");
+            let static_result = StorageCtx::static_call(PATH_USD_ADDRESS, calldata.into(), 500_000)
+                .expect("nested static call should succeed");
+            (result, static_result)
+        });
+
+        assert_eq!(U256::abi_decode(result.bytes()).unwrap(), U256::ZERO);
+
+        assert_eq!(U256::abi_decode(static_result.bytes()).unwrap(), U256::ZERO);
+        assert!(gas.spent() > 0);
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly
@@ -572,7 +618,7 @@ mod tests {
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
@@ -608,7 +654,7 @@ mod tests {
         //    since we pre-fund recipient): state gas used must be less than gas used
         {
             // Pre-fund recipient so the transfer is warm SSTORE (nonzero->nonzero)
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_mint(recipient, U256::from(1))
@@ -656,7 +702,7 @@ mod tests {
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
