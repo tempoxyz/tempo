@@ -142,7 +142,7 @@ impl TempoInvalidTransaction {
 }
 
 pub(crate) enum TempoPrecompileErrorDisposition {
-    Recoverable(String),
+    Recoverable(TempoPrecompileError),
     Fatal(HandlerError),
 }
 
@@ -153,7 +153,6 @@ pub(crate) enum TempoPrecompileErrorDisposition {
 pub(crate) fn classify_tempo_precompile_error(
     error: TempoPrecompileError,
 ) -> TempoPrecompileErrorDisposition {
-    let message = error.to_string();
     match error {
         TempoPrecompileError::EvmError(code) => {
             TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(code))
@@ -161,9 +160,9 @@ pub(crate) fn classify_tempo_precompile_error(
         error @ TempoPrecompileError::Fatal(_) => {
             TempoPrecompileErrorDisposition::Fatal(HandlerError::external(error))
         }
-        error => match error.into_precompile_result() {
+        error => match error.clone().into_precompile_result() {
             Err(PrecompileError::Revert(_)) | Err(PrecompileError::Halt(_)) => {
-                TempoPrecompileErrorDisposition::Recoverable(message)
+                TempoPrecompileErrorDisposition::Recoverable(error)
             }
             Err(PrecompileError::Fatal(error)) => {
                 TempoPrecompileErrorDisposition::Fatal(HandlerError::External(error))
@@ -175,8 +174,8 @@ pub(crate) fn classify_tempo_precompile_error(
 
 pub(crate) fn map_tempo_precompile_error(error: TempoPrecompileError) -> HandlerError {
     match classify_tempo_precompile_error(error) {
-        TempoPrecompileErrorDisposition::Recoverable(message) => {
-            HandlerError::external(TempoInvalidTransaction::PrecompileError(message))
+        TempoPrecompileErrorDisposition::Recoverable(error) => {
+            HandlerError::external(TempoInvalidTransaction::PrecompileError(error.to_string()))
         }
         TempoPrecompileErrorDisposition::Fatal(error) => error,
     }

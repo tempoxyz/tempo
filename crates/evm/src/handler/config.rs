@@ -413,16 +413,21 @@ pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError
     HandlerError::external(error.into())
 }
 
-fn map_protocol_result<R>(
+fn map_protocol_result<R>(result: TempoResult<R>) -> Result<R, TempoPrecompileErrorDisposition> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(classify_tempo_precompile_error(error)),
+    }
+}
+
+fn map_protocol_handler_result<R>(
     result: TempoResult<R>,
     map_recoverable: impl FnOnce(TempoPrecompileError) -> HandlerError,
 ) -> HandlerResult<R> {
-    match result {
+    match map_protocol_result(result) {
         Ok(value) => Ok(value),
-        Err(error) => match classify_tempo_precompile_error(error.clone()) {
-            TempoPrecompileErrorDisposition::Recoverable(_) => Err(map_recoverable(error)),
-            TempoPrecompileErrorDisposition::Fatal(error) => Err(error),
-        },
+        Err(TempoPrecompileErrorDisposition::Recoverable(error)) => Err(map_recoverable(error)),
+        Err(TempoPrecompileErrorDisposition::Fatal(error)) => Err(error),
     }
 }
 
@@ -471,7 +476,7 @@ fn settle_storage_credit_refunds(
         return Ok(());
     }
 
-    let settled = map_protocol_result(
+    let settled = map_protocol_handler_result(
         StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut storage = StorageCtx;
             let mut settled = 0i64;
@@ -585,20 +590,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             U256::ZERO
         } else {
             let checkpoint = host.state().checkpoint();
-            match fee_manager.collect_fee_post_tx(
+            match map_protocol_result(fee_manager.collect_fee_post_tx(
                 host,
                 fee_payer,
                 actual_spending,
                 refund,
                 fee_token,
                 beneficiary,
-            ) {
+            )) {
                 Ok(validator_fee) => validator_fee,
-                Err(error) => {
-                    let message = match classify_tempo_precompile_error(error) {
-                        TempoPrecompileErrorDisposition::Recoverable(message) => message,
-                        TempoPrecompileErrorDisposition::Fatal(error) => return Err(error),
-                    };
+                Err(TempoPrecompileErrorDisposition::Recoverable(error)) => {
+                    let message = error.to_string();
 
                     // A failed user execution already has the canonical receipt outcome. Any
                     // recoverable precompile revert or halt while refunding or settling its fee
@@ -618,6 +620,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                     tracing::warn!(error = %message, "fee settlement failed after successful execution");
                     U256::ZERO
                 }
+                Err(TempoPrecompileErrorDisposition::Fatal(error)) => return Err(error),
             }
         };
         result.ext.validator_fee = validator_fee;
@@ -646,7 +649,7 @@ impl TempoHandlerHooks {
         };
         let spec = host.config_spec_id();
 
-        map_protocol_result(
+        map_protocol_handler_result(
             StorageCtx::enter_evm_without_tip1060_accounting(host, || {
                 AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
                 TIP20ChannelReserve::new()
@@ -656,7 +659,7 @@ impl TempoHandlerHooks {
         )?;
 
         let fee_manager = host.ext().fee_manager.clone();
-        let fee_token = map_protocol_result(
+        let fee_token = map_protocol_handler_result(
             fee_manager.get_fee_token(host, envelope, fee_payer, spec),
             map_tempo_precompile_error,
         )?;
@@ -703,7 +706,7 @@ impl TempoHandlerHooks {
             )
         {
             host.state_mut().rollback(checkpoint, features);
-            return map_protocol_result(Err(error), |error| {
+            return map_protocol_handler_result(Err(error), |error| {
                 map_fee_protocol_error(
                     error,
                     host,
