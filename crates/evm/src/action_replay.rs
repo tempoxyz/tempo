@@ -17,7 +17,7 @@ use reth_revm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
-    nonce::{NonceManager, expiring_nonce_max_expiry_secs, expiring_nonce_set_capacity},
+    nonce::NonceManager,
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
@@ -227,8 +227,8 @@ where
         block_timestamp: u64,
     ) -> Result<(), BlockExecutionError> {
         let spec = self.inner.evm.ctx().cfg.spec;
-        let max_expiry_secs = expiring_nonce_max_expiry_secs(spec);
-        let capacity = expiring_nonce_set_capacity(spec);
+        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+        let capacity = spec.expiring_nonce_set_capacity();
         if expiring_nonce.valid_before <= block_timestamp
             || expiring_nonce.valid_before > block_timestamp.saturating_add(max_expiry_secs)
         {

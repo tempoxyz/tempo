@@ -22,8 +22,7 @@ pub use key_authorization::{
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, InvalidValidAfter, InvalidValidBefore,
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
-    SignatureType, TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS,
-    TEMPO_TX_TYPE_ID, TempoTransaction, validate_calls,
+    SignatureType, TEMPO_EXPIRING_NONCE_KEY, TEMPO_TX_TYPE_ID, TempoTransaction, validate_calls,
 };
 pub use tt_signed::AASigned;
 

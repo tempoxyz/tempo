@@ -15,7 +15,6 @@ use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
-use tempo_precompiles::nonce::expiring_nonce_max_expiry_secs;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -693,7 +692,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
 /// deterministic by signing + recovering with a random signer.
 pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     let is_t3 = env.hardfork().is_t3();
-    let max_expiry_secs = expiring_nonce_max_expiry_secs(env.hardfork());
+    let max_expiry_secs = env.hardfork().expiring_nonce_max_expiry_secs();
     let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
     let signer = PrivateKeySigner::random();
     let signer_addr = signer.address();
@@ -1742,7 +1741,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
 
     let uses_p256 = matches!(test_case.key_type, KeyType::P256 | KeyType::WebAuthn);
     let chain_id = env.chain_id();
-    let max_expiry_secs = expiring_nonce_max_expiry_secs(env.hardfork());
+    let max_expiry_secs = env.hardfork().expiring_nonce_max_expiry_secs();
 
     if uses_p256 && test_case.pre_bump_nonce.is_some() {
         return Err(eyre::eyre!(

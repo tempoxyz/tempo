@@ -47,10 +47,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        INonce::getNonceCall, NonceManager, expiring_nonce_max_expiry_secs,
-        expiring_nonce_set_capacity,
-    },
+    nonce::{INonce::getNonceCall, NonceManager},
     storage::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
@@ -1121,8 +1118,8 @@ where
         }
 
         if is_expiring_nonce {
-            let max_expiry_secs = expiring_nonce_max_expiry_secs(*spec);
-            let capacity = expiring_nonce_set_capacity(*spec);
+            let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+            let capacity = spec.expiring_nonce_set_capacity();
             // Expiring nonce transaction replay protection:
             // - Pre-T1B: use tx_hash for backwards-compatible behavior.
             // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))

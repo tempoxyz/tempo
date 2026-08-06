@@ -15,35 +15,6 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256};
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS;
-
-/// Capacity of the expiring nonce seen set from T10 (supports 10k TPS for 5 minutes).
-pub const POST_T10_EXPIRING_NONCE_SET_CAPACITY: u32 = 3_000_000;
-
-/// Maximum allowed skew for expiring nonce transactions from T10 (5 minutes).
-/// Transactions must have valid_before in (now, now + MAX_EXPIRY_SECS].
-pub const POST_T10_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 300;
-
-const PRE_T10_EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
-
-/// Returns the expiring nonce replay-protection capacity for `spec`.
-pub const fn expiring_nonce_set_capacity(spec: TempoHardfork) -> u32 {
-    if spec.is_t10() {
-        POST_T10_EXPIRING_NONCE_SET_CAPACITY
-    } else {
-        PRE_T10_EXPIRING_NONCE_SET_CAPACITY
-    }
-}
-
-/// Returns the maximum expiring nonce validity window for `spec`.
-pub const fn expiring_nonce_max_expiry_secs(spec: TempoHardfork) -> u64 {
-    if spec.is_t10() {
-        POST_T10_EXPIRING_NONCE_MAX_EXPIRY_SECS
-    } else {
-        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS
-    }
-}
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -156,8 +127,8 @@ impl NonceManager {
     ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
         let spec = self.storage.spec();
-        let max_expiry_secs = expiring_nonce_max_expiry_secs(spec);
-        let capacity = expiring_nonce_set_capacity(spec);
+        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+        let capacity = spec.expiring_nonce_set_capacity();
 
         // 1. Validate expiry window for the active fork.
         if valid_before <= now || valid_before > now.saturating_add(max_expiry_secs) {
@@ -209,13 +180,14 @@ mod tests {
 
     use super::*;
     use alloy::primitives::address;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_expiring_nonce_parameters_activate_at_t10() {
-        assert_eq!(expiring_nonce_max_expiry_secs(TempoHardfork::T9), 30);
-        assert_eq!(expiring_nonce_set_capacity(TempoHardfork::T9), 300_000);
-        assert_eq!(expiring_nonce_max_expiry_secs(TempoHardfork::T10), 300);
-        assert_eq!(expiring_nonce_set_capacity(TempoHardfork::T10), 3_000_000);
+        assert_eq!(TempoHardfork::T9.expiring_nonce_max_expiry_secs(), 30);
+        assert_eq!(TempoHardfork::T9.expiring_nonce_set_capacity(), 300_000);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 300);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 3_000_000);
     }
 
     #[test]
@@ -445,7 +417,7 @@ mod tests {
     }
 
     fn assert_ring_buffer_pointer_wraps_at_capacity(spec: TempoHardfork) -> eyre::Result<()> {
-        let capacity = expiring_nonce_set_capacity(spec);
+        let capacity = spec.expiring_nonce_set_capacity();
         let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
