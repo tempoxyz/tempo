@@ -276,6 +276,16 @@ fn append_genesis_arg(source: &str, previous: &str, hardfork: &str) -> eyre::Res
         hardfork.to_ascii_lowercase()
     );
     output = insert_once(&output, &previous_insert, &new_insert)?;
+
+    let previous_time = format!(
+        "            TempoHardfork::{previous} => Some(self.{}_time),\n",
+        previous.to_ascii_lowercase()
+    );
+    let new_time = format!(
+        "{previous_time}            TempoHardfork::{hardfork} => Some(self.{}_time),\n",
+        hardfork.to_ascii_lowercase()
+    );
+    output = insert_once(&output, &previous_time, &new_time)?;
     Ok(output)
 }
 
@@ -490,6 +500,25 @@ mod tests {
         let updated = append_hardfork_source(&source, "T10", "T11").unwrap();
         assert_eq!(updated.matches("Self::T11 => None").count(), 4);
         assert!(updated.contains("        T11,\n"));
+    }
+
+    #[test]
+    fn appends_genesis_arg_and_hardfork_time() {
+        let source = concat!(
+            "    /// T10 hardfork activation time.\n",
+            "    #[arg(long, default_value = \"0\")]\n",
+            "    t10_time: u64,\n",
+            "        chain_config\n",
+            "            .extra_fields\n",
+            "            .insert_value(\"t10Time\".to_string(), self.t10_time)?;\n",
+            "            TempoHardfork::T10 => Some(self.t10_time),\n",
+        );
+
+        let updated = append_genesis_arg(source, "T10", "T11").unwrap();
+
+        assert!(updated.contains("    t11_time: u64,"));
+        assert!(updated.contains(".insert_value(\"t11Time\".to_string(), self.t11_time)?;"));
+        assert!(updated.contains("TempoHardfork::T11 => Some(self.t11_time),"));
     }
 
     #[test]
