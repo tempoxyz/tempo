@@ -6,12 +6,6 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NetworkIdentity(pub <MinSig as Variant>::Public);
 
-impl NetworkIdentity {
-    pub(crate) fn public_key(&self) -> <MinSig as Variant>::Public {
-        self.0
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ParseNetworkIdentityError {
     #[error("invalid hex string: {0}")]

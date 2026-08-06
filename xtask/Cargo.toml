@@ -16,7 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
 tempo-consensus-config.workspace = true
@@ -29,6 +29,7 @@ tempo-revm.workspace = true
 alloy = { workspace = true, features = [
   "genesis",
   "providers",
+  "provider-ws",
   "reqwest",
   "reqwest-rustls-tls",
   "signers",
@@ -39,6 +40,7 @@ alloy = { workspace = true, features = [
   "getrandom",
 ] }
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 bytes.workspace = true
@@ -56,6 +58,7 @@ eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true
 rand_08.workspace = true
+rand.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true
 reth-db.workspace = true

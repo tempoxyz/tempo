@@ -1,0 +1,271 @@
+# Neobank swap workload and shared setup for operation-specific presets.
+#
+# This preset benchmarks the AlphaUSD-to-pathUSD DirectSwap transaction. The
+# deposit and withdrawal presets include this file and select a
+# single operation from the shared contract setup below.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+  fee_payers:
+    mnemonic: "test test test test test test test test test test test junk"
+    index: 100000
+
+artifacts:
+  ERC20: ../erc20.abi.json
+  DirectSwapABI: ../directswap.abi.json
+  ERC4626Vault: ../erc4626-vault.abi.json
+  DirectSwap:
+    abi: ../directswap.abi.json
+    bytecode: ../neobank-bytecodes/directswap.bin
+  PrivyFeeWrapper:
+    abi: ../erc4626-vault.abi.json
+    bytecode: ../neobank-bytecodes/privy-fee-wrapper.bin
+  PrivyAdapter:
+    bytecode: ../neobank-bytecodes/privy-adapter.bin
+  SentoraPathUSDVault:
+    abi: ../erc4626-vault.abi.json
+    bytecode: ../neobank-bytecodes/sentora-pathusd-vault.bin
+  SentoraAdapter:
+    bytecode: ../neobank-bytecodes/sentora-adapter.bin
+  MorphoMarket:
+    bytecode: ../neobank-bytecodes/morpho-market.bin
+  Oracle:
+    bytecode: ../neobank-bytecodes/oracle.bin
+  DirectSwapRoute:
+    bytecode: ../neobank-bytecodes/directswap-route.bin
+  Wrapper:
+    bytecode: ../neobank-bytecodes/wrapper.bin
+
+setup:
+  steps:
+    - id: directswap
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: DirectSwap
+        gas_limit: 8000000
+        constructor_args: []
+    - id: privy_fee_wrapper
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: PrivyFeeWrapper
+        gas_limit: 30000000
+        constructor_args: []
+    - id: privy_adapter
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: PrivyAdapter
+        gas_limit: 8000000
+        constructor_args: []
+    - id: sentora_pathusd_vault
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: SentoraPathUSDVault
+        gas_limit: 30000000
+        constructor_args: []
+    - id: sentora_adapter
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: SentoraAdapter
+        gas_limit: 20000000
+        constructor_args: []
+    - id: morpho_market
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: MorphoMarket
+        gas_limit: 30000000
+        constructor_args: []
+    - id: oracle
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: Oracle
+        gas_limit: 8000000
+        constructor_args: []
+    - id: directswap_route
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: DirectSwapRoute
+        gas_limit: 10000000
+        constructor_args: []
+    - id: wrapper
+      deploy:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        artifact: Wrapper
+        gas_limit: 1000000
+        constructor_args: []
+    - id: directswap_route_seed_token0
+      tx:
+        type: eip1559
+        from:
+          pool: fee_payers
+          select: { index: 0 }
+        gas_limit: 1000000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: transfer
+          args:
+            - { var: setup.directswap_route.address }
+            - 100000000000
+    - id: directswap_seed_token0
+      # users[0] is the devnet TIP20 issuer. Minting the reserve directly keeps
+      # swap liquidity independent of the per-account faucet allocation.
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: mint
+          args:
+            - { var: setup.directswap.address }
+            - "1000000000000000000"
+
+templates:
+  neobank_directswap:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 10
+    calls: []
+
+  neobank_vault_operation:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    sponsor:
+      pool: fee_payers
+      select: { index: 0 }
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 10
+    calls: []
+
+sequences:
+  neobank_swaps:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: random
+      amount:
+        u256:
+          uniform: [100000000, 1000000000]
+    steps:
+      - name: alphausd_to_pathusd
+        template: neobank_directswap
+        with:
+          from: { var: user.ref }
+          calls:
+            - to: "0x20c0000000000000000000000000000000000001"
+              abi: ERC20
+              function: approve
+              args:
+                - { var: setup.directswap.address }
+                - { var: amount }
+            - to: { var: setup.directswap.address }
+              abi: DirectSwapABI
+              function: swapExactIn
+              args:
+                - "0x20c0000000000000000000000000000000000001"
+                - "0x20c0000000000000000000000000000000000000"
+                - { var: amount }
+  neobank_deposits:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: random
+    steps:
+      - name: deposit_pathusd
+        template: neobank_vault_operation
+        with:
+          from: { var: user.ref }
+          calls:
+            - to: "0x20c0000000000000000000000000000000000000"
+              abi: ERC20
+              function: approve
+              args:
+                - { var: setup.privy_fee_wrapper.address }
+                - 1
+            - to: { var: setup.privy_fee_wrapper.address }
+              abi: ERC4626Vault
+              function: deposit
+              args:
+                - 1
+                - { var: user.address }
+
+  neobank_withdrawals:
+    bindings:
+      user:
+        account:
+          pool: users
+          select: { index: 0 }
+    steps:
+      - name: withdraw_pathusd
+        template: neobank_vault_operation
+        with:
+          from: { var: user.ref }
+          calls:
+            - to: { var: setup.privy_fee_wrapper.address }
+              abi: ERC4626Vault
+              function: withdraw
+              args:
+                - 1
+                - { var: user.address }
+                - { var: user.address }
+
+mix:
+  - sequence: neobank_swaps
+    weight: 100

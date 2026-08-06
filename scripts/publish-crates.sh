@@ -118,8 +118,9 @@ cp -R "$REPO_ROOT/crates/chainspec"  "$TMP_WORK_DIR/chainspec"
 cp -R "$REPO_ROOT/crates/alloy"      "$TMP_WORK_DIR/alloy"
 
 # ── 1. Delete compat modules ──────────────────────────────────────────────────
-log "Deleting reth_compat modules …"
+log "Deleting node-internal compatibility modules …"
 rm -rf "$TMP_WORK_DIR/primitives/src/reth_compat"
+rm -f  "$TMP_WORK_DIR/alloy/src/rpc/revm_compat.rs"
 rm -f  "$TMP_WORK_DIR/alloy/src/rpc/reth_compat.rs"
 
 # ── 2. Strip reth/compat references from source ──────────────────────────────
@@ -219,9 +220,11 @@ for feat in reth reth-codec serde-bincode-compat rpc; do
         err "Feature '$feat' still defined in tempo-primitives Cargo.toml"
 done
 
-# Alloy: no reth feature
-grep -qE "^\s*reth\s*=" "$TMP_WORK_DIR/alloy/Cargo.toml" && \
-    err "Feature 'reth' still defined in tempo-alloy Cargo.toml"
+# Alloy: no node-internal compatibility features
+for feat in revm reth; do
+    grep -qE "^\s*${feat}\s*=" "$TMP_WORK_DIR/alloy/Cargo.toml" && \
+        err "Feature '$feat' still defined in tempo-alloy Cargo.toml"
+done
 
 # Source: no forbidden references
 (
@@ -233,6 +236,8 @@ grep -qE "^\s*reth\s*=" "$TMP_WORK_DIR/alloy/Cargo.toml" && \
 
 grep -rq 'feature = "reth"' "$TMP_WORK_DIR/alloy/src/" && \
     err "reth-gated code still in tempo-alloy source"
+grep -rq 'feature = "revm"' "$TMP_WORK_DIR/alloy/src/" && \
+    err "revm-gated code still in tempo-alloy source"
 
 # Exclude hardfork.rs: the tempo_hardfork! macro generates #[cfg(feature = "reth")]
 # blocks that are dead code when the reth feature is absent (suppressed via check-cfg).

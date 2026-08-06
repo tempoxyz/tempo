@@ -4,7 +4,7 @@ use alloy_evm::{
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::{
-            DBErrorMarker,
+            ContextTr, DBErrorMarker, JournalTr,
             result::{EVMError, ResultAndState, ResultGas},
         },
         inspector::NoOpInspector,
@@ -27,7 +27,7 @@ use tempo_revm::{
     evm::TempoContext, handler::TempoEvmHandler,
 };
 
-use crate::TempoBlockEnv;
+use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
@@ -192,6 +192,33 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 }
 
+impl<DB, I> TempoPoolValidationEvm for TempoEvm<DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<DB>>,
+{
+    fn configure_for_pool(&mut self) {
+        // The pool admits future-time and future-nonce transactions and performs its own cached
+        // AMM liquidity check after EVM validation.
+        self.inner.skip_valid_after_check = true;
+        self.inner.skip_liquidity_check = true;
+        self.ctx_mut().cfg.disable_nonce_check = true;
+    }
+
+    fn validate_pool_transaction(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> (TempoPoolValidationResult<DB::Error>, TempoTxEnv) {
+        let result = self.validate_transaction(tx);
+        let tx = core::mem::take(&mut self.ctx_mut().tx);
+        // Discard this transaction's journaled writes (nonce bumps, fee deduction,
+        // key authorisation) while keeping loaded accounts and storage warm for the
+        // rest of the batch.
+        self.ctx_mut().journal_mut().discard_tx();
+        (result, tx)
+    }
+}
+
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
     DB: Database,
@@ -325,15 +352,19 @@ mod tests {
     use indexmap::IndexMap;
     use revm::{
         DatabaseCommit, DatabaseRef,
-        context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
+        context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
         database::{EmptyDB, in_memory_db::CacheDB},
-        state::EvmState,
+        state::{AccountInfo, Bytecode, EvmState},
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{
+        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
@@ -347,11 +378,27 @@ mod tests {
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
+        zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
-    use tempo_primitives::transaction::Call;
+    use tempo_primitives::{TempoAddressExt, transaction::Call};
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
+
+    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+        let code = Bytecode::new_legacy([0xef].into());
+        db.insert_account_info(
+            ZONE_FACTORY_ADDRESS,
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
+            .unwrap();
+    }
 
     #[test]
     fn can_execute_system_tx() {
@@ -506,6 +553,149 @@ mod tests {
         assert!(result.result.is_success());
     }
 
+    #[test]
+    fn zone_factory_created_portal_executes_deployed_runtime() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        // Returns 42 for every call. The portal proxy should delegate to this deployed runtime.
+        let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
+            0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+        ]));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo {
+                code_hash: logic_runtime.hash_slow(),
+                code: Some(logic_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin).apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let result = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: true,
+                        gatewayMode: true,
+                        allowedAccounts: vec![admin],
+                        zoneGateways: vec![Address::repeat_byte(0x44)],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            result.result.is_success(),
+            "createZone failed: {:?}",
+            result.result
+        );
+        assert!(result.result.tx_gas_used() >= ZONE_CREATION_GAS);
+        assert!(result.result.gas().block_regular_gas_used() >= ZONE_CREATION_GAS);
+        let create_output = match &result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output.clone(),
+            result => panic!("unexpected createZone result: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create_output).unwrap();
+        evm.db_mut().commit(result.state);
+
+        let result = evm
+            .transact_system_call(Address::ZERO, created.portal, Bytes::new())
+            .unwrap();
+        let output = match result.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("portal call failed: {result:?}"),
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_factory_creation_oog_below_minimum_reverts_state() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let mut env = evm_env_with_spec(TempoHardfork::T10);
+        env.block_env.basefee = 0;
+        let mut db = CacheDB::new(EmptyDB::default());
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, env);
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin).apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let input = IZoneFactory::createZoneCall {
+            params: IZoneFactory::CreateZoneParams {
+                initialToken: PATH_USD_ADDRESS,
+                accessMode: true,
+                gatewayMode: true,
+                allowedAccounts: vec![admin],
+                zoneGateways: vec![Address::repeat_byte(0x44)],
+                admin,
+                sequencers: vec![sequencer],
+                threshold: 1,
+                rpcUrl: "https://zone.example".to_string(),
+            },
+        }
+        .abi_encode();
+
+        let result = evm
+            .transact_raw(TempoTxEnv {
+                inner: TxEnv {
+                    caller: owner,
+                    gas_price: 0,
+                    gas_limit: ZONE_CREATION_GAS - 1,
+                    kind: TxKind::Call(ZONE_FACTORY_ADDRESS),
+                    data: input.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_matches!(
+            result.result,
+            ExecutionResult::Halt {
+                reason: TempoHaltReason::Ethereum(HaltReason::OutOfGas(_)),
+                ..
+            }
+        );
+        evm.db_mut().commit(result.state);
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            let factory = ZoneFactory::new();
+            assert_eq!(factory.next_zone_id()?, 1);
+            assert!(!factory.is_zone_portal(portal_address(1))?);
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .unwrap();
+    }
+
     #[derive(Default)]
     struct StorageState {
         reconstructed: BTreeMap<(Address, U256), U256>,
@@ -574,8 +764,8 @@ mod tests {
                     });
                     storage_state.reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, sload_value, amount_in) => {
-                    let key = (address, slot);
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
+                    let key = (action.address(), slot);
                     let current =
                         storage_state.apply_sload_value(key, sload_value, "FeeAmmSwap", hardfork);
                     let mut pool = Pool::decode_from_slot(current);
@@ -584,11 +774,35 @@ mod tests {
                         compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
                     )
                     .unwrap_or_else(|err| {
-                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
+                        panic!(
+                            "FeeAmmSwap invalid for {:?}:{slot:?} on {hardfork:?}: {err}",
+                            action.address()
+                        )
                     });
                     storage_state
                         .reconstructed
                         .insert(key, pool.encode_to_slot().unwrap());
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    slot,
+                    sload_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    let key = (action.address(), slot);
+                    let current = storage_state.apply_sload_value(
+                        key,
+                        sload_value,
+                        "FeeAmmLiquidityCheck",
+                        hardfork,
+                    );
+                    let pool = Pool::decode_from_slot(current);
+                    assert_eq!(
+                        pool.has_enough_reserve_validator_token(amount_out),
+                        has_enough_liquidity,
+                        "FeeAmmLiquidityCheck mismatch for {:?}:{slot:?} on {hardfork:?}",
+                        action.address(),
+                    );
                 }
             }
         }
@@ -624,6 +838,7 @@ mod tests {
     struct StorageActionSnapshotLabels {
         addresses: BTreeMap<Address, &'static str>,
         slots: BTreeMap<(Address, U256), &'static str>,
+        tip20_slots: BTreeMap<U256, &'static str>,
     }
 
     fn snapshot_storage_actions(
@@ -661,11 +876,23 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap(address, slot, sload_value, amount_in) => {
+                StorageAction::FeeAmmSwap(slot, sload_value, amount_in) => {
                     format!(
                         "FeeAmmSwap({}, {}, {sload_value}, {amount_in})",
-                        labels.address(address),
-                        labels.slot(address, slot),
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
+                    )
+                }
+                StorageAction::FeeAmmLiquidityCheck(
+                    slot,
+                    slot_value,
+                    amount_out,
+                    has_enough_liquidity,
+                ) => {
+                    format!(
+                        "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
+                        labels.address(action.address()),
+                        labels.slot(action.address(), slot),
                     )
                 }
             })
@@ -682,11 +909,14 @@ mod tests {
         }
 
         fn slot(&self, address: Address, slot: U256) -> String {
-            self.slots
-                .get(&(address, slot))
-                .copied()
-                .map(str::to_string)
-                .unwrap_or_else(|| slot.to_string())
+            if address.is_tip20() {
+                self.tip20_slots.get(&slot)
+            } else {
+                self.slots.get(&(address, slot))
+            }
+            .copied()
+            .map(str::to_string)
+            .unwrap_or_else(|| slot.to_string())
         }
     }
 
@@ -705,6 +935,8 @@ mod tests {
             let transfer_amount = U256::from(100);
             let gas_limit = 1_000_000;
             let gas_price = 1_000_000_000u64;
+            let amm_liquidity_reserve = 500_000u128;
+            let amm_liquidity = U256::from(amm_liquidity_reserve);
 
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(*hardfork);
@@ -725,7 +957,7 @@ mod tests {
                 },
             );
 
-            let fee_token =
+            let (fee_token, two_hop_fee_token) =
                 StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
                     TIP20Setup::path_usd(sender)
                         .with_issuer(sender)
@@ -736,6 +968,12 @@ mod tests {
                         .with_issuer(sender)
                         .with_mint(sender, starting_balance)
                         .with_mint(recipient, starting_balance)
+                        .apply()?;
+                    let two_hop_fee_token = TIP20Setup::create("TwoHopFeeToken", "2HOP", sender)
+                        .with_salt(B256::repeat_byte(0x01))
+                        .quote_token(fee_token.address())
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
                         .apply()?;
 
                     let mut fee_manager = TipFeeManager::new();
@@ -749,13 +987,28 @@ mod tests {
                         sender,
                         fee_token.address(),
                         PATH_USD_ADDRESS,
-                        U256::from(500_000),
+                        amm_liquidity,
                         sender,
                     )?;
+                    let two_hop_first_pool_id =
+                        PoolKey::new(two_hop_fee_token.address(), fee_token.address()).get_id();
+                    let two_hop_first_pool_slot =
+                        U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                            .mapping_slot(fee_manager_slots::POOLS);
+                    StorageCtx.sstore(
+                        TIP_FEE_MANAGER_ADDRESS,
+                        two_hop_first_pool_slot,
+                        Pool {
+                            reserve_user_token: 0,
+                            reserve_validator_token: amm_liquidity_reserve,
+                        }
+                        .encode_to_slot()?,
+                    )?;
 
-                    Ok::<Address, tempo_precompiles::error::TempoPrecompileError>(
+                    Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
                         fee_token.address(),
-                    )
+                        two_hop_fee_token.address(),
+                    ))
                 })
                 .expect("TIP20 setup should succeed");
             let setup_state = evm.ctx_mut().journaled_state.finalize();
@@ -765,15 +1018,10 @@ mod tests {
             assert_eq!(evm.take_actions(), Some(vec![]));
 
             let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
-            let sender_fee_token_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
             let fee_manager_balance_slot =
-                TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
-            let fee_manager_fee_token_balance_slot =
                 TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
             let recipient_balance_slot = recipient.mapping_slot(tip20_slots::BALANCES);
             let sender_reward_info_slot = sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
-            let sender_fee_token_reward_info_slot =
-                sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
             let recipient_reward_info_slot = recipient.mapping_slot(tip20_slots::USER_REWARD_INFO);
             let validator_token_slot =
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
@@ -785,6 +1033,15 @@ mod tests {
                 U256::from_be_bytes::<32>(pool_id.into()).mapping_slot(fee_manager_slots::POOLS);
             let pending_pool_reservation_slot = U256::from_be_bytes::<32>(pool_id.into())
                 .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
+            let two_hop_direct_pool_id = PoolKey::new(two_hop_fee_token, PATH_USD_ADDRESS).get_id();
+            let two_hop_direct_pool_slot = U256::from_be_bytes::<32>(two_hop_direct_pool_id.into())
+                .mapping_slot(fee_manager_slots::POOLS);
+            let two_hop_first_pool_id = PoolKey::new(two_hop_fee_token, fee_token).get_id();
+            let two_hop_first_pool_slot = U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                .mapping_slot(fee_manager_slots::POOLS);
+            let two_hop_first_pending_pool_reservation_slot =
+                U256::from_be_bytes::<32>(two_hop_first_pool_id.into())
+                    .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
             let receive_policy_config_slot =
                 recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             let nonce_key = U256::from(42);
@@ -796,43 +1053,42 @@ mod tests {
                 addresses: BTreeMap::from([
                     (PATH_USD_ADDRESS, "PATH_USD"),
                     (fee_token, "FEE_TOKEN"),
+                    (two_hop_fee_token, "TWO_HOP_FEE_TOKEN"),
                     (TIP_FEE_MANAGER_ADDRESS, "TIP_FEE_MANAGER"),
                     (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
                     (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
                     (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
                 ]),
                 slots: BTreeMap::from([
-                    ((PATH_USD_ADDRESS, tip20_slots::CURRENCY), "currency"),
-                    ((PATH_USD_ADDRESS, tip20_slots::TRANSFER_POLICY_ID), "transferPolicyId"),
-                    ((PATH_USD_ADDRESS, tip20_slots::PAUSED), "paused"),
-                    ((PATH_USD_ADDRESS, tip20_slots::GLOBAL_REWARD_PER_TOKEN), "globalRewardPerToken"),
-                    ((PATH_USD_ADDRESS, sender_balance_slot), "balances[sender]"),
-                    ((PATH_USD_ADDRESS, fee_manager_balance_slot), "balances[FeeManager]"),
-                    ((PATH_USD_ADDRESS, recipient_balance_slot), "balances[recipient]"),
-                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[sender].rewardRecipient"),
-                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[sender].rewardPerToken"),
-                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[sender].rewardBalance"),
-                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[recipient].rewardRecipient"),
-                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[recipient].rewardPerToken"),
-                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[recipient].rewardBalance"),
-                    ((fee_token, tip20_slots::CURRENCY), "currency"),
-                    ((fee_token, tip20_slots::TRANSFER_POLICY_ID), "transferPolicyId"),
-                    ((fee_token, tip20_slots::PAUSED), "paused"),
-                    ((fee_token, tip20_slots::GLOBAL_REWARD_PER_TOKEN), "globalRewardPerToken"),
-                    ((fee_token, sender_fee_token_balance_slot), "balances[sender]"),
-                    ((fee_token, fee_manager_fee_token_balance_slot), "balances[FeeManager]"),
-                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[sender].rewardRecipient"),
-                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[sender].rewardPerToken"),
-                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[sender].rewardBalance"),
                     ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),
                     ((TIP_FEE_MANAGER_ADDRESS, user_token_slot), "userTokens[sender]"),
                     ((TIP_FEE_MANAGER_ADDRESS, collected_fees_slot), "collectedFees[beneficiary][PATH_USD]"),
                     ((TIP_FEE_MANAGER_ADDRESS, pool_slot), "pools[FEE_TOKEN][PATH_USD]"),
                     ((TIP_FEE_MANAGER_ADDRESS, pending_pool_reservation_slot), "pendingFeeSwapReservation[FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_direct_pool_slot), "pools[TWO_HOP_FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pool_slot), "pools[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, two_hop_first_pending_pool_reservation_slot), "pendingFeeSwapReservation[TWO_HOP_FEE_TOKEN][FEE_TOKEN]"),
                     ((TIP403_REGISTRY_ADDRESS, receive_policy_config_slot), "receivePolicies[recipient]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(two_hop_fee_token)), "storageCredits[TWO_HOP_FEE_TOKEN]"),
                     ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
+                ]),
+                tip20_slots: BTreeMap::from([
+                    (tip20_slots::CURRENCY, "currency"),
+                    (tip20_slots::QUOTE_TOKEN, "quoteToken"),
+                    (tip20_slots::TRANSFER_POLICY_ID, "transferPolicyId"),
+                    (tip20_slots::PAUSED, "paused"),
+                    (tip20_slots::GLOBAL_REWARD_PER_TOKEN, "globalRewardPerToken"),
+                    (sender_balance_slot, "balances[sender]"),
+                    (fee_manager_balance_slot, "balances[FeeManager]"),
+                    (recipient_balance_slot, "balances[recipient]"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[sender].rewardRecipient"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[sender].rewardPerToken"),
+                    (sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[sender].rewardBalance"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT, "userRewardInfo[recipient].rewardRecipient"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN, "userRewardInfo[recipient].rewardPerToken"),
+                    (recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE, "userRewardInfo[recipient].rewardBalance"),
                 ]),
             };
 
@@ -841,7 +1097,8 @@ mod tests {
                                 to: Address,
                                 amount: U256,
                                 nonce: u64,
-                                nonce_key: U256|
+                                nonce_key: U256,
+                                fee_token: Address|
              -> eyre::Result<Vec<String>> {
                 let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
                 let tx = TempoTxEnv {
@@ -885,37 +1142,118 @@ mod tests {
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (
-                    "first_transfer",
-                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, U256::ZERO)
-                        .unwrap(),
+                    "direct_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
                 // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
                 // and fee balances are no longer zero.
                 (
-                    "second_transfer",
-                    run_transfer(&mut evm, sender, recipient, transfer_amount, 1, U256::ZERO)
-                        .unwrap(),
+                    "direct_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
-                // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
+                // Same as second transfer, but different fee token that requires a two-hop path.
                 (
-                    "2d_nonce_transfer",
-                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, nonce_key)
-                        .unwrap(),
+                    "twohop_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        2,
+                        U256::ZERO,
+                        two_hop_fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // Same as third transfer.
+                (
+                    "twohop_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        3,
+                        U256::ZERO,
+                        two_hop_fee_token,
+                    )
+                    .unwrap(),
+                ),
+                // TIP-20 transfer with a 2D nonce.
+                (
+                    "2d_nonce_first_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        nonce_key,
+                        fee_token,
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "2d_nonce_second_transfer",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        nonce_key,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
                 // Clear sender balance, minting a storage credit for PATH_USD.
-                ("clear_balance", {
+                ("clear_balance_transfer", {
                     let sender_balance = evm
                         .db()
                         .storage_ref(PATH_USD_ADDRESS, sender_balance_slot)
                         .expect("sender balance slot should be available");
-                    run_transfer(&mut evm, sender, recipient, sender_balance, 2, U256::ZERO)
-                        .unwrap()
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        sender_balance,
+                        4,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap()
                 }),
                 // Recreate sender balance, consuming the PATH_USD storage credit through an SSTORE.
                 (
-                    "recreate_balance",
-                    run_transfer(&mut evm, recipient, sender, transfer_amount, 0, U256::ZERO)
-                        .unwrap(),
+                    "recreate_balance_transfer",
+                    run_transfer(
+                        &mut evm,
+                        recipient,
+                        sender,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
                 ),
             ]);
             insta::assert_yaml_snapshot!(

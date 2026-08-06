@@ -3,8 +3,9 @@ use crate::{
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Log, LogData, U256};
 use alloy_evm::EvmInternals;
+use bitflags::bitflags;
 use revm::{
     context::{CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
@@ -231,6 +232,44 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
         Ok(())
     }
+
+    #[inline]
+    fn with_loaded_account<R>(
+        &mut self,
+        address: Address,
+        f: impl FnOnce(bool, &AccountInfo) -> R,
+    ) -> Result<R, TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_account_additional_cost();
+
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
+
+        if !self.spec.is_t4() {
+            deduct_gas(
+                &mut self.gas_tracker,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
+        }
+
+        // Dynamic gas.
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
+        }
+
+        let exists = !account.data.account().is_loaded_as_not_existing();
+        account.load_code()?;
+
+        Ok(f(exists, &account.data.account().info))
+    }
 }
 
 impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
@@ -266,7 +305,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions.record_always(StorageAction::Sstore(
             address,
@@ -274,7 +313,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
             val.data.present_value,
             value,
         ));
-        Ok(val)
+        Ok(val.into())
     }
 
     #[inline]
@@ -342,36 +381,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_account_additional_cost();
+        self.with_loaded_account(address, |_, info| f(info))
+    }
 
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
-        };
-
-        let mut account = self
-            .internals
-            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
-
-        if !self.spec.is_t4() {
-            deduct_gas(
-                &mut self.gas_tracker,
-                self.gas_params.warm_storage_read_cost(),
-            )?;
-        }
-
-        // dynamic gas
-        if account.is_cold {
-            deduct_gas(&mut self.gas_tracker, additional_cost)?;
-        }
-
-        account.load_code()?;
-
-        f(&account.data.account().info);
-        Ok(())
+    #[inline]
+    fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
+        self.with_loaded_account(address, |exists, info| {
+            let code_hash = if exists { info.code_hash } else { B256::ZERO };
+            let code = info.code.clone().unwrap_or_default();
+            (code_hash, code)
+        })
     }
 
     #[inline]
@@ -590,6 +609,108 @@ impl EvmPrecompileStorageProvider<'_> {
             top,
             "out-of-order checkpoint {op} (expected top of stack)"
         );
+    }
+}
+
+bitflags! {
+    /// SSTORE transition flags that drive gas/refund accounting.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SstoreTransitionFlags: u8 {
+        /// The slot's transaction-start value is zero.
+        const ORIGINAL_ZERO = 1 << 0;
+        /// The slot's pre-SSTORE value is zero.
+        const PRESENT_ZERO = 1 << 1;
+        /// The slot's post-SSTORE value is zero.
+        const NEW_ZERO = 1 << 2;
+        /// The slot's transaction-start value equals its pre-SSTORE value.
+        const ORIGINAL_EQ_PRESENT = 1 << 3;
+        /// The slot's transaction-start value equals its post-SSTORE value.
+        const ORIGINAL_EQ_NEW = 1 << 4;
+        /// The slot's pre-SSTORE current value equals its post-SSTORE value.
+        const PRESENT_EQ_NEW = 1 << 5;
+    }
+}
+
+impl SstoreTransitionFlags {
+    /// Computes the SSTORE transition flags from the values that drive gas/refund accounting.
+    pub fn from_values(original: U256, present: U256, new: U256) -> Self {
+        let mut flags = Self::empty();
+
+        if original.is_zero() {
+            flags |= Self::ORIGINAL_ZERO;
+        }
+        if present.is_zero() {
+            flags |= Self::PRESENT_ZERO;
+        }
+        if new.is_zero() {
+            flags |= Self::NEW_ZERO;
+        }
+        if original == present {
+            flags |= Self::ORIGINAL_EQ_PRESENT;
+        }
+        if original == new {
+            flags |= Self::ORIGINAL_EQ_NEW;
+        }
+        if present == new {
+            flags |= Self::PRESENT_EQ_NEW;
+        }
+
+        flags
+    }
+
+    /// Returns whether the write changes slot occupancy.
+    pub fn crosses_zero_boundary(&self) -> bool {
+        self.contains(Self::PRESENT_ZERO) != self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write creates an occupied slot.
+    pub fn is_zero_to_nonzero(&self) -> bool {
+        self.contains(Self::PRESENT_ZERO) && !self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write clears an occupied slot.
+    pub fn is_nonzero_to_zero(&self) -> bool {
+        !self.contains(Self::PRESENT_ZERO) && self.contains(Self::NEW_ZERO)
+    }
+
+    /// Returns whether the write changes the present value.
+    pub fn changes_present(&self) -> bool {
+        !self.contains(Self::PRESENT_EQ_NEW)
+    }
+
+    /// Returns whether this slot is still clean before the write.
+    ///
+    /// In EVM SSTORE terminology, "clean" means the transaction has not changed
+    /// the slot yet, so the transaction-start value (`original`) still equals
+    /// the current pre-write value (`present`).
+    pub fn is_original_eq_present(&self) -> bool {
+        self.contains(Self::ORIGINAL_EQ_PRESENT)
+    }
+
+    /// Returns whether the warm clean-update SSTORE cost applies.
+    ///
+    /// This is the `present != new && original == present` case: the write
+    /// changes a slot for the first time in the transaction. Dirty writes
+    /// (`original != present`) use different SSTORE accounting and do not pay
+    /// this clean-update charge again.
+    pub fn charges_clean_update(&self) -> bool {
+        self.changes_present() && self.is_original_eq_present()
+    }
+}
+
+impl From<&StateLoad<SStoreResult>> for SstoreTransitionFlags {
+    fn from(result: &StateLoad<SStoreResult>) -> Self {
+        Self::from_values(
+            result.data.original_value,
+            result.data.present_value,
+            result.data.new_value,
+        )
+    }
+}
+
+impl From<StateLoad<SStoreResult>> for SstoreTransitionFlags {
+    fn from(result: StateLoad<SStoreResult>) -> Self {
+        Self::from(&result)
     }
 }
 

@@ -5,6 +5,7 @@
 
 mod action_replay;
 mod assemble;
+mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
@@ -12,6 +13,7 @@ pub use action_replay::{
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
+pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
@@ -33,9 +35,10 @@ use alloy_evm::{
     eth::{EthBlockExecutionCtx, NextEvmEnvAttributes},
     revm::Inspector,
 };
+use alloy_primitives::Address;
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
+use reth_evm::{self, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -44,12 +47,16 @@ use tempo_primitives::{
 
 use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
+use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
+use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction,
-    TempoStateAccess,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
+    TempoHaltReason, TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]
@@ -65,6 +72,22 @@ pub struct TempoEvmConfig {
     pub block_assembler: TempoBlockAssembler,
 }
 
+impl FeeTokenResolver for TempoEvmConfig {
+    fn resolve_fee_token<S, M>(
+        &self,
+        state: &mut S,
+        tx: &TempoTxEnv,
+        fee_payer: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> TempoResult<Address>
+    where
+        S: TempoStateAccess<M>,
+    {
+        TempoFeeManager::new().resolve_fee_token(state, tx, fee_payer, spec, actions)
+    }
+}
+
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
@@ -74,6 +97,12 @@ impl TempoEvmConfig {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
+    }
+
+    /// Uses the provided sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.inner = self.inner.with_sender_recovery_cache(cache);
+        self
     }
 
     /// Returns the chain spec
@@ -371,7 +400,7 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
         assert_eq!(evm_env.block_env.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xab; 32]);
+        let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
                 consensus_context: Some(TempoConsensusContext {
@@ -479,7 +508,7 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
         assert_eq!(evm_env.block_env.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xcd; 32]);
+        let proposer = PublicKey::from_seed(0xcd);
         let evm_env = evm_config
             .next_evm_env(
                 &parent,

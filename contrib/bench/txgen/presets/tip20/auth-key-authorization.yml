@@ -1,0 +1,13 @@
+merge:
+  templates:
+    tip20_transfer:
+      auth:
+        mode: key_authorization
+        access_key:
+          derive: per_tx
+        key_type: secp256k1
+        limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+        allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
+        witness:
+          random_bytes: 32
+      gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}

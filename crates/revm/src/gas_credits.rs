@@ -10,7 +10,7 @@ use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
     interpreter::{
-        Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
+        Gas, InstructionContext, InstructionResult, StateLoad,
         gas::GasTracker,
         instructions::host::{sstore_default_gas_accounting, sstore_with_gas_accounting},
         interpreter::EthInterpreter,
@@ -19,7 +19,7 @@ use revm::{
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    storage::{FromWord, StorageAction},
+    storage::{FromWord, SstoreTransitionFlags, StorageAction},
     storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
 };
 
@@ -131,10 +131,11 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+    ) -> Result<SstoreTransitionFlags, Self::Error> {
         Ok(self
             .context
-            .sstore_skip_cold_load(address, key, value, skip_cold_load)?)
+            .sstore_skip_cold_load(address, key, value, skip_cold_load)?
+            .into())
     }
 
     #[inline]

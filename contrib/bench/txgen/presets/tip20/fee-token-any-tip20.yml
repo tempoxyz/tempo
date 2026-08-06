@@ -1,0 +1,5 @@
+merge:
+  templates:
+    tip20_transfer:
+      fee_token:
+        choice: ${TXGEN_TIP20_TOKENS}

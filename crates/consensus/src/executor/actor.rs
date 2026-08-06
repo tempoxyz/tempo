@@ -4,7 +4,7 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 
-use std::{collections::VecDeque, ops::RangeInclusive, sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
@@ -13,7 +13,7 @@ use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics as RuntimeMetrics, Pacer, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure};
+use eyre::{Report, WrapErr as _, bail, ensure};
 use futures::{
     FutureExt as _, StreamExt as _,
     channel::{
@@ -26,12 +26,11 @@ use futures::{
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
+use reth_provider::{BlockHashReader as _, BlockIdReader as _, BlockReader as _, BlockSource};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
-use tracing::{
-    Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
-};
+use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn};
 
 use super::{
     Config,
@@ -104,9 +103,9 @@ pub(crate) struct Actor<TContext> {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: Arc<TempoFullNode>,
 
-    /// Highest finalized height the executor should backfill to on startup.
-    backfill_target_height: Height,
-    execution_finalized_height: Height,
+    /// Highest finalized height the executor should backfill to on startup so
+    /// that CL and EL have a consistent view.
+    finalized_floor: Height,
 
     /// The channel over which the agent will receive new commands from the
     /// application actor.
@@ -115,6 +114,8 @@ pub(crate) struct Actor<TContext> {
     /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: crate::alias::marshal::Mailbox,
 
+    /// The latest state that the executor canonicalized. On startup, contains
+    /// the latest execution layer state.
     last_canonicalized: LastCanonicalized,
 
     /// The interval at which to send a forkchoice update heartbeat to the
@@ -125,14 +126,6 @@ pub(crate) struct Actor<TContext> {
     ///
     /// Armed only when no execution request is active or queued.
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
-
-    /// Gap between the execution layer's finalized watermark and the startup
-    /// backfill target. Needs to be handled on startup because the execution
-    /// layer does not reliably flush all blocks.
-    finalized_heights_to_backfill: RangeInclusive<u64>,
-
-    /// Backfills that are currently in-flight and are awaiting resolution.
-    pending_backfill: OptionFuture<BoxFuture<'static, (u64, Option<Block>)>>,
 
     /// Execution-layer requests waiting for the active execution task to finish.
     execution_queue: VecDeque<ExecutionRequest>,
@@ -159,7 +152,7 @@ pub(crate) struct Actor<TContext> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: Counter,
+    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
 }
 
 impl Metrics {
@@ -167,11 +160,10 @@ impl Metrics {
     where
         TContext: RuntimeMetrics,
     {
-        let finalized_blocks_proposed_by_self = Counter::default();
-        context.register(
+        let finalized_blocks_proposed_by_self = context.register(
             "finalized_blocks_proposed_by_self",
             "number of finalized blocks whose proposer matches this node's public key",
-            finalized_blocks_proposed_by_self.clone(),
+            Counter::default(),
         );
         Self {
             finalized_blocks_proposed_by_self,
@@ -197,27 +189,18 @@ where
             public_key,
         } = config;
         let metrics = Metrics::init(&context);
+
         let canonical_state = execution_node.provider.canonical_in_memory_state();
+
         let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
         let execution_finalized_num_hash = canonical_state
             .get_finalized_num_hash()
             .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
-        let execution_finalized_height = Height::new(execution_finalized_num_hash.number);
-        let head_num_hash = if head_num_hash.number >= execution_finalized_num_hash.number {
-            head_num_hash
-        } else {
-            execution_finalized_num_hash
-        };
 
-        let fcu_heartbeat_timer = OptionFuture::some(context.sleep(fcu_heartbeat_interval).boxed());
-        let backfill_target_height = finalized_floor;
-        let finalized_heights_to_backfill =
-            (execution_finalized_height.get() + 1)..=backfill_target_height.get();
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
-            backfill_target_height,
-            execution_finalized_height,
+            finalized_floor,
             mailbox,
             marshal,
             last_canonicalized: LastCanonicalized {
@@ -227,13 +210,10 @@ where
                     finalized_block_hash: execution_finalized_num_hash.hash,
                 },
                 head_height: Height::new(head_num_hash.number),
-                finalized_height: execution_finalized_height,
+                finalized_height: Height::new(execution_finalized_num_hash.number),
             },
             fcu_heartbeat_interval,
-            fcu_heartbeat_timer,
-
-            finalized_heights_to_backfill,
-            pending_backfill: OptionFuture::none(),
+            fcu_heartbeat_timer: OptionFuture::none(),
             execution_queue: VecDeque::new(),
             execution_task: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
@@ -250,27 +230,27 @@ where
     }
 
     async fn run(mut self) {
+        if let Err(error) = self.backfill_to_finalized_floor().await {
+            error_span!("shutdown").in_scope(|| {
+                error!(
+                    %error,
+                    "executor failed startup backfill",
+                )
+            });
+            return;
+        }
+
         info_span!("start").in_scope(|| {
             info!(
-                backfill_target_height = %self.backfill_target_height,
-                execution_finalized_height = %self.execution_finalized_height,
-                finalized_tip_height = %self.latest_observed_finalized_tip.0,
-                finalized_tip_digest = %self.latest_observed_finalized_tip.1,
-                "executor initialized finalized startup state; backfilling blocks \
-                from consensus to execution if necessary",
+                finalized_height = %self.last_canonicalized.finalized_height,
+                finalized_digest = %self.last_canonicalized.forkchoice.finalized_block_hash,
+                head_height = %self.last_canonicalized.head_height,
+                head_digest = %self.last_canonicalized.forkchoice.head_block_hash,
+                "entering executor loop",
             );
         });
 
         loop {
-            if self.pending_backfill.is_none()
-                && let Some(height) = self.finalized_heights_to_backfill.next()
-            {
-                self.pending_backfill.replace({
-                    let marshal = self.marshal.clone();
-                    async move { (height, marshal.get_block(Height::new(height)).await) }.boxed()
-                });
-            }
-
             self.start_next_execution_task();
             self.update_fcu_heartbeat_timer();
 
@@ -289,7 +269,7 @@ where
                             if let Some(job) = payload_job {
                                 self.payload_jobs.push(
                                     run_payload_job(
-                                        self.context.clone(),
+                                        self.context.child("payload_job"),
                                         self.execution_node.clone(),
                                         job,
                                     )
@@ -304,30 +284,6 @@ where
                                 shutting down to prevent consensus-execution divergence"
                             ));
                             break;
-                        }
-                    }
-                }
-
-                block = &mut self.pending_backfill => {
-                    match block {
-                        (height, Some(block)) => {
-                            let (ack, _wait) = Exact::handle();
-                            let span = info_span!("backfill_on_start", %height);
-                            self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(
-                                Box::new(FinalizedBlockRequest {
-                                    cause: span,
-                                    block,
-                                    acknowledgment: ack,
-                                    is_backfill: true,
-                                }),
-                            ));
-                        }
-                        (height, None) => {
-                            warn_span!("backfill_on_start", %height)
-                            .in_scope(|| warn!(
-                                "marshal actor did not have block even though \
-                                it must have finalized it previously",
-                            ));
                         }
                     }
                 }
@@ -353,6 +309,56 @@ where
         }
     }
 
+    async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
+        let start = self.last_canonicalized.finalized_height.get() + 1;
+        let end = self.finalized_floor.get();
+        let heights = start..=end;
+        if !heights.is_empty() {
+            info!(
+                start = *heights.start(),
+                end = *heights.end(),
+                "backfilling finalized blocks before entering executor loop"
+            );
+        }
+        for height in heights {
+            let span = info_span!("backfill_on_start", %height);
+            let block = get_block(
+                self.marshal.clone(),
+                self.execution_node.clone(),
+                Height::new(height),
+            )
+            .await
+            .wrap_err_with(|| format!("failed backfilling block for height `{height}`"))?;
+
+            let (ack, _wait) = Exact::handle();
+            let request = FinalizedBlockRequest {
+                cause: span,
+                block,
+                acknowledgment: ack,
+            };
+
+            if let Some(canonicalized) = forward_finalized(
+                self.context.as_present(),
+                self.execution_node.clone(),
+                self.public_key.clone(),
+                self.metrics.clone(),
+                self.last_canonicalized,
+                request,
+            )
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed forwarding backfilled finalized block at height `{height}` \
+                    to execution layer"
+                )
+            })? {
+                self.last_canonicalized = canonicalized;
+            }
+        }
+
+        Ok(())
+    }
+
     fn arm_fcu_heartbeat_timer(&mut self) {
         if !self.fcu_heartbeat_timer.is_none() {
             return;
@@ -366,10 +372,7 @@ where
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
-        if !self.is_backfilling()
-            && self.execution_task.is_none()
-            && self.execution_queue.is_empty()
-        {
+        if self.execution_task.is_none() && self.execution_queue.is_empty() {
             self.arm_fcu_heartbeat_timer();
         } else {
             self.disarm_fcu_heartbeat_timer();
@@ -385,17 +388,12 @@ where
 
     fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
-        let is_backfilling = self.is_backfilling();
         match message.command {
             Command::CanonicalizeHead(CanonicalizeHead {
                 height,
                 digest,
                 response,
             }) => {
-                if is_backfilling {
-                    info_span!("handle_message")
-                        .in_scope(|| info!("request to canonicalize deferred while backfilling"));
-                }
                 self.enqueue_execution_request(ExecutionRequest::Canonicalize(Box::new(
                     Canonicalize {
                         cause,
@@ -413,11 +411,6 @@ where
                 attributes,
                 response,
             }) => {
-                if is_backfilling {
-                    info_span!("handle_message").in_scope(|| {
-                        info!("request to canonicalize and build deferred while backfilling")
-                    });
-                }
                 self.enqueue_execution_request(ExecutionRequest::Canonicalize(Box::new(
                     Canonicalize {
                         cause,
@@ -437,9 +430,8 @@ where
                     self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(
                         FinalizedBlockRequest {
                             cause,
-                            block,
+                            block: (*block).clone(),
                             acknowledgment: acknowledgement,
-                            is_backfill: false,
                         },
                     )));
                 }
@@ -450,23 +442,12 @@ where
 
     fn enqueue_execution_request(&mut self, request: ExecutionRequest) {
         if matches!(&request, ExecutionRequest::Heartbeat { .. })
-            && (!self.execution_queue.is_empty()
-                || !self.execution_task.is_none()
-                || self.is_backfilling())
+            && (!self.execution_queue.is_empty() || !self.execution_task.is_none())
         {
             return;
         }
 
-        if request.is_backfill() {
-            let insert_at = self
-                .execution_queue
-                .iter()
-                .position(|request| !request.is_backfill())
-                .unwrap_or(self.execution_queue.len());
-            self.execution_queue.insert(insert_at, request);
-        } else {
-            self.execution_queue.push_back(request);
-        }
+        self.execution_queue.push_back(request);
     }
 
     fn start_next_execution_task(&mut self) {
@@ -476,7 +457,7 @@ where
 
         // If nothing is currently scheduled and a newer finalized tip was
         // observed, push it into the queue so that it will be picked up next.
-        if self.execution_queue.is_empty() && !self.is_backfilling() {
+        if self.execution_queue.is_empty() {
             let (height, digest) = self.latest_observed_finalized_tip;
             let new_canonicalized = self.last_canonicalized.update_finalized(height, digest);
             if new_canonicalized != self.last_canonicalized {
@@ -492,16 +473,13 @@ where
             }
         }
 
-        let Some(request) = self.execution_queue.front() else {
-            return;
-        };
-        if self.is_backfilling() && !request.is_backfill() {
+        if self.execution_queue.is_empty() {
             return;
         }
         let request = self.execution_queue.pop_front().expect("front exists");
 
         let task = execute_request(
-            self.context.clone(),
+            self.context.child("execute_request"),
             self.execution_node.clone(),
             self.public_key.clone(),
             self.metrics.clone(),
@@ -510,10 +488,45 @@ where
         );
         self.execution_task.replace(task.boxed());
     }
+}
 
-    fn is_backfilling(&self) -> bool {
-        self.pending_backfill.is_some() || !self.finalized_heights_to_backfill.is_empty()
+#[instrument(skip_all, fields(height), err)]
+async fn get_block(
+    marshal: crate::alias::marshal::Mailbox,
+    execution_node: Arc<TempoFullNode>,
+    height: Height,
+) -> eyre::Result<Block> {
+    if let Some(block) = marshal.get_block(height).await {
+        return Ok(block);
     }
+
+    warn!(
+        "marshal did not have backfill block; looking up its finalized digest \
+        to look for it in the execution layer"
+    );
+    let Some((_, digest)) = marshal.get_info(height).await else {
+        bail!("marshal actor did not have finalization info at height");
+    };
+
+    info!(
+        %digest,
+        "found finalized digest for block height; checking execution layer",
+    );
+    let Some(block) = execution_node
+        .provider
+        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
+        .wrap_err_with(|| {
+            format!("failed querying execution layer for backfill block `{digest}`")
+        })?
+    else {
+        warn!(%digest, "execution layer did not have missing backfill block");
+        bail!(
+            "marshal actor did not have block at height `{height}` and \
+            execution layer did not have block `{digest}`"
+        );
+    };
+
+    Ok(Block::from_execution_block_unchecked(block, None))
 }
 
 enum ExecutionRequest {
@@ -522,20 +535,10 @@ enum ExecutionRequest {
     FinalizeBlock(Box<FinalizedBlockRequest>),
 }
 
-impl ExecutionRequest {
-    fn is_backfill(&self) -> bool {
-        let Self::FinalizeBlock(req) = self else {
-            return false;
-        };
-        req.is_backfill
-    }
-}
-
 struct FinalizedBlockRequest {
     cause: Span,
     block: Block,
     acknowledgment: Exact,
-    is_backfill: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,7 +581,7 @@ struct StartPayloadJob {
 }
 
 async fn execute_request<TContext>(
-    context: ContextCell<TContext>,
+    context: TContext,
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
@@ -616,7 +619,6 @@ where
             }
         }
         ExecutionRequest::FinalizeBlock(request) => {
-            let fatal_on_error = !request.is_backfill;
             match forward_finalized(
                 &context,
                 execution_node,
@@ -631,14 +633,7 @@ where
                     canonicalized,
                     payload_job: None,
                 },
-                Err(error) if fatal_on_error => ExecutionTaskResult::Fatal { error },
-                Err(error) => {
-                    warn!(%error, "failed forwarding backfilled finalized block to execution layer");
-                    ExecutionTaskResult::Completed {
-                        canonicalized: None,
-                        payload_job: None,
-                    }
-                }
+                Err(error) => ExecutionTaskResult::Fatal { error },
             }
         }
     }
@@ -866,60 +861,123 @@ async fn forward_finalized<TContext: Pacer>(
         cause,
         block,
         acknowledgment,
-        is_backfill: _,
     } = request;
 
-    let new_canonicalized = canonicalized.update_finalized(block.height(), block.digest());
-    let forkchoice = (new_canonicalized != canonicalized).then_some(new_canonicalized);
+    // The finalized watermark reported by the execution layer is taken as
+    // gospel: a finalized block at or below the watermark is never forwarded
+    // (for example when consensus replays finalized blocks after restoring
+    // from a snapshot whose anchor is behind the execution state), because
+    // the new-payload + forkchoice-update combination would move the
+    // execution layer's forkchoice backwards and trigger a reorg. Instead,
+    // such a block must already be part of the execution layer's canonical
+    // chain, in which case it is acknowledged and dropped.
+    //
+    // The watermark must be read from the provider rather than from the
+    // tracked `canonicalized` state: forkchoice updates for finalized tips
+    // are accepted even when the execution layer reports SYNCING, so the
+    // tracked state can run ahead of what the execution layer has actually
+    // persisted while it is still pipeline-syncing toward the finalized tip.
+    //
+    // TODO: replace this by checking the last canonicalized height once all
+    // sync is forced through marshal and pipeline syncing is disabled.
+    let execution_finalized = execution_node
+        .provider
+        .finalized_block_num_hash()
+        .wrap_err("failed reading finalized block num hash from execution layer")?
+        .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
-    if let Some(canonicalized) = forkchoice {
+    let consensus_context = block.header().consensus_context;
+    let new_canonicalized = if block.height().get() <= execution_finalized.number {
+        let canonical_hash = execution_node
+            .provider
+            .block_hash(block.height().get())
+            .wrap_err_with(|| {
+                format!(
+                    "failed reading canonical execution block hash at finalized \
+                    block height `{}`",
+                    block.height(),
+                )
+            })?;
+        ensure!(
+            canonical_hash == Some(block.digest().0),
+            "finalized block with digest `{}` at height `{}` is at or below the \
+            execution layer's finalized block `{}` at height `{}`, but does not \
+            match the execution layer's canonical chain (canonical hash: `{:?}`)",
+            block.digest(),
+            block.height(),
+            execution_finalized.hash,
+            execution_finalized.number,
+            canonical_hash,
+        );
+        info!(
+            execution_finalized_height = execution_finalized.number,
+            execution_finalized_hash = %execution_finalized.hash,
+            "finalized block is already part of the execution layer's canonical \
+            chain; acknowledging without forwarding",
+        );
+        None
+    } else {
+        // Rebase the tracked forkchoice state onto the watermark the execution
+        // layer reported before extending it with the new block, so that the
+        // forkchoice update below always finalizes the block.
+        let new_canonicalized = LastCanonicalized {
+            forkchoice: ForkchoiceState {
+                safe_block_hash: execution_finalized.hash,
+                finalized_block_hash: execution_finalized.hash,
+                ..canonicalized.forkchoice
+            },
+            head_height: canonicalized.head_height,
+            finalized_height: Height::new(execution_finalized.number),
+        }
+        .update_finalized(block.height(), block.digest());
+
+        let (block, block_access_list) = block.into_parts();
+        let payload_status = execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(TempoExecutionData {
+                block,
+                block_access_list,
+                // can be omitted for finalized blocks
+                validator_set: None,
+            })
+            .pace(context, Duration::from_millis(20))
+            .await
+            .wrap_err(
+                "failed sending new-payload request to execution engine to \
+                    query payload status of finalized block",
+            )?;
+
+        ensure!(
+            payload_status.is_valid() || payload_status.is_syncing(),
+            "this is a problem: payload status of block-to-be-finalized was \
+                neither valid nor syncing: `{payload_status}`"
+        );
+
         submit_forkchoice_update(
             &execution_node,
             context,
             cause.clone(),
-            canonicalized,
+            new_canonicalized,
             None,
             ForkchoiceUpdateKind::Canonicalize {
                 head_or_finalized: HeadOrFinalized::Finalized,
             },
         )
         .await?;
-    }
 
-    let (block, block_access_list) = block.into_parts();
-    let consensus_context = block.header().consensus_context;
-    let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-            // can be omitted for finalized blocks
-            validator_set: None,
-        })
-        .pace(context, Duration::from_millis(20))
-        .await
-        .wrap_err(
-            "failed sending new-payload request to execution engine to \
-                query payload status of finalized block",
-        )?;
-
-    ensure!(
-        payload_status.is_valid() || payload_status.is_syncing(),
-        "this is a problem: payload status of block-to-be-finalized was \
-            neither valid nor syncing: `{payload_status}`"
-    );
+        Some(new_canonicalized)
+    };
 
     if let Some(public_key) = public_key.as_ref()
-        && consensus_context
-            .is_some_and(|context| &PublicKey::from(context.proposer.get()) == public_key)
+        && consensus_context.is_some_and(|context| context.proposer.to_inner() == *public_key)
     {
         metrics.finalized_blocks_proposed_by_self.inc();
     }
 
     acknowledgment.acknowledge();
 
-    Ok(forkchoice)
+    Ok(new_canonicalized)
 }
 
 /// Marker to indicate whether the head hash or finalized hash should be updated.

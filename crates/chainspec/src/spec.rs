@@ -77,6 +77,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T9 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t9_time: Option<u64>,
+    /// Activation timestamp for T10 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t10_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -500,6 +503,23 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cli")]
+    fn dev_genesis_contains_eip2935_history_storage() {
+        use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let history = chainspec
+            .genesis()
+            .alloc
+            .get(&HISTORY_STORAGE_ADDRESS)
+            .expect("dev genesis must install EIP-2935 history storage");
+
+        assert_eq!(history.nonce, Some(1));
+        assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
     fn test_tempo_chainspec_has_tempo_hardforks() {
         let chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
@@ -754,6 +774,27 @@ mod tests {
         use super::*;
 
         #[test]
+        fn builtin_schedules_match_hardfork_constants() {
+            let mainnet = super::super::TempoChainSpecParser::parse("mainnet")
+                .expect("the mainnet chainspec must always be well formed");
+            let moderato = super::super::TempoChainSpecParser::parse("moderato")
+                .expect("the moderato chainspec must always be well formed");
+
+            for &fork in TempoHardfork::VARIANTS {
+                assert_eq!(
+                    mainnet.info.fork_time(fork),
+                    fork.mainnet_activation_timestamp(),
+                    "mainnet {fork} activation mismatch"
+                );
+                assert_eq!(
+                    moderato.info.fork_time(fork),
+                    fork.moderato_activation_timestamp(),
+                    "moderato {fork} activation mismatch"
+                );
+            }
+        }
+
+        #[test]
         fn mainnet() {
             let cs = super::super::TempoChainSpecParser::parse("mainnet")
                 .expect("the mainnet chainspec must always be well formed");
@@ -833,9 +874,23 @@ mod tests {
             // At and after T7 activation
             assert!(cs.is_t7_active_at_timestamp(1783605600));
             assert_eq!(cs.tempo_hardfork_at(1783605600), TempoHardfork::T7);
-            assert!(!cs.is_t8_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
+
+            // Before T8 activation (1785420000 = Jul 30th 2026 16:00 CEST)
+            assert!(!cs.is_t8_active_at_timestamp(1785419999));
+            assert_eq!(cs.tempo_hardfork_at(1785419999), TempoHardfork::T7);
+
+            // At and after T8 activation
+            assert!(cs.is_t8_active_at_timestamp(1785420000));
+            assert_eq!(cs.tempo_hardfork_at(1785420000), TempoHardfork::T8);
+            // Before T9 activation (1786024800 = Aug 6th 2026 16:00 CEST)
+            assert!(!cs.is_t9_active_at_timestamp(1786024799));
+            assert_eq!(cs.tempo_hardfork_at(1786024799), TempoHardfork::T8);
+
+            // At and after T9 activation
+            assert!(cs.is_t9_active_at_timestamp(1786024800));
+            assert_eq!(cs.tempo_hardfork_at(1786024800), TempoHardfork::T9);
+            assert!(!cs.is_t10_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T9);
         }
 
         #[test]
@@ -915,9 +970,23 @@ mod tests {
             // At and after T7 activation
             assert!(cs.is_t7_active_at_timestamp(1783000800));
             assert_eq!(cs.tempo_hardfork_at(1783000800), TempoHardfork::T7);
-            assert!(!cs.is_t8_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
+
+            // Before T8 activation (1785160800 = Jul 27th 2026 16:00 CEST)
+            assert!(!cs.is_t8_active_at_timestamp(1785160799));
+            assert_eq!(cs.tempo_hardfork_at(1785160799), TempoHardfork::T7);
+
+            // At and after T8 activation
+            assert!(cs.is_t8_active_at_timestamp(1785160800));
+            assert_eq!(cs.tempo_hardfork_at(1785160800), TempoHardfork::T8);
+            // Before T9 activation (1785938400 = Aug 5th 2026 16:00 CEST)
+            assert!(!cs.is_t9_active_at_timestamp(1785938399));
+            assert_eq!(cs.tempo_hardfork_at(1785938399), TempoHardfork::T8);
+
+            // At and after T9 activation
+            assert!(cs.is_t9_active_at_timestamp(1785938400));
+            assert_eq!(cs.tempo_hardfork_at(1785938400), TempoHardfork::T9);
+            assert!(!cs.is_t10_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T9);
         }
 
         #[test]

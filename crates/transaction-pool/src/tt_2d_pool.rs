@@ -1143,7 +1143,7 @@ impl AA2dPool {
 
         if evict_pending {
             // For pending eviction, consider both regular 2D txs and expiring nonce txs
-            for _ in 0..count {
+            while self.pending_count > self.config.pending_limit.max_txs {
                 if let Some(tx) = self.evict_one_pending() {
                     removed.push(tx);
                 } else {
@@ -2180,6 +2180,23 @@ impl BestAA2dTransactions {
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
+                    // A live update may replace a transaction that was already in the
+                    // snapshot. Overwrite `by_id` first and remove the returned transaction's
+                    // ordering key so the same ID can never have two independent entries.
+                    let previous = self.by_id.insert(
+                        id,
+                        Arc::new(AA2dInternalTransaction {
+                            inner: AA2dStoredTransaction {
+                                submission_id: tx.submission_id,
+                                transaction: tx.transaction,
+                            },
+                            is_pending: AtomicBool::new(true),
+                        }),
+                    );
+                    if let Some(previous) = previous {
+                        self.independent
+                            .remove(&previous.inner.eviction_key(self.base_fee));
+                    }
                     if process {
                         // Only mark as independent if no ancestor is already tracked
                         if !self.by_id.contains_key(&AA2dTransactionId::new(
@@ -2191,16 +2208,6 @@ impl BestAA2dTransactions {
                             self.independent.insert(key, id);
                         }
                     }
-                    self.by_id.insert(
-                        id,
-                        Arc::new(AA2dInternalTransaction {
-                            inner: AA2dStoredTransaction {
-                                submission_id: tx.submission_id,
-                                transaction: tx.transaction,
-                            },
-                            is_pending: AtomicBool::new(true),
-                        }),
-                    );
                 }
             } else {
                 break;
@@ -4967,6 +4974,98 @@ mod tests {
         pool.assert_invariants();
     }
 
+    /// Evicting a pending transaction can demote its entire nonce chain. Once those demotions
+    /// restore the pending limit, eviction must stop instead of removing unrelated transactions.
+    #[test]
+    fn test_pending_eviction_stops_after_descendant_demotion() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 5,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+            max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
+        };
+        let mut pool = AA2dPool::new(config);
+        let max_fee = 30_000_000_000u128;
+
+        // Fill the pending pool with higher-priority transactions from unrelated senders.
+        let mut victim_hashes = Vec::new();
+        for i in 0..5usize {
+            let sender = Address::from_word(B256::from(U256::from(100 + i)));
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(100 + i))
+                .max_fee(max_fee)
+                .max_priority_fee(5_000_000_000)
+                .build();
+            victim_hashes.push(*tx.hash());
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // Stage a low-priority nonce chain with its root missing, so all descendants are queued.
+        let attacker = Address::from_word(B256::from(U256::from(1)));
+        let nonce_key = U256::from(1);
+        for nonce in 1..=4 {
+            let tx = TxBuilder::aa(attacker)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .max_fee(max_fee)
+                .max_priority_fee(1)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // Filling the gap promotes all five attacker transactions. Evicting the root then demotes
+        // its four descendants, which is sufficient to restore the pending limit by itself.
+        let root = TxBuilder::aa(attacker)
+            .nonce_key(nonce_key)
+            .max_fee(max_fee)
+            .max_priority_fee(1)
+            .build();
+        let root_hash = *root.hash();
+        let added = pool
+            .add_transaction(
+                Arc::new(wrap_valid_tx(root, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        let discarded = &added.as_pending().unwrap().discarded;
+
+        assert_eq!(
+            discarded.len(),
+            1,
+            "only the attacker root should be evicted"
+        );
+        assert_eq!(*discarded[0].hash(), root_hash);
+        assert!(!pool.contains(&root_hash));
+        for hash in victim_hashes {
+            assert!(
+                pool.contains(&hash),
+                "unrelated pending tx was over-evicted"
+            );
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 5);
+        assert_eq!(queued, 4);
+        pool.assert_invariants();
+    }
+
     /// Verifies queued spam cannot evict pending transactions
     #[test]
     fn test_queued_eviction_does_not_affect_pending() {
@@ -7202,6 +7301,84 @@ mod tests {
             !no_updates,
             "new tx should only be yielded when live updates are enabled"
         );
+    }
+
+    #[test_case::test_case(2_000_000_000, true ; "replacement within yielded priority is processed")]
+    #[test_case::test_case(6_000_000_000, false ; "replacement above yielded priority is stashed")]
+    fn best_transactions_live_replacement_has_single_ordering_entry(
+        replacement_priority: u128,
+        replacement_is_yielded: bool,
+    ) {
+        let mut pool = AA2dPool::default();
+        let sender_a = Address::random();
+        let sender_b = Address::random();
+        let sender_c = Address::random();
+
+        let tx_a = TxBuilder::aa(sender_a)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(5_000_000_000)
+            .max_fee(20_000_000_000)
+            .build();
+        let tx_a_hash = *tx_a.hash();
+        let tx_b = TxBuilder::aa(sender_b)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(20_000_000_000)
+            .build();
+        let tx_c = TxBuilder::aa(sender_c)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(500_000_000)
+            .max_fee(20_000_000_000)
+            .build();
+        let tx_c_hash = *tx_c.hash();
+
+        for tx in [tx_a, tx_b, tx_c] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut best = pool.best_transactions();
+        assert_eq!(*best.next().unwrap().hash(), tx_a_hash);
+
+        let replacement = TxBuilder::aa(sender_b)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(replacement_priority)
+            .max_fee(60_000_000_000)
+            .build();
+        let replacement_hash = *replacement.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(replacement, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        best.add_new_transactions();
+
+        let id_b = AA2dTransactionId::new(AASequenceId::new(sender_b, U256::ZERO), 0);
+        let unique_ids: HashSet<_> = best.independent.values().copied().collect();
+        assert_eq!(
+            best.independent.len(),
+            unique_ids.len(),
+            "each transaction ID must have at most one ordering entry"
+        );
+        assert_eq!(
+            best.independent.values().filter(|id| **id == id_b).count(),
+            usize::from(replacement_is_yielded),
+            "the replacement ID must have at most one ordering entry"
+        );
+
+        let remaining: Vec<_> = best.map(|tx| *tx.hash()).collect();
+        let expected = if replacement_is_yielded {
+            vec![replacement_hash, tx_c_hash]
+        } else {
+            vec![tx_c_hash]
+        };
+        assert_eq!(remaining, expected);
     }
 
     #[test]

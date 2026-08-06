@@ -29,7 +29,7 @@ pub struct TempoConsensusContext {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[rlp(trailing)]
+#[rlp(trailing(no_gaps))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -177,14 +177,31 @@ impl Sealable for TempoHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_rlp::Decodable as _;
+    use alloy_rlp::{Decodable as _, EMPTY_STRING_CODE, Header as RlpHeader};
+
+    fn append_explicit_none_to_rlp_list(encoded: &[u8]) -> Vec<u8> {
+        let mut payload = encoded;
+        let header = RlpHeader::decode(&mut payload).unwrap();
+        assert!(header.list);
+        assert_eq!(payload.len(), header.payload_length);
+
+        let mut out = Vec::new();
+        RlpHeader {
+            list: true,
+            payload_length: header.payload_length + 1,
+        }
+        .encode(&mut out);
+        out.extend_from_slice(payload);
+        out.push(EMPTY_STRING_CODE);
+        out
+    }
 
     #[test]
     fn consensus_context_rlp_roundtrip() {
         let ctx = TempoConsensusContext {
             epoch: 1,
             view: 5,
-            proposer: PublicKey::from_seed([0xab; 32]),
+            proposer: PublicKey::from_seed(42),
             parent_view: 4,
         };
 
@@ -270,7 +287,7 @@ mod tests {
                 epoch: 1,
                 view: 2,
                 parent_view: 1,
-                proposer: PublicKey::from_seed([0x01; 32]),
+                proposer: PublicKey::from_seed(1),
             }),
         };
 
@@ -289,6 +306,21 @@ mod tests {
         let encoded = alloy_rlp::encode(&header_no_ctx);
         let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(header_no_ctx, decoded);
+    }
+
+    #[test]
+    fn header_rejects_explicit_none_context_rlp() {
+        let header = TempoHeader {
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 3_000_000,
+            timestamp_millis_part: 0,
+            inner: Header::default(),
+            consensus_context: None,
+        };
+
+        let encoded = alloy_rlp::encode(&header);
+        let malformed = append_explicit_none_to_rlp_list(&encoded);
+        assert!(TempoHeader::decode(&mut malformed.as_slice()).is_err());
     }
 
     #[test]

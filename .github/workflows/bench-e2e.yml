@@ -30,23 +30,10 @@ on:
         required: false
         default: ""
       preset:
-        description: Benchmark preset.
-        type: choice
+        description: Benchmark preset or scenario, e.g. default or tip20:recipient=existing,auth=keychain.
+        type: string
         required: true
-        default: tip20_existing_recipients
-        options:
-          - tip20
-          - tip20_2d_nonces
-          - tip20_protocol_nonces
-          - tip20_random_recipients
-          - tip20_existing_recipients
-          - tip20_keychain
-          - tip20_keychain_random_recipients
-          - tip20_keychain_existing_recipients
-          - tip20_key_authorization
-          - mpp
-          - mix
-          - dex
+        default: default
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -76,7 +63,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "100"
+        default: "5000"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -121,12 +108,12 @@ on:
         description: Builder gas limit.
         type: string
         required: true
-        default: "5000000000"
+        default: "1000000000000"
       general-gas-limit:
-        description: General non-payment gas limit override. Defaults to gas-limit for keychain setup presets.
+        description: General non-payment gas limit override.
         type: string
         required: false
-        default: ""
+        default: "1000000000000"
       force-bloat:
         description: Force regeneration of local benchmark state.
         type: boolean
@@ -172,7 +159,7 @@ on:
       preset:
         type: string
         required: false
-        default: tip20_existing_recipients
+        default: default
       duration:
         type: string
         required: false
@@ -192,7 +179,7 @@ on:
       max-concurrent-requests:
         type: string
         required: false
-        default: "100"
+        default: "5000"
       baseline:
         type: string
         required: false
@@ -272,11 +259,11 @@ on:
       gas-limit:
         type: string
         required: false
-        default: "5000000000"
+        default: "1000000000000"
       general-gas-limit:
         type: string
         required: false
-        default: ""
+        default: "1000000000000"
       run-type:
         type: string
         required: false
@@ -340,8 +327,6 @@ on:
         required: false
         default: ""
     secrets:
-      DEREK_BENCH_TOKEN:
-        required: false
       TEMPO_TELEMETRY_URL:
         required: false
       GRAFANA_TEMPO:
@@ -369,8 +354,7 @@ env:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
+  id-token: write
 
 jobs:
   bench-e2e:
@@ -386,7 +370,7 @@ jobs:
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '500' }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '5000' }}
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
@@ -403,8 +387,8 @@ jobs:
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_SKIP_STATE_ROOT: ${{ inputs.skip-state-root == true || inputs.skip-state-root == 'true' }}
-      BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '5000000000' }}
-      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit != '' && inputs.general-gas-limit || (contains(fromJSON('["tip20_keychain","tip20_keychain_random_recipients","tip20_keychain_existing_recipients"]'), inputs.preset) && (inputs.gas-limit || '5000000000') || '') }}
+      BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
+      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit || '1000000000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
@@ -474,6 +458,20 @@ jobs:
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
 
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
+        with:
+          policy: bench-e2e
+
+      - name: Fetch ValScope token via STS
+        id: valscope-sts
+        if: env.BENCH_VALSCOPE == 'true'
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
+        with:
+          scope: tempoxyz/valscope
+          policy: tempo-bench-e2e
+
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -513,7 +511,21 @@ jobs:
           ref: main
           path: valscope
           persist-credentials: false
-          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          token: ${{ steps.valscope-sts.outputs.token }}
+
+      - name: Render txgen spec
+        run: |
+          rm -rf .bench-tmp/txgen-specs
+          spec_path="$(nu bench-e2e.nu render-txgen-spec --preset "$BENCH_PRESET" --out-dir ".bench-tmp/txgen-specs" | tail -n 1)"
+          if [ -z "$spec_path" ] || [ ! -f "$spec_path" ]; then
+            echo "::error::failed to render txgen spec for preset '$BENCH_PRESET'"
+            exit 1
+          fi
+
+          echo "BENCH_TXGEN_SPEC_PATH=$spec_path" >> "$GITHUB_ENV"
+          echo "::group::Rendered txgen spec ($BENCH_PRESET)"
+          cat "$spec_path"
+          echo "::endgroup::"
 
       - name: Resolve Tracy capture offset
         if: env.BENCH_TRACY != 'off'
@@ -538,7 +550,7 @@ jobs:
           INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
           INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -592,24 +604,22 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         continue-on-error: true
 
       - name: Install Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
 
       - name: Install txgen
-        env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
           export PATH="$CARGO_BIN_DIR:$PATH"
 
-          TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
+          TXGEN_GIT_URL="https://github.com/tempoxyz/txgen"
           install_args=(--git "$TXGEN_GIT_URL" --locked)
           if [ -n "$BENCH_TXGEN_REF" ]; then
             TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
@@ -726,7 +736,7 @@ jobs:
              } catch {
                baselineRef = process.env.INPUT_SHA;
              }
-             baselineName = baselineNameArg || baseRef;
+             baselineName = baselineNameArg && baselineNameArg !== 'merge-base' ? baselineNameArg : baselineRef;
            }
 
            if (featureArg) {
@@ -780,7 +790,7 @@ jobs:
           INPUT_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
           INPUT_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             if (process.env.BENCH_COMMENT_ID || !process.env.BENCH_PR) {
               return;
@@ -843,7 +853,7 @@ jobs:
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
@@ -853,7 +863,8 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          BENCH_GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         run: |
           if [ "$BENCH_OTLP" != "true" ]; then
             unset TEMPO_TELEMETRY_URL
@@ -865,9 +876,12 @@ jobs:
             echo "::error::run-pairs must be a positive integer"
             exit 1
           fi
-          if [ "$BENCH_RUN_SIDE" != "comparison" ] && [ "$BENCH_RUN_SIDE" != "feature" ]; then
-            echo "::error::run-side must be one of: comparison, feature"
+          if [ "$BENCH_RUN_SIDE" != "comparison" ] && [ "$BENCH_RUN_SIDE" != "feature" ] && [ "$BENCH_RUN_SIDE" != "baseline" ]; then
+            echo "::error::run-side must be one of: comparison, feature, baseline"
             exit 1
+          fi
+          if [ "$BENCH_RUN_SIDE" = "baseline" ] && [ "$BENCH_CLICKHOUSE_RUN" = "feature-1" ]; then
+            BENCH_CLICKHOUSE_RUN="baseline-1"
           fi
           if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::token-count must be a positive integer"
@@ -891,13 +905,14 @@ jobs:
             --gas-limit "$BENCH_GAS_LIMIT"
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
-            --baseline-name "${{ steps.refs.outputs.baseline-name }}"
-            --feature-name "${{ steps.refs.outputs.feature-name }}"
+            --baseline-name "$BASELINE_NAME"
+            --feature-name "$FEATURE_NAME"
             --tune
             --no-default-features
             --features "$BENCH_FEATURES"
             --skip-summary
           )
+          [ -n "$BENCH_TXGEN_SPEC_PATH" ] && cmd+=(--preset-path "$BENCH_TXGEN_SPEC_PATH")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
@@ -966,8 +981,8 @@ jobs:
             tps="$BENCH_TPS"
             accounts="$BENCH_ACCOUNTS"
             max-concurrent-requests="$BENCH_MAX_CONCURRENT_REQUESTS"
-            baseline="${{ steps.refs.outputs.baseline-name }}"
-            feature="${{ steps.refs.outputs.feature-name }}"
+            baseline="$BASELINE_NAME"
+            feature="$FEATURE_NAME"
             baseline-hardfork="$BENCH_BASELINE_HARDFORK"
             feature-hardfork="$BENCH_FEATURE_HARDFORK"
             gas-limit="$BENCH_GAS_LIMIT"
@@ -1044,7 +1059,7 @@ jobs:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_VALSCOPE_PUBLISHED_URL: ${{ steps.publish-valscope-static.outputs.url }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
@@ -1224,7 +1239,7 @@ jobs:
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -1238,7 +1253,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({

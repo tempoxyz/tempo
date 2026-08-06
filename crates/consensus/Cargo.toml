@@ -16,7 +16,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
@@ -30,6 +29,7 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }
 alloy-rpc-types-engine.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-rlp.workspace = true
 
 axum.workspace = true
@@ -37,6 +37,7 @@ bytes.workspace = true
 clap.workspace = true
 
 commonware-broadcast.workspace = true
+commonware-actor.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
@@ -58,9 +59,11 @@ jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 pin-project = "1.1.10"
 prometheus-client.workspace = true
+rand.workspace = true
 rand_08.workspace = true
 
 reth-consensus-common.workspace = true
+reth-engine-primitives.workspace = true
 rand_core.workspace = true
 reth-ethereum.workspace = true
 reth-evm.workspace = true
@@ -70,7 +73,6 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 
-serde_json.workspace = true
 thiserror.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }
@@ -80,7 +82,7 @@ url.workspace = true
 
 [dev-dependencies]
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
-tempo-primitives = { workspace = true, features = ["arbitrary"] }
+tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 
 age.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }

@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-chainspec@1.10.1`
+
+
 ## `tempo-chainspec@1.10.0`
 
 ### Minor Changes

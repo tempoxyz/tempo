@@ -1,14 +1,15 @@
 use std::{
-    collections::BTreeSet,
     fs, io,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     time::Instant,
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
-use reth_cli_commands::download::{DownloadCommand, manifest::OutputFileChecksum};
+use reth_cli_commands::download::{
+    DownloadCommand, DownloadPlanArchive, manifest::OutputFileChecksum,
+};
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
@@ -17,9 +18,7 @@ use tokio_util::io::StreamReader;
 use tracing::info;
 use url::Url;
 
-use crate::snapshot_manifest::{
-    CONSENSUS_ARCHIVE_ROOT, TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest,
-};
+use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -57,8 +56,25 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
     let manifest_url = matches.get_one::<String>("manifest_url").cloned();
     let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
+    let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
 
     runner.block_on(async move {
+        if args.inner.prints_plan_json() {
+            let mut plan = args
+                .inner
+                .plan()
+                .await
+                .wrap_err("failed to plan execution layer download")?;
+
+            if !args.skip_consensus {
+                let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
+                plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
+            }
+
+            plan.write_json(io::stdout().lock())?;
+            return Ok(());
+        }
+
         info!("running execution layer download...");
 
         let start = Instant::now();
@@ -81,7 +97,7 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             .unwrap_or_else(|| datadir.join("consensus"));
 
         let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
-        install_consensus_archive(&consensus_dir, &loaded_consensus).await?;
+        install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
 
         Ok(())
     })
@@ -102,12 +118,44 @@ enum ManifestSource {
     Path(PathBuf),
 }
 
+fn consensus_download_plan_archive(
+    loaded: &LoadedConsensusManifest,
+) -> eyre::Result<DownloadPlanArchive> {
+    let archive = &loaded.manifest.consensus_archive;
+    let url = match &loaded.archive_source {
+        ConsensusArchiveSource::Url(url) => url.clone(),
+        ConsensusArchiveSource::Path(path) => {
+            let path = if path.is_absolute() {
+                path.clone()
+            } else {
+                std::env::current_dir()
+                    .wrap_err("failed to resolve current directory")?
+                    .join(path)
+            };
+            Url::from_file_path(&path)
+                .map_err(|_| eyre::eyre!("invalid consensus archive path: {}", path.display()))?
+                .to_string()
+        }
+    };
+
+    Ok(DownloadPlanArchive::new(
+        TEMPO_CONSENSUS_MANIFEST_KEY,
+        archive.file.clone(),
+        url,
+        archive.size,
+        archive.output_size(),
+        archive.blake3.clone(),
+    ))
+}
+
 async fn load_consensus_manifest(
     manifest_url: Option<String>,
     manifest_path: Option<PathBuf>,
 ) -> eyre::Result<LoadedConsensusManifest> {
     let (manifest_bytes, source) = match (manifest_path, manifest_url) {
-        (None, None) => bail!("--manifest-url or --manifest-path must be set"),
+        (None, None) => {
+            bail!("--manifest-url or --manifest-path must be set");
+        }
         (Some(path), _) => (
             fs::read(&path).wrap_err("failed to read manifest file")?,
             ManifestSource::Path(path),
@@ -166,7 +214,9 @@ async fn fetch_manifest_bytes_from_source(
                 let bytes = fs::read(&path).wrap_err("failed to read manifest file")?;
                 Ok((bytes, ManifestSource::Path(path)))
             }
-            scheme => bail!("unsupported manifest URL scheme: {scheme}"),
+            scheme => {
+                bail!("unsupported manifest URL scheme: {scheme}");
+            }
         };
     }
 
@@ -201,18 +251,9 @@ fn resolve_consensus_archive_source(
 
     match source {
         ManifestSource::Url(manifest_url) => {
-            let mut base = Url::parse(manifest_url)?;
+            let base = Url::parse(manifest_url)?;
             match base.scheme() {
-                "http" | "https" => {
-                    {
-                        let mut segments = base.path_segments_mut().map_err(|_| {
-                            eyre::eyre!("manifest URL must have a hierarchical path")
-                        })?;
-                        segments.pop_if_empty();
-                        segments.pop();
-                    }
-                    archive_source_from_url(base.join(archive_file)?)
-                }
+                "http" | "https" => archive_source_from_url(base.join(archive_file)?),
                 "file" => {
                     let mut path = base
                         .to_file_path()
@@ -220,7 +261,9 @@ fn resolve_consensus_archive_source(
                     path.pop();
                     Ok(ConsensusArchiveSource::Path(path.join(archive_file)))
                 }
-                scheme => bail!("unsupported manifest URL scheme: {scheme}"),
+                scheme => {
+                    bail!("unsupported manifest URL scheme: {scheme}");
+                }
             }
         }
         ManifestSource::Path(manifest_path) => {
@@ -239,13 +282,16 @@ fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
             url.to_file_path()
                 .map_err(|_| eyre::eyre!("invalid file:// archive URL"))?,
         )),
-        scheme => bail!("unsupported consensus archive URL scheme: {scheme}"),
+        scheme => {
+            bail!("unsupported consensus archive URL scheme: {scheme}");
+        }
     }
 }
 
 async fn install_consensus_archive(
     consensus_dir: &Path,
     loaded: &LoadedConsensusManifest,
+    force: bool,
 ) -> eyre::Result<()> {
     let (archive_file, actual_archive_hash) =
         write_consensus_archive_to_temp(&loaded.archive_source).await?;
@@ -260,9 +306,7 @@ async fn install_consensus_archive(
 
     fs::create_dir_all(consensus_dir)
         .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
-    let partitions = consensus_archive_storage_partitions(archive_file.path())?;
-    clear_consensus_partitions(consensus_dir, &partitions)?;
-    extract_zstd_tar_archive(archive_file.path(), consensus_dir)?;
+    extract_zstd_tar_archive(archive_file.path(), consensus_dir, force)?;
     verify_consensus_output_files(
         consensus_dir,
         &loaded.manifest.consensus_archive.output_files,
@@ -349,96 +393,24 @@ where
     Ok(hasher.finalize())
 }
 
-fn clear_consensus_partitions(
-    consensus_dir: &Path,
-    partitions: &BTreeSet<String>,
+fn extract_zstd_tar_archive(
+    archive_path: &Path,
+    target_dir: &Path,
+    overwrite: bool,
 ) -> eyre::Result<()> {
-    for partition in partitions {
-        let path = safe_output_path(consensus_dir, partition)?;
-        if !path.exists() {
-            continue;
-        }
-        let meta =
-            fs::metadata(&path).wrap_err_with(|| format!("failed to stat {}", path.display()))?;
-        if meta.is_dir() {
-            fs::remove_dir_all(&path)
-                .wrap_err_with(|| format!("failed to remove {}", path.display()))?;
-        } else {
-            fs::remove_file(&path)
-                .wrap_err_with(|| format!("failed to remove {}", path.display()))?;
-        }
-    }
-    Ok(())
-}
-
-fn consensus_archive_storage_partitions(archive_path: &Path) -> eyre::Result<BTreeSet<String>> {
     let file = fs::File::open(archive_path)
         .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
     let decoder = zstd::stream::read::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .wrap_err("failed to read consensus archive")?;
-    let mut partitions = BTreeSet::new();
-    for entry in entries {
-        let entry = entry.wrap_err("failed to read consensus archive entry")?;
-        let entry_type = entry.header().entry_type();
-        let entry_path = entry
-            .path()
-            .wrap_err("failed reading consensus archive entry path")?
-            .to_string_lossy()
-            .to_string();
-        if let Some((partition, _)) = consensus_archive_entry(&entry_path, entry_type)? {
-            partitions.insert(partition);
-        }
-    }
-    Ok(partitions)
-}
-
-fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Result<()> {
-    let file = fs::File::open(archive_path)
-        .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
-    let decoder = zstd::stream::read::Decoder::new(file)?;
-    let mut archive = tar::Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .wrap_err("failed to read consensus archive")?;
-    for entry in entries {
-        let mut entry = entry.wrap_err("failed to read consensus archive entry")?;
-        let entry_type = entry.header().entry_type();
-
-        let entry_path = entry
-            .path()
-            .wrap_err("failed reading consensus archive entry path")?
-            .to_string_lossy()
-            .to_string();
-        let Some((_, output_relative)) = consensus_archive_entry(&entry_path, entry_type)? else {
-            continue;
-        };
-        let output_relative = output_relative.to_string_lossy().to_string();
-        if entry_type.is_dir() {
-            let output_path = safe_output_path(target_dir, &output_relative)?;
-            fs::create_dir_all(&output_path)
-                .wrap_err_with(|| format!("failed to create {}", output_path.display()))?;
-            continue;
-        }
-
-        ensure!(
-            entry_type.is_file(),
-            "consensus archive contains a non-file entry",
-        );
-
-        let output_path = safe_output_path(target_dir, &output_relative)
-            .wrap_err_with(|| format!("path is not safe: {output_relative}"))?;
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)
-                .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
-        }
-        entry
-            .unpack(&output_path)
-            .wrap_err_with(|| format!("failed to extract {}", output_path.display()))?;
-    }
-    Ok(())
+    archive.set_overwrite(overwrite);
+    // `Archive::unpack` delegates each member to `Entry::unpack_in`, which skips
+    // paths that would escape `target_dir` and validates link targets.
+    archive.unpack(target_dir).wrap_err_with(|| {
+        format!(
+            "failed to extract consensus archive into {}",
+            target_dir.display()
+        )
+    })
 }
 
 fn verify_consensus_output_files(
@@ -451,19 +423,13 @@ fn verify_consensus_output_files(
     );
 
     for expected in output_files {
-        let output_path = safe_output_path(consensus_dir, &expected.path)
-            .wrap_err_with(|| format!("path is not safe: {}", expected.path))?;
+        let output_path = consensus_dir.join(&expected.path);
         let metadata = fs::metadata(&output_path).wrap_err_with(|| {
             format!(
                 "failed to stat consensus archive output {}",
                 output_path.display()
             )
         })?;
-        ensure!(
-            metadata.is_file(),
-            "consensus archive output is not a file: {}",
-            expected.path,
-        );
         ensure!(
             metadata.len() == expected.size,
             "consensus archive output size mismatch for {}: expected {}, got {}",
@@ -493,72 +459,6 @@ fn hash_file_blake3(path: &Path) -> eyre::Result<String> {
         .update_reader(file)
         .wrap_err_with(|| format!("failed reading {}", path.display()))?;
     Ok(hasher.finalize().to_hex().to_string())
-}
-
-fn consensus_archive_entry(
-    relative: &str,
-    entry_type: tar::EntryType,
-) -> eyre::Result<Option<(String, PathBuf)>> {
-    let path = safe_relative_path(relative)?;
-    let mut components = path.components();
-    let Some(Component::Normal(root)) = components.next() else {
-        bail!("consensus archive entry path must not be empty");
-    };
-    ensure!(
-        root == std::ffi::OsStr::new(CONSENSUS_ARCHIVE_ROOT),
-        "consensus archive entry must be under `{CONSENSUS_ARCHIVE_ROOT}`: {relative}",
-    );
-    let Some(Component::Normal(partition)) = components.next() else {
-        ensure!(
-            entry_type.is_dir(),
-            "consensus archive root entry must be a directory: {relative}",
-        );
-        return Ok(None);
-    };
-    let partition = partition.to_string_lossy().to_string();
-    ensure!(
-        tempo_consensus::storage::snapshot::is_snapshot_storage_partition(&partition),
-        "consensus archive contains unexpected storage partition: {partition}",
-    );
-    let mut output_relative = PathBuf::from(&partition);
-    let mut is_partition_root = true;
-    for component in components {
-        is_partition_root = false;
-        let Component::Normal(component) = component else {
-            bail!("invalid consensus archive entry path: {relative}");
-        };
-        output_relative.push(component);
-    }
-    if is_partition_root {
-        ensure!(
-            entry_type.is_dir(),
-            "consensus archive partition entry must be a directory: {relative}",
-        );
-    }
-    ensure!(
-        entry_type.is_dir() || entry_type.is_file(),
-        "consensus archive contains a non-file entry",
-    );
-    Ok(Some((partition, output_relative)))
-}
-
-fn safe_output_path(root: &Path, relative: &str) -> eyre::Result<PathBuf> {
-    Ok(root.join(safe_relative_path(relative).wrap_err("path is not safe")?))
-}
-
-fn safe_relative_path(relative: &str) -> eyre::Result<PathBuf> {
-    let path = Path::new(relative);
-    ensure!(path.is_relative(), "path must be relative");
-
-    let mut components = path.components().peekable();
-    ensure!(components.peek().is_some(), "path must not be empty");
-
-    ensure!(
-        components.all(|comp| matches!(comp, Component::Normal(_))),
-        "all path components must be normal (no root, ., .., etc)",
-    );
-
-    Ok(path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -618,6 +518,57 @@ mod tests {
     }
 
     #[test]
+    fn args_accepts_print_plan_json() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--manifest-url",
+            "https://snap/manifest.json",
+            "--datadir",
+            "/d",
+            "--minimal",
+            "--print-plan-json",
+            "--skip-consensus=false",
+        ])
+        .unwrap();
+
+        assert!(args.inner.prints_plan_json());
+        assert!(!args.skip_consensus);
+    }
+
+    #[test]
+    fn consensus_download_plan_archive_includes_resolved_metadata() {
+        let loaded = LoadedConsensusManifest {
+            manifest: TempoConsensusManifest {
+                execution_finalized_height: 40,
+                execution_finalized_digest: B256::with_last_byte(0x28),
+                tip_finalization_height: 42,
+                tip_finalization_digest: B256::with_last_byte(0x2a),
+                anchor_finalization_height: 41,
+                anchor_finalization_digest: B256::with_last_byte(0x29),
+                consensus_archive: reth_cli_commands::download::manifest::SingleArchive {
+                    file: "consensus.tar.zst".to_string(),
+                    size: 12,
+                    decompressed_size: 34,
+                    blake3: Some("abc".to_string()),
+                    output_files: Vec::new(),
+                },
+            },
+            archive_source: ConsensusArchiveSource::Url(
+                "https://snap/consensus.tar.zst".to_string(),
+            ),
+        };
+
+        let archive = consensus_download_plan_archive(&loaded).unwrap();
+
+        assert_eq!(archive.component, "consensus");
+        assert_eq!(archive.file_name, "consensus.tar.zst");
+        assert_eq!(archive.url, "https://snap/consensus.tar.zst");
+        assert_eq!(archive.download_size, 12);
+        assert_eq!(archive.output_size, 34);
+        assert_eq!(archive.blake3.as_deref(), Some("abc"));
+    }
+
+    #[test]
     fn load_manifest_reads_tempo_consensus_extension_from_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("manifest.json");
@@ -667,6 +618,25 @@ mod tests {
     }
 
     #[test]
+    fn consensus_archive_url_resolves_relative_to_remote_manifest() {
+        let manifest_json = serde_json::json!({});
+        let source = ManifestSource::Url(
+            "https://snapshots.example.com/tempo-4217-42/manifest.json".to_string(),
+        );
+
+        let archive =
+            resolve_consensus_archive_source(&manifest_json, &source, "consensus.tar.zst").unwrap();
+
+        match archive {
+            ConsensusArchiveSource::Url(url) => assert_eq!(
+                url,
+                "https://snapshots.example.com/tempo-4217-42/consensus.tar.zst"
+            ),
+            ConsensusArchiveSource::Path(_) => panic!("remote manifest must resolve a URL"),
+        }
+    }
+
+    #[test]
     fn extract_zstd_tar_archive_allows_partition_directory_entries() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
@@ -677,15 +647,13 @@ mod tests {
 
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
         let mut builder = tar::Builder::new(encoder);
-        builder
-            .append_dir_all(CONSENSUS_ARCHIVE_ROOT, source.path())
-            .unwrap();
+        builder.append_dir_all("", source.path()).unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
 
         assert_eq!(
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
@@ -694,24 +662,126 @@ mod tests {
     }
 
     #[test]
-    fn extract_zstd_tar_archive_rejects_unexpected_partition() {
+    fn extract_zstd_tar_archive_accepts_new_partition_names() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
-        let partition = source.path().join("unexpected-partition");
+        let partition_name = "new-storage-partition";
+        let partition = source.path().join(partition_name);
         fs::create_dir_all(&partition).unwrap();
         fs::write(partition.join("00"), b"abc").unwrap();
 
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
         let mut builder = tar::Builder::new(encoder);
+        builder.append_dir_all("", source.path()).unwrap();
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+        let archive_file = write_test_archive(&archive);
+
+        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+
+        assert_eq!(
+            fs::read(target.path().join(partition_name).join("00")).unwrap(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_installs_bare_archive_contents() {
+        let target = tempfile::tempdir().unwrap();
+
+        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_cksum();
         builder
-            .append_dir_all(CONSENSUS_ARCHIVE_ROOT, source.path())
+            .append_data(&mut header, "partition/00", &mut &b"abc"[..])
+            .unwrap();
+
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+        let archive_file = write_test_archive(&archive);
+
+        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+
+        assert_eq!(
+            fs::read(target.path().join("partition").join("00")).unwrap(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_allows_existing_directories() {
+        let target = tempfile::tempdir().unwrap();
+        let existing = target.path().join("partition");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("old"), b"old").unwrap();
+
+        let source = tempfile::tempdir().unwrap();
+        let partition = source.path().join("partition");
+        fs::create_dir_all(&partition).unwrap();
+        fs::write(partition.join("00"), b"new").unwrap();
+
+        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+        builder.append_dir_all("", source.path()).unwrap();
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+        let archive_file = write_test_archive(&archive);
+
+        extract_zstd_tar_archive(archive_file.path(), target.path(), false).unwrap();
+        assert_eq!(fs::read(existing.join("old")).unwrap(), b"old");
+        assert_eq!(fs::read(existing.join("00")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_refuses_to_overwrite_existing_file() {
+        let target = tempfile::tempdir().unwrap();
+        let existing = target.path().join("00");
+        fs::write(&existing, b"old").unwrap();
+
+        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "00", &mut &b"new"[..])
             .unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
         let archive = encoder.finish().unwrap();
         let archive_file = write_test_archive(&archive);
 
-        assert!(extract_zstd_tar_archive(archive_file.path(), target.path()).is_err());
+        assert!(extract_zstd_tar_archive(archive_file.path(), target.path(), false).is_err());
+        assert_eq!(fs::read(existing).unwrap(), b"old");
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_overwrites_existing_file_when_forced() {
+        let target = tempfile::tempdir().unwrap();
+        let existing = target.path().join("00");
+        fs::write(&existing, b"old").unwrap();
+
+        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "00", &mut &b"new"[..])
+            .unwrap();
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+        let archive_file = write_test_archive(&archive);
+
+        extract_zstd_tar_archive(archive_file.path(), target.path(), true).unwrap();
+        assert_eq!(fs::read(existing).unwrap(), b"new");
     }
 
     #[tokio::test]
@@ -795,33 +865,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn verify_consensus_output_files_rejects_unsafe_output_path() {
-        let dir = tempfile::tempdir().unwrap();
-
-        assert!(
-            verify_consensus_output_files(
-                dir.path(),
-                &[OutputFileChecksum {
-                    path: "../engine-finalized-blocks-prunable-key/00".to_string(),
-                    size: 3,
-                    blake3: blake3::hash(b"abc").to_hex().to_string(),
-                }],
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn safe_output_path_rejects_unsafe_paths() {
-        let dir = tempfile::tempdir().unwrap();
-
-        assert!(safe_output_path(dir.path(), "").is_err());
-        assert!(safe_output_path(dir.path(), ".").is_err());
-        assert!(safe_output_path(dir.path(), "../partition").is_err());
-        assert!(safe_output_path(dir.path(), "/partition").is_err());
-        assert!(safe_output_path(dir.path(), "partition/00").is_ok());
     }
 }

@@ -1,0 +1,7 @@
+# Smallest-unit pathUSD deposits into the neobank vault.
+include: neobank-swap.yml
+
+merge:
+  mix:
+    - sequence: neobank_deposits
+      weight: 100
