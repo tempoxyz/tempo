@@ -116,7 +116,8 @@ struct BlockEntry {
 /// from the parent contexts that simplex hands to the application on
 /// propose/verify, and derived from blocks fetched along the latest
 /// notarization's ancestry. Block bodies are captured from validation
-/// requests or fetched from the marshal actor. Both are combined to
+/// requests and the node's own builds (the proposer never verifies its own
+/// block) or fetched from the marshal actor. Both are combined to
 /// reconstruct the
 /// canonical notarized chain on top of the finalized tip: the ancestry of
 /// the latest notarization, because a block can only be notarized if its
@@ -568,8 +569,11 @@ pub(crate) struct Actor<TContext> {
     /// Each job resolves a payload from the execution layer's payload builder
     /// and delivers it to the subscriber that requested the build. If the
     /// subscriber dropped its receiver in the meantime, the built payload is
-    /// discarded.
-    payload_jobs: FuturesUnordered<BoxFuture<'static, ()>>,
+    /// discarded. A delivered block is handed back as the job's output so
+    /// that its body can be recorded in the notarized block directory: the
+    /// proposer is never asked to verify its own proposal, so no validation
+    /// request would deliver it.
+    payload_jobs: FuturesUnordered<BoxFuture<'static, Option<Arc<Block>>>>,
 
     /// Tracks notarized blocks at the tip of the chain, bounded from below
     /// by the latest observed finalized tip of the network. That tip is
@@ -750,7 +754,15 @@ where
                     }
                 }
 
-                Some(()) = self.payload_jobs.next() => {}
+                Some(delivered) = self.payload_jobs.next() => {
+                    if let Some(block) = delivered {
+                        // The application received the built block and may
+                        // propose it; keep the body so the block can be
+                        // forwarded to the execution layer once a later
+                        // context proves it notarized.
+                        self.notarized_facts_directory.record_block(block);
+                    }
+                }
 
                 (digest, round, block) = &mut self.pending_notarized_block => {
                     self.handle_fetched_notarized_block(digest, round, block);
@@ -1653,7 +1665,7 @@ async fn run_payload_job<TContext: Pacer>(
         payload_id,
         mut response,
     }: StartPayloadJob,
-) {
+) -> Option<Arc<Block>> {
     let payload = select! {
         payload = execution_node
             .payload_builder_handle
@@ -1664,7 +1676,7 @@ async fn run_payload_job<TContext: Pacer>(
         // Drops the in-flight payload-resolution, killing payload build.
         () = response.cancellation() => {
             info!("payload subscriber went away before the payload was resolved; killing the payload build");
-            return;
+            return None;
         }
     };
 
@@ -1672,20 +1684,32 @@ async fn run_payload_job<TContext: Pacer>(
     // failure to the subscriber; the cause is only logged here.
     match payload {
         Some(Ok(payload)) => {
+            let retained = payload.clone();
             if response.send(payload).is_err() {
                 info!(
                     "payload subscriber went away before the payload could be delivered; discarding it"
                 );
+                return None;
             }
+            // The application received the block and may propose it; hand
+            // the body to the actor loop for the notarized block directory.
+            let (execution_block, block_access_list, _) =
+                retained.into_consensus_execution_payload();
+            Some(Arc::new(Block::from_execution_block_unchecked(
+                execution_block,
+                block_access_list,
+            )))
         }
         Some(Err(error)) => {
             warn!(
                 error = %eyre::Report::new(error),
                 "payload build job failed",
             );
+            None
         }
         None => {
             warn!("no payload build job found under the payload ID");
+            None
         }
     }
 }

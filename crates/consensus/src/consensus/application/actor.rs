@@ -23,23 +23,22 @@ use commonware_consensus::{
     Heightable as _,
     marshal::core::DigestFallback,
     simplex::{Plan, types::Context},
-    types::{Epoch, Epocher as _, FixedEpocher, HeightDelta, Round, View},
+    types::{Epocher as _, FixedEpocher, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
+    ContextCell, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
     telemetry::metrics::{Counter, MetricsExt as _},
 };
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use rand_core::{CryptoRng, Rng};
-use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_node::TempoFullNode;
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockReader as _, BlockSource};
@@ -275,9 +274,13 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        // The parent handed to us by consensus must be notarized; let the
-        // executor know so that it can keep driving the execution layer even
-        // if this proposal is aborted.
+        // Forward this notarized fact to the executor so that it can get
+        // started on bringing the execution layer to the right state. On the
+        // happy path there should always be enough headroom between this and
+        // the eventual request to build a block.
+        //
+        // If the EL is not (yet) in the correct state to build a block the
+        // build will fail fast.
         if let Err(error) = self.executor.parent_notarized(Context {
             round,
             leader: leader.clone(),
@@ -503,38 +506,6 @@ impl Inner<Init> {
             }
             info!("parent is last height of epoch; re-proposing parent");
             return Ok((parent, None));
-        }
-
-        let is_genesis_parent = parent.height().is_zero()
-            || parent_epoch_info.last() == parent.height()
-                && parent_epoch_info.epoch().next() == round.epoch();
-
-        // Send the proposal parent to execution layer to cover edge cases when
-        // we were not asked to to verify it (and hence are missing it in the
-        // EL).
-        //
-        // If proposing the first block of an epoch, its parent
-        // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
-        if !is_genesis_parent
-            && verify_block(
-                context,
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-            .is_none()
-        {
-            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -774,7 +745,7 @@ impl Inner<Init> {
             });
         }
 
-        let validation_duration = verify_block_via_executor(
+        let validation_duration = verify_block(
             round,
             &self.epoch_strategy,
             &self.state.executor,
@@ -873,102 +844,17 @@ struct VerifyResult {
     block: Option<Block>,
 }
 
-/// Verifies `block` given its `parent` against the execution layer.
+/// Validates `block` against the execution layer through the executor
+/// actor, which serializes the new-payload request with all other
+/// execution-layer work and records the block's body for the
+/// notarized-chain convergence.
 ///
-/// Returns EL validation duration when validation reached the execution layer
-/// and succeeded, or `None` if the block is invalid. Returns an error if
-/// validation was not possible, for example if communication with the execution
-/// layer failed.
-///
-/// Reason the reason for why a block was not valid is communicated as a
-/// tracing event.
-#[instrument(
-    skip_all,
-    fields(
-        %epoch,
-        epoch_length,
-        block.parent_digest = %block.parent_digest(),
-        block.digest = %block.digest(),
-        block.height = %block.height(),
-        block.timestamp = block.timestamp(),
-        parent.digest = %parent_digest,
-    )
-)]
-async fn verify_block<TContext: Pacer>(
-    context: &TContext,
-    epoch: Epoch,
-    epoch_strategy: &FixedEpocher,
-    engine: ConsensusEngineHandle<TempoPayloadTypes>,
-    block: &Block,
-    parent_digest: Digest,
-    scheme_provider: &SchemeProvider,
-) -> eyre::Result<Option<Duration>> {
-    use alloy_rpc_types_engine::PayloadStatusEnum;
-
-    let epoch_info = epoch_strategy
-        .containing(block.height())
-        .expect("epoch strategy is for all heights");
-    if epoch_info.epoch() != epoch {
-        info!("block does not belong to this epoch");
-        return Ok(None);
-    }
-    if block.parent_hash() != *parent_digest {
-        info!(
-            "parent digest stored in block must match the digest of the parent \
-            argument but doesn't"
-        );
-        return Ok(None);
-    }
-
-    // Scheme registration precedes engine creation, so the scheme must exist
-    let scheme = scheme_provider
-        .scheme(epoch)
-        .ok_or_eyre("cannot determine participants in the current epoch")?;
-
-    let validator_set = Some(
-        scheme
-            .participants()
-            .into_iter()
-            .map(|p| B256::from_slice(p))
-            .collect(),
-    );
-    let execution_data = TempoExecutionData {
-        block: block.execution_block().clone(),
-        block_access_list: block.block_access_list().cloned(),
-        validator_set,
-    };
-    let validation_start = Instant::now();
-    let payload_status = engine
-        .new_payload(execution_data)
-        .pace(context, Duration::from_millis(50))
-        .await
-        .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
-    match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
-        PayloadStatusEnum::Invalid { validation_error } => {
-            info!(
-                validation_error,
-                "execution layer returned that the block was invalid"
-            );
-            Ok(None)
-        }
-        PayloadStatusEnum::Accepted => {
-            bail!(
-                "failed validating block because payload was accepted, meaning \
-                that this was not actually executed by the execution layer for some reason"
-            );
-        }
-        PayloadStatusEnum::Syncing => {
-            bail!(
-                "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus \
-                layer but not the execution layer"
-            );
-        }
-    }
-}
-
-async fn verify_block_via_executor(
+/// Returns the EL validation duration when validation reached the execution
+/// layer and succeeded, or `None` if the block is invalid. Returns an error
+/// if validation was not possible, for example if the execution layer does
+/// not know the block's parent or the request was superseded by a
+/// newer-round request.
+async fn verify_block(
     round: Round,
     epoch_strategy: &FixedEpocher,
     executor: &crate::executor::Mailbox,
