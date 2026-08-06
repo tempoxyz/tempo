@@ -64,14 +64,8 @@ impl Mailbox {
         )
     }
 
-    /// Requests a new payload to be built on top of `digest` for the
-    /// proposal of `round`.
-    ///
-    /// The build is only started if the execution layer's head already is
-    /// `digest` (or is about to become it because it is the next notarized
-    /// block to forward). If it is not, the request fails fast (the
-    /// executor drops the response channel) and the executor converges the
-    /// execution layer in the background instead.
+    /// Requests the executor to build a proposal on top of `digest` found at
+    /// `round` and with `height`.
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
@@ -81,9 +75,12 @@ impl Mailbox {
     /// Conversely, the executor dropping its sender means the build failed;
     /// the executor logs the cause.
     ///
+    /// If the executor's tracked execution layer state is outdated, the build
+    /// fails fast.
+    ///
     /// The round arbitrates the slot shared with validation requests: only a
     /// request from a newer round replaces a queued one.
-    pub(crate) fn canonicalize_and_build(
+    pub(crate) fn build_proposal(
         &self,
         round: Round,
         height: Height,

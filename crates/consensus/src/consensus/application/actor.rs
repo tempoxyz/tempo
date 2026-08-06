@@ -611,7 +611,7 @@ impl Inner<Init> {
         let payload = self
             .state
             .executor
-            .canonicalize_and_build(round, parent.height(), parent.digest(), attrs)?
+            .build_proposal(round, parent.height(), parent.digest(), attrs)?
             .await
             .wrap_err(
                 "executor dropped the payload channel: the build failed (the \
