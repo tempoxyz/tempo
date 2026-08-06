@@ -4439,7 +4439,8 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
         test.gas_params().create_state_gas(),
         "first-call CREATE should contribute create_state_gas to AA intrinsic gas"
     );
-    let (gas_limit, reservoir) = test.evm.initial_gas_and_reservoir(&init_gas);
+    let (gas_limit, reservoir) = init_gas
+        .initial_gas_and_reservoir(tx_gas_limit, test.evm.ctx_ref().cfg().tx_gas_limit_cap());
 
     let mut call_idx = 0usize;
     let result = test
