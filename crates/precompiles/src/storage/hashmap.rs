@@ -228,10 +228,6 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         0
     }
 
-    fn state_gas_spilled(&self) -> u64 {
-        0
-    }
-
     fn gas_refunded(&self) -> i64 {
         0
     }
