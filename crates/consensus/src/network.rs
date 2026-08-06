@@ -1,9 +1,9 @@
 //! A channel wrapper that drops messages that exceed a pre-defined size.
 //!
-//! This layer defends against the `assert!` in
-//! [`commonware_p2p::authenticated::lookup::channels::UnlimitedSender::send`]
-//! that would lead to the node panicking if we ever exceeds the pre-configured
-//! message size.
+//! This layer defends against the `assert!` in commonware's internal channels
+//! (`commonware_p2p::authenticated::lookup::channels::UnlimitedSender::send` at
+//! the time of writing) that would lead to the node panicking if we ever
+//! exceeds the pre-configured message size.
 //!
 //! Note the interaction between size-limits and rate-limits: commonware
 //! performs rate-limits via the [`LimitedSender::check`] API prior to sending a
@@ -17,7 +17,7 @@
 use std::time::SystemTime;
 
 use commonware_actor::{Feedback, Unreliable};
-use commonware_p2p::{CheckedSender, LimitedSender, Recipients};
+use commonware_p2p::{Channel, CheckedSender, LimitedSender, Recipients};
 use commonware_runtime::{
     IoBufs, Metrics,
     telemetry::metrics::{Counter, MetricsExt as _},
@@ -28,13 +28,13 @@ use tracing::warn;
 #[derive(Clone)]
 pub(crate) struct SizeLimited<S> {
     inner: S,
-    channel: &'static str,
+    channel: Channel,
     max_size: usize,
     dropped: Counter,
 }
 
 impl<S> SizeLimited<S> {
-    fn new(inner: S, channel: &'static str, max_size: u32, dropped: Counter) -> Self {
+    fn new(inner: S, channel: Channel, max_size: u32, dropped: Counter) -> Self {
         Self {
             inner,
             channel,
@@ -48,7 +48,7 @@ impl<S> SizeLimited<S> {
 pub(crate) fn limit_channel<S, R>(
     context: &impl Metrics,
     (sender, receiver): (S, R),
-    channel: &'static str,
+    channel: Channel,
     max_size: u32,
 ) -> (SizeLimited<S>, R) {
     let dropped = context
@@ -66,7 +66,7 @@ pub(crate) fn limit_channel<S, R>(
 
 fn within_limit(
     message: impl Into<IoBufs>,
-    channel: &'static str,
+    channel: Channel,
     max_size: usize,
     dropped: &Counter,
 ) -> Option<IoBufs> {
@@ -87,7 +87,7 @@ fn within_limit(
 
 pub(crate) struct SizeLimitedChecked<S> {
     inner: S,
-    channel: &'static str,
+    channel: Channel,
     max_size: usize,
     dropped: Counter,
 }
@@ -192,7 +192,7 @@ mod tests {
     fn rejects_oversized_messages() {
         let peer = PrivateKey::random(test_rng()).public_key();
         let dropped = inert_counter();
-        let mut sender = SizeLimited::new(InertSender(peer.clone()), "test", 4, dropped.clone());
+        let mut sender = SizeLimited::new(InertSender(peer.clone()), 0, 4, dropped.clone());
 
         let sent = sender.send(Recipients::One(peer), b"large".to_vec(), false);
 
@@ -204,7 +204,7 @@ mod tests {
     fn forwards_messages_within_limit() {
         let peer = PrivateKey::random(test_rng()).public_key();
         let dropped = inert_counter();
-        let mut sender = SizeLimited::new(InertSender(peer.clone()), "test", 4, dropped.clone());
+        let mut sender = SizeLimited::new(InertSender(peer.clone()), 0, 4, dropped.clone());
 
         let sent = sender.send(Recipients::One(peer.clone()), b"four".to_vec(), false);
 

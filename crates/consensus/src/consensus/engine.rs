@@ -27,7 +27,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    alias,
+    alias, config,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -482,28 +482,46 @@ where
         ),
     ) -> eyre::Result<()> {
         let context = &*self.context;
-        let votes_channel = limit_channel(context, votes_channel, "votes", self.max_message_size);
+        let votes_channel = limit_channel(
+            context,
+            votes_channel,
+            config::VOTES_CHANNEL_IDENT,
+            self.max_message_size,
+        );
         let certificates_channel = limit_channel(
             context,
             certificates_channel,
-            "certificates",
+            config::CERTIFICATES_CHANNEL_IDENT,
             self.max_message_size,
         );
-        let resolver_channel =
-            limit_channel(context, resolver_channel, "resolver", self.max_message_size);
+        let resolver_channel = limit_channel(
+            context,
+            resolver_channel,
+            config::RESOLVER_CHANNEL_IDENT,
+            self.max_message_size,
+        );
         let broadcast_channel = limit_channel(
             context,
             broadcast_channel,
-            "broadcast",
+            config::BROADCASTER_CHANNEL_IDENT,
             self.max_message_size,
         );
-        let marshal_channel =
-            limit_channel(context, marshal_channel, "marshal", self.max_message_size);
-        let dkg_channel = limit_channel(context, dkg_channel, "dkg", self.max_message_size);
+        let marshal_channel = limit_channel(
+            context,
+            marshal_channel,
+            config::MARSHAL_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let dkg_channel = limit_channel(
+            context,
+            dkg_channel,
+            config::DKG_CHANNEL_IDENT,
+            self.max_message_size,
+        );
         let subblocks_channel = limit_channel(
             context,
             subblocks_channel,
-            "subblocks",
+            config::SUBBLOCKS_CHANNEL_IDENT,
             self.max_message_size,
         );
 
