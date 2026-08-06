@@ -681,25 +681,20 @@ impl GenesisArgs {
     }
 
     /// Returns the activation time of the given hardfork
-    fn hardfork_time(&self, hardfork: TempoHardfork) -> Option<u64> {
-        match hardfork {
-            TempoHardfork::Genesis => Some(0),
-            TempoHardfork::T0 => Some(self.t0_time),
-            TempoHardfork::T1 => Some(self.t1_time),
-            TempoHardfork::T1A => Some(self.t1a_time),
-            TempoHardfork::T1B => Some(self.t1b_time),
-            TempoHardfork::T1C => Some(self.t1c_time),
-            TempoHardfork::T2 => Some(self.t2_time),
-            TempoHardfork::T3 => Some(self.t3_time),
-            TempoHardfork::T4 => Some(self.t4_time),
-            TempoHardfork::T5 => Some(self.t5_time),
-            TempoHardfork::T6 => Some(self.t6_time),
-            TempoHardfork::T7 => Some(self.t7_time),
-            TempoHardfork::T8 => Some(self.t8_time),
-            TempoHardfork::T9 => Some(self.t9_time),
-            TempoHardfork::T10 => Some(self.t10_time),
-            _ => None,
+    fn hardfork_time(&self, fork: TempoHardfork) -> Option<u64> {
+        macro_rules! fork_time_match {
+            ($($variant:ident),* $(,)?) => {
+                paste::paste! {
+                    match fork {
+                        TempoHardfork::Genesis => Some(0),
+                        $(TempoHardfork::$variant => Some(self.[<$variant:lower _time>]),)*
+                        _ => None,
+                    }
+                }
+            };
         }
+
+        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
     }
 
     /// Returns the latest hardfork active at genesis.

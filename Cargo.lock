@@ -14009,6 +14009,7 @@ dependencies = [
  "eyre",
  "indicatif",
  "itertools 0.14.0",
+ "paste",
  "rand 0.10.2",
  "rand 0.8.6",
  "rayon",
