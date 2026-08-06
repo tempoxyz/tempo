@@ -14,25 +14,37 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
     ForkchoiceState, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
 };
-use commonware_consensus::types::Height;
+use commonware_consensus::types::{Height, Round};
 use futures::channel::oneshot;
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
-use reth_node_core::primitives::SealedBlock;
+use reth_node_core::primitives::{SealedBlock, SealedHeader};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::TempoPayloadAttributes;
-use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
+use tempo_primitives::{
+    Block as TempoBlock, BlockBody, TempoConsensusContext, TempoHeader, ed25519::PublicKey,
+};
 
 use super::super::{ExecutionEngine, FinalizedBlockProvider, Marshal};
 use crate::consensus::block::Block;
 
 pub(super) fn make_block(height: u64, parent_hash: B256) -> Block {
+    make_block_at_round(height, parent_hash, Round::zero())
+}
+
+pub(super) fn make_block_at_round(height: u64, parent_hash: B256, round: Round) -> Block {
     let header = TempoHeader {
         inner: Header {
             parent_hash,
             number: height,
             ..Default::default()
         },
+        consensus_context: Some(TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: 0,
+            proposer: PublicKey::from_seed(0),
+        }),
         ..Default::default()
     };
     let inner = TempoBlock {
@@ -51,6 +63,7 @@ pub(super) struct StubExecutionProvider {
 #[derive(Default)]
 struct StubExecutionProviderInner {
     finalized: Mutex<BlockNumHash>,
+    finalized_round: Mutex<Option<Round>>,
     durable: Mutex<HashMap<u64, B256>>,
     fail_durable_reads: AtomicBool,
     payloads: AtomicUsize,
@@ -61,8 +74,16 @@ struct StubExecutionProviderInner {
 }
 
 impl StubExecutionProvider {
-    pub(super) fn set_finalized(&self, number: u64, hash: B256) {
+    pub(super) fn set_finalized(&self, number: u64, hash: B256, round: Round) {
         *self.inner.finalized.lock() = BlockNumHash::new(number, hash);
+        *self.inner.finalized_round.lock() = Some(round);
+    }
+
+    /// Models a finalized execution header from before TIP-1031, when headers
+    /// had no consensus context and therefore no round.
+    pub(super) fn set_prefork_finalized(&self, number: u64, hash: B256) {
+        *self.inner.finalized.lock() = BlockNumHash::new(number, hash);
+        *self.inner.finalized_round.lock() = None;
     }
 
     pub(super) fn set_durable(&self, height: u64, hash: B256) {
@@ -97,8 +118,29 @@ impl StubExecutionProvider {
 }
 
 impl FinalizedBlockProvider for StubExecutionProvider {
-    fn finalized_block_num_hash(&self) -> eyre::Result<BlockNumHash> {
-        Ok(*self.inner.finalized.lock())
+    fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>> {
+        let tip = *self.inner.finalized.lock();
+        let consensus_context =
+            self.inner
+                .finalized_round
+                .lock()
+                .map(|round| TempoConsensusContext {
+                    epoch: round.epoch().get(),
+                    view: round.view().get(),
+                    parent_view: 0,
+                    proposer: PublicKey::from_seed(0),
+                });
+        Ok(SealedHeader::new(
+            TempoHeader {
+                inner: Header {
+                    number: tip.number,
+                    ..Default::default()
+                },
+                consensus_context,
+                ..Default::default()
+            },
+            tip.hash,
+        ))
     }
 
     fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
