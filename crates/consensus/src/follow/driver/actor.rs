@@ -22,18 +22,17 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
 
-use super::{Config, ExecutionProvider, Feed, Mailbox, Marshal, ingress::Message};
+use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::consensus::{Block, Digest};
 
-pub(super) fn try_init<TContext, P, M, F>(
+pub(super) fn try_init<TContext, P, M>(
     context: TContext,
-    config: Config<P, M, F>,
-) -> eyre::Result<(Driver<TContext, P, M, F>, Mailbox)>
+    config: Config<P, M>,
+) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
-    F: Feed + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
@@ -107,21 +106,20 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext, P, M, F> {
+pub(crate) struct Driver<TContext, P, M> {
     context: ContextCell<TContext>,
-    config: Config<P, M, F>,
+    config: Config<P, M>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
     network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
-impl<C, P, M, F> Driver<C, P, M, F>
+impl<C, P, M> Driver<C, P, M>
 where
     C: Clock + Rng + CryptoRng + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
-    F: Feed + 'static,
 {
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run())
@@ -293,8 +291,7 @@ where
         let activity = Activity::Finalization(finalization);
 
         let _ = self.config.marshal.certified(round, consensus_block).await;
-        self.config.marshal.report(activity.clone()).await;
-        self.config.feed.report(activity).await;
+        self.config.marshal.report(activity).await;
         Ok(())
     }
 

@@ -363,8 +363,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 TxBuilder.callGas(calls[0].data, nonceValue) + TxBuilder.GAS_LIMIT_BUFFER;
 
             TempoTransaction memory tx_ = TempoTransactionLib.create()
-                .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-                .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey)
+                .withChainId(uint64(block.chainid))
+                .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+                .withGasLimit(gasLimit)
+                .withCalls(calls)
+                .withNonceKey(nonceKey)
                 .withNonce(nonceValue);
 
             signedTx = TxBuilder.signTempo(vmRlp, vm, tx_, params);
@@ -397,8 +400,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             uint64 gasLimit = TxBuilder.createGas(initcode, nonceValue) + TxBuilder.GAS_LIMIT_BUFFER;
 
             TempoTransaction memory tx_ = TempoTransactionLib.create()
-                .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-                .withGasLimit(gasLimit).withCalls(calls).withNonceKey(0).withNonce(nonceValue);
+                .withChainId(uint64(block.chainid))
+                .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+                .withGasLimit(gasLimit)
+                .withCalls(calls)
+                .withNonceKey(0)
+                .withNonce(nonceValue);
 
             signedTx = TxBuilder.signTempo(vmRlp, vm, tx_, params);
         }
@@ -618,8 +625,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(uint64(nonceKey))
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(uint64(nonceKey))
             .withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -1188,8 +1198,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.createGas(initcode, ctx.protocolNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(ctx.nonceKey)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(ctx.nonceKey)
             .withNonce(ctx.current2dNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -1522,8 +1535,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(currentNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -1661,8 +1678,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(currentNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -1919,9 +1940,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 gasLimit =
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        TempoTransaction memory tx_ = TempoTransactionLib.create().withChainId(wrongChainId)
-            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(currentNonce);
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(wrongChainId)
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -2578,8 +2603,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(ctx.calls[0].data, ctx.currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(ctx.calls).withNonceKey(ctx.nonceKey)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(ctx.calls)
+            .withNonceKey(ctx.nonceKey)
             .withNonce(ctx.currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -2659,8 +2687,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 highGasLimit = TxBuilder.DEFAULT_GAS_LIMIT * 10;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(highGasLimit).withCalls(calls).withNonceKey(ctx.nonceKey)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(highGasLimit)
+            .withCalls(calls)
+            .withNonceKey(ctx.nonceKey)
             .withNonce(ctx.currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -2854,8 +2885,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(currentNonce)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce)
             .withFeeToken(invalidFeeToken);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -2906,9 +2941,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(ctx.calls[0].data, ctx.currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(ctx.calls).withNonceKey(ctx.nonceKey)
-            .withNonce(ctx.currentNonce).withFeeToken(address(feeToken));
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(ctx.calls)
+            .withNonceKey(ctx.nonceKey)
+            .withNonce(ctx.currentNonce)
+            .withFeeToken(address(feeToken));
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -2959,8 +2998,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(ctx.calls[0].data, ctx.currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(ctx.calls).withNonceKey(ctx.nonceKey)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(ctx.calls)
+            .withNonceKey(ctx.nonceKey)
             .withNonce(ctx.currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -3040,8 +3082,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(currentNonce)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce)
             .withFeeToken(noLiquidityToken);
 
         bytes memory signedTx = TxBuilder.signTempo(
@@ -3101,8 +3147,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 gasLimit = TxBuilder.callGas(calls[0].data, txNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(txNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(txNonce);
 
         if (validAfter > 0) {
             tx_ = tx_.withValidAfter(validAfter);
@@ -3324,9 +3374,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         bytes memory data = abi.encodeCall(ITIP20.transfer, (recipient, amount));
         uint64 gasLimit = TxBuilder.callGas(data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        Eip1559Transaction memory tx_ = Eip1559TransactionLib.create().withNonce(currentNonce)
-            .withMaxPriorityFeePerGas(priorityFee).withMaxFeePerGas(maxFee).withGasLimit(gasLimit)
-            .withTo(address(feeToken)).withData(data);
+        Eip1559Transaction memory tx_ = Eip1559TransactionLib.create()
+            .withNonce(currentNonce)
+            .withMaxPriorityFeePerGas(priorityFee)
+            .withMaxFeePerGas(maxFee)
+            .withGasLimit(gasLimit)
+            .withTo(address(feeToken))
+            .withData(data);
 
         bytes memory unsignedTx = tx_.encode(vmRlp);
         bytes32 txHash = keccak256(unsignedTx);
@@ -3375,9 +3429,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         bytes memory data = abi.encodeCall(ITIP20.transfer, (recipient, amount));
         uint64 gasLimit = TxBuilder.callGas(data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        Eip1559Transaction memory tx_ = Eip1559TransactionLib.create().withNonce(currentNonce)
-            .withMaxPriorityFeePerGas(1).withMaxFeePerGas(maxFee).withGasLimit(gasLimit)
-            .withTo(address(feeToken)).withData(data);
+        Eip1559Transaction memory tx_ = Eip1559TransactionLib.create()
+            .withNonce(currentNonce)
+            .withMaxPriorityFeePerGas(1)
+            .withMaxFeePerGas(maxFee)
+            .withGasLimit(gasLimit)
+            .withTo(address(feeToken))
+            .withData(data);
 
         bytes memory unsignedTx = tx_.encode(vmRlp);
         bytes32 txHash = keccak256(unsignedTx);
@@ -3447,9 +3505,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         bytes memory data = abi.encodeCall(ITIP20.transfer, (recipient, amount));
         uint64 gasLimit = TxBuilder.callGas(data, senderNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        Eip7702Transaction memory tx_ = Eip7702TransactionLib.create().withNonce(senderNonce)
-            .withMaxPriorityFeePerGas(10).withMaxFeePerGas(100).withGasLimit(gasLimit)
-            .withTo(address(feeToken)).withData(data).withAuthorizationList(auths);
+        Eip7702Transaction memory tx_ = Eip7702TransactionLib.create()
+            .withNonce(senderNonce)
+            .withMaxPriorityFeePerGas(10)
+            .withMaxFeePerGas(100)
+            .withGasLimit(gasLimit)
+            .withTo(address(feeToken))
+            .withData(data)
+            .withAuthorizationList(auths);
 
         bytes memory unsignedTx = tx_.encode(vmRlp);
         bytes32 txHash = keccak256(unsignedTx);
@@ -3506,9 +3569,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint64 gasLimit = TxBuilder.createGas(initcode, senderNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
-        Eip7702Transaction memory tx_ = Eip7702TransactionLib.create().withNonce(senderNonce)
-            .withMaxPriorityFeePerGas(10).withMaxFeePerGas(100).withGasLimit(gasLimit)
-            .withTo(address(0)).withData(initcode).withAuthorizationList(auths);
+        Eip7702Transaction memory tx_ = Eip7702TransactionLib.create()
+            .withNonce(senderNonce)
+            .withMaxPriorityFeePerGas(10)
+            .withMaxFeePerGas(100)
+            .withGasLimit(gasLimit)
+            .withTo(address(0))
+            .withData(initcode)
+            .withAuthorizationList(auths);
 
         bytes memory unsignedTx = tx_.encode(vmRlp);
         bytes32 txHash = keccak256(unsignedTx);
@@ -3585,8 +3653,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(nonceKey).withNonce(currentNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce);
 
         bytes memory unsignedTxForFeePayer = tx_.encode(vmRlp);
         bytes32 feePayerTxHash = keccak256(unsignedTxForFeePayer);
@@ -3978,8 +4050,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 gasLimit = TxBuilder.callGas(calls[0].data, 0) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY).withNonce(0)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY)
+            .withNonce(0)
             .withValidBefore(validBefore);
 
         signedTx = TxBuilder.signTempo(
@@ -4018,9 +4094,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 gasLimit = TxBuilder.callGas(calls[0].data, txNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY)
-            .withNonce(txNonce).withValidBefore(validBefore);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY)
+            .withNonce(txNonce)
+            .withValidBefore(validBefore);
 
         signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -4054,8 +4134,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 gasLimit = TxBuilder.callGas(calls[0].data, 0) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY).withNonce(0);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY)
+            .withNonce(0);
         // Note: NOT setting validBefore
 
         signedTx = TxBuilder.signTempo(
@@ -4503,8 +4587,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         });
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(highGasLimit).withCalls(calls).withNonceKey(0).withNonce(currentNonce);
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(highGasLimit)
+            .withCalls(calls)
+            .withNonceKey(0)
+            .withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -4803,9 +4891,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             TxBuilder.callGas(calls[0].data, currentNonce) + TxBuilder.GAS_LIMIT_BUFFER;
 
         // Build tx with wrong chain_id
-        TempoTransaction memory tx_ = TempoTransactionLib.create().withChainId(wrongChainId)
-            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE).withGasLimit(gasLimit).withCalls(calls)
-            .withNonceKey(nonceKey).withNonce(currentNonce);
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(wrongChainId)
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(nonceKey)
+            .withNonce(currentNonce);
 
         bytes memory signedTx = TxBuilder.signTempo(
             vmRlp,
@@ -4895,8 +4987,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint64 gasLimit = TxBuilder.callGas(calls[0].data, 0) + TxBuilder.GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
-            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
-            .withGasLimit(gasLimit).withCalls(calls).withNonceKey(EXPIRING_NONCE_KEY).withNonce(0)
+            .withChainId(uint64(block.chainid))
+            .withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(gasLimit)
+            .withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY)
+            .withNonce(0)
             .withValidBefore(validBefore);
 
         // Encode the base tx (before fee payer sig) — this is what fee payers sign

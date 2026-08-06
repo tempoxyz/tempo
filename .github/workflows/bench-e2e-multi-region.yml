@@ -3,6 +3,10 @@ name: bench-e2e-multi-region
 on:
   workflow_call:
     inputs:
+      cloud:
+        type: string
+        required: false
+        default: "aws"
       baseline:
         type: string
         required: false
@@ -34,7 +38,7 @@ on:
       regions:
         type: string
         required: false
-        default: "us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1"
+        default: ""
       tps:
         type: string
         required: false
@@ -47,6 +51,10 @@ on:
         type: string
         required: false
         default: "100"
+      general-gas-limit:
+        type: string
+        required: false
+        default: ""
       run-pairs:
         type: string
         required: false
@@ -66,6 +74,14 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      cloud:
+        description: Cloud provider used for disposable benchmark infrastructure.
+        type: choice
+        required: true
+        default: aws
+        options:
+          - aws
+          - gcp
       baseline:
         description: Git ref for the baseline run. Empty = tempoxyz/tempo main.
         type: string
@@ -125,10 +141,10 @@ on:
         required: true
         default: "50"
       regions:
-        description: "Comma-separated AWS regions. Valid values: us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1."
+        description: Comma-separated cloud regions. Empty uses the selected cloud's five defaults.
         type: string
-        required: true
-        default: "us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1"
+        required: false
+        default: ""
       tps:
         description: Target transactions per second.
         type: string
@@ -189,11 +205,6 @@ on:
         type: string
         required: true
         default: "5000000000"
-      general-gas-limit:
-        description: General non-payment gas limit override. Defaults to gas-limit for keychain setup presets.
-        type: string
-        required: false
-        default: ""
       force-bloat:
         description: Force regeneration of local benchmark state.
         type: boolean
@@ -231,9 +242,13 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
-      TERRAFORM_DIR: tempo-multi-region-benchmark/terraform
+      TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
+      BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
+      BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
+      BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
+      BENCH_GCP_SERVICE_ACCOUNT: benchmark-runner@chain-benchmarking-zygis.iam.gserviceaccount.com
       BENCH_INPUT_BASELINE: ${{ inputs.baseline || '' }}
       BENCH_INPUT_FEATURE: ${{ inputs.feature || '' }}
       BENCH_INPUT_BASELINE_NAME: ${{ inputs['baseline-name'] || '' }}
@@ -244,7 +259,9 @@ jobs:
       BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '50' }}
-      BENCH_INPUT_REGIONS: ${{ inputs.regions || 'us-east-1,us-west-2,eu-central-1,ap-southeast-1,ap-northeast-1' }}
+      BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '100' }}
@@ -344,7 +361,7 @@ jobs:
           BENCH_REGIONS: ${{ env.BENCH_INPUT_REGIONS }}
         run: |
           source "$BENCH_REPO_DIR/scripts/regions.sh"
-          normalized_region_csv="$(bench_e2e_multi_region_normalize_regions "$BENCH_REGIONS")"
+          normalized_region_csv="$(bench_e2e_multi_region_normalize_regions "$BENCH_REGIONS" "$BENCH_INPUT_CLOUD")"
           echo "Benchmark regions: $normalized_region_csv"
           echo "regions=$normalized_region_csv" >> "$GITHUB_OUTPUT"
 
@@ -385,6 +402,7 @@ jobs:
           toolchain: stable
 
       - name: Configure AWS credentials
+        if: env.BENCH_INPUT_CLOUD == 'aws'
         uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
@@ -392,8 +410,22 @@ jobs:
           role-duration-seconds: 21600
 
       - name: Configure AWS S3 transfers
+        if: env.BENCH_INPUT_CLOUD == 'aws'
         run: |
           "$BENCH_REPO_DIR/scripts/configure_aws_s3_transfer.sh"
+
+      - name: Authenticate to Google Cloud
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
+          service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud CLI
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
 
       - name: Fetch Tempo binaries
         id: fetch_tempo_binaries
@@ -401,6 +433,8 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage fetch-tempo-binaries \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
@@ -431,7 +465,8 @@ jobs:
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
-            --instance-type c6id.8xlarge \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -454,6 +489,8 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage generate-initial-validator-state \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
@@ -484,7 +521,8 @@ jobs:
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
-            --instance-type c6id.8xlarge \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -497,6 +535,8 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage initialize-validator-state \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
@@ -527,7 +567,8 @@ jobs:
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
-            --instance-type c6id.8xlarge \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -540,6 +581,8 @@ jobs:
         run: |
           "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
             --stage run-benchmarks \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
             --benchmark-id "$BENCHMARK_ID" \
             --results-dir "$BENCH_RESULTS_DIR" \
             --baseline "$BENCH_INPUT_BASELINE" \
@@ -570,7 +613,8 @@ jobs:
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
-            --instance-type c6id.8xlarge \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
             --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -583,19 +627,20 @@ jobs:
             --terraform-dir "${{ env.TERRAFORM_DIR }}" \
             --state-dir "$RUNNER_TEMP/terraform-destroy"
 
-      - name: Collect AWS artifacts
+      - name: Collect cloud artifacts
         if: always() && steps.checkout_benchmark_repo.outcome == 'success'
         run: |
-          if [ -d "$BENCH_RESULTS_DIR/aws-artifacts" ] && [ -n "$(find "$BENCH_RESULTS_DIR/aws-artifacts" -type f -print -quit 2>/dev/null)" ]; then
-            echo "AWS artifacts already collected; skipping duplicate collection."
+          if [ -d "$BENCH_RESULTS_DIR/cloud-artifacts" ] && [ -n "$(find "$BENCH_RESULTS_DIR/cloud-artifacts" -type f -print -quit 2>/dev/null)" ]; then
+            echo "Cloud artifacts already collected; skipping duplicate collection."
             exit 0
           fi
           "$BENCH_REPO_DIR/scripts/collect_artifacts.sh" \
+            --cloud "$BENCH_INPUT_CLOUD" \
             --terraform-dir "${{ env.TERRAFORM_DIR }}" \
             --outputs-file "$RUNNER_TEMP/terraform-destroy/terraform-outputs.json" \
-            --dest "$BENCH_RESULTS_DIR/aws-artifacts" || echo "::warning::artifact collection failed during teardown"
+            --dest "$BENCH_RESULTS_DIR/cloud-artifacts" || echo "::warning::artifact collection failed during teardown"
 
-      - name: Collect AWS e2e summary
+      - name: Collect e2e summary
         id: results-dir
         if: always()
         run: |

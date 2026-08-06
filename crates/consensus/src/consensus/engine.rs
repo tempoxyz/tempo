@@ -274,7 +274,6 @@ where
                 mailbox_size: self.mailbox_size,
                 subblocks: subblocks.as_ref().map(|s| s.mailbox()),
                 marshal: marshal_mailbox.clone(),
-                feed: feed_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
@@ -326,6 +325,7 @@ where
             peer_manager_mailbox,
 
             feed,
+            feed_mailbox,
 
             subblocks,
         })
@@ -381,6 +381,7 @@ where
     peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
+    feed_mailbox: crate::feed::Mailbox,
 
     subblocks: Option<subblocks::Actor<TContext>>,
 }
@@ -498,7 +499,10 @@ where
                 self.epoch_manager_mailbox,
                 Reporters::from((
                     self.executor_mailbox,
-                    Reporters::from((self.dkg_manager_mailbox.clone(), self.peer_manager_mailbox)),
+                    Reporters::from((
+                        self.dkg_manager_mailbox.clone(),
+                        Reporters::from((self.peer_manager_mailbox, self.feed_mailbox)),
+                    )),
                 )),
             )),
             self.broadcast_mailbox,

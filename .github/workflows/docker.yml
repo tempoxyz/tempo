@@ -27,7 +27,7 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Images
-    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
+    if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
       actions: read

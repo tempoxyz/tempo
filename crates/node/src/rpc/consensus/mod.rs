@@ -63,11 +63,11 @@ pub trait TempoConsensusApi {
 
     /// Get the current consensus state snapshot.
     ///
-    /// Returns the latest finalized block and the latest notarized block (if not yet finalized).
+    /// Returns the latest finalized block. The notarized field is retained for compatibility.
     #[method(name = "getLatest")]
     async fn get_latest(&self) -> RpcResult<ConsensusState>;
 
-    /// Subscribe to all consensus events (Notarized, Finalized, Nullified).
+    /// Subscribe to finalized block events.
     #[subscription(name = "subscribe" => "event", unsubscribe = "unsubscribe", item = Event)]
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }

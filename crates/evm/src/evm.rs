@@ -5334,7 +5334,7 @@ mod tests {
             AccountInfo::default().with_code(logic_runtime),
         );
         initialize_zone_factory(&mut db, owner);
-        let mut evm = configured_evm(TempoHardfork::T9, 0, false, db);
+        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
 
         let spec = evm.config_spec_id();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
@@ -5385,7 +5385,7 @@ mod tests {
         let sequencer = Address::repeat_byte(0x33);
         let mut db = InMemoryDB::default();
         initialize_zone_factory(&mut db, owner);
-        let mut evm = configured_evm(TempoHardfork::T9, 0, false, db);
+        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
 
         let spec = evm.config_spec_id();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);

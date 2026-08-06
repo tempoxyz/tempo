@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn create_zone_installs_proxy_and_constructor_equivalent_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
@@ -411,6 +411,7 @@ mod tests {
             );
             assert!(portal.is_access_enforced.read()?);
             assert!(portal.is_gateway_enforced.read()?);
+            assert_eq!(portal.max_tempo_gas_rate.read()?, 0);
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -437,13 +438,14 @@ mod tests {
                 StorageCtx.sload(created.portal, U256::from(21))?,
                 U256::from(0x0101)
             );
+            assert_eq!(portal.max_tempo_gas_rate.slot(), U256::from(22));
             Ok(())
         })
     }
 
     #[test]
     fn create_zone_emits_constructor_events_in_order_with_duplicate_roles() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let portal = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
@@ -495,7 +497,7 @@ mod tests {
 
     #[test]
     fn create_zone_allows_empty_role_sets_and_open_modes() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
@@ -527,7 +529,7 @@ mod tests {
 
     #[test]
     fn create_zone_rejects_invalid_closed_loop_config() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
@@ -554,7 +556,7 @@ mod tests {
 
     #[test]
     fn create_zone_rejects_invalid_sequencer_sets() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
@@ -594,7 +596,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
-            StorageCtx.set_spec(TempoHardfork::T9);
+            StorageCtx.set_spec(TempoHardfork::T10);
 
             let err = factory
                 .create_zone(
@@ -626,7 +628,7 @@ mod tests {
 
     #[test]
     fn owner_and_input_validation_revert_before_mutation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;

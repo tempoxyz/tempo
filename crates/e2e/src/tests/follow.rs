@@ -303,23 +303,6 @@ impl MetricScope for Follower {
     }
 }
 
-/// Polls the feed until `query` resolves successfully.
-///
-/// Height queries resolve once marshal has stored both the certificate and
-/// block for that height.
-async fn wait_for_finalization<TContext: Clock>(
-    context: &TContext,
-    feed: &FeedStateHandle,
-    query: Query,
-) {
-    while !matches!(
-        feed.get_finalization(query.clone()).await,
-        Response::Success(..)
-    ) {
-        context.sleep(Duration::from_millis(100)).await;
-    }
-}
-
 #[test_traced]
 fn follower_bootstraps_from_validator() {
     let _ = tempo_eyre::install();
@@ -350,7 +333,12 @@ fn follower_bootstraps_from_validator() {
         // The marshal floor only advances with actually processed blocks, so
         // the follower backfills the gap between its startup floor (genesis
         // for a fresh node) and the join point via gap repair.
-        wait_for_finalization(&context, &follower.feed, Query::Height(1)).await;
+        while !matches!(
+            follower.feed.get_finalization(Query::Height(1)).await,
+            Response::Success(..)
+        ) {
+            context.sleep(Duration::from_millis(100)).await;
+        }
     });
 }
 
@@ -379,20 +367,20 @@ fn follower_syncs_historical_state() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, follower_target_height).await;
-        wait_for_finalization(&context, &follower.feed, Query::Latest).await;
 
         // The follower syncs directly to the observed finalization rather than
-        // targeting an epoch boundary. Marshal may still backfill historical
-        // boundary certificates as part of its normal gap repair.
-        // The feed and Reth finalized tip show that the follower caught up
-        // independently of those certificates.
-        let reported_finalized_height = follower
-            .feed
-            .get_finalization(Query::Latest)
-            .await
-            .unwrap()
-            .block
-            .number();
+        // targeting an epoch boundary. The feed follows marshal's ordered block
+        // delivery, so wait for gap repair to advance it to the target.
+        let reported_finalized_height = loop {
+            if let Response::Success(block) = follower.feed.get_finalization(Query::Latest).await {
+                let height = block.block.number();
+                if height >= follower_target_height {
+                    break height;
+                }
+            }
+
+            context.sleep(Duration::from_millis(100)).await;
+        };
 
         let provider = &follower.execution_node.node.provider;
         let synced_height = loop {

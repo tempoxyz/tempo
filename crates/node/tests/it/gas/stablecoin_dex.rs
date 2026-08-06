@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
@@ -14,7 +14,9 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_FACTORY_ADDRESS,
-    stablecoin_dex::MIN_ORDER_AMOUNT, tip20::ISSUER_ROLE,
+    error::TempoPrecompileError,
+    stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, RoundingDirection, base_to_quote},
+    tip20::ISSUER_ROLE,
 };
 use test_case::test_case;
 
@@ -27,6 +29,19 @@ struct DexGasRow {
     gas: u64,
     storage_credits: String,
     pooled_storage_credits: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct DexGasOutcome {
+    gas: u64,
+    status: bool,
+}
+
+fn under_overflow_revert() -> Bytes {
+    TempoPrecompileError::under_overflow()
+        .into_precompile_result(0, 0)
+        .unwrap()
+        .bytes
 }
 
 fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
@@ -50,9 +65,13 @@ async fn approve<P: Provider + Clone>(
     Ok(())
 }
 
-async fn setup_deterministic_test_token<P>(
+async fn setup_test_token<P>(
     provider: P,
     caller: Address,
+    name: &str,
+    symbol: &str,
+    quote_token: Address,
+    salt: u8,
 ) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
 where
     P: Provider + Clone,
@@ -60,12 +79,12 @@ where
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
         .createToken_0(
-            "Test".to_string(),
-            "TEST".to_string(),
+            name.to_string(),
+            symbol.to_string(),
             "USD".to_string(),
-            PATH_USD_ADDRESS,
+            quote_token,
             caller,
-            B256::with_last_byte(0x62),
+            B256::with_last_byte(salt),
         )
         .gas(5_000_000)
         .send()
@@ -92,6 +111,16 @@ where
     assert!(receipt.status(), "grant issuer role failed");
 
     Ok(token)
+}
+
+async fn setup_deterministic_test_token<P>(
+    provider: P,
+    caller: Address,
+) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
+where
+    P: Provider + Clone,
+{
+    setup_test_token(provider, caller, "Test", "TEST", PATH_USD_ADDRESS, 0x62).await
 }
 
 #[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
@@ -456,5 +485,176 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
     );
     insta::assert_yaml_snapshot!(snapshot_name, gas);
 
+    Ok(())
+}
+
+#[test_case(TempoHardfork::T2 ; "t2_before_route_pause_checks")]
+#[test_case(TempoHardfork::T3 ; "t3_before_state_gas_accounting")]
+#[test_case(TempoHardfork::T4 ; "t4_with_state_gas_accounting")]
+#[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
+#[test_case(TempoHardfork::T7 ; "t7_with_tip1060")]
+#[test_case(TempoHardfork::T8 ; "t8_with_packed_order_layout")]
+#[test_case(TempoHardfork::T9 ; "t9_without_aggregate_liquidity")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stablecoin_dex_revert_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
+    let signers = (0..=6).map(signer).collect::<eyre::Result<Vec<_>>>()?;
+    let providers = signers
+        .iter()
+        .map(|signer| {
+            ProviderBuilder::new()
+                .wallet(signer.clone())
+                .connect_http(setup.http_url.clone())
+        })
+        .collect::<Vec<_>>();
+    let admin_provider = providers[0].clone();
+    let admin = signers[0].address();
+    let exchange =
+        |index: usize| IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, providers[index].clone());
+    let mut gas = BTreeMap::new();
+
+    // A running-input overflow must occur after the second order is settled.
+    let ask_base = setup_test_token(
+        admin_provider.clone(),
+        admin,
+        "Overflow Ask",
+        "OASK",
+        PATH_USD_ADDRESS,
+        0x63,
+    )
+    .await?;
+    let first = u128::MAX / 2;
+    let second = u128::MAX - first;
+    let mut pending = vec![
+        ask_base
+            .mint(signers[1].address(), U256::from(first))
+            .send()
+            .await?,
+        ask_base
+            .mint(signers[2].address(), U256::from(second))
+            .send()
+            .await?,
+    ];
+    await_receipts(&mut pending).await?;
+    approve(
+        providers[1].clone(),
+        *ask_base.address(),
+        STABLECOIN_DEX_ADDRESS,
+    )
+    .await?;
+    approve(
+        providers[2].clone(),
+        *ask_base.address(),
+        STABLECOIN_DEX_ADDRESS,
+    )
+    .await?;
+    for (index, amount) in [(1, first), (2, second)] {
+        let receipt = exchange(index)
+            .place(*ask_base.address(), amount, false, MAX_TICK)
+            .gas(5_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status(), "overflow ask setup failed");
+    }
+    let err = exchange(3)
+        .swapExactAmountOut(PATH_USD_ADDRESS, *ask_base.address(), u128::MAX, u128::MAX)
+        .call()
+        .await
+        .expect_err("overflow swap call unexpectedly succeeded");
+    assert_eq!(err.as_revert_data(), Some(under_overflow_revert()));
+
+    let receipt = exchange(3)
+        .swapExactAmountOut(PATH_USD_ADDRESS, *ask_base.address(), u128::MAX, u128::MAX)
+        .gas(10_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(!receipt.status(), "overflow swap unexpectedly succeeded");
+    gas.insert(
+        "swap_exact_out_accumulation_overflow",
+        DexGasOutcome {
+            gas: receipt.gas_used,
+            status: receipt.status(),
+        },
+    );
+
+    // A placement aggregate overflow must occur after linking the previous tail.
+    let bid_quote = setup_test_token(
+        admin_provider.clone(),
+        admin,
+        "Overflow Quote",
+        "OQUOTE",
+        PATH_USD_ADDRESS,
+        0x64,
+    )
+    .await?;
+    let bid_base = setup_test_token(
+        admin_provider,
+        admin,
+        "Overflow Bid",
+        "OBID",
+        *bid_quote.address(),
+        0x65,
+    )
+    .await?;
+    let escrow = [
+        base_to_quote(first, MIN_TICK, RoundingDirection::Up).unwrap(),
+        base_to_quote(second, MIN_TICK, RoundingDirection::Up).unwrap(),
+        base_to_quote(MIN_ORDER_AMOUNT, MIN_TICK, RoundingDirection::Up).unwrap(),
+    ];
+    for (index, amount) in escrow.into_iter().enumerate() {
+        let user = index + 4;
+        let receipt = bid_quote
+            .mint(signers[user].address(), U256::from(amount))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status(), "overflow quote mint failed");
+        approve(
+            providers[user].clone(),
+            *bid_quote.address(),
+            STABLECOIN_DEX_ADDRESS,
+        )
+        .await?;
+    }
+    for (index, amount) in [(4, first), (5, second)] {
+        let receipt = exchange(index)
+            .place(*bid_base.address(), amount, true, MIN_TICK)
+            .gas(5_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status(), "overflow bid setup failed");
+    }
+    let receipt = exchange(6)
+        .place(*bid_base.address(), MIN_ORDER_AMOUNT, true, MIN_TICK)
+        .gas(5_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    gas.insert(
+        "place_aggregate_overflow",
+        DexGasOutcome {
+            gas: receipt.gas_used,
+            status: receipt.status(),
+        },
+    );
+
+    let snapshot_name = format!(
+        "stablecoin_dex_revert_gas_snapshot_{}",
+        hardfork.name().to_lowercase()
+    );
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
     Ok(())
 }
