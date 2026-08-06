@@ -1,0 +1,21 @@
+version: 3
+
+rules:
+  # These Tempo-owned actions are SHA-pinned but do not publish releases that
+  # pinact can use for version-comment or minimum-age verification.
+  - ignore: true
+    conditions:
+      - expr: |
+          ActionRepoFullName in ["tempoxyz/changelogs", "tempoxyz/ci", "tempoxyz/gh-actions"]
+      - expr: ActionVersion matches "^[0-9a-f]{40}$"
+  # rust-toolchain uses moving toolchain branches rather than release tags; the
+  # workflow scanner still enforces immutable commit pins.
+  - ignore: true
+    conditions:
+      - expr: ActionName == "dtolnay/rust-toolchain"
+      - expr: ActionVersion matches "^[0-9a-f]{40}$"
+  # OCI images use digest pins rather than Git commit SHAs.
+  - ignore: true
+    conditions:
+      - expr: |
+          ActionName matches "^docker://.+" && ActionVersion matches "^sha256:[0-9a-f]{64}$"
