@@ -1,11 +1,20 @@
 use commonware_consensus::types::{Height, Round};
+use eyre::OptionExt as _;
+use reth_primitives_traits::SealedHeader;
+use tempo_primitives::TempoHeader;
 
-use crate::{alias::marshal::StartupTip, consensus::Digest};
+use crate::{
+    alias::marshal::StartupTip,
+    consensus::{
+        Digest,
+        block::{Block, round_from_context},
+    },
+};
 
 /// A possible forkchoice target.
 ///
 /// A certificate gives us a round and digest before we know the block height.
-/// Execution gives us a height and digest but no round.
+/// Genesis is the only target without a round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Target {
     pub(super) round: Option<Round>,
@@ -14,12 +23,29 @@ pub(super) struct Target {
 }
 
 impl Target {
-    pub(super) const fn from_execution(height: Height, digest: Digest) -> Self {
-        Self {
-            round: None,
-            height: Some(height),
-            digest,
-        }
+    pub(super) fn from_header(header: &SealedHeader<TempoHeader>) -> eyre::Result<Self> {
+        let tip = header.num_hash();
+        let round = if tip.number == 0 {
+            None
+        } else {
+            // Followers only support post-TIP-1031 execution targets, except genesis.
+            Some(
+                header
+                    .consensus_context
+                    .map(round_from_context)
+                    .ok_or_eyre("finalized execution block is missing its consensus context")?,
+            )
+        };
+        Ok(Self {
+            round,
+            height: Some(Height::new(tip.number)),
+            digest: Digest(tip.hash),
+        })
+    }
+
+    pub(super) fn from_block(block: &Block) -> Self {
+        Self::from_header(block.block().sealed_header())
+            .expect("finalized execution block is missing its consensus context")
     }
 
     pub(super) const fn certified(round: Round, digest: Digest) -> Self {
@@ -68,7 +94,10 @@ impl From<StartupTip> for Target {
 
 #[cfg(test)]
 mod tests {
+    use alloy_consensus::Header;
     use commonware_consensus::types::{Epoch, View};
+    use reth_primitives_traits::SealedHeader;
+    use tempo_primitives::{TempoConsensusContext, TempoHeader, ed25519::PublicKey};
 
     use super::*;
 
@@ -78,6 +107,30 @@ mod tests {
 
     fn digest(byte: u8) -> Digest {
         Digest(alloy_primitives::B256::with_last_byte(byte))
+    }
+
+    fn execution_header(
+        height: u64,
+        round: Option<Round>,
+        digest: Digest,
+    ) -> SealedHeader<TempoHeader> {
+        let consensus_context = round.map(|round| TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: 0,
+            proposer: PublicKey::from_seed(0),
+        });
+        SealedHeader::new(
+            TempoHeader {
+                inner: Header {
+                    number: height,
+                    ..Default::default()
+                },
+                consensus_context,
+                ..Default::default()
+            },
+            digest.0,
+        )
     }
 
     #[test]
@@ -111,26 +164,24 @@ mod tests {
     }
 
     #[test]
-    fn roundless_target_is_ordered_by_height() {
-        let dispatched = Target::from_execution(Height::new(100), digest(1));
-        let behind = Target::finalized(round(1), Height::new(50), digest(2));
-        assert!(!behind.supersedes(&dispatched));
-
-        let ahead = Target::finalized(round(1), Height::new(101), digest(3));
-        assert!(ahead.supersedes(&dispatched));
-    }
-
-    #[test]
-    fn certified_tip_does_not_supersede_roundless_target() {
-        let dispatched = Target::from_execution(Height::new(100), digest(1));
+    fn certified_tip_does_not_supersede_newer_execution_target() {
+        let header = execution_header(100, Some(round(2)), digest(1));
+        let dispatched = Target::from_header(&header).expect("header should have a round");
         let certified = Target::certified(round(1), digest(2));
         assert!(!certified.supersedes(&dispatched));
     }
 
     #[test]
     fn certified_tip_supersedes_genesis() {
-        let genesis = Target::from_execution(Height::zero(), digest(1));
+        let header = execution_header(0, None, digest(1));
+        let genesis = Target::from_header(&header).expect("genesis needs no round");
         let certified = Target::certified(round(1), digest(2));
         assert!(certified.supersedes(&genesis));
+    }
+
+    #[test]
+    fn non_genesis_execution_target_requires_round() {
+        let header = execution_header(1, None, digest(1));
+        assert!(Target::from_header(&header).is_err());
     }
 }

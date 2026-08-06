@@ -15,7 +15,7 @@ use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
-    types::{Epocher as _, FixedEpocher, Height, Round},
+    types::{Epocher as _, FixedEpocher, Height},
 };
 use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
@@ -25,13 +25,9 @@ use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
 use super::{
-    BlockLocation, Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message,
-    target::Target,
+    Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message, target::Target,
 };
-use crate::{
-    consensus::{Digest, block::Block},
-    utils::OptionFuture,
-};
+use crate::{consensus::block::Block, utils::OptionFuture};
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
@@ -78,10 +74,11 @@ where
             fcu_heartbeat_interval,
         } = config;
 
-        let tip = execution_provider
-            .finalized_block_num_hash()
-            .expect("failed reading finalized execution tip");
-        let tip = Target::from_execution(Height::new(tip.number), Digest(tip.hash));
+        let finalized_header = execution_provider
+            .finalized_header()
+            .expect("failed reading finalized execution header");
+        let tip = Target::from_header(&finalized_header)
+            .expect("failed constructing finalized execution target");
 
         let mut actor = Self {
             context: ContextCell::new(context),
@@ -156,10 +153,7 @@ where
                             self.observe(Target::finalized(round, height, digest));
                         }
                         Message::CertifiedTip { round, digest } => {
-                            if let Err(error) = self.observe_certified(round, digest) {
-                                error!(%error, %round, %digest, "failed ordering certified tip");
-                                break;
-                            }
+                            self.observe(Target::certified(round, digest));
                         }
                     }
                 }
@@ -183,98 +177,6 @@ where
             self.last_fcu.height = self.last_fcu.height.or(candidate.height);
             self.last_fcu.round = self.last_fcu.round.or(candidate.round);
         }
-    }
-
-    fn observe_certified(&mut self, round: Round, digest: Digest) -> eyre::Result<()> {
-        let candidate = Target::certified(round, digest);
-        let current = self.latest_tip;
-
-        // After a restart, execution may be ahead of the local certificate
-        // archive. Its tip then has a height but no round. A new certificate
-        // has a round but no height until execution knows its block. The normal
-        // `Target` order cannot compare these values, so use the epoch and block
-        // location to decide:
-        //
-        // Certificate                          Result
-        // -----------                          ------
-        // Earlier epoch                        Ignore it.
-        // Later epoch                          Use it as the new target.
-        // Same epoch, unknown block            Use it as the new target.
-        // Same epoch, block above the tip      Use the known height.
-        // Same epoch, canonical block below    Ignore it.
-        // Same epoch, any block at the tip     Report a finality conflict.
-        // Same epoch, side block below the tip Report a finality conflict.
-        //
-        // A verified block that is unknown can be treated as newer because an
-        // older block should already be present under consensus safety. A known
-        // block must also be in the epoch named by its certificate.
-
-        if candidate.digest == current.digest {
-            self.observe(candidate);
-            return Ok(());
-        }
-
-        if current.round.is_some() {
-            self.observe(candidate);
-            return Ok(());
-        }
-
-        let current_height = current
-            .height
-            .expect("a roundless forkchoice target must have a height");
-
-        let current_epoch = self
-            .epoch_strategy
-            .containing(current_height)
-            .expect("strategy is valid for all heights and epochs")
-            .epoch();
-
-        if round.epoch() < current_epoch {
-            return Ok(());
-        }
-
-        if round.epoch() > current_epoch {
-            self.latest_tip = candidate;
-            return Ok(());
-        }
-
-        let (height, canonical) = match self
-            .execution_provider
-            .locate_block(candidate.digest.0)
-            .wrap_err("failed locating certified block in execution")?
-        {
-            BlockLocation::Canonical(height) => (Height::new(height), true),
-            BlockLocation::NonCanonical(height) => (Height::new(height), false),
-            BlockLocation::Unknown => {
-                self.latest_tip = candidate;
-                return Ok(());
-            }
-        };
-
-        let block_epoch = self
-            .epoch_strategy
-            .containing(height)
-            .expect("strategy is valid for all heights and epochs")
-            .epoch();
-        ensure!(
-            block_epoch == round.epoch(),
-            "certified block `{digest}` is at height `{height}` in epoch `{block_epoch}`, but its \
-             certificate is from epoch `{}`",
-            round.epoch(),
-        );
-
-        if height > current_height {
-            self.latest_tip = Target::finalized(round, height, digest);
-            return Ok(());
-        }
-
-        ensure!(
-            canonical && height < current_height,
-            "certified block `{digest}` at height `{height}` conflicts with finalized execution \
-             tip `{}` at height `{current_height}`",
-            current.digest,
-        );
-        Ok(())
     }
 
     fn should_send_forkchoice(&self) -> bool {
@@ -315,9 +217,12 @@ where
 
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
-        let finalized = self.execution_provider.finalized_block_num_hash()?;
-
-        let finalized_height = Height::new(finalized.number);
+        let finalized_height = Height::new(
+            self.execution_provider
+                .finalized_header()?
+                .num_hash()
+                .number,
+        );
         let epoch_length = self
             .epoch_strategy
             .containing(finalized_height)
@@ -383,7 +288,7 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
             }
         }
         ExecutionRequest::Block(block, ack) => {
-            let tip = Target::from_execution(block.height(), block.digest());
+            let tip = Target::from_block(&block);
 
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);

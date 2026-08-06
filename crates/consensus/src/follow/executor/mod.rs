@@ -16,18 +16,21 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Pacer, Spawner};
+use eyre::OptionExt as _;
 use futures::channel::mpsc;
 use reth_engine_primitives::ConsensusEngineHandle;
-use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
+use reth_ethereum::chainspec::EthChainSpec as _;
+use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::{
-    BlockHashReader, BlockIdReader, BlockNumReader, ChainSpecProvider as _,
-    DatabaseProviderFactory as _,
+    BlockHashReader, BlockIdReader, ChainSpecProvider as _, DatabaseProviderFactory as _,
+    HeaderProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tempo_node::{TempoExecutionData, TempoPayloadTypes};
 use tempo_payload_types::TempoPayloadAttributes;
+use tempo_primitives::TempoHeader;
 
-use crate::consensus::Digest;
+use crate::{alias::marshal::StartupTip, consensus::Digest};
 
 mod actor;
 mod ingress;
@@ -46,7 +49,7 @@ pub(crate) struct Config<P, E, M = crate::alias::marshal::Mailbox> {
     pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) floor: Height,
     /// The actor uses this tip to order certificates received before marshal reports one.
-    pub(crate) startup_tip: crate::alias::marshal::StartupTip,
+    pub(crate) startup_tip: StartupTip,
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }
 
@@ -66,22 +69,12 @@ where
 
 /// Finalized block state needed to initialize and advance the follower.
 pub(crate) trait FinalizedBlockProvider: Send + Sync {
-    /// Execution layer's effective finalized block. Returns genesis when no
+    /// Execution layer's effective finalized header. Returns genesis when no
     /// explicit finalized marker exists on a fresh chain.
-    fn finalized_block_num_hash(&self) -> eyre::Result<BlockNumHash>;
+    fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>>;
 
     /// Persisted database block hash at `height`, excluding in-memory state.
     fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>>;
-
-    /// Locates a known block and reports whether it is canonical.
-    fn locate_block(&self, hash: B256) -> eyre::Result<BlockLocation>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BlockLocation {
-    Canonical(u64),
-    NonCanonical(u64),
-    Unknown,
 }
 
 /// Engine commands issued by the follower executor.
@@ -115,10 +108,15 @@ pub(crate) trait Marshal: Clone + Send + Sync {
 impl<N> FinalizedBlockProvider for BlockchainProvider<N>
 where
     N: ProviderNodeTypes,
+    N::Primitives: NodePrimitives<BlockHeader = TempoHeader>,
 {
-    fn finalized_block_num_hash(&self) -> eyre::Result<BlockNumHash> {
-        Ok(BlockIdReader::finalized_block_num_hash(self)?
-            .unwrap_or_else(|| BlockNumHash::new(0, self.chain_spec().genesis_hash())))
+    fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>> {
+        let hash = BlockIdReader::finalized_block_num_hash(self)?
+            .map(|tip| tip.hash)
+            .unwrap_or_else(|| self.chain_spec().genesis_hash());
+        HeaderProvider::sealed_header_by_hash(self, hash)
+            .map_err(eyre::Report::new)?
+            .ok_or_eyre("finalized execution block is missing its header")
     }
 
     fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
@@ -126,23 +124,6 @@ where
             .map_err(eyre::Report::new)?
             .block_hash(height)
             .map_err(eyre::Report::new)
-    }
-
-    fn locate_block(&self, hash: B256) -> eyre::Result<BlockLocation> {
-        let provider = self.consistent_provider().map_err(eyre::Report::new)?;
-        let Some(height) =
-            BlockNumReader::block_number(&provider, hash).map_err(eyre::Report::new)?
-        else {
-            return Ok(BlockLocation::Unknown);
-        };
-
-        let canonical_hash = BlockHashReader::block_hash(&provider, height).map_err(eyre::Report::new)?;
-        if canonical_hash == Some(hash)
-        {
-            Ok(BlockLocation::Canonical(height))
-        } else {
-            Ok(BlockLocation::NonCanonical(height))
-        }
     }
 }
 
