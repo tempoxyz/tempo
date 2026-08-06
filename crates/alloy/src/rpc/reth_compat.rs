@@ -263,7 +263,7 @@ mod tests {
 
         assert_eq!(
             tx_env.execution_context(),
-            Some(tempo_revm::ExecutionContext::Simulation)
+            tempo_revm::ExecutionContext::Simulation
         );
         assert_eq!(
             tx_env.channel_open_context_hash(),

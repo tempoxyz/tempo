@@ -64,7 +64,7 @@ impl TempoTransactionRequest {
 
         tx_env.fee_token = fee_token;
         tx_env.is_system_tx = false;
-        tx_env.execution_context = Some(ExecutionContext::Simulation);
+        tx_env.execution_context = ExecutionContext::Simulation;
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(aa.aa_calls.len(), 1);
         assert_eq!(aa.aa_calls[0].to, TxKind::Call(target));
         assert!(matches!(aa.signature, TempoSignature::Keychain(_)));
-        assert_eq!(env.execution_context(), Some(ExecutionContext::Simulation));
+        assert_eq!(env.execution_context(), ExecutionContext::Simulation);
         assert_eq!(
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
