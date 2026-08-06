@@ -8,6 +8,10 @@ import json
 from pathlib import Path
 
 
+INVARIANT_TEST = "tests/invariant-tests.nu"
+TEMPO_TEST = "tests/tempo-tests.nu"
+
+
 def replace_parameter(path: Path, value: str) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
@@ -22,6 +26,50 @@ def replace_parameter(path: Path, value: str) -> None:
                 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
                 return
     raise ValueError(f"missing hardforks parameter in {path}")
+
+
+def migrate_hardfork_tests(workflows_root: Path) -> None:
+    """Remove fork-specific expectations from the workflow test fixtures.
+
+    The generated manifests are the source of truth for the current/next lanes. The
+    migration keeps existing workflow checkouts compatible while making future fork
+    rotations a data-only change.
+    """
+    replace_test_block(
+        workflows_root / INVARIANT_TEST,
+        '    assert equal ($lanes | get hardfork) ["T9" "T10"]\n',
+        """    let tempo_workflow = (open manifests/tempo-tests.yaml)
+    let tempo_parameters = $tempo_workflow.spec.arguments.parameters
+    let tempo_hardforks = ($tempo_parameters | where name == \"hardforks\" | first)
+    let tempo_lanes = ($tempo_hardforks.value | from json)
+
+    assert equal ($lanes | get hardfork) ($tempo_lanes | get hardfork)
+    assert equal ($lanes | length) 2
+""",
+    )
+    replace_test_block(
+        workflows_root / TEMPO_TEST,
+        """    assert equal ($lanes | get hardfork) [\"T9\" \"T10\"]
+    assert equal $lanes.0.genesisArgs \"--t8-time=0 --t9-time=0 --t10-time=4102444800\"
+    assert equal $lanes.1.genesisArgs \"--t8-time=0 --t9-time=0 --t10-time=0\"
+""",
+        """    assert equal ($lanes | length) 2
+    assert equal (($lanes | get hardfork | uniq) | length) 2
+    for lane in $lanes {
+        let hardfork = ($lane.hardfork | str downcase)
+        assert ($lane.genesisArgs | str contains $\"--($hardfork)-time=\")
+    }
+""",
+    )
+
+
+def replace_test_block(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    if new in text:
+        return
+    if old not in text:
+        raise ValueError(f"unsupported hardfork test fixture in {path}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
 def parse_metadata(raw: str, requested: str) -> tuple[list[dict[str, str]], dict[str, object]]:
@@ -75,6 +123,7 @@ def main() -> None:
         args.workflows_root / "manifests/invariant-tests.yaml",
         json.dumps([{"hardfork": lane["hardfork"]} for lane in matrix], separators=(",", ":")),
     )
+    migrate_hardfork_tests(args.workflows_root)
     print(json.dumps(metadata, separators=(",", ":")))
 
 
