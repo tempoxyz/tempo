@@ -38,14 +38,18 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
+        INITIAL_FACTORY_OWNER, ITIP403Registry, IValidatorConfigV2, createTokenCall,
+        initial_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -307,7 +311,8 @@ impl GenesisArgs {
 
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
-        let mut evm = setup_tempo_evm(self.chain_id);
+        let genesis_spec = TempoHardfork::from(&self);
+        let mut evm = setup_tempo_evm(self.chain_id, genesis_spec);
 
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
@@ -678,6 +683,35 @@ impl GenesisArgs {
     }
 }
 
+impl GenesisArgs {
+    fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
+        macro_rules! fork_time_match {
+            ($($variant:ident),* $(,)?) => {
+                paste::paste! {
+                    match fork {
+                        TempoHardfork::Genesis => Some(0),
+                        $(TempoHardfork::$variant => Some(self.[<$variant:lower _time>]),)*
+                        _ => None,
+                    }
+                }
+            };
+        }
+
+        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
+    }
+}
+
+impl From<&GenesisArgs> for TempoHardfork {
+    fn from(args: &GenesisArgs) -> Self {
+        TempoHardfork::VARIANTS
+            .iter()
+            .rev()
+            .copied()
+            .find(|fork| args.fork_time(*fork) == Some(0))
+            .unwrap_or(TempoHardfork::Genesis)
+    }
+}
+
 fn insert_zone_state_at_genesis(
     t10_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
@@ -699,11 +733,13 @@ fn insert_zone_state_at_genesis(
     }
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
+fn setup_tempo_evm(chain_id: u64, spec: TempoHardfork) -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     env.cfg_env.chain_id = chain_id;
+    env.cfg_env.spec = spec;
+    env.cfg_env.gas_params = tempo_revm::gas_params::tempo_gas_params(spec);
 
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
@@ -1271,5 +1307,42 @@ mod tests {
         insert_zone_state_at_genesis(1, &mut alloc);
 
         assert!(!alloc.contains_key(&ZONE_FACTORY_ADDRESS));
+    }
+
+    #[test]
+    fn genesis_tip20_tokens_initialize_tip403_policy_bindings() -> eyre::Result<()> {
+        let admin = Address::repeat_byte(0x11);
+        let mut evm = setup_tempo_evm(1337, TempoHardfork::T9);
+        initialize_registry(&mut evm)?;
+        initialize_tip20_factory(&mut evm)?;
+        create_path_usd_token(admin, &[], 0, &mut evm)?;
+        let token = create_and_mint_token(
+            "TestUSD",
+            "TestUSD",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            &[],
+            U256::ZERO,
+            SaltOrAddress::Address(address!("20C0000000000000000000000000000000000001")),
+            &mut evm,
+        )?;
+
+        StorageCtx::enter_ctx(
+            evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> tempo_precompiles::Result<()> {
+                let registry = TIP403Registry::new();
+                for token in [PATH_USD_ADDRESS, token] {
+                    let policy = registry.token_transfer_policy_id(
+                        ITIP403Registry::tokenTransferPolicyIdCall { token },
+                    )?;
+                    assert!(policy.isSet);
+                    assert_eq!(policy.policyId, 1);
+                }
+                Ok(())
+            },
+        )?;
+        Ok(())
     }
 }
