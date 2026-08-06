@@ -905,8 +905,8 @@ mod tests {
             Ok(U256::ZERO)
         }
 
-        fn get_block_hash(&mut self, _number: &U256) -> Result<Option<B256>, Self::Error> {
-            Ok(Some(B256::ZERO))
+        fn get_block_hash(&mut self, _number: &U256) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
