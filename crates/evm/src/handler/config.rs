@@ -413,10 +413,46 @@ pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError
     HandlerError::external(error.into())
 }
 
-fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
+fn map_protocol_result<R>(
+    result: TempoResult<R>,
+    map_recoverable: impl FnOnce(TempoPrecompileError) -> HandlerError,
+) -> HandlerResult<R> {
     match result {
         Ok(value) => Ok(value),
-        Err(error) => Err(map_tempo_precompile_error(error)),
+        Err(error) => match classify_tempo_precompile_error(error.clone()) {
+            TempoPrecompileErrorDisposition::Recoverable(_) => Err(map_recoverable(error)),
+            TempoPrecompileErrorDisposition::Fatal(error) => Err(error),
+        },
+    }
+}
+
+fn map_fee_protocol_error(
+    error: TempoPrecompileError,
+    host: &mut Evm<'_, TempoEvmTypes>,
+    fee_manager: &dyn ProtocolFeeManager,
+    fee_token: Address,
+    fee: U256,
+    beneficiary: Address,
+) -> HandlerError {
+    match error {
+        TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+            let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
+            invalid(FeePaymentError::InsufficientAmmLiquidity {
+                user_token: validator_token.map(|_| fee_token),
+                validator_token,
+                fee,
+            })
+        }
+        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
+            invalid(FeePaymentError::InsufficientFeeTokenBalance {
+                fee,
+                balance: error.available,
+            })
+        }
+        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+            invalid(TempoInvalidTransaction::FeeTokenPaused { address: fee_token })
+        }
+        error => invalid(FeePaymentError::Other(error.to_string())),
     }
 }
 
@@ -435,9 +471,8 @@ fn settle_storage_credit_refunds(
         return Ok(());
     }
 
-    let settled = map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-        host,
-        || {
+    let settled = map_protocol_result(
+        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut storage = StorageCtx;
             let mut settled = 0i64;
             for (key, word) in slots {
@@ -458,8 +493,9 @@ fn settle_storage_credit_refunds(
                 storage.sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(balance))?;
             }
             Ok(settled)
-        },
-    ))?;
+        }),
+        map_tempo_precompile_error,
+    )?;
     result
         .gas
         .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
@@ -610,18 +646,20 @@ impl TempoHandlerHooks {
         };
         let spec = host.config_spec_id();
 
-        map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-            host,
-            || {
+        map_protocol_result(
+            StorageCtx::enter_evm_without_tip1060_accounting(host, || {
                 AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
                 TIP20ChannelReserve::new()
                     .set_channel_open_context_hash(envelope.channel_open_context_hash())
-            },
-        ))?;
+            }),
+            map_tempo_precompile_error,
+        )?;
 
         let fee_manager = host.ext().fee_manager.clone();
-        let fee_token =
-            map_protocol_result(fee_manager.get_fee_token(host, envelope, fee_payer, spec))?;
+        let fee_token = map_protocol_result(
+            fee_manager.get_fee_token(host, envelope, fee_payer, spec),
+            map_tempo_precompile_error,
+        )?;
         host.ext_mut().resolved_fee_token = Some(fee_token);
         if !fee_token.is_tip20() {
             return Err(invalid(TempoInvalidTransaction::FeeTokenNotTip20 {
@@ -665,32 +703,15 @@ impl TempoHandlerHooks {
             )
         {
             host.state_mut().rollback(checkpoint, features);
-            return Err(match error {
-                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
-                    let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
-                    invalid(FeePaymentError::InsufficientAmmLiquidity {
-                        user_token: validator_token.map(|_| context.fee_token),
-                        validator_token,
-                        fee: context.collected,
-                    })
-                }
-                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
-                    invalid(FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: context.collected,
-                        balance: error.available,
-                    })
-                }
-                TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                    invalid(TempoInvalidTransaction::FeeTokenPaused {
-                        address: context.fee_token,
-                    })
-                }
-                error => match classify_tempo_precompile_error(error) {
-                    TempoPrecompileErrorDisposition::Recoverable(message) => {
-                        invalid(FeePaymentError::Other(message))
-                    }
-                    TempoPrecompileErrorDisposition::Fatal(error) => error,
-                },
+            return map_protocol_result(Err(error), |error| {
+                map_fee_protocol_error(
+                    error,
+                    host,
+                    fee_manager.as_ref(),
+                    context.fee_token,
+                    context.collected,
+                    beneficiary,
+                )
             });
         }
 
