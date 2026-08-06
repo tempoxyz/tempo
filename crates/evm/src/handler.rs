@@ -11,7 +11,7 @@ use self::config::{TempoFeeContext, TempoHandlerHooks, invalid};
 use crate::{FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv};
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
-    Evm, EvmFeatures, TxResult,
+    ErrorCode, Evm, EvmFeatures, TxResult,
     env::TxEnv,
     ethereum::{
         access_list_counts, initial_gas_and_reservoir, initial_message, validate_block_gas_limit,
@@ -673,7 +673,7 @@ pub(super) struct KeychainState {
 fn keychain_error(error: TempoPrecompileError) -> HandlerError {
     match error {
         TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-        error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+        TempoPrecompileError::Fatal(_) => HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE),
         error => invalid(TempoInvalidTransaction::KeychainValidationFailed {
             reason: format!("{error:?}"),
         }),
@@ -956,7 +956,9 @@ fn apply_key_authorization(
                 });
                 result.map_err(|error| match error {
                     TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                    error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+                    TempoPrecompileError::Fatal(_) => {
+                        HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE)
+                    }
                     error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
                         reason: error.to_string(),
                     }),
@@ -971,7 +973,7 @@ fn apply_key_authorization(
         }
         Err(error) => Err(match error {
             TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-            error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
+            TempoPrecompileError::Fatal(_) => HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE),
             error => invalid(TempoInvalidTransaction::KeychainPrecompileError {
                 reason: error.to_string(),
             }),
@@ -1121,8 +1123,8 @@ fn prevalidate_call_scopes(
             gas.set_remaining(0);
             (InstrStop::PrecompileOOG, Default::default())
         }
-        Err(PrecompileError::Fatal(error)) => {
-            return Err(HandlerError::External(error));
+        Err(PrecompileError::Fatal(_)) => {
+            return Err(HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE));
         }
         Ok(_) => unreachable!("Tempo precompile errors cannot produce success"),
     };

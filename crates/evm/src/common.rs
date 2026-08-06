@@ -1,4 +1,6 @@
-use crate::{TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
+use crate::{
+    TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv, error::map_tempo_precompile_error,
+};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
@@ -165,7 +167,7 @@ pub trait TempoStateAccess<M = ()> {
 
             Ok(Ok(()))
         })
-        .map_err(|err: TempoPrecompileError| HandlerError::external(err))?
+        .map_err(map_tempo_precompile_error)?
     }
 
     /// Checks if the given token can be used as a fee token.

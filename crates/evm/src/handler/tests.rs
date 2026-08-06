@@ -3980,7 +3980,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     storage::{ContractStorage, Handler, StorageActions},
     tip_fee_manager::TipFeeManager,
-    tip20::TIP20Token,
+    tip20::{TIP20Error, TIP20Token},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -4110,6 +4110,97 @@ impl ProtocolFeeManager for ValidatorTokenLookupFailsFeeManager {
     ) -> tempo_precompiles::error::Result<U256> {
         Ok(U256::ZERO)
     }
+}
+
+#[derive(Debug)]
+struct PolicyForbidsOnFeeSettlement;
+
+impl ProtocolFeeManager for PolicyForbidsOnFeeSettlement {
+    fn validate_fee_token(
+        &self,
+        _host: &mut Evm<'_, TempoEvmTypes>,
+        _fee_token: Address,
+        _spec: TempoHardfork,
+    ) -> HandlerResult<()> {
+        Ok(())
+    }
+
+    fn get_fee_token(
+        &self,
+        _host: &mut Evm<'_, TempoEvmTypes>,
+        _tx: &TempoTxEnv,
+        _fee_payer: Address,
+        _spec: TempoHardfork,
+    ) -> tempo_precompiles::error::Result<Address> {
+        Ok(DEFAULT_FEE_TOKEN)
+    }
+
+    fn collect_fee_pre_tx(
+        &self,
+        _host: &mut Evm<'_, TempoEvmTypes>,
+        _fee_payer: Address,
+        _user_token: Address,
+        _max_amount: U256,
+        _beneficiary: Address,
+        _skip_liquidity_check: bool,
+    ) -> tempo_precompiles::error::Result<Address> {
+        Ok(DEFAULT_FEE_TOKEN)
+    }
+
+    fn collect_fee_post_tx(
+        &self,
+        _host: &mut Evm<'_, TempoEvmTypes>,
+        _fee_payer: Address,
+        _actual_spending: U256,
+        _refund_amount: U256,
+        _fee_token: Address,
+        _beneficiary: Address,
+    ) -> tempo_precompiles::error::Result<U256> {
+        Err(TIP20Error::policy_forbids().into())
+    }
+}
+
+#[test]
+fn policy_forbids_during_fee_settlement_preserves_reverted_result() {
+    let spec = TempoHardfork::T8;
+    let ext = TempoEvmExt::default().with_fee_manager(PolicyForbidsOnFeeSettlement);
+    let precompiles = tempo_precompiles::TempoPrecompiles::new(
+        spec,
+        ext.actions.clone(),
+        ext.non_creditable_slots.clone(),
+    );
+    let mut evm = build_tempo_evm(
+        spec,
+        1,
+        TempoBlockEnv::default(),
+        InMemoryDB::default(),
+        precompiles,
+        ext,
+    );
+    let tx: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_limit: 500_000,
+                gas_price: 1,
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                input: Bytes::new(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        )),
+        SIGNER,
+    )
+    .into();
+    let tx = Recovered::new_unchecked(tx, SIGNER);
+
+    let result = evm
+        .transact(&tx)
+        .expect("business errors from fee settlement must not abort EVM execution")
+        .detach()
+        .result;
+    assert!(!result.status, "the user call should remain reverted");
+    assert_eq!(result.stop, InstrStop::Revert);
 }
 
 #[test]

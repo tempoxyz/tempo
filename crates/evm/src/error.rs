@@ -1,6 +1,8 @@
 //! Tempo EVM and transaction validation errors.
 
 use alloy_primitives::{Address, U256};
+use evm2::{ErrorCode, precompiles::PrecompileError, registry::HandlerError};
+use tempo_precompiles::error::TempoPrecompileError;
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Errors that can occur while configuring the Tempo EVM.
@@ -81,6 +83,8 @@ pub enum TempoInvalidTransaction {
     },
     #[error("keychain validation failed: {reason}")]
     KeychainValidationFailed { reason: String },
+    #[error("precompile error: {0}")]
+    PrecompileError(String),
     #[error("KeyAuthorization chain_id mismatch: expected {expected}, got {got}")]
     KeyAuthorizationChainIdMismatch { expected: u64, got: u64 },
     #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
@@ -129,10 +133,48 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
+            | Self::PrecompileError(_)
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
         }
+    }
+}
+
+pub(crate) enum TempoPrecompileErrorDisposition {
+    Recoverable(TempoPrecompileError),
+    Fatal(HandlerError),
+}
+
+/// Classifies a protocol error using the same result boundary as an EVM2 precompile call.
+pub(crate) fn classify_tempo_precompile_error(
+    error: TempoPrecompileError,
+) -> TempoPrecompileErrorDisposition {
+    match error {
+        TempoPrecompileError::EvmError(code) => {
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(code))
+        }
+        TempoPrecompileError::Fatal(_) => {
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE))
+        }
+        error => match error.clone().into_precompile_result() {
+            Err(PrecompileError::Revert(_)) | Err(PrecompileError::Halt(_)) => {
+                TempoPrecompileErrorDisposition::Recoverable(error)
+            }
+            Err(PrecompileError::Fatal(_)) => TempoPrecompileErrorDisposition::Fatal(
+                HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE),
+            ),
+            Ok(_) => unreachable!("Tempo precompile errors cannot produce success"),
+        },
+    }
+}
+
+pub(crate) fn map_tempo_precompile_error(error: TempoPrecompileError) -> HandlerError {
+    match classify_tempo_precompile_error(error) {
+        TempoPrecompileErrorDisposition::Recoverable(error) => {
+            HandlerError::external(TempoInvalidTransaction::PrecompileError(error.to_string()))
+        }
+        TempoPrecompileErrorDisposition::Fatal(error) => error,
     }
 }
 
@@ -192,6 +234,8 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
 mod tests {
     use super::*;
     use evm2::registry::HandlerError;
+    use tempo_contracts::precompiles::StablecoinDEXError;
+    use tempo_precompiles::tip20::TIP20Error;
 
     #[test]
     fn test_error_display() {
@@ -233,6 +277,33 @@ mod tests {
         assert!(matches!(
             error.external_ref::<TempoInvalidTransaction>(),
             Some(TempoInvalidTransaction::InvalidFeePayerSignature)
+        ));
+    }
+
+    #[test]
+    fn classify_protocol_errors_like_evm2_precompile_calls() {
+        let recoverable = [
+            TempoPrecompileError::TIP20(TIP20Error::policy_forbids()),
+            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist()),
+            TempoPrecompileError::UnknownFunctionSelector([0xde, 0xad, 0xbe, 0xef]),
+            TempoPrecompileError::OutOfGas,
+        ];
+
+        for error in recoverable {
+            assert!(matches!(
+                classify_tempo_precompile_error(error),
+                TempoPrecompileErrorDisposition::Recoverable(_)
+            ));
+        }
+        assert!(matches!(
+            classify_tempo_precompile_error(TempoPrecompileError::EvmError(
+                ErrorCode::BAL_NOT_COVERED
+            )),
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(_))
+        ));
+        assert!(matches!(
+            classify_tempo_precompile_error(TempoPrecompileError::Fatal("host failure".into())),
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(_))
         ));
     }
 

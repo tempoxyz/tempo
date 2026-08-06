@@ -3,6 +3,10 @@
 use crate::{
     FeePaymentError, TempoEvmTx, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
     common::is_tip20_fee_inference_call,
+    error::{
+        TempoPrecompileErrorDisposition, classify_tempo_precompile_error,
+        map_tempo_precompile_error,
+    },
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -409,11 +413,51 @@ pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError
     HandlerError::external(error.into())
 }
 
-fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
+fn map_protocol_result<R>(result: TempoResult<R>) -> Result<R, TempoPrecompileErrorDisposition> {
     match result {
         Ok(value) => Ok(value),
-        Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
-        Err(error) => Err(HandlerError::external(error)),
+        Err(error) => Err(classify_tempo_precompile_error(error)),
+    }
+}
+
+fn map_protocol_handler_result<R>(
+    result: TempoResult<R>,
+    map_recoverable: impl FnOnce(TempoPrecompileError) -> HandlerError,
+) -> HandlerResult<R> {
+    match map_protocol_result(result) {
+        Ok(value) => Ok(value),
+        Err(TempoPrecompileErrorDisposition::Recoverable(error)) => Err(map_recoverable(error)),
+        Err(TempoPrecompileErrorDisposition::Fatal(error)) => Err(error),
+    }
+}
+
+fn map_fee_protocol_error(
+    error: TempoPrecompileError,
+    host: &mut Evm<'_, TempoEvmTypes>,
+    fee_manager: &dyn ProtocolFeeManager,
+    fee_token: Address,
+    fee: U256,
+    beneficiary: Address,
+) -> HandlerError {
+    match error {
+        TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+            let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
+            invalid(FeePaymentError::InsufficientAmmLiquidity {
+                user_token: validator_token.map(|_| fee_token),
+                validator_token,
+                fee,
+            })
+        }
+        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
+            invalid(FeePaymentError::InsufficientFeeTokenBalance {
+                fee,
+                balance: error.available,
+            })
+        }
+        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+            invalid(TempoInvalidTransaction::FeeTokenPaused { address: fee_token })
+        }
+        error => invalid(FeePaymentError::Other(error.to_string())),
     }
 }
 
@@ -432,9 +476,8 @@ fn settle_storage_credit_refunds(
         return Ok(());
     }
 
-    let settled = map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-        host,
-        || {
+    let settled = map_protocol_handler_result(
+        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut storage = StorageCtx;
             let mut settled = 0i64;
             for (key, word) in slots {
@@ -455,8 +498,9 @@ fn settle_storage_credit_refunds(
                 storage.sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(balance))?;
             }
             Ok(settled)
-        },
-    ))?;
+        }),
+        map_tempo_precompile_error,
+    )?;
     result
         .gas
         .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
@@ -545,14 +589,36 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            map_protocol_result(fee_manager.collect_fee_post_tx(
+            let checkpoint = host.state().checkpoint();
+            match map_protocol_result(fee_manager.collect_fee_post_tx(
                 host,
                 fee_payer,
                 actual_spending,
                 refund,
                 fee_token,
                 beneficiary,
-            ))?
+            )) {
+                Ok(validator_fee) => validator_fee,
+                Err(TempoPrecompileErrorDisposition::Recoverable(error)) => {
+                    let message = error.to_string();
+
+                    // Fee settlement is a handler-side protocol call. A recoverable precompile
+                    // result here must preserve the user's receipt result rather than escape as
+                    // a transaction-invalidating handler error.
+                    let features = host.version().features;
+                    host.state_mut().rollback(checkpoint, features);
+                    if !result.status {
+                        return Ok(result);
+                    }
+
+                    // Execution has already committed its checkpoint, so keep the successful
+                    // execution and retain the upfront reservation if settlement cannot refund
+                    // it. This is deterministic and avoids making a protocol revert block-fatal.
+                    tracing::warn!(error = %message, "fee settlement failed after successful execution");
+                    U256::ZERO
+                }
+                Err(TempoPrecompileErrorDisposition::Fatal(error)) => return Err(error),
+            }
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
@@ -580,18 +646,20 @@ impl TempoHandlerHooks {
         };
         let spec = host.config_spec_id();
 
-        map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-            host,
-            || {
+        map_protocol_handler_result(
+            StorageCtx::enter_evm_without_tip1060_accounting(host, || {
                 AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
                 TIP20ChannelReserve::new()
                     .set_channel_open_context_hash(envelope.channel_open_context_hash())
-            },
-        ))?;
+            }),
+            map_tempo_precompile_error,
+        )?;
 
         let fee_manager = host.ext().fee_manager.clone();
-        let fee_token =
-            map_protocol_result(fee_manager.get_fee_token(host, envelope, fee_payer, spec))?;
+        let fee_token = map_protocol_handler_result(
+            fee_manager.get_fee_token(host, envelope, fee_payer, spec),
+            map_tempo_precompile_error,
+        )?;
         host.ext_mut().resolved_fee_token = Some(fee_token);
         if !fee_token.is_tip20() {
             return Err(invalid(TempoInvalidTransaction::FeeTokenNotTip20 {
@@ -635,29 +703,15 @@ impl TempoHandlerHooks {
             )
         {
             host.state_mut().rollback(checkpoint, features);
-            return Err(match error {
-                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
-                    let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
-                    invalid(FeePaymentError::InsufficientAmmLiquidity {
-                        user_token: validator_token.map(|_| context.fee_token),
-                        validator_token,
-                        fee: context.collected,
-                    })
-                }
-                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error)) => {
-                    invalid(FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: context.collected,
-                        balance: error.available,
-                    })
-                }
-                TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                    invalid(TempoInvalidTransaction::FeeTokenPaused {
-                        address: context.fee_token,
-                    })
-                }
-                TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
-                error => invalid(FeePaymentError::Other(error.to_string())),
+            return map_protocol_handler_result(Err(error), |error| {
+                map_fee_protocol_error(
+                    error,
+                    host,
+                    fee_manager.as_ref(),
+                    context.fee_token,
+                    context.collected,
+                    beneficiary,
+                )
             });
         }
 
