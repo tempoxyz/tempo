@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   prepare:
-    name: Prepare release/v${{ inputs.version }}
+    name: Prepare pre-release/v${{ inputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release-pr
@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
 
-          echo "release_branch=release/v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_branch=pre-release/v${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Check out the requested source commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
