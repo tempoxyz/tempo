@@ -68,8 +68,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, StorageActionReplayState, TempoEvmConfig,
-    TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
+    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -239,7 +239,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
             return;
         };
-        let _ = self.build_time_multiplier.fetch_update(
+        let _ = self.build_time_multiplier.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(decay_build_time_multiplier(current, observed)),
@@ -370,7 +370,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            mut state_root_handle,
             config,
             cancel,
             best_payload,
@@ -539,19 +539,22 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         let bal_task_handle = if self.enable_bal {
-            let bal_task_handle =
-                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
+            let bal_task_handle = self.spawn_bal_task(
+                state_root_handle
+                    .as_mut()
+                    .map(|handle| handle.take_state_hook()),
+            );
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(ref handle) = trie_handle {
+            if let Some(handle) = state_root_handle.as_mut() {
                 executor
                     .evm_mut()
                     .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
+                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
             }
             None
         };
@@ -628,7 +631,6 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
-        let mut action_replay_state = StorageActionReplayState::default();
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -786,7 +788,7 @@ where
                     bal_task_handle.is_some(),
                 )
             } else {
-                action_replay_state.invalidate_expiring_nonce_cache();
+                executor.invalidate_expiring_nonce_cache();
                 executor
                     .execute_transaction_with_result_closure(
                         tx.transaction.executable(),
@@ -1020,13 +1022,14 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
+            .and_then(|handle| handle.try_take_hashed_state_rx())
+            .map(|rx| rx.recv())
         {
             hashed_state
         } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
+            Arc::new(finish_provider.hashed_post_state(&db.bundle_state))
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1038,7 +1041,7 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = trie_handle {
+            } else if let Some(mut handle) = state_root_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
@@ -1083,7 +1086,7 @@ where
             (outcome.state_root, outcome.trie_updates)
         } else {
             let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
+                .state_root_with_updates((*hashed_state).clone())
                 .map_err(BlockExecutionError::other)?;
 
             (state_root, Arc::new(trie_updates))
@@ -1288,7 +1291,7 @@ where
         let executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
+            hashed_state,
             trie_updates,
         };
 

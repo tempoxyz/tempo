@@ -681,7 +681,10 @@ impl MultisigSignature {
         let (mut sig_fields, sig_rest) = fields.split_at(sig_header.payload_length);
         let mut signatures = Vec::new();
         while !sig_fields.is_empty() {
-            signatures.push(TempoSignature::decode_with_depth(&mut sig_fields, depth + 1)?);
+            signatures.push(TempoSignature::decode_with_depth(
+                &mut sig_fields,
+                depth + 1,
+            )?);
         }
         if !sig_rest.is_empty() {
             return Err(alloy_rlp::Error::Custom(

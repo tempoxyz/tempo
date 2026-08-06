@@ -3,11 +3,11 @@ use std::io::Write as _;
 use commonware_codec::Encode as _;
 use commonware_cryptography::{
     Signer as _,
-    bls12381::{dkg, primitives::variant::MinSig},
+    bls12381::{dkg::feldman_desmedt as dkg, primitives::variant::MinSig},
     ed25519::PrivateKey,
 };
 use commonware_utils::{N3f1, NZU32};
-use rand_08::SeedableRng as _;
+use rand::SeedableRng as _;
 use secrecy::ExposeSecret as _;
 
 use crate::{
@@ -122,7 +122,7 @@ fn signing_key_read_encrypted_from_file_roundtrip() {
 
 #[test]
 fn signing_key_random_generates_distinct_keys() {
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(7);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
     let a = SigningKey::random(&mut rng);
     let b = SigningKey::random(&mut rng);
     assert_ne!(a.public_key(), b.public_key());
@@ -130,23 +130,51 @@ fn signing_key_random_generates_distinct_keys() {
 
 #[test]
 fn signing_key_write_to_file_encrypted_roundtrip() {
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(99);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(99);
     let original = SigningKey::random(&mut rng);
 
-    let file = tempfile::NamedTempFile::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("signing.key");
     original
-        .write_to_file_encrypted(file.path(), passphrase("hunter2"))
+        .write_to_file_encrypted(&path, passphrase("hunter2"))
         .expect("encrypted write must succeed");
 
-    let loaded = SigningKey::read_from_file_encrypted(file.path(), passphrase("hunter2"))
+    let loaded = SigningKey::read_from_file_encrypted(&path, passphrase("hunter2"))
         .expect("encrypted read with the correct passphrase must succeed");
 
     assert_eq!(loaded.public_key(), original.public_key());
 }
 
+#[cfg(unix)]
+#[test]
+fn signing_key_write_to_file_encrypted_restricts_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("signing.key");
+
+    SigningKey::random(rand::rng())
+        .write_to_file_encrypted(&path, passphrase("hunter2"))
+        .unwrap();
+
+    assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn signing_key_write_to_file_encrypted_does_not_overwrite_existing_file() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), b"existing contents").unwrap();
+
+    SigningKey::random(rand::rng())
+        .write_to_file_encrypted(file.path(), passphrase("hunter2"))
+        .expect_err("writing to an existing file must fail");
+
+    assert_eq!(std::fs::read(file.path()).unwrap(), b"existing contents");
+}
+
 #[test]
 fn signing_key_write_encrypted_wrong_passphrase_fails() {
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(1234);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(1234);
     let key = SigningKey::random(&mut rng);
 
     let mut buf = Vec::new();
@@ -183,7 +211,7 @@ fn signing_share_read_from_file_trims_whitespace() {
 
 #[test]
 fn signing_share_roundtrip() {
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
     let (_, mut shares) =
         dkg::deal_anonymous::<MinSig, N3f1>(&mut rng, Default::default(), NZU32!(1));

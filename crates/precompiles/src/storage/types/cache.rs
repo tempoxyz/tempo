@@ -141,7 +141,7 @@ pub(crate) struct HandlerCache<K, H, const THRESHOLD: usize = CACHE_THRESHOLD> {
 impl<K, H, const THRESHOLD: usize> HandlerCache<K, H, THRESHOLD> {
     /// Creates a new empty handler cache.
     #[inline]
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: RefCell::new(HandlerCacheState::Linear(LinearCache::default())),
         }
@@ -162,7 +162,7 @@ where
 
     /// Returns a reference to a lazily initialized handler for the given key.
     #[inline]
-    pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
+    pub(crate) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
         let mut cache = self.inner.borrow_mut();
         let ptr = match &mut *cache {
             HandlerCacheState::Linear(linear) => {
@@ -187,7 +187,7 @@ where
 
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
-    pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
+    pub(crate) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         let mut cache = self.inner.borrow_mut();
         let ptr = match &mut *cache {
             HandlerCacheState::Linear(linear) => {

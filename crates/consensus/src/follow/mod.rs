@@ -5,7 +5,8 @@
 
 mod driver;
 pub mod engine;
-pub(crate) mod resolver;
+pub(crate) mod executor;
+mod resolver;
 mod stubs;
 pub mod upstream;
 

@@ -15,7 +15,7 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     Precompile,
-    error::{Result, TempoPrecompileError},
+    error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, StorageActions, evm::EvmPrecompileStorageProvider},
 };
 
@@ -114,6 +114,18 @@ impl StorageCtx {
             })
         })?;
         result.unwrap()
+    }
+
+    /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
+    pub fn account_code(&self, address: Address) -> Result<(B256, Bytecode)> {
+        Self::try_with_storage(|s| s.account_code(address))
+    }
+
+    /// Copies deployed runtime bytecode between accounts.
+    ///
+    /// Returns `None` when the source account's runtime bytecode is empty.
+    pub fn copy_runtime(&mut self, source: Address, destination: Address) -> Result<Option<B256>> {
+        Self::try_with_storage(|s| s.copy_runtime(source, destination))
     }
 
     /// Returns the chain ID.
@@ -316,11 +328,9 @@ impl StorageCtx {
         PrecompileOutput::halt(halt, self.reservoir())
     }
 
-    /// Returns a [`PrecompileResult`] constructed from the given [`TempoPrecompileError`].
-    pub fn error_result(&self, error: impl Into<TempoPrecompileError>) -> PrecompileResult {
-        error
-            .into()
-            .into_precompile_result(self.gas_used(), self.reservoir())
+    /// Returns a [`PrecompileResult`] constructed from the given error.
+    pub fn error_result(&self, error: impl IntoPrecompileResult) -> PrecompileResult {
+        error.into_precompile_result(self.gas_used(), self.reservoir())
     }
 }
 

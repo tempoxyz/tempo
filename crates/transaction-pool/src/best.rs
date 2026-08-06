@@ -12,7 +12,6 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -159,7 +158,7 @@ where
 
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+    pub fn on_new_result(&mut self, result: &impl TxResult) {
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
                 continue;

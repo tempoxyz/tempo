@@ -7,15 +7,13 @@ use alloy_primitives::{
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
+use reth_chainspec::EthChainSpec;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{
     ChainSpecProvider, ExecutionOutcome, HeaderProvider, ProviderError, ProviderResult,
     StateProviderFactory,
 };
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
@@ -45,7 +43,7 @@ impl AmmLiquidityCache {
     where
         Client: StateProviderFactory
             + HeaderProvider<Header = TempoHeader>
-            + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+            + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>,
     {
         let this = Self {
             inner: Default::default(),
@@ -175,7 +173,7 @@ impl AmmLiquidityCache {
     where
         Client: StateProviderFactory
             + HeaderProvider<Header = TempoHeader>
-            + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+            + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>,
     {
         self.clear();
         let tip = client.best_block_number()?;

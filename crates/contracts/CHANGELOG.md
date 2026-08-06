@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-contracts@1.10.1`
+
+### Patch Changes
+
+- Added `IStorageCredits::Mode::as_str` returning the lowercase string label for a storage credit mode. (by @DerekCofausper, [#6734](https://github.com/tempoxyz/tempo/pull/6734))
+
 ## `tempo-contracts@1.10.0`
 
 ### Minor Changes

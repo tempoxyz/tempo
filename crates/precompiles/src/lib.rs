@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
-pub use error::{IntoPrecompileResult, Result};
+pub use error::{EncodePrecompileResult, IntoPrecompileResult, Result};
 
 pub mod storage;
 
@@ -14,6 +14,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod address_registry;
+pub mod current_committee;
 pub mod native_multisig;
 pub mod nonce;
 pub mod receive_policy_guard;
@@ -27,6 +28,7 @@ pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
+pub mod zone_factory;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
@@ -34,6 +36,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    current_committee::CurrentCommittee,
     native_multisig::NativeMultisig,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
@@ -48,6 +51,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
+    zone_factory::ZoneFactory,
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -65,11 +69,13 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
+    DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -161,8 +167,9 @@ pub fn tempo_precompiles(
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
 /// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
-/// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
-/// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
+/// AccountKeychain, ValidatorConfigV2, and CurrentCommittee. Each precompile is wrapped via the
+/// `tempo_precompile!` macro which enforces direct-call-only (no delegatecall) and sets up the
+/// storage context.
 ///
 /// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
 pub fn extend_tempo_precompiles(
@@ -204,6 +211,10 @@ pub fn extend_tempo_precompiles(
             Some(ReceivePolicyGuard::create_precompile(&env))
         } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
             Some(StorageCredits::create_precompile(&env))
+        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t8() {
+            Some(CurrentCommittee::create_precompile(&env))
+        } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t10() {
+            Some(ZoneFactory::create_precompile(&env))
         } else {
             None
         }
@@ -296,6 +307,13 @@ impl TIP20Token {
     }
 }
 
+impl ZoneFactory {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ZoneFactory", env: env, |input| { Self::new() })
+    }
+}
+
 impl StablecoinDEX {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
@@ -335,6 +353,13 @@ impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ValidatorConfigV2", env: env, |input| { Self::new() })
+    }
+}
+
+impl CurrentCommittee {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("CurrentCommittee", env: env, |input| { Self::new() })
     }
 }
 
@@ -1087,6 +1112,29 @@ mod tests {
         assert!(
             precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
             "SignatureVerifier should NOT be registered before T3"
+        );
+    }
+
+    #[test]
+    fn test_zone_factory_registered_at_t10_only() {
+        let mut pre_t10 = CfgEnv::<TempoHardfork>::default();
+        pre_t10.set_spec_and_mainnet_gas_params(TempoHardfork::T9);
+        assert!(
+            test_tempo_precompiles(&pre_t10)
+                .get(&ZONE_FACTORY_ADDRESS)
+                .is_none()
+        );
+
+        let mut t10 = CfgEnv::<TempoHardfork>::default();
+        t10.set_spec_and_mainnet_gas_params(TempoHardfork::T10);
+        let precompiles = test_tempo_precompiles(&t10);
+        assert!(
+            precompiles.get(&ZONE_FACTORY_ADDRESS).is_some(),
+            "ZoneFactory should be registered at T10"
+        );
+        assert!(
+            precompiles.get(&zone_factory::portal_address(1)).is_none(),
+            "ZonePortal storage handles must not be registered as precompiles"
         );
     }
 

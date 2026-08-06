@@ -79,7 +79,7 @@ async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
         let token = setup_test_token(provider.clone(), caller).await?;
 
         // First, mint some tokens to the caller for testing
-        let mint_amount = U256::from(rand::random::<u128>());
+        let mint_amount = U256::from(rand_09::random::<u128>());
         token
             .mint(caller, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
@@ -128,7 +128,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
         let token_address = *token.address();
 
         // First, mint some tokens to the caller for testing
-        let mint_amount = U256::from(rand::random::<u128>());
+        let mint_amount = U256::from(rand_09::random::<u128>());
         token
             .mint(caller, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
@@ -229,7 +229,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
         // Setup test token
         let token = setup_test_token(provider.clone(), caller).await?;
 
-        let mint_amount = U256::from(rand::random::<u128>());
+        let mint_amount = U256::from(rand_09::random::<u128>());
         let mint_receipt = token
             .mint(caller, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)

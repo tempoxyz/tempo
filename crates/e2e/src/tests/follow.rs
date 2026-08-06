@@ -3,7 +3,7 @@
 //! These tests verify that a follower node can sync blocks from an upstream
 //! node (validator or another follower) using in-process direct access.
 
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::{
     Setup, TestingNode, connect_execution_peers,
@@ -11,6 +11,7 @@ use crate::{
     metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
 };
+use alloy::consensus::BlockHeader as _;
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
@@ -19,21 +20,94 @@ use commonware_runtime::{
     BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::NZU64;
-use futures::future::join_all;
-use rand_core::CryptoRngCore;
+use futures::{channel::oneshot, future::join_all};
+use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
+use rand_core::CryptoRng;
+use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
 
+#[tokio::test]
+#[test_traced]
+async fn follower_rpc_survives_execution_node_handle_drop() {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let (addr_tx, addr_rx) = oneshot::channel::<SocketAddr>();
+    let (done_tx, done_rx) = oneshot::channel::<()>();
+
+    let executor_handle = std::thread::spawn(move || {
+        let executor = Runner::from(cfg);
+        executor.start(|mut context| async move {
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+            validators[0].start(&context).await;
+
+            let follower = Follower::builder()
+                .runtime(execution_runtime.handle())
+                .follow(&mut context, &validators[0])
+                .await;
+
+            let http_addr = follower
+                .execution_node
+                .node
+                .add_ons_handle
+                .rpc_server_handles
+                .rpc
+                .http_local_addr()
+                .unwrap();
+
+            let Follower {
+                execution_node,
+                _handle,
+                ..
+            } = follower;
+            let ExecutionNode {
+                node,
+                runtime: _runtime,
+                exit_fut: _exit_fut,
+            } = execution_node;
+
+            // Production drops this owner after starting the follower engine. The engine must
+            // retain every lifetime-sensitive handle needed to keep RPC available.
+            drop(node);
+            addr_tx.send(http_addr).unwrap();
+
+            let _ = done_rx.await;
+            drop(_handle);
+        });
+    });
+
+    let http_addr = addr_rx.await.unwrap();
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{http_addr}"))
+        .unwrap();
+    let _: String = client.request("eth_chainId", rpc_params![]).await.unwrap();
+
+    done_tx.send(()).unwrap();
+    executor_handle.join().unwrap();
+}
+
 trait FeedStateProvider {
     fn feed_state(&self) -> FeedStateHandle;
+
+    fn execution_node(&self) -> Arc<tempo_node::TempoFullNode>;
 }
 
 impl<TContext: Clock> FeedStateProvider for TestingNode<TContext> {
     fn feed_state(&self) -> FeedStateHandle {
         self.consensus_config.feed_state.clone()
+    }
+
+    fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
+        self.execution_node
+            .as_ref()
+            .expect("upstream execution node must be running")
+            .node
+            .clone()
+            .into()
     }
 }
 
@@ -41,11 +115,19 @@ impl FeedStateProvider for Follower {
     fn feed_state(&self) -> FeedStateHandle {
         self.feed.clone()
     }
+
+    fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
+        self.execution_node.node.clone().into()
+    }
 }
 
 impl<T: FeedStateProvider> FeedStateProvider for &T {
     fn feed_state(&self) -> FeedStateHandle {
         (*self).feed_state()
+    }
+
+    fn execution_node(&self) -> Arc<tempo_node::TempoFullNode> {
+        (*self).execution_node()
     }
 }
 
@@ -97,7 +179,7 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRngCore + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
         use tempo_consensus::follow::upstream::in_process;
         let Self {
@@ -117,6 +199,8 @@ impl FollowerBuilder {
 
         let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
         let feed_state = FeedStateHandle::new();
+        let upstream_execution_node = upstream.execution_node();
+        let upstream_feed_state = upstream.feed_state();
 
         let config = crate::ExecutionNodeConfig {
             secret_key: alloy_primitives::B256::random(),
@@ -147,10 +231,10 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label("upstream"),
+            context.child("upstream"),
             in_process::Config {
-                execution_node: node.node.clone().into(),
-                feed: upstream.feed_state(),
+                execution_node: upstream_execution_node,
+                feed: upstream_feed_state,
             },
         );
 
@@ -162,23 +246,23 @@ impl FollowerBuilder {
             .expect("no genesis network identity");
 
         let config = follow::Config {
-            network_identity,
+            network_identity: network_identity.clone(),
             upstream,
             upstream_mailbox,
             execution_node: node.node.clone().into(),
             feed_state: feed_state.clone(),
             partition_prefix,
-            epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
-            mailbox_size: 16_384,
+            epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
+            mailbox_size: commonware_utils::NZUsize!(16_384),
+            upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
-            strict_startup: false,
         };
 
         let handle = config
-            .try_init(context.with_label(&name))
+            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
             .await
             .expect("failed to initialize follow engine")
             .start();
@@ -243,19 +327,21 @@ fn follower_bootstraps_from_validator() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, target_height).await;
-
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 
-        // Follower starts only from the bootstrap point.
-        let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
-        let Response::Missing(..) = historical_cert else {
-            panic!("shouldn't have historical certs");
-        };
+        // The marshal floor only advances with actually processed blocks, so
+        // the follower backfills the gap between its startup floor (genesis
+        // for a fresh node) and the join point via gap repair.
+        follower
+            .feed
+            .get_finalization(Query::Height(1))
+            .await
+            .unwrap();
     });
 }
 
 #[test_traced]
-fn follower_fast_sync_skips_historical_boundaries() {
+fn follower_syncs_historical_state() {
     let _ = tempo_eyre::install();
 
     let start_height = 2 * EPOCH_LENGTH + 1;
@@ -279,20 +365,36 @@ fn follower_fast_sync_skips_historical_boundaries() {
         follower.connect_peers(&validators).await;
 
         wait_for_height(&context, &follower, follower_target_height).await;
-        follower.feed.get_finalization(Query::Latest).await.unwrap();
 
-        let epoch_0_boundary = EPOCH_LENGTH - 1;
-        let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
-        for boundary in [epoch_0_boundary, epoch_1_boundary] {
-            let historical_boundary = follower
-                .feed
-                .get_finalization(Query::Height(boundary))
-                .await;
+        // The follower syncs directly to the observed finalization rather than
+        // targeting an epoch boundary. The feed follows marshal's ordered block
+        // delivery, so wait for gap repair to advance it to the target.
+        let reported_finalized_height = loop {
+            if let Response::Success(block) = follower.feed.get_finalization(Query::Latest).await {
+                let height = block.block.number();
+                if height >= follower_target_height {
+                    break height;
+                }
+            }
 
-            let Response::Missing(..) = historical_boundary else {
-                panic!("boundary block at height {boundary} should be missing after fast sync");
-            };
-        }
+            context.sleep(Duration::from_millis(100)).await;
+        };
+
+        let provider = &follower.execution_node.node.provider;
+        let synced_height = loop {
+            if let Some(height) = provider
+                .finalized_block_number()
+                .expect("failed reading follower finalized height")
+                && height >= follower_target_height
+            {
+                break height;
+            }
+
+            context.sleep(Duration::from_millis(100)).await;
+        };
+
+        assert!(reported_finalized_height >= follower_target_height);
+        assert!(synced_height >= follower_target_height);
     });
 }
 
@@ -325,29 +427,26 @@ fn follower_reads_boundaries_after_full_dkg() {
             .await
             .unwrap();
 
-        wait_for_height(&context, &validators[0], start_height).await;
-        context.to_metrics().assert_no_dkg_failures();
-
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
             .follow(&mut context, &validators[0])
             .await;
+
         follower.connect_peers(&validators).await;
 
-        wait_for_height(&context, &follower, follower_target_height).await;
-        follower.feed.get_finalization(Query::Latest).await.unwrap();
+        wait_for_height(&context, &validators[0], start_height).await;
+        context.to_metrics().assert_no_dkg_failures();
 
-        let epoch_0_boundary = EPOCH_LENGTH - 1;
-        let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
-        for boundary in [epoch_0_boundary, epoch_1_boundary] {
-            let historical_boundary = follower
+        wait_for_height(&context, &follower, follower_target_height).await;
+
+        // The follower processes both boundaries alongside the validator,
+        // registering the epoch-1 outcome so it can verify and progress through epoch 2.
+        for boundary in [EPOCH_LENGTH - 1, 2 * EPOCH_LENGTH - 1] {
+            follower
                 .feed
                 .get_finalization(Query::Height(boundary))
-                .await;
-
-            let Response::Success(..) = historical_boundary else {
-                panic!("boundary block at height {boundary} should be present after full DKG");
-            };
+                .await
+                .unwrap();
         }
     });
 }
@@ -384,12 +483,12 @@ fn follower_bootstraps_from_follower() {
             .await;
         follower_follower.connect_peers(&validators).await;
 
-        // Wait on the *primary*, but query the *secondary* follower. This
-        // should address all race conditions between a) the secondary follower
-        // starting, b) receving the finalized block, and c) propagating it to its
-        // consensus feed so that it can d) be queried successfully.
+        // Wait for the primary to progress far enough that the secondary has
+        // finalizations available to fetch.
         wait_for_height(&context, &validator_follower, target_height * 2).await;
 
+        // Height progress can precede ordered delivery into the secondary's
+        // consensus feed, so wait for the state this test actually asserts.
         follower_follower
             .feed
             .get_finalization(Query::Latest)

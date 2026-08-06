@@ -3,9 +3,12 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
-    validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool,
+    validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -13,7 +16,7 @@ use alloy_primitives::{
     map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use parking_lot::RwLock;
-use reth_chainspec::ChainSpecProvider;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::StateProvider;
@@ -29,7 +32,8 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -38,14 +42,14 @@ use tempo_precompiles::{
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
-use tempo_primitives::Block;
+use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client> {
+pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
-        TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+        TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
         TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
@@ -53,13 +57,16 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client>
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+    EvmConfig: ConfigureTempoPoolEvm,
 {
     pub fn new(
         protocol_pool: Pool<
-            TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
+            TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
             TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
@@ -72,9 +79,12 @@ where
         }
     }
 }
-impl<Client> TempoTransactionPool<Client>
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+    EvmConfig: ConfigureTempoPoolEvm,
 {
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
@@ -175,21 +185,29 @@ where
         // so eviction matches events emitted with sub-policy IDs.
         let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
 
-        // Pre-collect policy IDs where TIP_FEE_MANAGER_ADDRESS (the fee recipient) was
-        // blacklisted or un-whitelisted. This is constant across all txs so we compute
-        // it once instead of re-scanning the updates list per transaction.
-        let fee_manager_blacklisted: Vec<u64> = updates
-            .blacklist_additions
-            .iter()
-            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-            .map(|(policy_id, _)| *policy_id)
-            .collect();
-        let fee_manager_unwhitelisted: Vec<u64> = updates
-            .whitelist_removals
-            .iter()
-            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-            .map(|(policy_id, _)| *policy_id)
-            .collect();
+        // Pre-T8 fee collection checked TIP_FEE_MANAGER_ADDRESS as the fee-token recipient.
+        // TIP-1042 exempts that recipient side, so T8+ invalidation only tracks fee-payer sender
+        // authorization.
+        let is_t8 = spec.is_t8();
+        // NOTE: We can remove this logic after T8 activation
+        let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
+            (
+                updates
+                    .blacklist_additions
+                    .iter()
+                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                    .map(|(policy_id, _)| *policy_id)
+                    .collect(),
+                updates
+                    .whitelist_removals
+                    .iter()
+                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                    .map(|(policy_id, _)| *policy_id)
+                    .collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
@@ -605,7 +623,7 @@ where
 }
 
 // Manual Clone implementation
-impl<Client> Clone for TempoTransactionPool<Client> {
+impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
@@ -615,7 +633,7 @@ impl<Client> Clone for TempoTransactionPool<Client> {
 }
 
 // Manual Debug implementation
-impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
+impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConfig> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
@@ -626,10 +644,11 @@ impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
 }
 
 // Implement the TransactionPool trait
-impl<Client> TransactionPool for TempoTransactionPool<Client>
+impl<Client, EvmConfig> TransactionPool for TempoTransactionPool<Client, EvmConfig>
 where
+    EvmConfig: ConfigureTempoPoolEvm,
     Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
         + Send
         + Sync
         + 'static,
@@ -1234,9 +1253,12 @@ where
     }
 }
 
-impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
+impl<Client, EvmConfig> TransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
 {
     type Block = Block;
 
@@ -1284,18 +1306,17 @@ pub(crate) fn exceeds_spending_limit(
             StorageActions::disabled(),
             || -> TempoPrecompileResult<bool> {
                 let keychain = AccountKeychain::new();
-                if !keychain.keys[subject.account][subject.key_id]
-                    .read()?
-                    .enforce_limits
-                {
+                let key = keychain.keys[subject.account][subject.key_id].read()?;
+                if !key.enforce_limits {
                     return Ok(false);
                 }
 
-                let remaining = keychain.effective_remaining_limit(
+                let remaining = keychain.effective_remaining_limit_with_key(
                     subject.account,
                     subject.key_id,
                     subject.fee_token,
                     current_timestamp,
+                    &key,
                 )?;
                 Ok(fee_token_cost > remaining)
             },
@@ -1350,7 +1371,8 @@ fn get_sender_policy_ids(
 /// For simple (non-compound) policies, the transfer policy applies symmetrically to both
 /// sender and recipient, so the set contains just the policy ID. For compound policies
 /// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
-/// fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+/// pre-T8 fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
+/// T8+ fee collection exempts the FeeManager recipient side, so this returns `None`.
 ///
 /// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
 /// where the fee manager itself is blacklisted or un-whitelisted.
@@ -1359,6 +1381,10 @@ fn get_recipient_policy_ids(
     fee_token: Address,
     spec: TempoHardfork,
 ) -> Option<Vec<u64>> {
+    if spec.is_t8() {
+        return None;
+    }
+
     provider.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
@@ -1733,7 +1759,10 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(account).build_multisig(account);
 
         let provider = create_provider_with_tip();
-        provider.add_account(account, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_account(
+            account,
+            ExtendedAccount::new(pooled.nonce(), *pooled.cost()),
+        );
         let pool = create_test_pool(provider);
         add_validated(&pool, pooled.clone());
 
@@ -1772,7 +1801,10 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(account).build_multisig(account);
 
         let provider = create_provider_with_tip();
-        provider.add_account(account, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_account(
+            account,
+            ExtendedAccount::new(pooled.nonce(), *pooled.cost()),
+        );
         let pool = create_test_pool(provider);
         add_validated(&pool, pooled.clone());
 
@@ -2506,9 +2538,9 @@ mod tests {
         );
     }
 
-    /// `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
+    /// Pre-T8, `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
     #[test]
-    fn recipient_policy_ids_includes_recipient_sub_policy() {
+    fn recipient_policy_ids_includes_recipient_sub_policy_pre_t8() {
         let fee_token = address!("20C0000000000000000000000000000000000001");
         let compound_policy_id: u64 = 5;
         let sender_sub: u64 = 3;
@@ -2548,7 +2580,7 @@ mod tests {
             .unwrap();
 
         let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
             .expect("should resolve policy IDs");
 
         assert!(
@@ -2565,9 +2597,9 @@ mod tests {
         );
     }
 
-    /// For simple (non-compound) policies, `get_recipient_policy_ids` returns just the root.
+    /// For simple (non-compound) policies, pre-T8 `get_recipient_policy_ids` returns just the root.
     #[test]
-    fn recipient_policy_ids_simple_policy() {
+    fn recipient_policy_ids_simple_policy_pre_t8() {
         let fee_token = address!("20C0000000000000000000000000000000000001");
         let simple_policy_id: u64 = 7;
 
@@ -2598,10 +2630,33 @@ mod tests {
             .unwrap();
 
         let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::default())
+        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
             .expect("should resolve policy IDs");
 
         assert_eq!(ids, vec![simple_policy_id]);
+    }
+
+    #[test]
+    fn recipient_policy_ids_exempt_on_t8() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+        let simple_policy_id: u64 = 7;
+
+        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
+            tempo_chainspec::spec::MODERATO.clone(),
+        ));
+
+        let transfer_policy_id_packed =
+            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            )]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        assert!(get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T8).is_none());
     }
 
     #[test]

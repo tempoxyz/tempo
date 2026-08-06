@@ -256,13 +256,9 @@ impl TxBuilder {
             key_authorization: self.key_authorization,
         };
 
-        let owner_signature =
-            PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
-        let signature = TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            vec![owner_signature],
-            None,
-        ));
+        let owner_signature = PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
+        let signature =
+            TempoSignature::Multisig(MultisigSignature::new(account, vec![owner_signature], None));
         let aa_signed = AASigned::new_unhashed(tx, signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
 

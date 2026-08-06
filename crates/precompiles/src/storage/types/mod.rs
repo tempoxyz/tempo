@@ -19,7 +19,7 @@ pub mod bytes_like;
 mod primitives;
 
 mod cache;
-pub(super) use cache::HandlerCache;
+pub(crate) use cache::HandlerCache;
 
 use crate::{
     error::Result,

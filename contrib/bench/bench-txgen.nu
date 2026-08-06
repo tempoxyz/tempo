@@ -206,7 +206,7 @@ def "main run" [
     --tps: int = 10000
     --duration: int = 30
     --accounts: int = 1000
-    --max-concurrent-requests: int = 100
+    --max-concurrent-requests: int = 5000
     --samply
     --samply-args: string = ""
     --loud
@@ -247,8 +247,7 @@ def "main run" [
     let resolved_scenario = if $scenario != "" {
         $scenario
     } else {
-        let tps_k = ($tps // 1000)
-        $"($preset)-($tps_k)k"
+        $preset
     }
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
         error make { msg: "--baseline and --feature must both be provided for txgen comparison mode" }

@@ -13,10 +13,7 @@ use jsonrpsee::{
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
 
-pub use types::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError, IdentityTransition,
-    IdentityTransitionResponse, Query, TransitionProofData,
-};
+pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
 
 /// Custom error codes for the consensus RPC.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -66,28 +63,13 @@ pub trait TempoConsensusApi {
 
     /// Get the current consensus state snapshot.
     ///
-    /// Returns the latest finalized block and the latest notarized block (if not yet finalized).
+    /// Returns the latest finalized block. The notarized field is retained for compatibility.
     #[method(name = "getLatest")]
     async fn get_latest(&self) -> RpcResult<ConsensusState>;
 
-    /// Subscribe to all consensus events (Notarized, Finalized, Nullified).
+    /// Subscribe to finalized block events.
     #[subscription(name = "subscribe" => "event", unsubscribe = "unsubscribe", item = Event)]
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
-
-    /// Get identity transition proofs (full DKG events).
-    ///
-    /// Each proof contains the block header with the new DKG outcome, and a BLS certificate from the OLD
-    /// network identity that signs the block.
-    ///
-    /// - `from_epoch`: Optional epoch to start searching from (defaults to latest finalized)
-    /// - `full = false` (default): Returns only the most recent transition
-    /// - `full = true`: Returns all transitions from the starting epoch back to genesis
-    #[method(name = "getIdentityTransitionProof")]
-    async fn get_identity_transition_proof(
-        &self,
-        from_epoch: Option<u64>,
-        full: Option<bool>,
-    ) -> RpcResult<IdentityTransitionResponse>;
 }
 
 /// Tempo consensus RPC implementation.
@@ -143,16 +125,5 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         });
 
         Ok(())
-    }
-
-    async fn get_identity_transition_proof(
-        &self,
-        from_epoch: Option<u64>,
-        full: Option<bool>,
-    ) -> RpcResult<IdentityTransitionResponse> {
-        self.consensus_feed
-            .get_identity_transition_proof(from_epoch, full.unwrap_or(false))
-            .await
-            .map_err(|e| ErrorObject::owned(INTERNAL_ERROR_CODE, e.to_string(), None::<()>))
     }
 }

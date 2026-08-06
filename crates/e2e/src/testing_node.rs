@@ -9,7 +9,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
-use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
+use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
 use reth_db::{Database, DatabaseEnv, open_db_read_only};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
@@ -173,6 +173,17 @@ where
         &mut self.consensus_config
     }
 
+    pub fn adopt_identity_from(&mut self, identity_source: Self) {
+        let peer_manager = self.consensus_config.peer_manager.clone();
+
+        self.uid = identity_source.uid;
+        self.private_key = identity_source.private_key;
+        self.consensus_config = identity_source.consensus_config;
+        self.consensus_config.peer_manager = peer_manager;
+        self.network_address = identity_source.network_address;
+        self.chain_address = identity_source.chain_address;
+    }
+
     /// Get a reference to the oracle.
     pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
         &self.oracle
@@ -283,7 +294,9 @@ where
         let engine = self
             .consensus_config
             .clone()
-            .try_init(context.with_label(&format!("{}_{}", self.uid, self.n_starts)))
+            .try_init(context.child(Box::leak(
+                format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
+            )))
             .await
             .expect("must be able to start the engine");
 

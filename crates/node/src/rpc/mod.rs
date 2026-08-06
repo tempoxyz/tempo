@@ -23,7 +23,7 @@ pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Respons
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::TempoStateAccess;
+use tempo_evm::{FeeTokenResolver, TempoStateAccess};
 use tempo_precompiles::{
     NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     native_multisig::NativeMultisig,
@@ -38,7 +38,7 @@ pub use token::{TempoToken, TempoTokenApiServer};
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};
 use alloy_evm::{EvmFactory, block::BlockExecutorFactory};
-use reth_chainspec::{EthereumHardforks, Hardforks};
+use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -54,8 +54,9 @@ use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
-        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
-        LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
+        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
+        LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
+        SpawnBlocking, Trace,
         bal::GetBlockAccessList,
         estimate::EstimateCall,
         pending_block::{BuildPendingEnv, PendingEnvBuilder},
@@ -111,7 +112,7 @@ pub trait TempoEthApiBounds:
                     >,
                 >,
             >,
-        >,
+        > + FeeTokenResolver,
     >
 {
 }
@@ -134,7 +135,7 @@ impl<N> TempoEthApiBounds for N where
                         >,
                     >,
                 >,
-            >,
+            > + FeeTokenResolver,
         >
 {
 }
@@ -506,21 +507,19 @@ where
             .fee_payer()
             .map_err(EVMError::<ProviderError, _>::from)?;
 
-        let fee_token = db
-            .get_fee_token(
+        let actions = StorageActions::disabled();
+        let fee_token = self
+            .evm_config()
+            .resolve_fee_token(
+                &mut db,
                 tx_env,
                 fee_payer,
                 evm_env.cfg_env.spec,
-                StorageActions::disabled(),
+                actions.clone(),
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(
-                fee_token,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                StorageActions::disabled(),
-            )
+            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
             .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance
@@ -564,6 +563,7 @@ where
 }
 
 impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -619,15 +619,15 @@ where
 /// Converter for Tempo receipts.
 #[derive(Debug, Clone)]
 #[expect(clippy::type_complexity)]
-pub struct TempoReceiptConverter {
+pub struct TempoReceiptConverter<ChainSpec = TempoChainSpec> {
     inner: EthReceiptConverter<
-        TempoChainSpec,
+        ChainSpec,
         fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
     >,
 }
 
-impl TempoReceiptConverter {
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+impl<ChainSpec> TempoReceiptConverter<ChainSpec> {
+    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
         Self {
             inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
@@ -654,7 +654,10 @@ impl TempoReceiptConverter {
     }
 }
 
-impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
+impl<ChainSpec> ReceiptConverter<TempoPrimitives> for TempoReceiptConverter<ChainSpec>
+where
+    ChainSpec: EthChainSpec + 'static,
+{
     type RpcReceipt = TempoTransactionReceipt;
     type Error = EthApiError;
 
@@ -721,12 +724,12 @@ impl<N> TempoEthApiBuilder<N> {
 impl<N> EthApiBuilder<N> for TempoEthApiBuilder<N>
 where
     N: FullNodeComponents<
-            Types: NodeTypes<ChainSpec = TempoChainSpec, Primitives = TempoPrimitives>,
+            Types: NodeTypes<Primitives = TempoPrimitives>,
             Pool = <N as RpcNodeCore>::Pool,
             Evm = <N as RpcNodeCore>::Evm,
         > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
         + TempoEthApiBounds,
-    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = <N::Types as NodeTypes>::ChainSpec>,
     <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {

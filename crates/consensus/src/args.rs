@@ -1,7 +1,7 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{
     net::SocketAddr,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -89,8 +89,8 @@ pub struct Args {
 
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
-    #[arg(long = "consensus.mailbox-size", default_value_t = 16_384)]
-    pub mailbox_size: usize,
+    #[arg(long = "consensus.mailbox-size", default_value = "16384")]
+    pub mailbox_size: NonZeroUsize,
 
     /// The maximum number of blocks that will be buffered per peer. Used to
     /// send and receive blocks over the network of the consensus layer.
@@ -307,12 +307,13 @@ pub struct Args {
     )]
     pub finalized_blocks_retention: u64,
 
-    /// Require startup to use a consensus finalized certificate archive.
-    ///
-    /// When disabled, startup falls back to the execution layer's finalized
-    /// watermark for compatibility with snapshots that do not include
-    /// consensus finalization state.
-    #[arg(long = "consensus.strict-startup", default_value_t = false)]
+    /// Deprecated compatibility flag. Consensus state is always required on
+    /// startup, so this setting no longer has any effect.
+    #[arg(
+        long = "consensus.strict-startup",
+        default_value_t = true,
+        help = "Deprecated: consensus state is always required on startup, so this flag no longer has any effect."
+    )]
     pub strict_startup: bool,
 
     /// Deprecated compatibility flag. Ignored because the legacy immutable
@@ -492,10 +493,10 @@ mod tests {
         // binary's CLI struct; we re-declare them here just so clap can
         // resolve the references during parse-time validation.
         #[arg(long = "follow")]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         follow: Option<String>,
         #[arg(long = "dev")]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         dev: bool,
 
         #[command(flatten)]
@@ -515,12 +516,6 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
-    }
-
-    #[test]
-    fn strict_startup_flag_parses() {
-        let cli = parse(&["--dev", "--consensus.strict-startup"]);
-        assert!(cli.consensus.strict_startup);
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

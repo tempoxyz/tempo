@@ -1,0 +1,786 @@
+name: bench-e2e-multi-region
+
+on:
+  workflow_call:
+    inputs:
+      cloud:
+        type: string
+        required: false
+        default: "aws"
+      baseline:
+        type: string
+        required: false
+        default: ""
+      feature:
+        type: string
+        required: false
+        default: ""
+      baseline-name:
+        type: string
+        required: false
+        default: ""
+      feature-name:
+        type: string
+        required: false
+        default: ""
+      duration:
+        type: string
+        required: false
+        default: "90"
+      bloat:
+        type: string
+        required: false
+        default: "100"
+      validator-count:
+        type: string
+        required: false
+        default: "10"
+      regions:
+        type: string
+        required: false
+        default: ""
+      tps:
+        type: string
+        required: false
+        default: "50000"
+      accounts:
+        type: string
+        required: false
+        default: "1000"
+      max-concurrent-requests:
+        type: string
+        required: false
+        default: "5000"
+      general-gas-limit:
+        type: string
+        required: false
+        default: ""
+      run-pairs:
+        type: string
+        required: false
+        default: "3"
+      clickhouse-run:
+        type: string
+        required: false
+        default: "feature-1"
+      otlp:
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      BENCH_LOGS_PUSH_URL:
+        required: false
+      TEMPO_TELEMETRY_URL:
+        required: false
+      BENCH_VICTORIAMETRICS_URL:
+        required: false
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
+        required: false
+      VICTORIALOGS_URL:
+        required: false
+      VICTORIAMETRICS_URL:
+        required: false
+  workflow_dispatch:
+    inputs:
+      cloud:
+        description: Cloud provider used for disposable benchmark infrastructure.
+        type: choice
+        required: true
+        default: aws
+        options:
+          - aws
+          - gcp
+      baseline:
+        description: Git ref for the baseline run. Empty = tempoxyz/tempo main.
+        type: string
+        required: false
+        default: ""
+      feature:
+        description: Git ref for the feature run. Empty = tempoxyz/tempo main.
+        type: string
+        required: false
+        default: ""
+      baseline-hardfork:
+        description: Latest active hardfork for the baseline run. Empty = latest Tempo hardfork.
+        type: string
+        required: false
+        default: ""
+      feature-hardfork:
+        description: Latest active hardfork for the feature run. Empty = latest Tempo hardfork.
+        type: string
+        required: false
+        default: ""
+      preset:
+        description: Benchmark preset.
+        type: choice
+        required: true
+        default: tip20_existing_recipients
+        options:
+          - tip20
+          - tip20_2d_nonces
+          - tip20_protocol_nonces
+          - tip20_random_recipients
+          - tip20_existing_recipients
+          - tip20_keychain
+          - tip20_keychain_random_recipients
+          - tip20_keychain_existing_recipients
+          - tip20_key_authorization
+          - mpp
+          - mix
+          - dex
+      duration:
+        description: Benchmark duration in seconds.
+        type: string
+        required: true
+        default: "90"
+      bloat:
+        description: State bloat size in GB.
+        type: choice
+        required: true
+        default: "100"
+        options:
+          - "0"
+          - "1"
+          - "10"
+          - "100"
+      validator-count:
+        description: Number of validators.
+        type: string
+        required: true
+        default: "10"
+      regions:
+        description: Comma-separated cloud regions. Empty uses the selected cloud's five defaults.
+        type: string
+        required: false
+        default: ""
+      tps:
+        description: Target transactions per second.
+        type: string
+        required: true
+        default: "50000"
+      accounts:
+        description: Number of benchmark accounts.
+        type: string
+        required: true
+        default: "1000"
+      max-concurrent-requests:
+        description: Max concurrent sender requests.
+        type: string
+        required: true
+        default: "5000"
+      txgen-ref:
+        description: Optional ref to pin in tempoxyz/txgen.
+        type: string
+        required: false
+        default: ""
+      token-count:
+        description: Number of TIP20 tokens to use in txgen presets.
+        type: string
+        required: true
+        default: "4"
+      profiling:
+        description: Profiling.
+        type: choice
+        required: true
+        default: "off"
+        options:
+          - "off"
+          - samply
+          - tracy
+          - both
+      otlp:
+        description: Export OTLP traces and logs.
+        type: boolean
+        required: true
+        default: true
+      valscope:
+        description: Generate and publish ValScope static reports.
+        type: boolean
+        required: true
+        default: false
+      baseline-args:
+        description: Extra args passed only to the baseline node.
+        type: string
+        required: false
+        default: ""
+      feature-args:
+        description: Extra args passed only to the feature node.
+        type: string
+        required: false
+        default: ""
+      gas-limit:
+        description: Builder gas limit.
+        type: string
+        required: true
+        default: "5000000000"
+      no-cache:
+        description: Skip binary cache.
+        type: boolean
+        required: true
+        default: false
+      bench-args:
+        description: Extra bench args.
+        type: string
+        required: false
+        default: ""
+      run-pairs:
+        description: Number of baseline/feature run pairs.
+        type: string
+        required: true
+        default: "3"
+      clickhouse-run:
+        description: Benchmark phase that may use the direct ClickHouse reporter.
+        type: string
+        required: false
+        default: "feature-1"
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  packages: read
+
+jobs:
+  bench-e2e-multi-region:
+    name: bench-e2e-multi-region
+    runs-on: depot-ubuntu-latest-8
+    timeout-minutes: 360
+
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      BENCH_REPO_DIR: tempo-multi-region-benchmark
+      TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
+      BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
+      BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
+      BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
+      BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
+      BENCH_GCP_WIF_PROVIDER: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
+      BENCH_GCP_SERVICE_ACCOUNT: benchmark-runner@chain-benchmarking-zygis.iam.gserviceaccount.com
+      BENCH_INPUT_BASELINE: ${{ inputs.baseline || '' }}
+      BENCH_INPUT_FEATURE: ${{ inputs.feature || '' }}
+      BENCH_INPUT_BASELINE_NAME: ${{ inputs['baseline-name'] || '' }}
+      BENCH_INPUT_FEATURE_NAME: ${{ inputs['feature-name'] || '' }}
+      BENCH_INPUT_BASELINE_HARDFORK: ${{ inputs['baseline-hardfork'] || '' }}
+      BENCH_INPUT_FEATURE_HARDFORK: ${{ inputs['feature-hardfork'] || '' }}
+      BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
+      BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
+      BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
+      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
+      BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
+      BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
+      BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
+      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
+      BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
+      BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
+      BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
+      BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
+      BENCH_INPUT_VALSCOPE: ${{ github.event_name == 'workflow_dispatch' && (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
+      BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
+      BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
+      BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
+      BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
+      BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
+      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+
+    steps:
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@483bda4a2a4b5e04a51edff03768c1590d271f80
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+
+      - name: Check org membership
+        if: github.event_name != 'schedule'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.github-sts.outputs.token }}
+          script: |
+            const org = 'tempoxyz';
+            const username = context.actor;
+
+            try {
+              const { status } = await github.rest.orgs.checkMembershipForUser({ org, username });
+              if (status === 204 || status === 302) {
+                return;
+              }
+            } catch {}
+
+            core.setFailed(`@${username} is not a member of ${org}`);
+
+      - name: Fetch ClickHouse metric allowlist
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'contrib/bench/clickhouse-metrics.txt';
+            const { data } = await github.rest.repos.getContent({
+              owner: 'tempoxyz',
+              repo: 'tempo',
+              path,
+              ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
+            });
+
+            if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+              core.setFailed(`Expected ${path} to be a file at ${context.sha}`);
+              return;
+            }
+
+            fs.mkdirSync('contrib/bench', { recursive: true });
+            fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
+
+      - name: Checkout benchmark repo
+        id: checkout_benchmark_repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: tempoxyz/tempo-multi-region-benchmark
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          path: ${{ env.BENCH_REPO_DIR }}
+          token: ${{ steps.github-sts.outputs.token }}
+          persist-credentials: false
+
+      - name: Validate Tempo commit ancestry
+        run: |
+          resolve_tempo_ref() {
+            local ref="${1:-main}"
+            local rev
+
+            if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              printf '%s\n' "$ref"
+              return 0
+            fi
+
+            if [[ "$ref" == refs/* ]]; then
+              git ls-remote https://github.com/tempoxyz/tempo.git "$ref" "$ref^{}" 2>/dev/null |
+                awk -v ref="$ref" 'BEGIN { rev = "" } $2 == ref "^{}" { print $1; found = 1; exit } $2 == ref && rev == "" { rev = $1 } END { if (!found && rev != "") print rev }'
+              return 0
+            fi
+
+            rev="$(git ls-remote --refs https://github.com/tempoxyz/tempo.git "refs/heads/$ref" 2>/dev/null | awk -v ref="refs/heads/$ref" '$2 == ref { print $1; exit }')"
+            if [[ -n "$rev" ]]; then
+              printf '%s\n' "$rev"
+              return 0
+            fi
+
+            git ls-remote https://github.com/tempoxyz/tempo.git "refs/tags/$ref" "refs/tags/$ref^{}" 2>/dev/null |
+              awk -v ref="refs/tags/$ref" 'BEGIN { rev = "" } $2 == ref "^{}" { print $1; found = 1; exit } $2 == ref && rev == "" { rev = $1 } END { if (!found && rev != "") print rev }'
+          }
+
+          baseline_ref="${BENCH_INPUT_BASELINE:-main}"
+          feature_ref="${BENCH_INPUT_FEATURE:-main}"
+          baseline_commit="$(resolve_tempo_ref "$baseline_ref")"
+          feature_commit="$(resolve_tempo_ref "$feature_ref")"
+
+          if [[ -z "$baseline_commit" ]]; then
+            echo "Unable to resolve baseline ref '$baseline_ref' in tempoxyz/tempo" >&2
+            exit 1
+          fi
+          if [[ -z "$feature_commit" ]]; then
+            echo "Unable to resolve feature ref '$feature_ref' in tempoxyz/tempo" >&2
+            exit 1
+          fi
+
+          "$BENCH_REPO_DIR/scripts/validate_tempo_commit_ancestry.sh" \
+            baseline "$baseline_ref" "$baseline_commit" \
+            feature "$feature_ref" "$feature_commit"
+
+      - name: Validate regions
+        id: regions
+        env:
+          BENCH_REGIONS: ${{ env.BENCH_INPUT_REGIONS }}
+        run: |
+          source "$BENCH_REPO_DIR/scripts/regions.sh"
+          normalized_region_csv="$(bench_e2e_multi_region_normalize_regions "$BENCH_REGIONS" "$BENCH_INPUT_CLOUD")"
+          echo "Benchmark regions: $normalized_region_csv"
+          echo "regions=$normalized_region_csv" >> "$GITHUB_OUTPUT"
+
+      - name: Show benchmark inputs
+        env:
+          BENCHMARK_REGIONS: ${{ steps.regions.outputs.regions }}
+          WORKFLOW_INPUTS: ${{ toJson(inputs) }}
+        run: |
+          if ! printf '%s\n' "$WORKFLOW_INPUTS" | jq -e 'type == "object"' >/dev/null; then
+            WORKFLOW_INPUTS='{}'
+          fi
+
+          echo "Benchmark run parameters"
+          echo "benchmark-id=$BENCHMARK_ID"
+          echo "normalized-regions=$BENCHMARK_REGIONS"
+          printf '%s\n' "$WORKFLOW_INPUTS" | jq -r 'to_entries | sort_by(.key)[] | "\(.key)=\(.value | tojson)"'
+
+          {
+            echo "## Benchmark run parameters"
+            echo ""
+            echo "- Benchmark ID: \`$BENCHMARK_ID\`"
+            echo "- Normalized regions: \`$BENCHMARK_REGIONS\`"
+            echo ""
+            echo '```json'
+            printf '%s\n' "$WORKFLOW_INPUTS" | jq -S .
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.14.7"
+          terraform_wrapper: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+
+      - name: Configure AWS credentials
+        if: env.BENCH_INPUT_CLOUD == 'aws'
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: us-east-1
+          role-duration-seconds: 21600
+
+      - name: Configure AWS S3 transfers
+        if: env.BENCH_INPUT_CLOUD == 'aws'
+        run: |
+          "$BENCH_REPO_DIR/scripts/configure_aws_s3_transfer.sh"
+
+      # gcloud persists credentials and command state in SQLite files below its
+      # config directory.  Keep that state out of the runner image's shared
+      # default directory: benchmark phases run many gcloud commands and IAP
+      # tunnels concurrently, and a stale/corrupt default database causes
+      # gcloud to abort before issuing the requested API call.
+      - name: Isolate Google Cloud CLI state
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        run: |
+          gcloud_config_dir="$RUNNER_TEMP/gcloud-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$gcloud_config_dir"
+          {
+            echo "CLOUDSDK_CONFIG=$gcloud_config_dir"
+            echo "CLOUDSDK_CORE_PROJECT=$BENCH_GCP_PROJECT_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ env.BENCH_GCP_WIF_PROVIDER }}
+          service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud CLI
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          project_id: ${{ env.BENCH_GCP_PROJECT_ID }}
+
+      - name: Fetch Tempo binaries
+        id: fetch_tempo_binaries
+        continue-on-error: true
+        run: |
+          "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --stage fetch-tempo-binaries \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
+            --benchmark-id "$BENCHMARK_ID" \
+            --results-dir "$BENCH_RESULTS_DIR" \
+            --baseline "$BENCH_INPUT_BASELINE" \
+            --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
+            --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
+            --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
+            --preset "$BENCH_INPUT_PRESET" \
+            --duration "$BENCH_INPUT_DURATION" \
+            --bloat "$BENCH_INPUT_BLOAT" \
+            --tps "$BENCH_INPUT_TPS" \
+            --accounts "$BENCH_INPUT_ACCOUNTS" \
+            --max-concurrent-requests "$BENCH_INPUT_MAX_CONCURRENT_REQUESTS" \
+            --txgen-ref "$BENCH_INPUT_TXGEN_REF" \
+            --token-count "$BENCH_INPUT_TOKEN_COUNT" \
+            --profiling "$BENCH_INPUT_PROFILING" \
+            --otlp "$BENCH_INPUT_OTLP" \
+            --valscope "$BENCH_INPUT_VALSCOPE" \
+            --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
+            --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
+            --no-cache "$BENCH_INPUT_NO_CACHE" \
+            --no-slack "true" \
+            --bench-args "$BENCH_INPUT_BENCH_ARGS" \
+            --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
+            --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
+            --regions "${{ steps.regions.outputs.regions }}" \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
+            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
+
+      - name: Install txgen
+        if: steps.fetch_tempo_binaries.outcome == 'success'
+        env:
+          BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
+        run: |
+          "$BENCH_REPO_DIR/scripts/install_txgen.sh"
+
+      - name: Generate initial validator state
+        id: generate_initial_validator_state
+        if: steps.fetch_tempo_binaries.outcome == 'success'
+        continue-on-error: true
+        run: |
+          "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --stage generate-initial-validator-state \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
+            --benchmark-id "$BENCHMARK_ID" \
+            --results-dir "$BENCH_RESULTS_DIR" \
+            --baseline "$BENCH_INPUT_BASELINE" \
+            --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
+            --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
+            --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
+            --preset "$BENCH_INPUT_PRESET" \
+            --duration "$BENCH_INPUT_DURATION" \
+            --bloat "$BENCH_INPUT_BLOAT" \
+            --tps "$BENCH_INPUT_TPS" \
+            --accounts "$BENCH_INPUT_ACCOUNTS" \
+            --max-concurrent-requests "$BENCH_INPUT_MAX_CONCURRENT_REQUESTS" \
+            --txgen-ref "$BENCH_INPUT_TXGEN_REF" \
+            --token-count "$BENCH_INPUT_TOKEN_COUNT" \
+            --profiling "$BENCH_INPUT_PROFILING" \
+            --otlp "$BENCH_INPUT_OTLP" \
+            --valscope "$BENCH_INPUT_VALSCOPE" \
+            --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
+            --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
+            --no-cache "$BENCH_INPUT_NO_CACHE" \
+            --no-slack "true" \
+            --bench-args "$BENCH_INPUT_BENCH_ARGS" \
+            --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
+            --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
+            --regions "${{ steps.regions.outputs.regions }}" \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
+            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
+
+      - name: Initialize ${{ env.BENCH_INPUT_VALIDATOR_COUNT }} validators with ${{ env.BENCH_INPUT_BLOAT }}GiB bloat file
+        id: initialize_validator_state
+        if: steps.generate_initial_validator_state.outcome == 'success'
+        continue-on-error: true
+        run: |
+          "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --stage initialize-validator-state \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
+            --benchmark-id "$BENCHMARK_ID" \
+            --results-dir "$BENCH_RESULTS_DIR" \
+            --baseline "$BENCH_INPUT_BASELINE" \
+            --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
+            --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
+            --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
+            --preset "$BENCH_INPUT_PRESET" \
+            --duration "$BENCH_INPUT_DURATION" \
+            --bloat "$BENCH_INPUT_BLOAT" \
+            --tps "$BENCH_INPUT_TPS" \
+            --accounts "$BENCH_INPUT_ACCOUNTS" \
+            --max-concurrent-requests "$BENCH_INPUT_MAX_CONCURRENT_REQUESTS" \
+            --txgen-ref "$BENCH_INPUT_TXGEN_REF" \
+            --token-count "$BENCH_INPUT_TOKEN_COUNT" \
+            --profiling "$BENCH_INPUT_PROFILING" \
+            --otlp "$BENCH_INPUT_OTLP" \
+            --valscope "$BENCH_INPUT_VALSCOPE" \
+            --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
+            --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
+            --no-cache "$BENCH_INPUT_NO_CACHE" \
+            --no-slack "true" \
+            --bench-args "$BENCH_INPUT_BENCH_ARGS" \
+            --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
+            --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
+            --regions "${{ steps.regions.outputs.regions }}" \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
+            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
+
+      - name: Run benchmarks (${{ env.BENCH_INPUT_RUN_PAIRS }} run-pairs)
+        id: benchmark
+        if: steps.generate_initial_validator_state.outcome == 'success' && steps.initialize_validator_state.outcome == 'success'
+        continue-on-error: true
+        run: |
+          "$BENCH_REPO_DIR/scripts/run_comparison.sh" \
+            --stage run-benchmarks \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --gcp-project-id "$BENCH_GCP_PROJECT_ID" \
+            --benchmark-id "$BENCHMARK_ID" \
+            --results-dir "$BENCH_RESULTS_DIR" \
+            --baseline "$BENCH_INPUT_BASELINE" \
+            --feature "$BENCH_INPUT_FEATURE" \
+            --baseline-name "$BENCH_INPUT_BASELINE_NAME" \
+            --feature-name "$BENCH_INPUT_FEATURE_NAME" \
+            --baseline-hardfork "$BENCH_INPUT_BASELINE_HARDFORK" \
+            --feature-hardfork "$BENCH_INPUT_FEATURE_HARDFORK" \
+            --preset "$BENCH_INPUT_PRESET" \
+            --duration "$BENCH_INPUT_DURATION" \
+            --bloat "$BENCH_INPUT_BLOAT" \
+            --tps "$BENCH_INPUT_TPS" \
+            --accounts "$BENCH_INPUT_ACCOUNTS" \
+            --max-concurrent-requests "$BENCH_INPUT_MAX_CONCURRENT_REQUESTS" \
+            --txgen-ref "$BENCH_INPUT_TXGEN_REF" \
+            --token-count "$BENCH_INPUT_TOKEN_COUNT" \
+            --profiling "$BENCH_INPUT_PROFILING" \
+            --otlp "$BENCH_INPUT_OTLP" \
+            --valscope "$BENCH_INPUT_VALSCOPE" \
+            --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
+            --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
+            --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
+            --no-cache "$BENCH_INPUT_NO_CACHE" \
+            --no-slack "true" \
+            --bench-args "$BENCH_INPUT_BENCH_ARGS" \
+            --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
+            --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
+            --regions "${{ steps.regions.outputs.regions }}" \
+            --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
+            --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
+            --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
+            --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
+            --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
+
+      - name: Start infrastructure teardown
+        if: always() && steps.checkout_benchmark_repo.outcome == 'success'
+        run: |
+          "$BENCH_REPO_DIR/scripts/start_terraform_destroy.sh" \
+            --terraform-dir "${{ env.TERRAFORM_DIR }}" \
+            --state-dir "$RUNNER_TEMP/terraform-destroy"
+
+      - name: Collect cloud artifacts
+        if: always() && steps.checkout_benchmark_repo.outcome == 'success'
+        run: |
+          if [ -d "$BENCH_RESULTS_DIR/cloud-artifacts" ] && [ -n "$(find "$BENCH_RESULTS_DIR/cloud-artifacts" -type f -print -quit 2>/dev/null)" ]; then
+            echo "Cloud artifacts already collected; skipping duplicate collection."
+            exit 0
+          fi
+          "$BENCH_REPO_DIR/scripts/collect_artifacts.sh" \
+            --cloud "$BENCH_INPUT_CLOUD" \
+            --terraform-dir "${{ env.TERRAFORM_DIR }}" \
+            --outputs-file "$RUNNER_TEMP/terraform-destroy/terraform-outputs.json" \
+            --dest "$BENCH_RESULTS_DIR/cloud-artifacts" || echo "::warning::artifact collection failed during teardown"
+
+      - name: Collect e2e summary
+        id: results-dir
+        if: always()
+        run: |
+          results_dir="$BENCH_RESULTS_DIR"
+          summary_path="$results_dir/summary.md"
+          if [ ! -f "$summary_path" ]; then
+            echo "::notice::No benchmark summary found at $summary_path"
+            exit 0
+          fi
+          echo "path=$results_dir" >> "$GITHUB_OUTPUT"
+          echo "Results directory: $results_dir"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-e2e-multi-region-results
+          path: ${{ env.BENCH_RESULTS_DIR }}
+          if-no-files-found: warn
+
+      - name: Post results to summary
+        if: steps.results-dir.outputs.path != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_ACTOR: ${{ github.actor }}
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_FETCH_BINARIES_OUTCOME: ${{ steps.fetch_tempo_binaries.outcome }}
+          BENCH_GENERATE_OUTCOME: ${{ steps.generate_initial_validator_state.outcome }}
+          BENCH_INITIALIZE_OUTCOME: ${{ steps.initialize_validator_state.outcome }}
+          BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const resultsDir = process.env.BENCH_RESULTS_DIR;
+
+            let summary = '';
+            try {
+              summary = fs.readFileSync(`${resultsDir}/summary.md`, 'utf8');
+            } catch (e) {
+              summary = 'Benchmark completed but failed to read summary.';
+            }
+
+            const lifecycleOutcomes = [
+              process.env.BENCH_FETCH_BINARIES_OUTCOME,
+              process.env.BENCH_GENERATE_OUTCOME,
+              process.env.BENCH_INITIALIZE_OUTCOME,
+              process.env.BENCHMARK_OUTCOME,
+            ];
+            let resultHeadline = lifecycleOutcomes.includes('failure')
+              ? 'Benchmark failed!'
+              : 'Benchmark complete!';
+            try {
+              const comparison = JSON.parse(fs.readFileSync(`${resultsDir}/comparison.json`, 'utf8'));
+              const exitCode = Number(comparison.exit_code ?? 0);
+              if (Number.isFinite(exitCode) && exitCode !== 0) {
+                resultHeadline = `Benchmark failed: exit code ${exitCode}`;
+              }
+            } catch (e) {}
+
+            let jobUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            try {
+              const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+              });
+              const job = jobs.jobs.find(j => j.name === 'bench-e2e-multi-region');
+              if (job) {
+                jobUrl = job.html_url;
+              }
+            } catch (e) {
+              core.info(`Unable to resolve job URL: ${e.message}`);
+            }
+
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
+            await core.summary.addRaw(body).write();
+
+      - name: Wait for infrastructure teardown
+        if: always() && steps.checkout_benchmark_repo.outcome == 'success'
+        run: |
+          "$BENCH_REPO_DIR/scripts/wait_terraform_destroy.sh" \
+            --state-dir "$RUNNER_TEMP/terraform-destroy"
+
+      - name: Check benchmark result
+        if: always() && (steps.fetch_tempo_binaries.outcome == 'failure' || steps.generate_initial_validator_state.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
+        run: exit 1

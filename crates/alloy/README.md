@@ -41,6 +41,36 @@ async fn build_provider() -> Result<impl Provider<TempoNetwork>, TransportError>
 }
 ```
 
+### Tempo Accounts wallet
+
+Native clients can use the same account and access keys persisted by Tempo
+Accounts. The wallet lazily selects a key for each transaction's account,
+chain, and calls; fills its signature type, key ID, and pending authorization
+before gas estimation; and signs with that exact key afterward:
+
+```rust,no_run
+use alloy::providers::ProviderBuilder;
+use tempo_alloy::{TempoNetwork, accounts::TempoAccountsWallet};
+
+async fn accounts_provider(
+    rpc_url: &str,
+) -> Result<impl alloy::providers::Provider<TempoNetwork>, Box<dyn std::error::Error>> {
+    let wallet = TempoAccountsWallet::from_default_store()?;
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        // The Accounts wallet is itself a standard Alloy transaction filler:
+        // its synchronous phase runs before gas estimation and its async phase
+        // signs once the remaining recommended fillers are complete.
+        .filler(wallet)
+        .connect(rpc_url)
+        .await?;
+    Ok(provider)
+}
+```
+
+Use `TempoAccountsWallet::from_store(path)` for a non-default store. A request
+with an explicit `key_id` pins that key: if it expires or disappears before
+signing, the wallet returns an error instead of silently switching credentials.
+
 This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://docs.tempo.xyz/protocol/tip20/overview):
 
 ```rust,no_run

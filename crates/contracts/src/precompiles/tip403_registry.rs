@@ -22,6 +22,7 @@ crate::sol! {
         // View Functions
         function policyIdCounter() external view returns (uint64);
         function policyExists(uint64 policyId) external view returns (bool);
+        function tokenTransferPolicyId(address token) external view returns (bool isSet, uint64 policyId);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
         function isAuthorizedSender(uint64 policyId, address user) external view returns (bool);
@@ -39,6 +40,7 @@ crate::sol! {
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
         function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
         function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
+        function migrateTransferPolicyIds(address[] calldata tokens) external returns (uint256 migrated);
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);

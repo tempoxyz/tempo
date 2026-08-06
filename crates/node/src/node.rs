@@ -34,7 +34,7 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
-use reth_tracing::tracing::{debug, info};
+use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
     TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
@@ -86,7 +86,7 @@ pub struct TempoNodeArgs {
     pub builder_enable_prewarming: bool,
 
     /// Enable speculative parallel payload builder.
-    #[arg(long = "builder.parallel", default_value_t = false)]
+    #[arg(long = "builder.parallel", default_value_t = false, hide = true)]
     pub builder_parallel: bool,
 
     /// Disable sharing the execution cache with the payload builder.
@@ -135,6 +135,10 @@ impl TempoNodeArgs {
 
     /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
+        if self.builder_parallel {
+            warn!("Parallel block builder is still in development and should not be used");
+        }
+
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: !self.builder_disable_prewarming,
@@ -435,7 +439,10 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        if let Some(cache) = ctx.sender_recovery_cache() {
+            evm_config = evm_config.with_sender_recovery_cache(cache.clone());
+        }
         Ok(evm_config)
     }
 }
@@ -498,6 +505,8 @@ pub struct TempoPoolBuilder {
     pub aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
+    /// Whether to skip the FeeAMM liquidity check during pool admission.
+    pub disable_fee_amm_check: bool,
     /// Optional additional stateless validation check forwarded to the inner ETH validator.
     pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
     /// Optional additional stateful validation check forwarded to the inner ETH validator.
@@ -514,6 +523,12 @@ impl TempoPoolBuilder {
     /// Sets the maximum number of authorizations allowed in an AA transaction.
     pub const fn with_max_tempo_authorizations(mut self, max: usize) -> Self {
         self.max_tempo_authorizations = max;
+        self
+    }
+
+    /// Configures whether to disable the FeeAMM liquidity check during pool admission.
+    pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
+        self.disable_fee_amm_check = disable;
         self
     }
 
@@ -591,6 +606,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
         f.debug_struct("TempoPoolBuilder")
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
+            .field("disable_fee_amm_check", &self.disable_fee_amm_check)
             .field(
                 "additional_stateless_validation",
                 &self.additional_stateless_validation.as_ref().map(|_| "..."),
@@ -608,6 +624,7 @@ impl Default for TempoPoolBuilder {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            disable_fee_amm_check: false,
             additional_stateless_validation: None,
             additional_stateful_validation: None,
         }
@@ -656,6 +673,7 @@ where
         let Self {
             aa_valid_after_max_secs,
             max_tempo_authorizations,
+            disable_fee_amm_check,
             additional_stateless_validation,
             additional_stateful_validation,
         } = self;
@@ -668,6 +686,7 @@ where
                 max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
+            .with_disable_fee_amm_check(disable_fee_amm_check)
         });
         let protocol_pool = Pool::new(
             validator,
@@ -778,6 +797,14 @@ mod tests {
 
         assert_eq!(node.pool_builder.aa_valid_after_max_secs, 12);
         assert_eq!(node.pool_builder.max_tempo_authorizations, 7);
+    }
+
+    #[test]
+    fn tempo_node_disables_fee_amm_pool_check() {
+        let node =
+            TempoNode::default().map_pool_builder(|pool| pool.with_disable_fee_amm_check(true));
+
+        assert!(node.pool_builder.disable_fee_amm_check);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
-use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use revm::{
@@ -9,14 +9,9 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
-};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
-    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
@@ -24,7 +19,7 @@ use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
 /// when the call still moves tokens.
-fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
+pub(crate) fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
     input.first_chunk::<4>().is_some_and(|&s| {
         matches!(
             s,
@@ -118,87 +113,6 @@ pub trait TempoStateAccess<M = ()> {
             &mut ReadOnlyStorageProvider::new(self, spec).with_actions(actions),
             f,
         )
-    }
-
-    /// Resolves user-level or transaction-level fee token preference.
-    fn get_fee_token(
-        &mut self,
-        tx: impl TempoTx,
-        fee_payer: Address,
-        spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> TempoResult<Address>
-    where
-        Self: Sized,
-    {
-        // If there is a fee token explicitly set on the tx type, use that.
-        if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
-        }
-
-        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-        // new preference, the newly set preference should be used immediately instead of the
-        // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-        {
-            return Ok(call.token);
-        }
-
-        // Check stored user token preference
-        let user_token = self.with_read_only_storage_ctx(spec, actions.clone(), || {
-            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens[fee_payer].read()
-        })?;
-
-        if !user_token.is_zero() {
-            return Ok(user_token);
-        }
-
-        // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
-            let can_infer_tip20 =
-                // AA txs only when fee_payer == tx.origin.
-                if tx.is_aa() && fee_payer != tx.caller() {
-                    false
-                }
-                // Otherwise, restricted to TIP-20 calls that move the called token.
-                else {
-                    tx.calls().all(|(kind, input)| {
-                        kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
-                    })
-                }
-            ;
-
-            if can_infer_tip20 && self.is_valid_fee_token(spec, to, actions.clone())? {
-                return Ok(to);
-            }
-        }
-
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
-        // use the input token as the fee token (the token that will be pulled from the user).
-        // For AA transactions, this only applies if there's exactly one call.
-        let mut calls = tx.calls();
-        if let Some((kind, input)) = calls.next()
-            && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-            && (!tx.is_aa() || calls.next().is_none())
-        {
-            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
-            {
-                return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn, actions)?
-            {
-                return Ok(call.tokenIn);
-            }
-        }
-
-        // If no fee token is found, default to the first deployed TIP20
-        Ok(DEFAULT_FEE_TOKEN)
     }
 
     /// Checks if the given TIP20 token has USD currency.
@@ -444,6 +358,10 @@ where
         Ok(())
     }
 
+    fn account_code(&mut self, _: Address) -> TempoResult<(B256, Bytecode)> {
+        unreachable!("'account_code' not supported in read-only context")
+    }
+
     // No-op methods are unimplemented in read-only context.
     fn chain_id(&self) -> u64 {
         unreachable!("'chain_id' not implemented in read-only context yet")
@@ -518,10 +436,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FeeTokenResolver, TempoFeeManager};
     use alloy_primitives::{address, uint};
+    use alloy_sol_types::SolCall;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
+    use tempo_contracts::precompiles::{
+        DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
+    };
     use tempo_precompiles::{
-        PATH_USD_ADDRESS,
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        tip_fee_manager::TipFeeManager,
         tip20::{IRolesAuth::*, ITIP20::*, TIP20Token, slots as tip20_slots},
     };
 
@@ -541,9 +465,9 @@ mod tests {
             ..Default::default()
         };
 
-        let mut db = EmptyDB::default();
-        let token = db.get_fee_token(
-            tx,
+        let token = TempoFeeManager.resolve_fee_token(
+            &mut EmptyDB::default(),
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -569,9 +493,9 @@ mod tests {
             ..Default::default()
         };
 
-        let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(
-            tx,
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut EmptyDB::default(),
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -591,8 +515,9 @@ mod tests {
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
-        let result_token = db.get_fee_token(
-            TempoTxEnv::default(),
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut db,
+            &TempoTxEnv::default(),
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -617,9 +542,9 @@ mod tests {
             ..Default::default()
         };
 
-        let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(
-            tx,
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut EmptyDB::default(),
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -640,9 +565,9 @@ mod tests {
             ..Default::default()
         };
 
-        let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(
-            tx,
+        let result_token = TempoFeeManager.resolve_fee_token(
+            &mut EmptyDB::default(),
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -679,8 +604,9 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(
-            tx,
+        let token = TempoFeeManager.resolve_fee_token(
+            &mut db,
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),
@@ -707,8 +633,9 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.get_fee_token(
-            tx,
+        let token = TempoFeeManager.resolve_fee_token(
+            &mut db,
+            &tx,
             caller,
             TempoHardfork::Genesis,
             StorageActions::disabled(),

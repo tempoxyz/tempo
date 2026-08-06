@@ -6,7 +6,10 @@ use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
     Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
-    stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
+    stablecoin_dex::{
+        StablecoinDEX,
+        orderbook::{BookId, compute_book_key},
+    },
     view,
 };
 
@@ -79,7 +82,20 @@ impl Precompile for StablecoinDEX {
                     priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
 
                     #[schedule(since = T7)]
-                    storageCredits(call) => view(call, |c| self.storage_credits(c.user))
+                    storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
+
+                    #[schedule(since = T8)]
+                    bookIndexForKey(call) => view(call, |c| {
+                        let index = self.book_key_index(c.bookKey)?;
+                        Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
+                    }),
+                    #[schedule(since = T8)]
+                    bookKeyForIndex(call) => view(call, |c| self.book_key_for_index(c.index)),
+                    #[schedule(since = T8)]
+                    setBookIndex(call) => mutate_void(call, msg_sender, |_, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.set_book_index(c.index)
+                    }),
                 }
             }
         )
@@ -450,7 +466,7 @@ mod tests {
 
     #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 

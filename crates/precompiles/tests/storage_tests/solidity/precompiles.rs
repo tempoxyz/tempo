@@ -17,7 +17,13 @@ fn test_tip403_registry_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(policy_id_counter, policy_records, policy_set);
+    let rust_layout = layout_fields!(
+        policy_id_counter,
+        policy_records,
+        policy_set,
+        receive_policies,
+        token_transfer_policies
+    );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
@@ -56,6 +62,17 @@ fn test_tip403_registry_layout() {
             panic_layout_mismatch("CompoundPolicyData struct layout", errors, &sol_path);
         }
     }
+
+    // Verify `TokenTransferPolicy` packs the ID and set bit into one slot.
+    {
+        use tempo_precompiles::tip403_registry::__packing_token_transfer_policy::*;
+        let rust_binding = struct_fields!(slots::TOKEN_TRANSFER_POLICIES, policy_id, is_set);
+        if let Err(errors) =
+            compare_nested_struct_type(&solc_layout, "TokenTransferPolicy", &rust_binding)
+        {
+            panic_layout_mismatch("TokenTransferPolicy struct layout", errors, &sol_path);
+        }
+    }
 }
 
 #[test]
@@ -89,7 +106,7 @@ fn test_fee_manager_layout() {
 #[test]
 fn test_stablecoin_dex_layout() {
     use tempo_precompiles::stablecoin_dex::{
-        order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
+        order::__packing_legacy_order::*, orderbook::__packing_orderbook::*, slots,
     };
 
     let sol_path = testdata("stablecoin_dex.sol");
@@ -131,6 +148,7 @@ fn test_stablecoin_dex_layout() {
         asks,
         best_bid_tick,
         best_ask_tick,
+        book_id,
         bid_bitmap,
         ask_bitmap
     );
@@ -284,7 +302,7 @@ fn export_all_storage_constants() {
     // Stablecoin DEX
     {
         use tempo_precompiles::stablecoin_dex::{
-            order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
+            order::__packing_legacy_order::*, orderbook::__packing_orderbook::*, slots,
         };
 
         let fields = layout_fields!(books, orders, balances, next_order_id, book_keys);
@@ -314,6 +332,7 @@ fn export_all_storage_constants() {
             asks,
             best_bid_tick,
             best_ask_tick,
+            book_id,
             bid_bitmap,
             ask_bitmap
         );

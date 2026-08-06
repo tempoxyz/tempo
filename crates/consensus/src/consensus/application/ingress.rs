@@ -1,23 +1,26 @@
+use commonware_actor::{
+    Feedback,
+    mailbox::{self, Policy},
+};
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay,
     simplex::{Plan, types::Context},
-    types::{Epoch, Round, View},
+    types::{Round, View},
 };
 
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::channel::oneshot;
-use futures::{SinkExt as _, channel::mpsc};
-use std::time::Instant;
+use std::{collections::VecDeque, time::Instant};
 
 use crate::consensus::Digest;
 
 #[derive(Clone)]
 pub(crate) struct Mailbox {
-    inner: mpsc::Sender<Message>,
+    inner: mailbox::Sender<Message>,
 }
 
 impl Mailbox {
-    pub(super) fn from_sender(inner: mpsc::Sender<Message>) -> Self {
+    pub(super) fn from_sender(inner: mailbox::Sender<Message>) -> Self {
         Self { inner }
     }
 }
@@ -26,19 +29,18 @@ impl Mailbox {
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
     Broadcast(Box<Broadcast>),
-    Genesis(Genesis),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
 }
 
-pub(super) struct Genesis {
-    pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Digest>,
-}
+impl Policy for Message {
+    type Overflow = VecDeque<Self>;
 
-impl From<Genesis> for Message {
-    fn from(value: Genesis) -> Self {
-        Self::Genesis(value)
+    fn handle(overflow: &mut Self::Overflow, message: Self) {
+        match message {
+            Self::Broadcast(_) => {}
+            message => overflow.push_back(message),
+        }
     }
 }
 
@@ -86,41 +88,23 @@ impl Automaton for Mailbox {
 
     type Digest = Digest;
 
-    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
-        let (tx, rx) = oneshot::channel();
-        // XXX: Cannot propagate the error upstream because of the trait def.
-        // But if the actor no longer responds the application is dead.
-        self.inner
-            .send(
-                Genesis {
-                    epoch,
-                    response: tx,
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive genesis");
-        rx.await
-            .expect("application returns the digest of the genesis")
-    }
-
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
         // XXX: Cannot propagate the error upstream because of the trait def.
         // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
-        self.inner
-            .send(
-                Propose {
-                    parent: context.parent,
-                    response: tx,
-                    round: context.round,
-                    leader: context.leader,
-                    started_at: Instant::now(),
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive proposals");
+        let propose = Propose {
+            parent: context.parent,
+            response: tx,
+            round: context.round,
+            leader: context.leader,
+            started_at: Instant::now(),
+        };
+
+        assert!(
+            self.inner.enqueue(propose.into(),).accepted(),
+            "application is present and ready to receive proposals"
+        );
+
         rx
     }
 
@@ -132,19 +116,19 @@ impl Automaton for Mailbox {
         // XXX: Cannot propagate the error upstream because of the trait def.
         // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
-        self.inner
-            .send(
-                Verify {
-                    parent: context.parent,
-                    payload,
-                    proposer: context.leader,
-                    round: context.round,
-                    response: tx,
-                }
-                .into(),
-            )
-            .await
-            .expect("application is present and ready to receive verify requests");
+        let verify = Verify {
+            parent: context.parent,
+            payload,
+            proposer: context.leader,
+            round: context.round,
+            response: tx,
+        };
+
+        assert!(
+            self.inner.enqueue(verify.into(),).accepted(),
+            "application is present and ready to receive verify requests"
+        );
+
         rx
     }
 }
@@ -164,11 +148,52 @@ impl Relay for Mailbox {
     type PublicKey = PublicKey;
     type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
-        self.inner
-            .send(Broadcast { digest, plan }.into())
-            .await
-            .expect("application is present and ready to receive broadcasts");
+    fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) -> Feedback {
+        self.inner.enqueue(Broadcast { digest, plan }.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+    use commonware_actor::{Feedback, mailbox};
+    use commonware_consensus::{
+        Relay as _,
+        simplex::Plan,
+        types::{Epoch, Round, View},
+    };
+    use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
+    use commonware_utils::NZUsize;
+
+    use super::{Mailbox, Message};
+    use crate::consensus::Digest;
+
+    #[test]
+    fn broadcast_overflow_is_dropped() {
+        deterministic::Runner::default().start(|context| async move {
+            let (sender, mut receiver) = mailbox::new(context.child("mailbox"), NZUsize!(1));
+            let mut mailbox = Mailbox::from_sender(sender);
+            let round = Round::new(Epoch::zero(), View::zero());
+            let first = Digest(B256::with_last_byte(1));
+            let second = Digest(B256::with_last_byte(2));
+
+            assert_eq!(
+                mailbox.broadcast(first, Plan::Propose { round }),
+                Feedback::Ok
+            );
+            assert_eq!(
+                mailbox.broadcast(second, Plan::Propose { round }),
+                Feedback::Backoff
+            );
+
+            let Message::Broadcast(first_message) =
+                receiver.recv().await.expect("first broadcast missing")
+            else {
+                panic!("expected broadcast");
+            };
+            assert_eq!(first_message.digest, first);
+
+            assert!(receiver.try_recv().is_err());
+        });
     }
 }

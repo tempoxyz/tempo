@@ -65,6 +65,8 @@ futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true
 reqwest.workspace = true
+metrics.workspace = true
+sysinfo.workspace = true
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -90,7 +92,7 @@ alloy = { workspace = true, features = [
 	"signer-mnemonic-all-languages",
 ] }
 alloy-rlp.workspace = true
-rand.workspace = true
+rand_09.workspace = true
 futures.workspace = true
 test-case.workspace = true
 indexmap.workspace = true

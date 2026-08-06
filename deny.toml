@@ -8,13 +8,14 @@ ignore = [
   "RUSTSEC-2024-0436",
   # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
   "RUSTSEC-2025-0141",
-  # https://rustsec.org/advisories/RUSTSEC-2026-0118 vulnerable DnssecDnsHandle code was
-  # moved from hickory-proto to hickory-net in 0.26.0; we use hickory-net 0.26.1 which has
-  # the fix, and no patched hickory-proto release exists
-  "RUSTSEC-2026-0118",
   # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 is unmaintained
   # and is pulled in transitively by upstream crates with no safe upgrade available.
   "RUSTSEC-2026-0173",
+  # https://rustsec.org/advisories/RUSTSEC-2025-0055 tracing-subscriber 0.2
+  # is pulled in by ark-relations 0.5.1, which is pinned by commonware-cryptography.
+  # ark-relations 0.5.1 requires tracing-subscriber ^0.2, so this cannot be upgraded
+  # without commonware moving to a newer arkworks release.
+  "RUSTSEC-2025-0055",
 ]
 
 # This section is considered when running `cargo deny check bans`.
