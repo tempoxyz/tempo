@@ -1,3 +1,19 @@
+//! A channel wrapper that drops messages that exceed a pre-defined size.
+//!
+//! This layer defends against the `assert!` in
+//! [`commonware_p2p::authenticated::lookup::channels::UnlimitedSender::send`]
+//! that would lead to the node panicking if we ever exceeds the pre-configured
+//! message size.
+//!
+//! Note the interaction between size-limits and rate-limits: commonware
+//! performs rate-limits via the [`LimitedSender::check`] API prior to sending a
+//! a message. This means that if a rate-limiter is in place (which is always
+//! the case), then a rate-limiting token will be consumed before the message is
+//! sent and potentially dropped because it exceeds limits.
+//!
+//! To avoid this waste, commonware either needs to change the assert! into a
+//! graceful rejection (so that the token can be reclaimed), or allow performing
+//! the size check before.
 use std::time::SystemTime;
 
 use commonware_actor::{Feedback, Unreliable};
