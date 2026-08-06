@@ -28,7 +28,7 @@ pub use assemble::TempoBlockAssembler;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
-pub use error::{FeePaymentError, TempoEvmError, TempoInvalidTransaction};
+pub use error::{FeePaymentError, TempoEvmError, TempoInvalidTransaction, TempoProtocolError};
 pub use evm::{TempoEvm, TempoEvmFactory};
 pub use handler::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoBlockExt, TempoConfig,

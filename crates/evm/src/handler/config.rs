@@ -1,8 +1,8 @@
 //! EVM2 transaction handler plumbing.
 
 use crate::{
-    FeePaymentError, TempoEvmTx, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
-    common::is_tip20_fee_inference_call,
+    FeePaymentError, TempoEvmTx, TempoInvalidTransaction, TempoProtocolError, TempoStateAccess,
+    TempoTx, TempoTxEnv, common::is_tip20_fee_inference_call,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -409,11 +409,13 @@ pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError
     HandlerError::external(error.into())
 }
 
-fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
+fn map_protocol_result<R>(stage: &'static str, result: TempoResult<R>) -> HandlerResult<R> {
     match result {
         Ok(value) => Ok(value),
         Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
-        Err(error) => Err(HandlerError::external(error)),
+        Err(error) => Err(HandlerError::external(TempoProtocolError::new(
+            stage, error,
+        ))),
     }
 }
 
@@ -432,9 +434,9 @@ fn settle_storage_credit_refunds(
         return Ok(());
     }
 
-    let settled = map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-        host,
-        || {
+    let settled = map_protocol_result(
+        "settle_storage_credit_refunds",
+        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut storage = StorageCtx;
             let mut settled = 0i64;
             for (key, word) in slots {
@@ -455,8 +457,8 @@ fn settle_storage_credit_refunds(
                 storage.sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(balance))?;
             }
             Ok(settled)
-        },
-    ))?;
+        }),
+    )?;
     result
         .gas
         .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
@@ -545,14 +547,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            map_protocol_result(fee_manager.collect_fee_post_tx(
-                host,
-                fee_payer,
-                actual_spending,
-                refund,
-                fee_token,
-                beneficiary,
-            ))?
+            map_protocol_result(
+                "collect_fee_post_tx",
+                fee_manager.collect_fee_post_tx(
+                    host,
+                    fee_payer,
+                    actual_spending,
+                    refund,
+                    fee_token,
+                    beneficiary,
+                ),
+            )?
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
@@ -580,18 +585,20 @@ impl TempoHandlerHooks {
         };
         let spec = host.config_spec_id();
 
-        map_protocol_result(StorageCtx::enter_evm_without_tip1060_accounting(
-            host,
-            || {
+        map_protocol_result(
+            "resolve_fee_context_storage",
+            StorageCtx::enter_evm_without_tip1060_accounting(host, || {
                 AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
                 TIP20ChannelReserve::new()
                     .set_channel_open_context_hash(envelope.channel_open_context_hash())
-            },
-        ))?;
+            }),
+        )?;
 
         let fee_manager = host.ext().fee_manager.clone();
-        let fee_token =
-            map_protocol_result(fee_manager.get_fee_token(host, envelope, fee_payer, spec))?;
+        let fee_token = map_protocol_result(
+            "resolve_fee_token",
+            fee_manager.get_fee_token(host, envelope, fee_payer, spec),
+        )?;
         host.ext_mut().resolved_fee_token = Some(fee_token);
         if !fee_token.is_tip20() {
             return Err(invalid(TempoInvalidTransaction::FeeTokenNotTip20 {
@@ -657,7 +664,9 @@ impl TempoHandlerHooks {
                 }
                 TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
                 error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
-                error => invalid(FeePaymentError::Other(error.to_string())),
+                error => invalid(FeePaymentError::Other(format!(
+                    "collect_fee_pre_tx: {error}"
+                ))),
             });
         }
 

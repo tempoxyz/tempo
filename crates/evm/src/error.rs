@@ -1,6 +1,7 @@
 //! Tempo EVM and transaction validation errors.
 
 use alloy_primitives::{Address, U256};
+use tempo_precompiles::error::TempoPrecompileError;
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Errors that can occur while configuring the Tempo EVM.
@@ -13,6 +14,24 @@ pub enum TempoEvmError {
     /// Invalid EVM configuration.
     #[error("invalid EVM configuration: {0}")]
     InvalidEvmConfig(String),
+}
+
+/// A protocol error raised while executing one of the EVM handler stages.
+#[derive(Debug, thiserror::Error)]
+#[error("{stage}: {source}")]
+pub struct TempoProtocolError {
+    /// Handler stage that surfaced the protocol error.
+    pub stage: &'static str,
+    /// Original protocol error.
+    #[source]
+    pub source: TempoPrecompileError,
+}
+
+impl TempoProtocolError {
+    /// Attach a handler stage without erasing the original protocol error.
+    pub const fn new(stage: &'static str, source: TempoPrecompileError) -> Self {
+        Self { stage, source }
+    }
 }
 
 /// Tempo-specific transaction validation errors.
@@ -234,6 +253,17 @@ mod tests {
             error.external_ref::<TempoInvalidTransaction>(),
             Some(TempoInvalidTransaction::InvalidFeePayerSignature)
         ));
+    }
+
+    #[test]
+    fn protocol_errors_preserve_the_handler_stage() {
+        let error = TempoProtocolError::new(
+            "collect_fee_post_tx",
+            TempoPrecompileError::Fatal("test failure".into()),
+        );
+
+        assert_eq!(error.to_string(), "collect_fee_post_tx: test failure");
+        assert_eq!(error.stage, "collect_fee_post_tx");
     }
 
     #[test]
