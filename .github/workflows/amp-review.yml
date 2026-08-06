@@ -21,7 +21,7 @@ jobs:
       contents: read
     steps:
       - name: Run Amp Code Review
-        uses: docker://ghcr.io/sourcegraph/cra-github:latest
+        uses: docker://ghcr.io/sourcegraph/cra-github@sha256:e0cddc552fe89730913c277ed3a21d061a49c5decbeb0e5e42b3fd844c364c69 # latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AMP_SERVER_URL: ${{ vars.AMP_SERVER_URL }}
