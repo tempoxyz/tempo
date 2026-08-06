@@ -492,8 +492,8 @@ mod tests {
                 .unwrap_or_default())
         }
 
-        fn get_block_hash(&mut self, _number: &U256) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &U256) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
