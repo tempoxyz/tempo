@@ -19,7 +19,7 @@ use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
         PrecompileStorageProvider, StorageActions,
-        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
+        evm::{EvmPrecompileExecution, EvmStorageExt},
     },
 };
 
@@ -135,10 +135,15 @@ impl StorageCtx {
         let actions = evm.ext().storage_actions();
         let non_creditable_slots = evm.ext().non_creditable_slots();
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, &mut gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots)
-            .with_gas_params(gas_params);
+        let mut storage = EvmPrecompileExecution::new_storage(
+            evm,
+            &mut gas,
+            spec,
+            false,
+            actions,
+            non_creditable_slots,
+        )
+        .with_gas_params(gas_params);
         storage.set_tip1060_storage_credits(false);
         let result = Self::enter(&mut storage, f);
         (result, gas)
@@ -157,9 +162,14 @@ impl StorageCtx {
         let actions = evm.ext().storage_actions();
         let non_creditable_slots = evm.ext().non_creditable_slots();
         let spec = evm.config_spec_id();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
-            .with_actions(actions)
-            .with_non_creditable_slots(non_creditable_slots);
+        let mut storage = EvmPrecompileExecution::new_storage(
+            evm,
+            gas,
+            spec,
+            false,
+            actions,
+            non_creditable_slots,
+        );
         storage.set_tip1060_storage_credits(tip1060_storage_credits);
         Self::enter(&mut storage, f)
     }

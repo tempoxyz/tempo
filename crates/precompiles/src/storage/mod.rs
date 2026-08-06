@@ -36,7 +36,7 @@ use crate::error::{Result, TempoPrecompileError};
 ///
 /// # Implementations
 ///
-/// - `EvmPrecompileStorageProvider` - Production EVM storage
+/// - `EvmPrecompileExecution` - Production EVM storage and execution
 /// - `HashMapStorageProvider` - Test storage
 ///
 /// # Sync with `[StorageCtx]`

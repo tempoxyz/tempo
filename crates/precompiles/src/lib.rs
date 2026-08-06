@@ -209,11 +209,10 @@ where
     fn execute(
         &mut self,
         evm: &mut Evm<'_, T>,
-        tx_env: &TxEnv<T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        if let Some(result) = self.base.execute(evm, tx_env, message, gas) {
+        if let Some(result) = self.base.execute(evm, message, gas) {
             return Some(result);
         }
         if !self.contains_tempo(&message.code_address) {
@@ -228,7 +227,7 @@ where
         let mut execution = EvmPrecompileExecution::new(
             evm,
             gas,
-            tx_env.clone(),
+            TxEnv::<T>::default(),
             message,
             self.spec,
             self.actions.clone(),
@@ -261,7 +260,7 @@ where
 mod tests {
     use super::*;
     use crate::storage::{
-        StorageCtx, evm::EvmPrecompileStorageProvider, hashmap::HashMapStorageProvider,
+        StorageCtx, evm::EvmPrecompileExecution, hashmap::HashMapStorageProvider,
     };
     use alloy::{
         primitives::{Bytes, U256, bytes},
@@ -372,7 +371,7 @@ mod tests {
         };
         let mut gas = GasTracker::new(message.gas_limit);
         let result = precompiles
-            .execute(evm, &TxEnv::<TestTypes>::default(), &message, &mut gas)
+            .execute(evm, &message, &mut gas)
             .expect("Tempo precompile must be registered");
         (result, gas)
     }
@@ -619,7 +618,7 @@ mod tests {
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)
@@ -655,7 +654,7 @@ mod tests {
         //    since we pre-fund recipient): state gas used must be less than gas used
         {
             // Pre-fund recipient so the transfer is warm SSTORE (nonzero->nonzero)
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_mint(recipient, U256::from(1))
@@ -703,7 +702,7 @@ mod tests {
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let mut storage = EvmPrecompileExecution::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
                     .with_issuer(sender)

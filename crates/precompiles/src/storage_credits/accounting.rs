@@ -5,7 +5,7 @@
 //! trait so the exact same logic can be reused from two places:
 //!
 //! - Tempo's EVM2 opcode-level SSTORE hook, and
-//! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
+//! - [`EvmPrecompileExecution`](crate::storage::evm::EvmPrecompileExecution)
 //!   so precompile-driven storage writes honor the same accounting.
 
 use super::{CreditMode, StorageCredits, TransientState};
