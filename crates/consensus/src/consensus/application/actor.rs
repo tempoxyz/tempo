@@ -210,7 +210,7 @@ where
 
                 self.context.child("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(*verify, context)
+                    move |_| inner.handle_verify(*verify)
                 });
             }
         }
@@ -416,11 +416,7 @@ impl Inner<Init> {
         ),
         err(level = Level::INFO),
     )]
-    async fn handle_verify<TContext: Pacer>(
-        self,
-        verify: Verify,
-        context: TContext,
-    ) -> eyre::Result<()> {
+    async fn handle_verify(self, verify: Verify) -> eyre::Result<()> {
         let Verify {
             parent,
             payload,
@@ -436,7 +432,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, proposer, round) => {
+            res = self.clone().verify(parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         )?;
@@ -682,9 +678,8 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn verify<TContext: Pacer>(
+    async fn verify(
         self,
-        _context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
@@ -706,7 +701,6 @@ impl Inner<Init> {
             .wrap_err("failed getting proposal block")?;
 
         // Can only repropose at the end of an epoch.
-        //
         if payload == parent_digest {
             let epoch_info = self
                 .epoch_strategy
