@@ -6,7 +6,8 @@ use commonware_runtime::{
 pub(super) struct Metrics {
     pub(super) peers: Gauge,
     pub(super) slots: Gauge,
-    pub(super) watermark: Gauge,
+    pub(super) watermark_epoch: Gauge,
+    pub(super) watermark_view: Gauge,
     pub(super) dispatched: Counter,
     pub(super) admitted: Counter,
     pub(super) stale: Counter,
@@ -29,7 +30,14 @@ impl Metrics {
         Self {
             peers: context.gauge("peers", "peers offering tempo/1"),
             slots: context.gauge("slots", "peers with a pending certificate"),
-            watermark: context.gauge("watermark_view", "highest applied view"),
+            // A round is (epoch, view). View resets each epoch, so it is only
+            // meaningful next to the epoch; exposing both keeps the pair
+            // monotonic instead of jumping backward at an epoch boundary.
+            watermark_epoch: context.gauge("watermark_epoch", "highest applied round epoch"),
+            watermark_view: context.gauge(
+                "watermark_view",
+                "highest applied view within `watermark_epoch`",
+            ),
             dispatched: context.counter("dispatched", "certificates sent for judgement"),
             admitted: context.counter("admitted", "certificates verified and applied"),
             stale: context.counter("stale", "certificates judged at or below the watermark"),

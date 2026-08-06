@@ -382,7 +382,12 @@ where
     /// a correctness requirement.
     fn prune_stale_slots(&mut self) {
         let watermark = self.watermark();
-        self.metrics.watermark.set(watermark.view().get() as i64);
+        self.metrics
+            .watermark_epoch
+            .set(watermark.epoch().get() as i64);
+        self.metrics
+            .watermark_view
+            .set(watermark.view().get() as i64);
         self.slots.retain(|_, slot| slot.round > watermark);
         self.metrics.slots.set(self.slots.len() as i64);
     }
