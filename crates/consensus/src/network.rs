@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use commonware_actor::{Feedback, Unreliable};
-use commonware_p2p::{CheckedSender, LimitedSender, Recipients, UnlimitedSender};
+use commonware_p2p::{CheckedSender, LimitedSender, Recipients};
 use commonware_runtime::{
     IoBufs, Metrics,
     telemetry::metrics::{Counter, MetricsExt as _},
@@ -42,7 +42,10 @@ pub(crate) fn limit_channel<S, R>(
             "dropped_oversized_messages",
             "outbound p2p messages dropped for exceeding the maximum message size",
         );
-    (SizeLimited::new(sender, channel, max_size, dropped), receiver)
+    (
+        SizeLimited::new(sender, channel, max_size, dropped),
+        receiver,
+    )
 }
 
 fn within_limit(
@@ -64,24 +67,6 @@ fn within_limit(
     }
 
     Some(message)
-}
-
-impl<S: UnlimitedSender> UnlimitedSender for SizeLimited<S> {
-    type PublicKey = S::PublicKey;
-
-    fn send(
-        &mut self,
-        recipients: Recipients<Self::PublicKey>,
-        message: impl Into<IoBufs> + Send,
-        priority: bool,
-    ) -> Unreliable<Feedback> {
-        let Some(message) = within_limit(message, self.channel, self.max_size, &self.dropped)
-        else {
-            return Unreliable::rejected();
-        };
-
-        self.inner.send(recipients, message, priority)
-    }
 }
 
 pub(crate) struct SizeLimitedChecked<S> {
