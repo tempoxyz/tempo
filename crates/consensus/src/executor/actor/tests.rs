@@ -368,6 +368,39 @@ fn first_missing_ancestor_walks_the_latest_notarization_backwards() {
 }
 
 #[test]
+fn cursor_catches_up_with_a_head_it_could_not_be_placed_on() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut directory = empty_directory(finalized);
+
+    // A is picked up for forwarding ...
+    let a = block(1, 11, finalized);
+    record(&mut directory, &a);
+    let next = directory.next_to_forward(T0).expect("chain start");
+    assert_eq!(next.block.digest(), a.digest());
+
+    // ... and while the forward is in flight, B's notarization arrives
+    // without its body. The completed forward reports A as the head, but
+    // the walk from the bodiless latest notarization dead-ends, so the
+    // head cannot be placed on the canonical path and the cursor stays
+    // put.
+    let b = block(2, 12, a.digest());
+    directory.record_notarized(b.context().round, b.digest());
+    directory.record_execution_notarized(Height::new(11), a.digest());
+    assert!(directory.next_to_forward(T0).is_none());
+
+    // B's body closes the gap; the candidate is A — already the head. The
+    // actor re-reports the unchanged head after the no-op forward, which
+    // now walks through to A and advances the cursor past it instead of
+    // re-selecting A forever.
+    directory.record_block(b.clone().into());
+    let next = directory.next_to_forward(T0).expect("gap closed");
+    assert_eq!(next.block.digest(), a.digest());
+    directory.record_execution_notarized(Height::new(11), a.digest());
+    let next = directory.next_to_forward(T0).expect("cursor caught up");
+    assert_eq!(next.block.digest(), b.digest());
+}
+
+#[test]
 fn rejected_blocks_are_withheld_until_the_retry_delay_elapses() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut directory = empty_directory(finalized);

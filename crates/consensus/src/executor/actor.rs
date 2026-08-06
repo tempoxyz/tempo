@@ -1385,7 +1385,7 @@ where
     .await
     {
         Ok(canonicalized) => ExecutionTaskResult::Completed {
-            canonicalized,
+            canonicalized: Some(canonicalized),
             payload_job: None,
         },
         // A notarized block carries the votes of a quorum of validators, of
@@ -1914,7 +1914,7 @@ async fn forward_notarized<TContext: Pacer>(
     canonicalized: LastCanonicalized,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
-) -> eyre::Result<Option<LastCanonicalized>> {
+) -> eyre::Result<LastCanonicalized> {
     let height = block.height();
     let digest = block.digest();
 
@@ -1947,8 +1947,16 @@ async fn forward_notarized<TContext: Pacer>(
     );
 
     let new_canonicalized = canonicalized.update_head(height, digest);
+    // The forkchoice update is skipped when the block already is the head,
+    // but the state is reported either way: the caller feeds it to the
+    // notarized block directory, whose canonicalization cursor may trail
+    // the head (a notarization arriving mid-forward has no body yet, which
+    // keeps the head movement from being placed on the canonical path).
+    // Re-reporting the head lets the cursor catch up; swallowing it would
+    // re-select this block forever, starving all other execution-layer
+    // work.
     if new_canonicalized == canonicalized {
-        return Ok(None);
+        return Ok(new_canonicalized);
     }
     submit_forkchoice_update(
         &execution_node,
@@ -1961,7 +1969,7 @@ async fn forward_notarized<TContext: Pacer>(
         },
     )
     .await?;
-    Ok(Some(new_canonicalized))
+    Ok(new_canonicalized)
 }
 
 /// Marker to indicate whether the head hash or finalized hash should be updated.
