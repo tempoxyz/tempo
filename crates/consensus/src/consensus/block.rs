@@ -467,6 +467,23 @@ mod tests {
         })
     }
 
+    // required unit tests:
+    //
+    // 1. roundtrip block write -> read -> equality
+    // 2. encode size for block.
+    // 3. roundtrip notarized write -> read -> equality
+    // 4. encode size for notarized
+    // 5. roundtrip finalized write -> read -> equality
+    // 6. encode size for finalized
+    //
+    //
+    // desirable snapshot tests:
+    //
+    // 1. block write -> stable hex or rlp representation
+    // 2. block digest -> stable hex
+    // 3. notarized write -> stable hex (necessary? good to guard against commonware xyz changes?)
+    // 4. finalized write -> stable hex (necessary? good to guard against commonware xyz changes?)
+
     #[test]
     fn reads_block_without_block_access_list_bytes() {
         let execution_block = SealedBlock::seal_slow(TempoBlock {
