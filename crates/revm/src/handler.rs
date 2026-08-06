@@ -854,18 +854,24 @@ where
     /// Upstream's [`Handler::tx_gas`] subtracts the intrinsic gas unguarded,
     /// which would underflow for pre-T0 (Genesis) transactions that pass
     /// validation with `gas_limit < intrinsic` (nonce gas is added after
-    /// validation). `TempoEvm::initial_gas_and_reservoir` falls back to
-    /// `(u64::MAX, 0)` in that case, matching the historic behavior.
+    /// validation). This implementation falls back to `(u64::MAX, 0)` in that
+    /// case, matching the historic behavior.
     ///
     /// This is also the last hook that still sees `init_and_floor_gas`, so it
     /// records whether the intrinsic gas ended up above the gas limit for
     /// [`Handler::execution`] — see `TempoEvm::intrinsic_gas_exceeds_limit`.
     #[inline]
     fn tx_gas(&self, evm: &mut Self::Evm, init_and_floor_gas: &InitialAndFloorGas) -> GasTracker {
-        let tx_gas_limit = evm.ctx_ref().tx().gas_limit();
-        evm.intrinsic_gas_exceeds_limit = evm.ctx_ref().cfg().spec().is_t0()
-            && tx_gas_limit < init_and_floor_gas.initial_total_gas();
-        let (remaining, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
+        let ctx = evm.ctx_ref();
+        let tx_gas_limit = ctx.tx().gas_limit();
+        let is_t0 = ctx.cfg().spec().is_t0();
+        let intrinsic_gas_exceeds_limit = tx_gas_limit < init_and_floor_gas.initial_total_gas();
+        let (remaining, reservoir) = if !is_t0 && intrinsic_gas_exceeds_limit {
+            (u64::MAX, 0)
+        } else {
+            init_and_floor_gas.initial_gas_and_reservoir(tx_gas_limit, ctx.cfg().tx_gas_limit_cap())
+        };
+        evm.intrinsic_gas_exceeds_limit = is_t0 && intrinsic_gas_exceeds_limit;
         GasTracker::new(tx_gas_limit, remaining, reservoir)
     }
 
