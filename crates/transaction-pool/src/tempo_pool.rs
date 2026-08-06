@@ -948,6 +948,9 @@ where
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(Vec::new(), txs.clone());
         txs.extend(self.protocol_pool.remove_transactions(hashes));
         txs
     }
@@ -960,6 +963,9 @@ where
             .aa_2d_pool
             .write()
             .remove_transactions_and_descendants(hashes.iter());
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(Vec::new(), txs.clone());
         txs.extend(
             self.protocol_pool
                 .remove_transactions_and_descendants(hashes),
@@ -975,6 +981,9 @@ where
             .aa_2d_pool
             .write()
             .remove_transactions_by_sender(sender);
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(Vec::new(), txs.clone());
         txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
         txs
     }
@@ -1390,6 +1399,7 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     /// Returns the hashes of the evicted transactions.
     fn tx_hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
         txs.iter().map(|tx| *tx.hash()).collect()
@@ -1404,7 +1414,8 @@ mod tests {
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        FullTransactionEvent, PoolConfig, TransactionOrigin, TransactionPool,
+        TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1589,6 +1600,34 @@ mod tests {
         };
         pool.add_validated_transaction(TransactionOrigin::External, validated)
             .expect("transaction should be admitted");
+    }
+
+    #[tokio::test]
+    async fn emits_discarded_event_when_removing_aa_2d_transaction() {
+        let pooled = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .build();
+        let hash = *pooled.hash();
+        let pool = create_test_pool(create_provider_with_tip());
+        let mut events = pool.all_transactions_event_listener();
+
+        add_validated(&pool, pooled);
+        let pending = tokio::time::timeout(std::time::Duration::from_secs(1), events.next())
+            .await
+            .expect("pending event should be emitted");
+        assert!(matches!(
+            pending,
+            Some(FullTransactionEvent::Pending(event_hash)) if event_hash == hash
+        ));
+
+        assert!(pool.remove_transaction(hash).is_some());
+        let discarded = tokio::time::timeout(std::time::Duration::from_secs(1), events.next())
+            .await
+            .expect("discarded event should be emitted");
+        assert!(matches!(
+            discarded,
+            Some(FullTransactionEvent::Discarded(event_hash)) if event_hash == hash
+        ));
     }
 
     fn create_provider_with_tip() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
