@@ -16,9 +16,7 @@ pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
-use reth_primitives_traits::{
-    BlockTy, HeaderTy, Recovered, SealedBlock, SealedHeaderFor, TransactionMeta, WithEncoded,
-};
+use reth_primitives_traits::{HeaderTy, Recovered, SealedHeaderFor, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -585,11 +583,10 @@ where
     fn convert_receipts(
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
-        block: &SealedBlock<BlockTy<TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
         let receipt_context = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
         self.inner
-            .convert_receipts(receipts, block)?
+            .convert_receipts(receipts)?
             .into_iter()
             .zip(receipt_context)
             .map(|(inner, tx)| {

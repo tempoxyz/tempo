@@ -371,13 +371,13 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
                 .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
         )
         .with_storages(replacements.iter().map(|replacement| {
-            let storage = HashedStorage::from_iter(
-                true,
+            let mut storage = HashedStorage::from_iter(
                 replacement
                     .hashed_storage
                     .iter()
                     .map(|entry| (entry.key, entry.value)),
             );
+            storage.wiped = true;
             (replacement.hashed_address, storage)
         }))
 }
