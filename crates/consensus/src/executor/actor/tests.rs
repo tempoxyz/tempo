@@ -283,6 +283,50 @@ fn advance_finalized_drops_stale_entries() {
 }
 
 #[test]
+fn finalized_tip_never_regresses() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut directory = empty_directory(finalized);
+
+    let a = block(1, 11, finalized);
+    let b = block(2, 12, a.digest());
+    record(&mut directory, &a);
+    record(&mut directory, &b);
+    directory.advance_finalized(round(1), Height::new(11), a.digest());
+    directory.record_execution_notarized(Height::new(12), b.digest());
+
+    // A tip below the tracked one (replayed on startup) is ignored: the
+    // boundary, the directory's data, and the cursor stay untouched.
+    let old = Digest(B256::repeat_byte(0xee));
+    directory.advance_finalized(round(0), Height::new(9), old);
+    assert_eq!(
+        directory.finalized_tip,
+        (round(1), Height::new(11), a.digest()),
+    );
+    assert!(directory.blocks.contains_key(&b.digest()));
+    assert_eq!(directory.notarized_cursor, (Height::new(12), b.digest()));
+
+    // A re-report of the tracked tip itself is a no-op as well.
+    directory.advance_finalized(round(1), Height::new(11), a.digest());
+    assert_eq!(directory.notarized_cursor, (Height::new(12), b.digest()));
+}
+
+#[test]
+fn finalized_tip_advances_by_round_at_equal_height() {
+    // The boundary is ordered by round alone: a tip with a newer round
+    // advances it even at the tracked height. This covers a directory
+    // seeded with the zero round (genesis, whose digest doubles as the
+    // tip until the first finalization is reported).
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut directory = empty_directory(finalized);
+
+    directory.advance_finalized(round(2), Height::new(10), finalized);
+    assert_eq!(
+        directory.finalized_tip,
+        (round(2), Height::new(10), finalized),
+    );
+}
+
+#[test]
 fn first_missing_ancestor_walks_the_latest_notarization_backwards() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut directory = empty_directory(finalized);

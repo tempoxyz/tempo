@@ -352,16 +352,29 @@ impl NotarizedFactsDirectory {
     /// Advances the finalized tip of the network and drops all data at or
     /// below its round and height, enforcing the ownership boundary with the
     /// finalization pipeline.
+    ///
+    /// Tips at or below the already tracked round (a tip replayed on
+    /// startup) are ignored, so the boundary never regresses. The marshal
+    /// actor guarantees that a newer round never finalizes a lower height.
     fn advance_finalized(&mut self, round: Round, height: Height, digest: Digest) {
-        self.finalized_tip = (round, height, digest);
-        self.notarized.retain(|notarized, _| *notarized > round);
-        self.blocks.retain(|_, entry| entry.block.height() > height);
-        // The finalized tip overtook the canonicalization cursor; continue
-        // forwarding from the tip. The execution layer only knows the tip
-        // once the finalization pipeline has caught up, which the caller
-        // must gate forwarding on.
-        if self.notarized_cursor.0 <= height {
-            self.notarized_cursor = (height, digest);
+        if round > self.finalized_tip.0 {
+            self.finalized_tip = (round, height, digest);
+            self.notarized.retain(|notarized, _| *notarized > round);
+            self.blocks.retain(|_, entry| entry.block.height() > height);
+            // The finalized tip overtook the canonicalization cursor; continue
+            // forwarding from the tip. The execution layer only knows the tip
+            // once the finalization pipeline has caught up, which the caller
+            // must gate forwarding on.
+            if self.notarized_cursor.0 <= height {
+                self.notarized_cursor = (height, digest);
+            }
+        } else {
+            debug!(
+                %round,
+                %height,
+                %digest,
+                "ignoring finalized tip that does not advance the tracked one",
+            );
         }
     }
 
@@ -601,11 +614,6 @@ where
             .get_finalized_num_hash()
             .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
-        // TODO: pass the round information into the actor from the outside.
-        // FIXME: pull the round information from the archive. But this only
-        // works once we have removed the execution layer fallback.
-        let observed_finalized_tip = (Round::default(), finalized_tip.0, finalized_tip.1);
-
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
@@ -632,7 +640,7 @@ where
             payload_jobs: FuturesUnordered::new(),
 
             notarized_facts_directory: NotarizedFactsDirectory::new(
-                observed_finalized_tip,
+                finalized_tip,
                 (
                     Height::new(head_num_hash.number),
                     Digest(head_num_hash.hash),
