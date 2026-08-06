@@ -2,7 +2,10 @@ use std::time::SystemTime;
 
 use commonware_actor::{Feedback, Unreliable};
 use commonware_p2p::{CheckedSender, LimitedSender, Recipients, UnlimitedSender};
-use commonware_runtime::IoBufs;
+use commonware_runtime::{
+    IoBufs, Metrics,
+    telemetry::metrics::{Counter, MetricsExt as _},
+};
 use tracing::warn;
 
 /// A p2p sender that rejects messages larger than the configured network limit.
@@ -11,34 +14,46 @@ pub(crate) struct SizeLimited<S> {
     inner: S,
     channel: &'static str,
     max_size: usize,
+    dropped: Counter,
 }
 
 impl<S> SizeLimited<S> {
-    const fn new(inner: S, channel: &'static str, max_size: u32) -> Self {
+    fn new(inner: S, channel: &'static str, max_size: u32, dropped: Counter) -> Self {
         Self {
             inner,
             channel,
             max_size: max_size as usize,
+            dropped,
         }
     }
 }
 
 /// Apply the outbound size limit to a registered p2p channel.
 pub(crate) fn limit_channel<S, R>(
+    context: &impl Metrics,
     (sender, receiver): (S, R),
     channel: &'static str,
     max_size: u32,
 ) -> (SizeLimited<S>, R) {
-    (SizeLimited::new(sender, channel, max_size), receiver)
+    let dropped = context
+        .child("network")
+        .with_attribute("channel", channel)
+        .counter(
+            "dropped_oversized_messages",
+            "outbound p2p messages dropped for exceeding the maximum message size",
+        );
+    (SizeLimited::new(sender, channel, max_size, dropped), receiver)
 }
 
 fn within_limit(
     message: impl Into<IoBufs>,
     channel: &'static str,
     max_size: usize,
+    dropped: &Counter,
 ) -> Option<IoBufs> {
     let message = message.into();
     if message.len() > max_size {
+        dropped.inc();
         warn!(
             channel,
             message_size = message.len(),
@@ -60,7 +75,8 @@ impl<S: UnlimitedSender> UnlimitedSender for SizeLimited<S> {
         message: impl Into<IoBufs> + Send,
         priority: bool,
     ) -> Unreliable<Feedback> {
-        let Some(message) = within_limit(message, self.channel, self.max_size) else {
+        let Some(message) = within_limit(message, self.channel, self.max_size, &self.dropped)
+        else {
             return Unreliable::rejected();
         };
 
@@ -72,6 +88,7 @@ pub(crate) struct SizeLimitedChecked<S> {
     inner: S,
     channel: &'static str,
     max_size: usize,
+    dropped: Counter,
 }
 
 impl<S: CheckedSender> CheckedSender for SizeLimitedChecked<S> {
@@ -82,7 +99,8 @@ impl<S: CheckedSender> CheckedSender for SizeLimitedChecked<S> {
     }
 
     fn send(self, message: impl Into<IoBufs> + Send, priority: bool) -> Unreliable<Feedback> {
-        let Some(message) = within_limit(message, self.channel, self.max_size) else {
+        let Some(message) = within_limit(message, self.channel, self.max_size, &self.dropped)
+        else {
             return Unreliable::rejected();
         };
 
@@ -107,6 +125,7 @@ impl<S: LimitedSender> LimitedSender for SizeLimited<S> {
                 inner,
                 channel: self.channel,
                 max_size: self.max_size,
+                dropped: self.dropped.clone(),
             })
     }
 }
@@ -119,10 +138,18 @@ mod tests {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use commonware_math::algebra::Random as _;
     use commonware_p2p::{CheckedSender, LimitedSender, Recipients, Sender as _};
-    use commonware_runtime::IoBufs;
+    use commonware_runtime::{
+        IoBufs,
+        telemetry::metrics::{Counter, Registered, Registration, raw},
+    };
     use commonware_utils::test_rng;
 
     use super::SizeLimited;
+
+    /// A counter that is not exposed by any metrics registry.
+    fn inert_counter() -> Counter {
+        Registered::with_registration(raw::Counter::default(), Registration::from(()))
+    }
 
     #[derive(Clone)]
     struct InertSender<P>(P);
@@ -163,20 +190,24 @@ mod tests {
     #[test]
     fn rejects_oversized_messages() {
         let peer = PrivateKey::random(test_rng()).public_key();
-        let mut sender = SizeLimited::new(InertSender(peer.clone()), "test", 4);
+        let dropped = inert_counter();
+        let mut sender = SizeLimited::new(InertSender(peer.clone()), "test", 4, dropped.clone());
 
         let sent = sender.send(Recipients::One(peer), b"large".to_vec(), false);
 
         assert!(sent.is_empty());
+        assert_eq!(dropped.get(), 1);
     }
 
     #[test]
     fn forwards_messages_within_limit() {
         let peer = PrivateKey::random(test_rng()).public_key();
-        let mut sender = SizeLimited::new(InertSender(peer.clone()), "test", 4);
+        let dropped = inert_counter();
+        let mut sender = SizeLimited::new(InertSender(peer.clone()), "test", 4, dropped.clone());
 
         let sent = sender.send(Recipients::One(peer.clone()), b"four".to_vec(), false);
 
         assert_eq!(sent, vec![peer]);
+        assert_eq!(dropped.get(), 0);
     }
 }

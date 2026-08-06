@@ -481,16 +481,31 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
-        let votes_channel = limit_channel(votes_channel, "votes", self.max_message_size);
-        let certificates_channel =
-            limit_channel(certificates_channel, "certificates", self.max_message_size);
-        let resolver_channel = limit_channel(resolver_channel, "resolver", self.max_message_size);
-        let broadcast_channel =
-            limit_channel(broadcast_channel, "broadcast", self.max_message_size);
-        let marshal_channel = limit_channel(marshal_channel, "marshal", self.max_message_size);
-        let dkg_channel = limit_channel(dkg_channel, "dkg", self.max_message_size);
-        let subblocks_channel =
-            limit_channel(subblocks_channel, "subblocks", self.max_message_size);
+        let context = &*self.context;
+        let votes_channel = limit_channel(context, votes_channel, "votes", self.max_message_size);
+        let certificates_channel = limit_channel(
+            context,
+            certificates_channel,
+            "certificates",
+            self.max_message_size,
+        );
+        let resolver_channel =
+            limit_channel(context, resolver_channel, "resolver", self.max_message_size);
+        let broadcast_channel = limit_channel(
+            context,
+            broadcast_channel,
+            "broadcast",
+            self.max_message_size,
+        );
+        let marshal_channel =
+            limit_channel(context, marshal_channel, "marshal", self.max_message_size);
+        let dkg_channel = limit_channel(context, dkg_channel, "dkg", self.max_message_size);
+        let subblocks_channel = limit_channel(
+            context,
+            subblocks_channel,
+            "subblocks",
+            self.max_message_size,
+        );
 
         let peer_manager = self.peer_manager.start();
 
