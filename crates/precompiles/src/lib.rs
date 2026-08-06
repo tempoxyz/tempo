@@ -862,17 +862,17 @@ mod tests {
     }
 
     #[test]
-    fn test_zone_factory_registered_at_t9_only() {
-        let pre_t9 = test_tempo_precompiles(TempoHardfork::T8);
+    fn test_zone_factory_registered_at_t10_only() {
+        let pre_t10 = test_tempo_precompiles(TempoHardfork::T9);
         assert!(
-            !pre_t9.contains(&ZONE_FACTORY_ADDRESS),
-            "ZoneFactory should not be registered before T9"
+            !pre_t10.contains(&ZONE_FACTORY_ADDRESS),
+            "ZoneFactory should not be registered before T10"
         );
 
-        let precompiles = test_tempo_precompiles(TempoHardfork::T9);
+        let precompiles = test_tempo_precompiles(TempoHardfork::T10);
         assert!(
             precompiles.contains(&ZONE_FACTORY_ADDRESS),
-            "ZoneFactory should be registered at T9"
+            "ZoneFactory should be registered at T10"
         );
         assert!(
             !precompiles.contains(&zone_factory::portal_address(1)),
