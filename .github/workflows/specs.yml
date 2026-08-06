@@ -284,7 +284,27 @@ jobs:
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
+        run: |
+          # Instrument only the binary (to link the profiling runtime) and the
+          # Tempo crates covered by this job. Instrumenting revm's opcode loop
+          # makes the Solidity invariant suite several times slower.
+          cat > "$RUNNER_TEMP/rustc-coverage-wrapper" <<'EOF'
+          #!/usr/bin/env bash
+          case " $* " in
+            *" --crate-name forge "*|*" --crate-name tempo_precompiles "*|*" --crate-name tempo_contracts "*)
+              exec sccache "$@" -C instrument-coverage
+              ;;
+            *)
+              exec sccache "$@"
+              ;;
+          esac
+          EOF
+          chmod +x "$RUNNER_TEMP/rustc-coverage-wrapper"
+          # Wrapper-added flags are invisible to Cargo's freshness checks, so
+          # do not reuse an uninstrumented target directory restored by cache.
+          cargo clean --profile release
+          RUSTC_WRAPPER="$RUNNER_TEMP/rustc-coverage-wrapper" \
+            cargo build --bin forge --profile release --no-default-features
 
       # Build WITHOUT coverage on main/merge-group runs.
       - name: Build foundry forge
