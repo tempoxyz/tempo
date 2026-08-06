@@ -142,7 +142,6 @@ mod tests {
             .with_cfg(Default::default())
             .with_tx(TempoTxEnv::default());
         let mut evm = TempoEvm::new(ctx, ());
-
         // Set block with default fields
         evm.set_block(TempoBlockEnv::default());
 

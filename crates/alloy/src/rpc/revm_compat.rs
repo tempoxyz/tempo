@@ -47,16 +47,40 @@ impl TempoTransactionRequest {
             None
         };
 
+        let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
+        let mock_signature = if let Some(init) = self.multisig_init.as_ref() {
+            create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
+                .map_err(|err| ValueError::new(self.clone(), err))?
+        } else if let Some(signature_count) = self.multisig_signature_count {
+            create_mock_native_multisig_sig_for_account(
+                caller_addr,
+                signature_count,
+                &key_type,
+                self.key_data.as_ref(),
+            )
+            .map_err(|err| ValueError::new(self.clone(), err))?
+        } else {
+            create_mock_tempo_sig(
+                &key_type,
+                self.key_data.as_ref(),
+                self.key_id,
+                caller_addr,
+                is_t1c,
+            )
+        };
+
         let Self {
             inner,
             fee_token,
             calls,
-            key_type,
-            key_data,
+            key_type: _,
+            key_data: _,
             key_id,
             tempo_authorization_list,
             nonce_key,
             key_authorization,
+            multisig_init: _,
+            multisig_signature_count: _,
             valid_before,
             valid_after,
             fee_payer_signature: _,
@@ -67,10 +91,6 @@ impl TempoTransactionRequest {
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
-            let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-            let mock_signature =
-                create_mock_tempo_sig(&key_type, key_data.as_ref(), key_id, caller_addr, is_t1c);
-
             let mut calls = calls;
             if let Some(to) = &inner.to {
                 calls.push(Call {
@@ -103,6 +123,66 @@ impl TempoTransactionRequest {
 
         Ok(tx_env)
     }
+}
+
+pub(super) fn create_mock_native_multisig_sig(
+    init: &tempo_primitives::transaction::InitMultisig,
+    key_type: &SignatureType,
+    key_data: Option<&Bytes>,
+) -> Result<TempoSignature, &'static str> {
+    use tempo_primitives::transaction::{
+        MultisigConfigError, MultisigQuorumError, MultisigSignature,
+        multisig_signature_count_for_threshold,
+    };
+
+    let account = init.account().map_err(MultisigConfigError::as_str)?;
+    let signature_count = multisig_signature_count_for_threshold(
+        init.owners.iter().map(|owner| owner.weight),
+        init.threshold,
+    )
+    .map_err(MultisigQuorumError::as_str)?;
+    let signatures =
+        create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?;
+
+    Ok(TempoSignature::Multisig(MultisigSignature::new(
+        account,
+        signatures,
+        Some(init.clone()),
+    )))
+}
+
+pub(super) fn create_mock_native_multisig_sig_for_account(
+    account: Address,
+    signature_count: usize,
+    key_type: &SignatureType,
+    key_data: Option<&Bytes>,
+) -> Result<TempoSignature, &'static str> {
+    use tempo_primitives::transaction::MultisigSignature;
+
+    Ok(TempoSignature::Multisig(MultisigSignature::new(
+        account,
+        create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?,
+        None,
+    )))
+}
+
+fn create_mock_native_multisig_owner_signatures(
+    signature_count: usize,
+    key_type: &SignatureType,
+    key_data: Option<&Bytes>,
+) -> Result<Vec<Bytes>, &'static str> {
+    use tempo_primitives::transaction::MAX_MULTISIG_SIGNATURES;
+
+    if signature_count == 0 {
+        return Err("multisig mock signature requires at least one owner");
+    }
+    if signature_count > MAX_MULTISIG_SIGNATURES {
+        return Err("too many multisig signatures");
+    }
+
+    Ok((0..signature_count)
+        .map(|_| create_mock_primitive_signature(key_type, key_data.cloned()).to_bytes())
+        .collect())
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints.

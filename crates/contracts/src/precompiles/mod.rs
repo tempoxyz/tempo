@@ -2,6 +2,7 @@ pub mod account_keychain;
 pub mod address_registry;
 pub mod common_errors;
 pub mod current_committee;
+pub mod native_multisig;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -20,6 +21,7 @@ pub use account_keychain::*;
 pub use address_registry::*;
 pub use common_errors::*;
 pub use current_committee::*;
+pub use native_multisig::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
 pub use signature_verifier::*;
@@ -57,6 +59,7 @@ pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
 pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
+pub const NATIVE_MULTISIG_ADDRESS: Address = address!("0xAACC000000000000000000000000000000000000");
 pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x1060000000000000000000000000000000000000");
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
@@ -76,6 +79,7 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
+    (NATIVE_MULTISIG_ADDRESS, TempoHardfork::T8),
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
 ];

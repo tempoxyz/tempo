@@ -1,8 +1,13 @@
-use super::tempo_transaction::{
-    MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
+use super::{
+    multisig::{MultisigSignature, SIGNATURE_TYPE_MULTISIG},
+    tempo_transaction::{
+        MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
+        SignatureType,
+    },
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
+use alloy_rlp::Encodable;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -93,6 +98,7 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+#[expect(clippy::type_complexity)]
 fn split_p256_signature_fields(
     sig_data: &[u8; P256_SIGNATURE_LENGTH],
 ) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
@@ -108,6 +114,11 @@ fn split_p256_signature_fields(
     let (pub_key_y, pre_hash) = sig_data
         .split_first_chunk::<32>()
         .expect("P256 signature length checked");
+    // Any nonzero flag byte decodes as pre_hash=true. This lenient decoding matches the behavior
+    // of the deployed SignatureVerifier precompile and payment-lane classifier, which decode
+    // verbatim on-chain calldata; rejecting noncanonical flag bytes here would be STF-breaking.
+    // Noncanonical bytes cannot malleate transaction hashes because signatures are re-encoded
+    // canonically (`to_bytes` emits `0x01` for true) before hashing.
     (r, s, pub_key_x, pub_key_y, pre_hash[0] != 0)
 }
 
@@ -570,6 +581,9 @@ pub enum TempoSignature {
     /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
     /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
     Keychain(KeychainSignature),
+
+    /// Native multisig signature.
+    Multisig(MultisigSignature),
 }
 
 impl TempoSignature {
@@ -579,14 +593,35 @@ impl TempoSignature {
     /// - If length is 65 bytes: treat as secp256k1 signature (no type identifier)
     /// - Otherwise: first byte is the signature type identifier
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        Self::from_bytes_with_depth(data, 1)
+    }
+
+    /// Parses a signature while tracking native multisig nesting `depth`.
+    ///
+    /// The top-level signature is depth `1`; each nested owner approval is parsed one level deeper.
+    /// [`MultisigSignature::decode_with_depth`] rejects nodes past [`MAX_MULTISIG_NESTING_DEPTH`],
+    /// so deeply nested untrusted input cannot recurse the parser into a stack overflow.
+    fn from_bytes_with_depth(data: &[u8], depth: usize) -> Result<Self, &'static str> {
         if data.is_empty() {
             return Err("Signature data is empty");
         }
 
-        // Check if this is a Keychain signature (type identifier 0x03 or 0x04)
-        // We need to handle this specially before delegating to PrimitiveSignature
+        if data.len() == SECP256K1_SIGNATURE_LENGTH {
+            return PrimitiveSignature::from_bytes(data).map(Self::Primitive);
+        }
+
+        if data.len() > 1 && data[0] == SIGNATURE_TYPE_MULTISIG {
+            let mut sig_data = &data[1..];
+            match MultisigSignature::decode_with_depth(&mut sig_data, depth) {
+                Ok(signature) if sig_data.is_empty() => return Ok(Self::Multisig(signature)),
+                _ => return Err("Invalid Multisig signature RLP"),
+            }
+        }
+
+        // Check if this is a Keychain signature before delegating to
+        // PrimitiveSignature. The exact 65-byte secp256k1 path remains untyped for
+        // backwards compatibility.
         if data.len() > 1
-            && data.len() != SECP256K1_SIGNATURE_LENGTH
             && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
         {
             let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
@@ -621,6 +656,15 @@ impl TempoSignature {
         Ok(Self::Primitive(primitive))
     }
 
+    /// Decodes one RLP-encoded owner approval at the given native multisig nesting `depth`.
+    ///
+    /// Owner approvals are length-prefixed byte strings; this preserves the depth so nested
+    /// multisig approvals stay bounded by [`MultisigSignature::decode_with_depth`].
+    pub(crate) fn decode_with_depth(buf: &mut &[u8], depth: usize) -> alloy_rlp::Result<Self> {
+        let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
+        Self::from_bytes_with_depth(&bytes, depth).map_err(alloy_rlp::Error::Custom)
+    }
+
     /// Encode signature to bytes
     ///
     /// For backward compatibility:
@@ -642,6 +686,12 @@ impl TempoSignature {
                 bytes.extend_from_slice(&inner_bytes);
                 Bytes::from(bytes)
             }
+            Self::Multisig(multisig_sig) => {
+                let mut bytes = Vec::with_capacity(1 + multisig_sig.length());
+                bytes.push(SIGNATURE_TYPE_MULTISIG);
+                multisig_sig.encode(&mut bytes);
+                Bytes::from(bytes)
+            }
         }
     }
 
@@ -654,14 +704,16 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.encoded_length(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.encoded_length(),
+            Self::Multisig(multisig_sig) => 1 + multisig_sig.length(),
         }
     }
 
-    /// Get signature type
-    pub fn signature_type(&self) -> SignatureType {
+    /// Get the primitive signature type, if the outer signature has one.
+    pub fn signature_type(&self) -> Option<SignatureType> {
         match self {
-            Self::Primitive(primitive_sig) => primitive_sig.signature_type(),
-            Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
+            Self::Primitive(primitive_sig) => Some(primitive_sig.signature_type()),
+            Self::Keychain(keychain_sig) => Some(keychain_sig.signature.signature_type()),
+            Self::Multisig(_) => None,
         }
     }
 
@@ -670,6 +722,7 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.size(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.size(),
+            Self::Multisig(multisig_sig) => 1 + multisig_sig.size(),
         }
     }
 
@@ -687,6 +740,12 @@ impl TempoSignature {
     /// that the signature is valid for the keychain. They also need to check the access key is authorized
     /// in the keychain precompile.
     /// We cannot check this here, as we don't have access to the keychain precompile.
+    ///
+    /// - Multisig: returns the derived/claimed native multisig account after stateless shape
+    ///   checks only. It does NOT verify owner approvals or that the owner-weight threshold is met.
+    ///   This is the same footgun as Keychain: callers must not treat a returned account as an
+    ///   authorized transaction. Owner-threshold verification is stateful and happens in the native
+    ///   multisig verifier (`NativeMultisig::verify_authorization`), which needs the stored config.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -700,12 +759,20 @@ impl TempoSignature {
                 // Return the user_address - the root account this transaction is for
                 Ok(keychain_sig.user_address)
             }
+            Self::Multisig(multisig_sig) => multisig_sig
+                .recover_account()
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new()),
         }
     }
 
     /// Check if this is a Keychain signature
     pub fn is_keychain(&self) -> bool {
         matches!(self, Self::Keychain(_))
+    }
+
+    /// Check if this is a native multisig signature.
+    pub fn is_multisig(&self) -> bool {
+        matches!(self, Self::Multisig(_))
     }
 
     /// Check if this is a legacy V1 Keychain signature (deprecated at T1C).
@@ -742,6 +809,14 @@ impl TempoSignature {
     pub fn as_keychain(&self) -> Option<&KeychainSignature> {
         match self {
             Self::Keychain(keychain_sig) => Some(keychain_sig),
+            _ => None,
+        }
+    }
+
+    /// Get the native multisig signature if this is a multisig signature.
+    pub fn as_multisig(&self) -> Option<&MultisigSignature> {
+        match self {
+            Self::Multisig(multisig_sig) => Some(multisig_sig),
             _ => None,
         }
     }
@@ -1028,6 +1103,10 @@ mod tests {
         let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
         let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
         (signing_key, pub_key_x, pub_key_y)
+    }
+
+    fn valid_multisig_owner_signature_bytes() -> Bytes {
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
     }
 
     /// Sign a message hash with P256, normalize s, return (r, s)
@@ -1416,6 +1495,28 @@ mod tests {
     }
 
     #[test]
+    fn test_tempo_signature_65_byte_multisig_shape_decodes_as_secp256k1() {
+        let account = Address::repeat_byte(0x11);
+        let signatures = vec![Bytes::from(vec![0x33; 39])];
+        let payload_length = account.length() + signatures.length();
+
+        let mut sig_bytes = vec![SIGNATURE_TYPE_MULTISIG];
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut sig_bytes);
+        account.encode(&mut sig_bytes);
+        signatures.encode(&mut sig_bytes);
+
+        assert_eq!(sig_bytes.len(), SECP256K1_SIGNATURE_LENGTH);
+        assert!(matches!(
+            TempoSignature::from_bytes(&sig_bytes).unwrap(),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(_))
+        ));
+    }
+
+    #[test]
     fn test_tempo_signature_from_bytes_p256() {
         use super::{P256_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256};
 
@@ -1429,6 +1530,27 @@ mod tests {
         } else {
             panic!("Expected Primitive(P256) variant");
         }
+    }
+
+    #[test]
+    fn test_p256_from_bytes_canonicalizes_prehash_flag() {
+        // Decoding is lenient (any nonzero flag byte means pre_hash=true), matching the deployed
+        // network, and re-encoding is canonical, so noncanonical flag bytes cannot malleate hashes.
+        let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
+        sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
+
+        sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 0;
+        let decoded = TempoSignature::from_bytes(&sig_bytes).expect("flag 0 decodes");
+        assert_eq!(decoded.to_bytes(), Bytes::from(sig_bytes.clone()));
+
+        sig_bytes[1 + P256_SIGNATURE_LENGTH - 1] = 2;
+        let decoded = TempoSignature::from_bytes(&sig_bytes).expect("noncanonical flag decodes");
+        let reencoded = decoded.to_bytes();
+        assert_eq!(
+            reencoded[reencoded.len() - 1],
+            1,
+            "noncanonical pre_hash flag re-encodes to the canonical 0x01"
+        );
     }
 
     #[test]
@@ -1508,7 +1630,9 @@ mod tests {
 
         // Test P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
-        sig2_bytes.extend_from_slice(&[2u8; P256_SIGNATURE_LENGTH]);
+        let mut p256_payload = [2u8; P256_SIGNATURE_LENGTH];
+        p256_payload[128] = 1;
+        sig2_bytes.extend_from_slice(&p256_payload);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
         let encoded2 = sig2.to_bytes();
         assert_eq!(encoded2.len(), 1 + P256_SIGNATURE_LENGTH);
@@ -1875,6 +1999,43 @@ mod tests {
             key_id_a, key_id_b,
             "V2 should recover different key_ids for different user_addresses"
         );
+    }
+
+    #[test]
+    fn test_signature_type_is_none_for_multisig() {
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::repeat_byte(0x11),
+            vec![valid_multisig_owner_signature_bytes()],
+            None,
+        ));
+
+        assert_eq!(signature.signature_type(), None);
+    }
+
+    #[test]
+    fn test_recover_signer_multisig_only_recovers_account() {
+        use crate::transaction::{InitMultisig, MultisigOwner};
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x42),
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: Address::repeat_byte(0x11),
+                weight: 1,
+            }],
+        };
+        let account = config.account().unwrap();
+        let inner_hash = B256::repeat_byte(0x24);
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![valid_multisig_owner_signature_bytes()],
+            Some(config.clone()),
+        ));
+
+        // recover_signer returns the claimed account after stateless shape checks only; it does
+        // not verify owner approvals. Stateful owner-threshold verification is exercised by the
+        // native multisig precompile tests.
+        assert_eq!(signature.recover_signer(&inner_hash).unwrap(), account);
     }
 
     #[test]

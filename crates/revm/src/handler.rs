@@ -14,7 +14,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
         result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
-        transaction::{AccessListItem, AccessListItemTr},
+        transaction::{AccessListItem, AccessListItemTr, AuthorizationTr},
     },
     context_interface::cfg::{GasId, GasParams},
     handler::{
@@ -25,10 +25,7 @@ use revm::{
     inspector::{Inspector, InspectorHandler},
     interpreter::{
         CallOutcome, CreateOutcome, Gas, InitialAndFloorGas,
-        gas::{
-            COLD_SLOAD_COST, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
-            get_tokens_in_calldata_istanbul,
-        },
+        gas::{COLD_SLOAD_COST, WARM_SSTORE_RESET, get_tokens_in_calldata_istanbul},
         interpreter::EthInterpreter,
     },
     precompile::PrecompileError,
@@ -44,6 +41,10 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
+    native_multisig::{
+        NativeMultisig,
+        auth::{NativeMultisigAuthConfig, NativeMultisigAuthError},
+    },
     nonce::{
         EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
         NonceManager,
@@ -58,24 +59,28 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, validate_calls,
+        InitMultisig, SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending,
+        validate_calls,
     },
 };
 
 use crate::{
-    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    ProtocolFeeContext, RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, TempoBatchCallEnv, TempoEvm,
+    TempoInvalidTransaction, TempoTxEnv,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
+    signature_gas::{
+        calculate_native_multisig_bootstrap_storage_gas, primitive_signature_verification_gas,
+        tempo_signature_verification_gas,
+    },
 };
 
-/// Additional gas for P256 signature verification
-/// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
-const P256_VERIFY_GAS: u64 = 5_000;
-
-/// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+#[cfg(test)]
+use crate::signature_gas::{
+    NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER, NATIVE_MULTISIG_OWNER_WEIGHT_GAS,
+    NATIVE_MULTISIG_VALIDATION_GAS, P256_VERIFY_GAS, native_multisig_bootstrap_storage_slots,
+};
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -108,39 +113,6 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
-
-/// Calculates the gas cost for verifying a primitive signature.
-///
-/// Returns the additional gas required beyond the base transaction cost:
-/// - Secp256k1: 0 (already included in base 21k)
-/// - P256: 5000 gas
-/// - WebAuthn: 5000 gas + calldata cost for webauthn_data
-#[inline]
-fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
-            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
-        }
-    }
-}
-
-/// Calculates the gas cost for verifying an AA signature.
-///
-/// For Keychain signatures, adds key validation overhead to the inner signature cost
-/// Returns the additional gas required beyond the base transaction cost.
-#[inline]
-fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
-    match signature {
-        TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
-        TempoSignature::Keychain(keychain_sig) => {
-            // Keychain = inner signature + key validation overhead (SLOAD + processing)
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 struct LoadedTxAccessKey {
@@ -439,7 +411,11 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             StorageActions::disabled(),
             || {
                 let mut keychain = AccountKeychain::new();
+                keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(ctx.tx.caller())?;
+
+                let mut multisig = NativeMultisig::new();
+                multisig.set_tx_origin(ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
@@ -993,9 +969,6 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
-        // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
-
         let nonce_key = tx
             .tempo_tx_env
             .as_ref()
@@ -1003,6 +976,196 @@ where
             .unwrap_or_default();
 
         let spec = cfg.spec();
+        let mut native_multisig_bootstrap: Option<(Address, InitMultisig)> = None;
+
+        if spec.is_t8() {
+            let tempo_tx_env = tx.tempo_tx_env.as_ref();
+            let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
+            let is_rpc_simulation =
+                tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+            let caller_account_info = if multisig_signature.is_some() {
+                Some(
+                    journal
+                        .load_account_with_code(tx.caller())?
+                        .data
+                        .info
+                        .clone(),
+                )
+            } else {
+                None
+            };
+            StorageCtx::enter_precompile(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions.clone(),
+                |multisig_precompile: NativeMultisig| -> Result<
+                    (),
+                    EVMError<DB::Error, TempoInvalidTransaction>,
+                > {
+                    let caller_is_multisig = multisig_precompile
+                        .is_multisig_account(tx.caller())
+                        .map_err(NativeMultisigAuthError::from)
+                        .map_err(map_native_multisig_error::<DB>)?;
+
+                    if tx.has_fee_payer_signature()
+                        && multisig_precompile
+                            .is_multisig_account(fee_payer)
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                    {
+                        return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
+                            account: fee_payer,
+                        }
+                        .into());
+                    }
+
+                    let ensure_authority_not_multisig =
+                        |authority| -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+                            if multisig_precompile
+                                .is_multisig_account(authority)
+                                .map_err(NativeMultisigAuthError::from)
+                                .map_err(map_native_multisig_error::<DB>)?
+                            {
+                                // Whether an authority is a native multisig account is read from
+                                // storage, so this rejection depends on chain state and can flip
+                                // after signing/relay. Classify it as a state-dependent validation
+                                // failure (not a bad transaction) so honest relays are not penalized.
+                                // The deterministic payload-only checks in validate_env stay
+                                // NativeMultisigInvalidTransaction.
+                                return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                    reason: format!(
+                                        "native multisig account {authority} cannot be used as an authorization-list authority"
+                                    ),
+                                }
+                                .into());
+                            }
+                            Ok(())
+                        };
+
+                    if let Some(tempo_tx_env) = tempo_tx_env {
+                        for auth in &tempo_tx_env.tempo_authorization_list {
+                            if let Some(authority) = auth.authority() {
+                                ensure_authority_not_multisig(authority)?;
+                            }
+                        }
+                    } else {
+                        for auth in tx.authorization_list() {
+                            if let Some(authority) = auth.authority() {
+                                ensure_authority_not_multisig(authority)?;
+                            }
+                        }
+                    }
+
+                    let is_keychain_multisig_transaction =
+                        tempo_tx_env.is_some_and(|aa| aa.signature.is_keychain());
+                    if caller_is_multisig
+                        && multisig_signature.is_none()
+                        && !is_keychain_multisig_transaction
+                    {
+                        return Err(
+                            TempoInvalidTransaction::NativeMultisigRequiresMultisigSignature {
+                                account: tx.caller(),
+                            }
+                            .into(),
+                        );
+                    }
+
+                    let Some(multisig_signature) = multisig_signature else {
+                        return Ok(());
+                    };
+                    // `multisig_signature` is derived from `tempo_tx_env` (`aa.signature.as_multisig()`)
+                    // above, so it being Some implies `tempo_tx_env` is Some. This is an invariant,
+                    // not a reachable error path.
+                    let tempo_tx_env =
+                        tempo_tx_env.expect("multisig signature is derived from tempo_tx_env");
+
+                    let caller_account_info = caller_account_info
+                        .as_ref()
+                        .expect("loaded for native multisig signatures");
+                    if !caller_account_info.is_empty_code_hash() {
+                        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
+                            reason: "native multisig account cannot have code or EIP-7702 delegation"
+                                .to_string(),
+                        }
+                        .into());
+                    }
+
+                    if caller_is_multisig {
+                        multisig_signature.validate_registered_shape().map_err(|reason| {
+                            TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                                reason: reason.to_string(),
+                            }
+                        })?;
+                    }
+
+                    if caller_is_multisig {
+                        if !is_rpc_simulation {
+                            let threshold = multisig_precompile
+                                .load_registered_threshold(multisig_signature.account())
+                                .map_err(NativeMultisigAuthError::from)
+                                .map_err(map_native_multisig_error::<DB>)?;
+                            multisig_precompile
+                                .verify_authorization(
+                                    tempo_tx_env.signature_hash,
+                                    multisig_signature,
+                                    NativeMultisigAuthConfig::Registered {
+                                        account: multisig_signature.account(),
+                                        threshold,
+                                    },
+                                    |acc| {
+                                        multisig_precompile
+                                            .load_registered_threshold(acc)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
+                                    |account, owner| {
+                                        multisig_precompile
+                                            .read_owner_weight(account, owner)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
+                                )
+                                .map_err(map_native_multisig_error::<DB>)?;
+                        }
+                    } else {
+                        let init_config = multisig_signature.init().ok_or_else(|| {
+                            TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                reason:
+                                    "first native multisig transaction requires multisig_init"
+                                        .to_string(),
+                            }
+                        })?;
+
+                        if !is_rpc_simulation {
+                            multisig_precompile
+                                .verify_authorization(
+                                    tempo_tx_env.signature_hash,
+                                    multisig_signature,
+                                    NativeMultisigAuthConfig::Inline(init_config),
+                                    |acc| {
+                                        multisig_precompile
+                                            .load_registered_threshold(acc)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
+                                    |account, owner| {
+                                        multisig_precompile
+                                            .read_owner_weight(account, owner)
+                                            .map_err(NativeMultisigAuthError::from)
+                                    },
+                                )
+                                .map_err(map_native_multisig_error::<DB>)?;
+                        }
+                        native_multisig_bootstrap =
+                            Some((multisig_signature.account(), init_config.clone()));
+                    }
+
+                    Ok(())
+                },
+            )?;
+        }
+
+        // Load caller's account mutably after multisig validation.
+        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
         let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
@@ -1458,6 +1621,26 @@ where
             evm.collected_fee = gas_balance_spending;
         }
 
+        // Native multisig bootstrap is validated before fee collection, but the config write must
+        // happen in the committed pre-execution phase. This also seeds the transient
+        // bootstrapped-account guard before user calls can reach the multisig precompile.
+        if let Some((account, config)) = native_multisig_bootstrap {
+            StorageCtx::enter_evm_without_tip1060_accounting(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions.clone(),
+                || {
+                    let mut multisig = NativeMultisig::new();
+                    multisig
+                        .store_initial_config(account, &config)
+                        .map_err(NativeMultisigAuthError::from)
+                        .map_err(map_native_multisig_error::<DB>)
+                },
+            )?;
+        }
+
         // If the transaction includes a KeyAuthorization, validate and authorize the key
         // only after fee collection has succeeded. This pre-execution write is deliberately
         // outside the later user-call batch checkpoint, so same-transaction authorize-and-use
@@ -1806,9 +1989,61 @@ where
 
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
+            let has_native_multisig_fields = aa_env.signature.is_multisig();
+
+            if has_native_multisig_fields && !cfg.spec.is_t8() {
+                return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
+            }
+
+            if let Some(multisig_signature) = aa_env.signature.as_multisig() {
+                let account = multisig_signature.recover_account().map_err(|reason| {
+                    TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                        reason: reason.to_string(),
+                    }
+                })?;
+                if account != tx.caller {
+                    return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                        reason: "multisig signature account does not match transaction caller"
+                            .to_string(),
+                    }
+                    .into());
+                }
+                if aa_env
+                    .tempo_authorization_list
+                    .iter()
+                    .any(|auth| auth.authority() == Some(account))
+                {
+                    return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                        reason: format!(
+                            "native multisig account {account} cannot be used as an authorization-list authority"
+                        ),
+                    }
+                    .into());
+                }
+            }
+
+            if aa_env.signature.is_multisig() && aa_env.key_authorization.is_some() {
+                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                    reason: "native multisig transactions cannot carry key_authorization"
+                        .to_string(),
+                }
+                .into());
+            }
 
             if aa_env.subblock_transaction && has_keychain_fields {
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
+            }
+
+            if aa_env
+                .tempo_authorization_list
+                .iter()
+                .any(|auth| auth.signature().is_multisig())
+            {
+                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                    reason: "native multisig signatures are not allowed in authorization lists"
+                        .to_string(),
+                }
+                .into());
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
@@ -2213,6 +2448,7 @@ pub struct ValidationContext {
 /// - Key authorization costs (if present):
 ///   - Pre-T1B: 27k base + 3k ecrecover + 22k per spending limit
 ///   - T1B+: ecrecover + SLOAD + SSTORE × (1 + N limits)
+/// - Native multisig bootstrap storage costs when `multisig_init` is present
 /// - Floor gas calculation (EIP-7623, Prague+)
 pub fn calculate_aa_batch_intrinsic_gas<'a>(
     aa_env: &TempoBatchCallEnv,
@@ -2231,6 +2467,18 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
     // 2. Signature verification gas
     gas.initial_regular_gas += tempo_signature_verification_gas(signature);
+
+    // 2b. Native multisig bootstrap storage costs.
+    if spec.is_t8()
+        && let Some(init) = signature
+            .as_multisig()
+            .and_then(|multisig_signature| multisig_signature.init())
+    {
+        let (regular_gas, state_gas) =
+            calculate_native_multisig_bootstrap_storage_gas(init, gas_params, spec);
+        gas.initial_regular_gas += regular_gas;
+        gas.initial_state_gas += state_gas;
+    }
 
     let cold_account_cost =
         gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
@@ -2529,6 +2777,22 @@ pub fn validate_time_window(
     }
 
     Ok(())
+}
+
+fn map_native_multisig_error<DB: Database>(
+    err: NativeMultisigAuthError,
+) -> EVMError<DB::Error, TempoInvalidTransaction> {
+    match err {
+        NativeMultisigAuthError::Fatal(err) => {
+            EVMError::<DB::Error, TempoInvalidTransaction>::Custom(err)
+        }
+        NativeMultisigAuthError::InvalidTransaction(reason) => {
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }.into()
+        }
+        NativeMultisigAuthError::ValidationFailed(reason) => {
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }.into()
+        }
+    }
 }
 
 #[cfg(test)]
