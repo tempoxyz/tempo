@@ -421,12 +421,7 @@ impl NotarizedFactsDirectory {
     ///
     /// A notarization implies the notarization of all its ancestors up to
     /// the finalized tip, so a missing ancestor body must be fetched even if
-    /// no explicit notarization fact was observed for it; its round is then
-    /// derived from the consensus context of its child, which names the view
-    /// the parent was constructed in. The walk stops at the network's
-    /// finalized tip because it is never forwarded, so its body is not
-    /// needed. This also covers the locally forwarded finalized tip, which
-    /// never runs ahead of the network's.
+    /// no explicit notarization fact was observed for it.
     fn first_missing_ancestor(&self) -> Option<(Round, Digest)> {
         let (finalized_round, finalized_height, finalized_digest) = self.finalized_tip;
         let (latest_round, tip) = self.notarized.last_key_value()?;
@@ -947,6 +942,13 @@ where
     }
 
     /// Records the context's parent as notarized.
+    ///
+    /// NOTE: the first proposed block of an epoch will always have a round
+    /// `round = (<epoch>, <view>) = (<epoch>, 0)`. This is not a real round
+    /// and hinges on the assumption that in order to verify or propose blocks
+    /// for `<epoch>`, the node must have finalized the boundary block of
+    /// `<epoch>`, which is exactly that parent block. In fact, a node will not
+    /// start a simplex engine for `<epoch>` if it does not have this block.
     fn record_notarized_parent(&mut self, context: Context<Digest, PublicKey>) {
         self.notarized_facts_directory.record_notarized(
             Round::new(context.round.epoch(), context.parent.0),
