@@ -523,6 +523,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn state_gas_spilled(&self) -> u64 {
+        self.gas_tracker.state_gas_spilled()
+    }
+
+    #[inline]
     fn gas_refunded(&self) -> i64 {
         self.gas_tracker.refunded()
     }

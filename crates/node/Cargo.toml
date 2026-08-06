@@ -92,7 +92,7 @@ alloy = { workspace = true, features = [
 	"signer-mnemonic-all-languages",
 ] }
 alloy-rlp.workspace = true
-rand.workspace = true
+rand_09.workspace = true
 futures.workspace = true
 test-case.workspace = true
 indexmap.workspace = true

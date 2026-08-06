@@ -21,9 +21,9 @@ concurrency:
 jobs:
   add-hardfork:
     name: Add ${{ inputs.hardfork }} hardfork
-    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    if: ${{ github.repository == 'tempoxyz/tempo' && github.ref == 'refs/heads/main' }}
     runs-on: depot-ubuntu-latest-4
-    environment: release-pr
+    environment: add-hardfork
     permissions: {}
     steps:
       - name: Mint scoped app token
@@ -57,9 +57,10 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: nightly
+          components: rustfmt
 
       - name: Generate Tempo hardfork plumbing
         id: hardfork

@@ -58,6 +58,7 @@ eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true
 rand_08.workspace = true
+rand.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true
 reth-db.workspace = true

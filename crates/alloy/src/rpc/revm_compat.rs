@@ -6,7 +6,7 @@ use tempo_primitives::{
     SignatureType, TempoSignature,
     transaction::{Call, RecoveredTempoAuthorization},
 };
-use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
+use tempo_revm::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};
 
 /// Non-zero transaction identifier used only for RPC simulations.
 ///
@@ -64,6 +64,7 @@ impl TempoTransactionRequest {
 
         tx_env.fee_token = fee_token;
         tx_env.is_system_tx = false;
+        tx_env.execution_context = ExecutionContext::Simulation;
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
@@ -219,12 +220,13 @@ mod tests {
         let env = request
             .try_into_tempo_tx_env(TempoTxEnv::default(), true)
             .expect("valid simulation request");
-        let aa = env.tempo_tx_env.expect("AA simulation env");
+        let aa = env.tempo_tx_env.as_ref().expect("AA simulation env");
 
         assert_eq!(aa.override_key_id, Some(key_id));
         assert_eq!(aa.aa_calls.len(), 1);
         assert_eq!(aa.aa_calls[0].to, TxKind::Call(target));
         assert!(matches!(aa.signature, TempoSignature::Keychain(_)));
+        assert_eq!(env.execution_context(), ExecutionContext::Simulation);
         assert_eq!(
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
