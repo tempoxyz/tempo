@@ -1,6 +1,8 @@
 //! Tempo EVM and transaction validation errors.
 
 use alloy_primitives::{Address, U256};
+use evm2::{ErrorCode, precompiles::PrecompileError, registry::HandlerError};
+use tempo_precompiles::error::TempoPrecompileError;
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Errors that can occur while configuring the Tempo EVM.
@@ -81,6 +83,8 @@ pub enum TempoInvalidTransaction {
     },
     #[error("keychain validation failed: {reason}")]
     KeychainValidationFailed { reason: String },
+    #[error("precompile error: {0}")]
+    PrecompileError(String),
     #[error("KeyAuthorization chain_id mismatch: expected {expected}, got {got}")]
     KeyAuthorizationChainIdMismatch { expected: u64, got: u64 },
     #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
@@ -129,10 +133,52 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
+            | Self::PrecompileError(_)
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
         }
+    }
+}
+
+pub(crate) enum TempoPrecompileErrorDisposition {
+    Recoverable(String),
+    Fatal(HandlerError),
+}
+
+/// Classifies a protocol error using the same mapping as an EVM2 precompile call.
+///
+/// Ordinary protocol failures are reverts or non-fatal halts. They must not escape a completed
+/// transaction as raw handler errors. Only host/database failures are fatal at this boundary.
+pub(crate) fn classify_tempo_precompile_error(
+    error: TempoPrecompileError,
+) -> TempoPrecompileErrorDisposition {
+    let message = error.to_string();
+    match error {
+        TempoPrecompileError::EvmError(code) => {
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(code))
+        }
+        error @ TempoPrecompileError::Fatal(_) => {
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::external(error))
+        }
+        error => match error.into_precompile_result() {
+            Err(PrecompileError::Revert(_)) | Err(PrecompileError::Halt(_)) => {
+                TempoPrecompileErrorDisposition::Recoverable(message)
+            }
+            Err(PrecompileError::Fatal(error)) => {
+                TempoPrecompileErrorDisposition::Fatal(HandlerError::External(error))
+            }
+            Ok(_) => unreachable!("Tempo precompile errors cannot produce success"),
+        },
+    }
+}
+
+pub(crate) fn map_tempo_precompile_error(error: TempoPrecompileError) -> HandlerError {
+    match classify_tempo_precompile_error(error) {
+        TempoPrecompileErrorDisposition::Recoverable(message) => {
+            HandlerError::external(TempoInvalidTransaction::PrecompileError(message))
+        }
+        TempoPrecompileErrorDisposition::Fatal(error) => error,
     }
 }
 
@@ -192,6 +238,7 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
 mod tests {
     use super::*;
     use evm2::registry::HandlerError;
+    use tempo_contracts::precompiles::StablecoinDEXError;
 
     #[test]
     fn test_error_display() {
@@ -233,6 +280,47 @@ mod tests {
         assert!(matches!(
             error.external_ref::<TempoInvalidTransaction>(),
             Some(TempoInvalidTransaction::InvalidFeePayerSignature)
+        ));
+    }
+
+    #[test]
+    fn classify_protocol_errors_like_evm2_precompile_calls() {
+        let recoverable = [
+            TempoPrecompileError::TIP20(TIP20Error::policy_forbids()),
+            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::order_does_not_exist()),
+            TempoPrecompileError::UnknownFunctionSelector([0xde, 0xad, 0xbe, 0xef]),
+            TempoPrecompileError::OutOfGas,
+        ];
+
+        for error in recoverable {
+            assert!(matches!(
+                classify_tempo_precompile_error(error),
+                TempoPrecompileErrorDisposition::Recoverable(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn classify_host_errors_as_fatal() {
+        assert!(matches!(
+            classify_tempo_precompile_error(TempoPrecompileError::EvmError(
+                ErrorCode::BAL_NOT_COVERED
+            )),
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::Fatal(_))
+        ));
+        assert!(matches!(
+            classify_tempo_precompile_error(TempoPrecompileError::Fatal("database failure".into())),
+            TempoPrecompileErrorDisposition::Fatal(HandlerError::External(_))
+        ));
+    }
+
+    #[test]
+    fn maps_recoverable_errors_to_typed_transaction_errors() {
+        let error =
+            map_tempo_precompile_error(TempoPrecompileError::TIP20(TIP20Error::policy_forbids()));
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::PrecompileError(_))
         ));
     }
 

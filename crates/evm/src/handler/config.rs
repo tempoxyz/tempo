@@ -3,6 +3,10 @@
 use crate::{
     FeePaymentError, TempoEvmTx, TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
     common::is_tip20_fee_inference_call,
+    error::{
+        TempoPrecompileErrorDisposition, classify_tempo_precompile_error,
+        map_tempo_precompile_error,
+    },
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
@@ -412,8 +416,7 @@ pub(super) fn invalid(error: impl Into<TempoInvalidTransaction>) -> HandlerError
 fn map_protocol_result<R>(result: TempoResult<R>) -> HandlerResult<R> {
     match result {
         Ok(value) => Ok(value),
-        Err(TempoPrecompileError::EvmError(code)) => Err(HandlerError::Fatal(code)),
-        Err(error) => Err(HandlerError::external(error)),
+        Err(error) => Err(map_tempo_precompile_error(error)),
     }
 }
 
@@ -555,17 +558,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                 beneficiary,
             ) {
                 Ok(validator_fee) => validator_fee,
-                Err(TempoPrecompileError::EvmError(code)) => {
-                    return Err(HandlerError::Fatal(code));
-                }
-                Err(error @ TempoPrecompileError::Fatal(_)) => {
-                    return Err(HandlerError::external(error));
-                }
                 Err(error) => {
-                    // A failed user execution already has the canonical receipt outcome. A
-                    // business error while refunding or settling its fee must not turn that
-                    // receipt into a block-fatal handler error. Roll back any partial post-tx
-                    // writes and retain the pre-tx fee reservation as the conservative charge.
+                    let message = match classify_tempo_precompile_error(error) {
+                        TempoPrecompileErrorDisposition::Recoverable(message) => message,
+                        TempoPrecompileErrorDisposition::Fatal(error) => return Err(error),
+                    };
+
+                    // A failed user execution already has the canonical receipt outcome. Any
+                    // recoverable precompile revert or halt while refunding or settling its fee
+                    // must not turn that receipt into a block-fatal handler error. Roll back any
+                    // partial post-tx writes and retain the pre-tx fee reservation as the
+                    // conservative charge.
                     let features = host.version().features;
                     host.state_mut().rollback(checkpoint, features);
                     if !result.status {
@@ -576,7 +579,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                     // already committed its execution checkpoint. Keep the original execution
                     // result, with the reserved fee retained, rather than reporting a divergent
                     // block error for a protocol-level settlement failure.
-                    tracing::warn!(error = %error, "fee settlement failed after successful execution");
+                    tracing::warn!(error = %message, "fee settlement failed after successful execution");
                     U256::ZERO
                 }
             }
@@ -682,9 +685,12 @@ impl TempoHandlerHooks {
                         address: context.fee_token,
                     })
                 }
-                TempoPrecompileError::EvmError(code) => HandlerError::Fatal(code),
-                error @ TempoPrecompileError::Fatal(_) => HandlerError::external(error),
-                error => invalid(FeePaymentError::Other(error.to_string())),
+                error => match classify_tempo_precompile_error(error) {
+                    TempoPrecompileErrorDisposition::Recoverable(message) => {
+                        invalid(FeePaymentError::Other(message))
+                    }
+                    TempoPrecompileErrorDisposition::Fatal(error) => error,
+                },
             });
         }
 
