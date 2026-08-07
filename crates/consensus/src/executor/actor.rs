@@ -557,7 +557,8 @@ where
                     // A now-stale in-flight body fetch is dropped by
                     // `update_notarized_block_fetch` on the next loop
                     // iteration.
-                    self.notarized_tree.set_finalized_tip(round, height, digest);
+                    self.notarized_tree
+                        .set_network_finalized_tip(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
                     self.pending_finalizations.push_back(FinalizedBlockRequest {

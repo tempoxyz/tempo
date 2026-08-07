@@ -255,7 +255,7 @@ fn finalized_tip_bounds_recording() {
 
     let a = block(5, 11, finalized);
     let b = block(6, 12, a.digest());
-    tree.advance_finalized(round(5), Height::new(11), a.digest());
+    tree.set_network_finalized_tip(round(5), Height::new(11), a.digest());
     tree.heal();
 
     // Parents notarized at or below the finalized round, or re-affirming
@@ -292,7 +292,7 @@ fn advance_finalized_drops_stale_entries() {
     record(&mut tree, &a);
     record(&mut tree, &b);
 
-    tree.advance_finalized(round(1), Height::new(11), a.digest());
+    tree.set_network_finalized_tip(round(1), Height::new(11), a.digest());
     tree.heal();
 
     assert!(!tree.blocks.contains_key(&a.digest()));
@@ -314,21 +314,24 @@ fn finalized_tip_never_regresses() {
     let b = block(2, 12, a.digest());
     record(&mut tree, &a);
     record(&mut tree, &b);
-    tree.advance_finalized(round(1), Height::new(11), a.digest());
+    tree.set_network_finalized_tip(round(1), Height::new(11), a.digest());
     tree.heal();
     tree.record_execution_notarized(Height::new(12), b.digest());
 
     // A tip below the tracked one (replayed on startup) is ignored: the
     // boundary, the tree's data, and the cursor stay untouched.
     let old = Digest(B256::repeat_byte(0xee));
-    tree.advance_finalized(round(0), Height::new(9), old);
+    tree.set_network_finalized_tip(round(0), Height::new(9), old);
     tree.heal();
-    assert_eq!(tree.finalized_tip, (round(1), Height::new(11), a.digest()),);
+    assert_eq!(
+        tree.network_finalized_tip,
+        (round(1), Height::new(11), a.digest()),
+    );
     assert!(tree.blocks.contains_key(&b.digest()));
     assert_eq!(tree.notarized_cursor, (Height::new(12), b.digest()));
 
     // A re-report of the tracked tip itself is a no-op as well.
-    tree.advance_finalized(round(1), Height::new(11), a.digest());
+    tree.set_network_finalized_tip(round(1), Height::new(11), a.digest());
     tree.heal();
     assert_eq!(tree.notarized_cursor, (Height::new(12), b.digest()));
 }
@@ -342,8 +345,11 @@ fn finalized_tip_advances_by_round_at_equal_height() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
-    tree.advance_finalized(round(2), Height::new(10), finalized);
-    assert_eq!(tree.finalized_tip, (round(2), Height::new(10), finalized),);
+    tree.set_network_finalized_tip(round(2), Height::new(10), finalized);
+    assert_eq!(
+        tree.network_finalized_tip,
+        (round(2), Height::new(10), finalized),
+    );
 }
 
 #[test]
@@ -430,7 +436,7 @@ fn finalized_tip_reroots_a_cursor_stranded_on_an_orphaned_branch() {
     // `forward_finalized`.)
     let b1 = block(3, 11, finalized);
     let b2 = block(4, 12, b1.digest());
-    tree.advance_finalized(round(3), Height::new(11), b1.digest());
+    tree.set_network_finalized_tip(round(3), Height::new(11), b1.digest());
     tree.heal();
     assert!(tree.pending_head.is_none());
     assert_eq!(tree.notarized_cursor, (Height::new(12), a2.digest()));

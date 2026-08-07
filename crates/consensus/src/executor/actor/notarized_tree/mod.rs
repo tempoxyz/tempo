@@ -79,7 +79,7 @@ pub(super) struct NotarizedTree {
     /// The latest observed finalized tip of the network: the tree's
     /// lower bound. Data at or below it is never recorded, and recorded data
     /// is pruned once the tip moves past it.
-    finalized_tip: (Round, Height, Digest),
+    network_finalized_tip: (Round, Height, Digest),
     /// The canonicalization cursor: the most recent block on the canonical
     /// notarized path that the execution layer provably has. Blocks are
     /// forwarded strictly above it.
@@ -121,7 +121,7 @@ impl NotarizedTree {
         notarized_cursor: (Height, Digest),
     ) -> Self {
         Self {
-            finalized_tip,
+            network_finalized_tip: finalized_tip,
             notarized_cursor,
             pending_head: None,
             blocks: HashMap::new(),
@@ -142,7 +142,7 @@ impl NotarizedTree {
         notarized_in: Round,
         digest: Digest,
     ) {
-        let (finalized_round, _, finalized_digest) = self.finalized_tip;
+        let (finalized_round, _, finalized_digest) = self.network_finalized_tip;
         if notarized_in <= finalized_round || digest == finalized_digest {
             return;
         }
@@ -163,7 +163,7 @@ impl NotarizedTree {
     /// height. Such a stale block is expunged so that it is neither
     /// fetched nor forwarded again.
     pub(super) fn record_block(&mut self, block: Arc<Block>) {
-        if block.height() <= self.finalized_tip.1 {
+        if block.height() <= self.network_finalized_tip.1 {
             debug!(
                 digest = %block.digest(),
                 height = %block.height(),
@@ -243,7 +243,7 @@ impl NotarizedTree {
     /// traded for recovery speed, bounded by the advancing finalized tip,
     /// which sweeps everything it passes.
     pub(super) fn heal(&mut self) {
-        let (finalized_round, finalized_height, finalized_digest) = self.finalized_tip;
+        let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
         self.blocks
             .retain(|_, entry| entry.block.height() > finalized_height);
         if self
@@ -307,12 +307,12 @@ impl NotarizedTree {
             return;
         };
         let mut digest = pending.digest;
-        while digest != self.finalized_tip.2 && digest != self.notarized_cursor.1 {
+        while digest != self.network_finalized_tip.2 && digest != self.notarized_cursor.1 {
             let Some(entry) = self.blocks.get(&digest) else {
                 return;
             };
             let height = entry.block.height();
-            if height <= self.finalized_tip.1 {
+            if height <= self.network_finalized_tip.1 {
                 return;
             }
             let parent = entry.block.parent_digest();
@@ -354,9 +354,14 @@ impl NotarizedTree {
     /// Tips at or below the already tracked round (a tip replayed on
     /// startup) are ignored, so the boundary never regresses. The marshal
     /// actor guarantees that a newer round never finalizes a lower height.
-    pub(super) fn set_finalized_tip(&mut self, round: Round, height: Height, digest: Digest) {
-        if round > self.finalized_tip.0 {
-            self.finalized_tip = (round, height, digest);
+    pub(super) fn set_network_finalized_tip(
+        &mut self,
+        round: Round,
+        height: Height,
+        digest: Digest,
+    ) {
+        if round > self.network_finalized_tip.0 {
+            self.network_finalized_tip = (round, height, digest);
         } else {
             debug!(
                 %round,
@@ -417,7 +422,7 @@ impl NotarizedTree {
     /// the finalized tip, so a missing ancestor body must be fetched even if
     /// no explicit notarization fact was observed for it.
     pub(super) fn first_missing_ancestor(&self) -> Option<(Round, Digest)> {
-        let (finalized_round, finalized_height, finalized_digest) = self.finalized_tip;
+        let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
         let pending = self.pending_head.as_ref()?;
         // The round of the pending head comes from the context that
         // reported it; further down the path it is derived from the context
@@ -446,6 +451,6 @@ impl NotarizedTree {
 impl NotarizedTree {
     /// The height of the latest observed finalized tip of the network.
     pub(super) fn finalized_tip_height(&self) -> Height {
-        self.finalized_tip.1
+        self.network_finalized_tip.1
     }
 }
