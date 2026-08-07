@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -16,7 +16,10 @@ use revm::{
         result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
-    context_interface::cfg::{GasId, GasParams},
+    context_interface::{
+        cfg::{GasId, GasParams, gas::GasTracker},
+        journaled_state::JournalCheckpoint,
+    },
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, post_execution,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
@@ -24,7 +27,7 @@ use revm::{
     },
     inspector::{Inspector, InspectorHandler},
     interpreter::{
-        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas,
+        CallOutcome, CreateOutcome, FrameInput, Gas, InitialAndFloorGas,
         gas::{
             COLD_SLOAD_COST, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
             get_tokens_in_calldata_istanbul,
@@ -64,7 +67,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
@@ -261,11 +264,13 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 /// while halts such as OOG consume the entire remaining transaction budget.
 ///
 /// NOTE: in AA batches, non-refundable state-gas charges that are known upfront, are already
-/// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure.
+/// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure
+/// plus the batch's intrinsic EIP-8037 CREATE state gas (`create_state_refund`).
 fn normalize_failed_batch_result_gas(
     frame_result: &mut FrameResult,
     final_gas_limit: u64,
     accumulated_state_gas_spent: i64,
+    create_state_refund: u64,
 ) {
     // Create new Gas with correct limit, because Gas does not have a set_limit method
     // (the frame_result limit only covers the failed step).
@@ -285,6 +290,13 @@ fn normalize_failed_batch_result_gas(
             .saturating_add_signed(accumulated_state_gas_spent)
             .saturating_add_signed(frame_result.gas().state_gas_spent()),
     );
+    // The AA intrinsic gas charged `create_state_gas` upfront for every CREATE
+    // call in the batch, and the batch failure rolled every deployment back —
+    // including successfully deployed calls and calls that never ran. Refund
+    // the whole batch's charge to the reservoir; the reservoir reconstruction
+    // above already canceled the failed step's own `last_frame_result` refund,
+    // so this cannot double-count.
+    corrected_gas.refill_reservoir(create_state_refund);
     *frame_result.gas_mut() = corrected_gas;
 }
 
@@ -555,8 +567,7 @@ where
     fn execute_single_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        gas_limit: u64,
-        reservoir: u64,
+        gas: &mut GasTracker,
         mut run_loop: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -566,14 +577,27 @@ where
             <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
-        // Create first frame action
-        let first_frame_input = self.first_frame_input(evm, gas_limit, reservoir)?;
+        // Create first frame action. `None` only happens when the EIP-2780
+        // runtime gas phase runs out of gas, which Tempo keeps disabled.
+        let mut first_frame_input = self.first_frame_input(evm, gas)?.ok_or_else(|| {
+            EVMError::Custom("first frame creation ran out of gas with EIP-2780 disabled".into())
+        })?;
+
+        // Tempo charges the EIP-8037 CREATE state gas at the intrinsic phase
+        // (EIP-2780 stays disabled), so the upstream runtime phase never marks
+        // it as charged. Mark it here so `last_frame_result` refunds the
+        // charge via `FrameResult::refundable_state_gas` when the CREATE
+        // deploys nothing, matching the inner-frame CREATE refund and the
+        // revm 41.0.0 top-level behavior.
+        if let FrameInput::Create(inputs) = &mut first_frame_input.frame_input {
+            inputs.set_charged_create_state_gas(true);
+        }
 
         // Run execution loop (standard or inspector)
         let mut frame_result = run_loop(self, evm, first_frame_input)?;
 
         // Handle last frame result
-        self.last_frame_result(evm, reservoir, &mut frame_result)?;
+        self.last_frame_result(evm, &mut frame_result, gas)?;
 
         Ok(frame_result)
     }
@@ -584,10 +608,9 @@ where
     fn execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        gas_limit: u64,
-        reservoir: u64,
+        gas: &mut GasTracker,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.execute_single_call_with(evm, gas_limit, reservoir, Self::run_exec_loop)
+        self.execute_single_call_with(evm, gas, Self::run_exec_loop)
     }
 
     /// Generic multi-call execution that works with both standard and inspector exec loops.
@@ -621,14 +644,19 @@ where
         F: FnMut(
             &mut Self,
             &mut TempoEvm<DB, I>,
-            u64,
-            u64,
+            &mut GasTracker,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
+
+        // Intrinsic EIP-8037 CREATE state gas charged upfront for the whole
+        // batch (see `calculate_batch_intrinsic_gas`), refunded when the batch
+        // fails and every deployment is rolled back.
+        let create_state_refund = evm.ctx().cfg().gas_params().create_state_gas()
+            * calls.iter().filter(|call| call.to.is_create()).count() as u64;
 
         // Store original TxEnv values to restore after batch execution
         let original_kind = evm.ctx().tx().kind();
@@ -647,6 +675,7 @@ where
                 &mut frame_result,
                 evm.ctx().tx().gas_limit(),
                 accumulated_state_gas_spent,
+                create_state_refund,
             );
             return Ok(frame_result);
         }
@@ -662,7 +691,12 @@ where
             }
 
             // Execute call with NO additional initial gas (already deducted upfront in validation)
-            let frame_result = execute_single(self, evm, remaining_gas, reservoir);
+            //
+            // The per-call transaction-level gas mirrors the pre-call state: the
+            // call's budget is the batch's remaining gas (also its limit, matching
+            // the temporary `tx.gas_limit` above) plus the current reservoir.
+            let mut call_gas = GasTracker::new(remaining_gas, remaining_gas, reservoir);
+            let frame_result = execute_single(self, evm, &mut call_gas);
 
             // Restore original TxEnv immediately after execution, even if execution failed
             {
@@ -710,6 +744,7 @@ where
                     &mut frame_result,
                     evm.ctx().tx().gas_limit(),
                     accumulated_state_gas_spent,
+                    create_state_refund,
                 );
 
                 return Ok(frame_result);
@@ -752,11 +787,16 @@ where
     fn execute_multi_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        gas_limit: u64,
-        reservoir: u64,
+        gas: &GasTracker,
         calls: Vec<tempo_primitives::transaction::Call>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
+        self.execute_multi_call_with(
+            evm,
+            gas.remaining(),
+            gas.reservoir(),
+            calls,
+            Self::execute_single_call,
+        )
     }
 
     /// Executes a standard single-call transaction with inspector support.
@@ -766,13 +806,12 @@ where
     fn inspect_execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        gas_limit: u64,
-        reservoir: u64,
+        gas: &mut GasTracker,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
     {
-        self.execute_single_call_with(evm, gas_limit, reservoir, Self::inspect_run_exec_loop)
+        self.execute_single_call_with(evm, gas, Self::inspect_run_exec_loop)
     }
 
     /// Executes a multi-call AA transaction atomically with inspector support.
@@ -782,8 +821,7 @@ where
     fn inspect_execute_multi_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        gas_limit: u64,
-        reservoir: u64,
+        gas: &GasTracker,
         calls: Vec<tempo_primitives::transaction::Call>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -791,8 +829,8 @@ where
     {
         self.execute_multi_call_with(
             evm,
-            gas_limit,
-            reservoir,
+            gas.remaining(),
+            gas.reservoir(),
             calls,
             Self::inspect_execute_single_call,
         )
@@ -813,6 +851,27 @@ where
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
 
+    /// Overridden transaction-level gas builder that reproduces the pre-T0
+    /// behavior when the initial gas spending exceeds the gas limit.
+    ///
+    /// Upstream's [`Handler::tx_gas`] subtracts the intrinsic gas unguarded,
+    /// which would underflow for pre-T0 (Genesis) transactions that pass
+    /// validation with `gas_limit < intrinsic` (nonce gas is added after
+    /// validation). `TempoEvm::initial_gas_and_reservoir` falls back to
+    /// `(u64::MAX, 0)` in that case, matching the historic behavior.
+    ///
+    /// This is also the last hook that still sees `init_and_floor_gas`, so it
+    /// records whether the intrinsic gas ended up above the gas limit for
+    /// [`Handler::execution`] — see `TempoEvm::intrinsic_gas_exceeds_limit`.
+    #[inline]
+    fn tx_gas(&self, evm: &mut Self::Evm, init_and_floor_gas: &InitialAndFloorGas) -> GasTracker {
+        let tx_gas_limit = evm.ctx_ref().tx().gas_limit();
+        evm.intrinsic_gas_exceeds_limit = evm.ctx_ref().cfg().spec().is_t0()
+            && tx_gas_limit < init_and_floor_gas.initial_total_gas();
+        let (remaining, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
+        GasTracker::new(tx_gas_limit, remaining, reservoir)
+    }
+
     /// Overridden execution method that handles AA vs standard transactions.
     ///
     /// Dispatches based on transaction type:
@@ -822,22 +881,25 @@ where
     fn execution(
         &mut self,
         evm: &mut Self::Evm,
-        init_and_floor_gas: &InitialAndFloorGas,
-    ) -> Result<FrameResult, Self::Error> {
-        let spec = evm.ctx_ref().cfg().spec();
-        let tx = evm.tx();
+        _checkpoint: JournalCheckpoint,
+        gas: &mut GasTracker,
+    ) -> Result<Option<FrameResult>, Self::Error> {
+        // Tempo keeps the EIP-2780 runtime gas phase disabled: first-frame
+        // creation charges nothing, so the phase checkpoint opened by
+        // `pre_execution` (or `run_system_call`) commits immediately. The
+        // EIP-7702 delegations applied under that checkpoint stay applied even
+        // when execution is skipped below, matching revm 41.
+        evm.ctx().journal_mut().checkpoint_commit();
 
-        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
-            return Ok(oog);
+        if let Some(oog) = oog_frame_result_if_intrinsic_exceeds_limit(evm) {
+            return Ok(Some(oog));
         }
-
-        let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, gas_limit, reservoir, calls)
+            self.execute_multi_call(evm, gas, calls).map(Some)
         } else {
-            self.execute_single_call(evm, gas_limit, reservoir)
+            self.execute_single_call(evm, gas).map(Some)
         }
     }
 
@@ -853,7 +915,7 @@ where
         if exec_result.instruction_result().is_ok() {
             gas_credits::apply_refund(evm, exec_result.gas_mut())?;
         }
-        self.refund(evm, exec_result, eip7702_gas_refund);
+        self.refund(evm, exec_result, eip7702_gas_refund)?;
 
         let result_gas = post_execution::build_result_gas(
             exec_result.instruction_result().is_halt(),
@@ -876,16 +938,25 @@ where
     /// regardless of the transaction's gas used. Pre-T7 keeps the standard
     /// capped behavior (`Gas::set_final_refund`).
     #[inline]
-    fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
+    fn refund(
+        &self,
+        evm: &mut Self::Evm,
+        exec_result: &mut FrameResult,
+        eip7702_refund: i64,
+    ) -> Result<(), Self::Error> {
         let spec = evm.ctx.cfg.spec;
-        let gas = exec_result.gas_mut();
         if spec.is_t7() {
             // No cap: leave the accumulated refund counter untouched after
             // recording the EIP-7702 auth refund.
-            gas.record_refund(eip7702_refund);
+            exec_result.gas_mut().record_refund(eip7702_refund);
         } else {
-            post_execution::refund(spec.into(), gas, eip7702_refund);
+            post_execution::refund(
+                evm.ctx.cfg.gas_params(),
+                exec_result.gas_mut(),
+                eip7702_refund,
+            );
         }
+        Ok(())
     }
 
     /// Take logs from the Journal if outcome is Halt Or Revert.
@@ -912,8 +983,8 @@ where
     fn apply_eip7702_auth_list(
         &self,
         evm: &mut Self::Evm,
-        _init_and_floor_gas: &mut InitialAndFloorGas,
-    ) -> Result<u64, Self::Error> {
+        _gas: &mut GasTracker,
+    ) -> Result<Option<u64>, Self::Error> {
         let ctx = &mut evm.ctx;
         let spec = ctx.cfg.spec;
 
@@ -937,14 +1008,12 @@ where
                     .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
                 &mut ctx.journaled_state,
             )?
-            .0
         } else {
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
                 ctx.tx.authorization_list(),
                 &mut ctx.journaled_state,
             )?
-            .0
         };
 
         let refunded_gas = ctx
@@ -953,7 +1022,7 @@ where
             .tx_eip7702_auth_refund_regular()
             .saturating_mul(refunded_accounts);
 
-        Ok(refunded_gas)
+        Ok(Some(refunded_gas))
     }
 
     #[inline]
@@ -2062,7 +2131,20 @@ where
                 acc as u64,
                 storage as u64,
                 tx.authorization_list_len() as u64,
+                // Tempo keeps EIP-2780 disabled.
+                None,
             );
+
+            // Upstream moved the EIP-8037 state-gas intrinsics (per-auth
+            // account creation and CREATE state gas) into the EIP-2780
+            // runtime gas phase. Tempo keeps EIP-2780 disabled, so charge
+            // them at the intrinsic phase exactly like revm 41.0.0 did.
+            // Pre-T4 gas tables have these at zero.
+            init_gas.initial_state_gas += tx.authorization_list_len() as u64
+                * (gas_params.new_account_state_gas() + gas_params.tx_eip7702_state_gas_bytecode());
+            if tx.kind().is_create() {
+                init_gas.initial_state_gas += gas_params.create_state_gas();
+            }
             // TIP-1000: Storage pricing updates for launch
             // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
             // no need for v1 fork check as gas_params would be zero
@@ -2174,8 +2256,9 @@ where
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
-        let mut init_and_floor_gas = self.validate(evm)?;
-        self.pre_execution(evm, &mut init_and_floor_gas)?;
+        let init_and_floor_gas = self.validate(evm)?;
+        let mut gas = self.tx_gas(evm, &init_and_floor_gas);
+        self.pre_execution(evm, &mut gas)?;
         let result = ValidationContext {
             fee_token: evm
                 .fee_token
@@ -2241,10 +2324,10 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
     // 4. Authorization list costs (EIP-7702)
     let num_auths = authorization_list.len() as u64;
-    gas.initial_regular_gas +=
-        num_auths * gas_params.get(GasId::tx_eip7702_per_empty_account_cost());
+    gas.initial_regular_gas += num_auths * gas_params.get(GasId::tx_eip7702_regular_gas());
     // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).
-    gas.initial_state_gas += num_auths * gas_params.tx_eip7702_state_gas();
+    gas.initial_state_gas += num_auths
+        * (gas_params.new_account_state_gas() + gas_params.tx_eip7702_state_gas_bytecode());
 
     // Add signature verification costs for each authorization
     // No need for v1 fork check as gas_params would be zero
@@ -2443,56 +2526,59 @@ where
     fn inspect_execution(
         &mut self,
         evm: &mut Self::Evm,
-        init_and_floor_gas: &InitialAndFloorGas,
-    ) -> Result<FrameResult, Self::Error> {
-        let spec = evm.ctx_ref().cfg().spec();
-        let tx = evm.tx();
+        _checkpoint: JournalCheckpoint,
+        gas: &mut GasTracker,
+    ) -> Result<Option<FrameResult>, Self::Error> {
+        // See `Handler::execution`: EIP-2780 is disabled, commit the phase
+        // checkpoint immediately.
+        evm.ctx().journal_mut().checkpoint_commit();
 
-        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
-            return Ok(oog);
+        if let Some(oog) = oog_frame_result_if_intrinsic_exceeds_limit(evm) {
+            return Ok(Some(oog));
         }
-
-        let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
+            self.inspect_execute_multi_call(evm, gas, calls).map(Some)
         } else {
-            self.inspect_execute_single_call(evm, gas_limit, reservoir)
+            self.inspect_execute_single_call(evm, gas).map(Some)
         }
     }
 }
 
-/// Helper function to create a frame result for an out of gas error.
+/// Builds the out-of-gas frame result for a transaction whose intrinsic gas
+/// ended up above its gas limit, or `None` when execution should proceed.
 ///
-/// Use native fn when new revm version is released.
+/// `Handler::validate` checks the gas limit against the intrinsic gas, but
+/// Tempo's `validate_against_state_and_deduct_caller` charges state-dependent
+/// intrinsics after that check: pre-T1B a keychain precompile that runs out of
+/// gas raises `initial_regular_gas` to `u64::MAX`. Such a transaction stays
+/// valid and burns its gas limit, but must not execute — in particular the
+/// CREATE frame, and with it the caller nonce bump, is never reached, which is
+/// what makes the poisoned payload replayable on those historic forks.
+///
+/// Upstream's [`Handler::runtime_oog_result`] is deliberately not reused: it
+/// bumps the caller nonce for CREATE transactions.
 #[inline]
-fn oog_frame_result(kind: TxKind, gas_limit: u64) -> FrameResult {
-    if kind.is_call() {
+fn oog_frame_result_if_intrinsic_exceeds_limit<DB, I>(evm: &TempoEvm<DB, I>) -> Option<FrameResult>
+where
+    DB: Database + Debug,
+    DB::Error: Debug,
+{
+    if !evm.intrinsic_gas_exceeds_limit {
+        return None;
+    }
+    let tx = &evm.ctx.tx;
+    let gas_limit = tx.gas_limit();
+    let kind = *tx
+        .first_call()
+        .expect("we already checked that there is at least one call in aa tx")
+        .0;
+    Some(if kind.is_call() {
         FrameResult::new_call_oog(gas_limit, 0..0, 0)
     } else {
         FrameResult::new_create_oog(gas_limit, 0)
-    }
-}
-
-/// Checks if gas limit is sufficient and returns OOG frame result if not.
-///
-/// For T0+, validates gas limit covers intrinsic gas. For pre-T0, skips check
-/// to maintain backward compatibility.
-#[inline]
-fn check_gas_limit(
-    spec: tempo_chainspec::hardfork::TempoHardfork,
-    tx: &TempoTxEnv,
-    adjusted_gas: &InitialAndFloorGas,
-) -> Option<FrameResult> {
-    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_total_gas() {
-        let kind = *tx
-            .first_call()
-            .expect("we already checked that there is at least one call in aa tx")
-            .0;
-        return Some(oog_frame_result(kind, tx.gas_limit()));
-    }
-    None
+    })
 }
 
 /// Validates time window for AA transactions

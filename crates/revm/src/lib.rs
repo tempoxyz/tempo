@@ -25,4 +25,4 @@ pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, 
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use tempo_primitives::TempoBlockEnv;
-pub use tx::{TempoBatchCallEnv, TempoTxEnv};
+pub use tx::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};

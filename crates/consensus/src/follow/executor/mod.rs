@@ -16,20 +16,25 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Pacer, Spawner};
+use eyre::OptionExt as _;
 use futures::channel::mpsc;
 use reth_engine_primitives::ConsensusEngineHandle;
-use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
+use reth_ethereum::chainspec::EthChainSpec as _;
+use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::{
-    BlockHashReader as _, BlockIdReader, ChainSpecProvider as _, DatabaseProviderFactory as _,
+    BlockHashReader, BlockIdReader, ChainSpecProvider as _, DatabaseProviderFactory as _,
+    HeaderProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tempo_node::{TempoExecutionData, TempoPayloadTypes};
 use tempo_payload_types::TempoPayloadAttributes;
+use tempo_primitives::TempoHeader;
 
 use crate::consensus::Digest;
 
 mod actor;
 mod ingress;
+mod target;
 
 #[cfg(test)]
 mod test;
@@ -62,9 +67,9 @@ where
 
 /// Finalized block state needed to initialize and advance the follower.
 pub(crate) trait FinalizedBlockProvider: Send + Sync {
-    /// Execution layer's effective finalized block. Returns genesis when no
+    /// Execution layer's effective finalized header. Returns genesis when no
     /// explicit finalized marker exists on a fresh chain.
-    fn finalized_block_num_hash(&self) -> eyre::Result<BlockNumHash>;
+    fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>>;
 
     /// Persisted database block hash at `height`, excluding in-memory state.
     fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>>;
@@ -101,10 +106,15 @@ pub(crate) trait Marshal: Clone + Send + Sync {
 impl<N> FinalizedBlockProvider for BlockchainProvider<N>
 where
     N: ProviderNodeTypes,
+    N::Primitives: NodePrimitives<BlockHeader = TempoHeader>,
 {
-    fn finalized_block_num_hash(&self) -> eyre::Result<BlockNumHash> {
-        Ok(BlockIdReader::finalized_block_num_hash(self)?
-            .unwrap_or_else(|| BlockNumHash::new(0, self.chain_spec().genesis_hash())))
+    fn finalized_header(&self) -> eyre::Result<SealedHeader<TempoHeader>> {
+        let hash = BlockIdReader::finalized_block_num_hash(self)?
+            .map(|tip| tip.hash)
+            .unwrap_or_else(|| self.chain_spec().genesis_hash());
+        HeaderProvider::sealed_header_by_hash(self, hash)
+            .map_err(eyre::Report::new)?
+            .ok_or_eyre("finalized execution block is missing its header")
     }
 
     fn durable_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {

@@ -21,6 +21,7 @@ use commonware_cryptography::{
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
+use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -386,7 +387,7 @@ impl commonware_consensus::CertifiableBlock for Block {
         match self.consensus_context {
             Some(ctx) => Context {
                 leader: ctx.proposer.to_inner(),
-                round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
+                round: round_from_context(ctx),
                 parent: (View::new(ctx.parent_view), self.parent_digest()),
             },
             None => {
@@ -410,6 +411,10 @@ impl commonware_consensus::CertifiableBlock for Block {
             }
         }
     }
+}
+
+pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
+    Round::new(Epoch::new(context.epoch), View::new(context.view))
 }
 
 fn validate_block_access_list_hash(

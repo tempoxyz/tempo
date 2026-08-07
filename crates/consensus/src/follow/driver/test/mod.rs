@@ -1,7 +1,5 @@
 //! Standalone follower driver actor tests.
 
-mod utils;
-
 use std::time::Duration;
 
 use commonware_consensus::{
@@ -18,10 +16,12 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_node::rpc::consensus::Event;
 
 use super::{Config, try_init};
-use crate::epoch::SchemeProvider;
-use utils::{
-    EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture, make_block,
-    make_certified_block, make_finalization,
+use crate::{
+    epoch::SchemeProvider,
+    follow::test_utils::{
+        EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture, make_block,
+        make_certified_block, make_finalization,
+    },
 };
 
 const WAIT_ATTEMPTS: usize = 100;

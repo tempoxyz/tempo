@@ -342,6 +342,9 @@ fn append_bench_hardfork(
     let marker = format!("'{previous}'");
     let replacement = format!("'{previous}', '{hardfork}'");
     let count = source.matches(&marker).count();
+    if count == 0 {
+        return Ok(source.to_owned());
+    }
     ensure!(
         count == 1,
         "expected one benchmark hardfork allowlist entry"
@@ -503,5 +506,23 @@ mod tests {
         let updated = append_bench_hardfork(source, &variants, "T10", "T11").unwrap();
         assert!(updated.contains("['T9', 'T10', 'T11']"));
         assert_eq!(updated.matches("T9|T10|T11").count(), 4);
+    }
+
+    #[test]
+    fn current_benchmark_workflow_without_allowlist_does_not_break_add_hardfork() {
+        let variants = [
+            "Genesis", "T0", "T1", "T1A", "T1B", "T1C", "T2", "T3", "T4", "T5", "T6", "T7", "T8",
+            "T9", "T10",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let source = include_str!("../../.github/workflows/bench.yml");
+
+        let updated = append_bench_hardfork(source, &variants, "T10", "T11")
+            .expect("add-hardfork should tolerate the current benchmark workflow shape without an in-workflow hardfork allowlist");
+
+        assert!(updated.contains("baseline-hardfork=HARDFORK"));
+        assert!(updated.contains("feature-hardfork=HARDFORK"));
     }
 }

@@ -53,6 +53,14 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Set when the intrinsic gas ended up above the transaction gas limit.
+    ///
+    /// `validate_against_state_and_deduct_caller` can raise the intrinsic gas
+    /// after `validate` already accepted the transaction (pre-T1B the keychain
+    /// precompile running out of gas sets `initial_regular_gas` to `u64::MAX`).
+    /// Recorded by `Handler::tx_gas` and consumed by `Handler::execution`,
+    /// which then skips execution entirely.
+    pub(crate) intrinsic_gas_exceeds_limit: bool,
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
@@ -106,6 +114,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
+            intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
             ..
@@ -119,6 +128,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
+            intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
             fee_manager,
@@ -148,6 +158,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            intrinsic_gas_exceeds_limit: false,
             actions,
             non_creditable_slots,
             fee_manager,
@@ -475,6 +486,27 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T4;
         cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
+        cfg.enable_amsterdam_eip8037 = true;
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T4 hardfork, the TIP-1016 regular/state gas split
+    /// enabled (`enable_amsterdam_eip8037` plus the matching gas table), and a
+    /// funded account.
+    fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T4;
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         cfg.enable_amsterdam_eip8037 = true;
 
         let ctx = Context::mainnet()
@@ -3870,6 +3902,164 @@ mod tests {
             run_create(false)? - run_create(true)?, // gas_with_hash - gas_without_hash (test fixture)
             tempo_gas_params(TempoHardfork::T4).keccak256_cost(1),
             "generic CREATE should add HASH_COST(L) on top of the non-hash baseline"
+        );
+        Ok(())
+    }
+
+    /// TIP-1016 / EIP-8037: a reverting CREATE must not consume `create_state_gas`,
+    /// no matter where the CREATE sits.
+    ///
+    /// revm 42 refunds a failed first frame's CREATE state gas only when the
+    /// frame input is marked as charged (`FrameResult::refundable_state_gas`).
+    /// Tempo charges that gas at the intrinsic phase (EIP-2780 stays disabled),
+    /// so the first frame must carry the flag or a reverting top-level CREATE
+    /// would permanently consume `create_state_gas` while a reverting inner
+    /// CREATE gets it refunded.
+    ///
+    /// Each scenario's create-state-gas consumption is measured as the gas
+    /// delta between default T4 params and `create_state_gas` overridden to
+    /// zero: equal gas across the override means the charge was fully refunded.
+    #[test]
+    fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Result<()> {
+        let caller = Address::repeat_byte(0x11);
+        // PUSH1 0 PUSH1 0 REVERT
+        let reverting_initcode = bytes!("60006000fd");
+        // Runtime code that CREATEs the reverting initcode and swallows the
+        // failure: PUSH5 <initcode> PUSH1 0 MSTORE (initcode at memory[27..32]),
+        // then PUSH1 5 PUSH1 27 PUSH1 0 CREATE POP STOP.
+        let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
+
+        assert!(
+            tempo_gas_params_with_amsterdam(TempoHardfork::T4, true).create_state_gas() > 0,
+            "T4 must price CREATE state gas for this test to be meaningful"
+        );
+
+        let run = |top_level: bool, zero_create_state_gas: bool| -> eyre::Result<u64> {
+            let mut evm = create_funded_evm_t4_amsterdam(caller);
+            if zero_create_state_gas {
+                evm.ctx.cfg.gas_params.override_gas(vec![(
+                    revm::context_interface::cfg::GasId::create_state_gas(),
+                    0,
+                )]);
+            }
+
+            let tx_env = if top_level {
+                TxEnv {
+                    caller,
+                    kind: TxKind::Create,
+                    data: reverting_initcode.clone(),
+                    gas_limit: 3_000_000,
+                    ..Default::default()
+                }
+            } else {
+                let contract = Address::repeat_byte(0x42);
+                evm.ctx.db_mut().insert_account_info(
+                    contract,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(inner_create_code.clone())),
+                        ..Default::default()
+                    },
+                );
+                TxEnv {
+                    caller,
+                    kind: TxKind::Call(contract),
+                    gas_limit: 3_000_000,
+                    ..Default::default()
+                }
+            };
+
+            let result = evm.transact_commit(tx_env.into())?;
+            if top_level {
+                assert!(
+                    matches!(result, ExecutionResult::Revert { .. }),
+                    "top-level CREATE should revert"
+                );
+            } else {
+                assert!(
+                    result.is_success(),
+                    "inner-CREATE caller swallows the revert"
+                );
+            }
+            Ok(result.tx_gas_used())
+        };
+
+        assert_eq!(
+            run(false, false)?,
+            run(false, true)?,
+            "reverting inner CREATE must refund its create_state_gas"
+        );
+        assert_eq!(
+            run(true, false)?,
+            run(true, true)?,
+            "reverting top-level CREATE must refund create_state_gas like a reverting inner CREATE"
+        );
+        Ok(())
+    }
+
+    /// Same regression for the AA batch path: a failed batch must refund the
+    /// intrinsic CREATE state gas of every CREATE call in the batch — both the
+    /// reverting CREATE itself and a successfully deployed CREATE whose state
+    /// is rolled back by the atomic batch revert.
+    #[test]
+    fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // PUSH1 0 PUSH1 0 REVERT
+        let reverting_initcode = bytes!("60006000fd");
+        // PUSH1 0 PUSH1 0 RETURN — deploys an empty contract
+        let empty_initcode = bytes!("60006000f3");
+        // Contract whose runtime code reverts immediately.
+        let reverting_contract = Address::repeat_byte(0x42);
+
+        // Scenario 1: the CREATE call itself reverts.
+        let create_reverts = key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&reverting_initcode)
+                .gas_limit(5_000_000)
+                .build(),
+        )?;
+        // Scenario 2: the CREATE deploys, then a later call fails the batch.
+        let batch_reverts_after_create = key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&empty_initcode)
+                .call(reverting_contract, &[])
+                .gas_limit(5_000_000)
+                .build(),
+        )?;
+
+        let run = |signed_tx: &tempo_primitives::AASigned,
+                   zero_create_state_gas: bool|
+         -> eyre::Result<u64> {
+            let mut evm = create_funded_evm_t4_amsterdam(caller);
+            if zero_create_state_gas {
+                evm.ctx.cfg.gas_params.override_gas(vec![(
+                    revm::context_interface::cfg::GasId::create_state_gas(),
+                    0,
+                )]);
+            }
+            evm.ctx.db_mut().insert_account_info(
+                reverting_contract,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("60006000fd"))),
+                    ..Default::default()
+                },
+            );
+
+            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(signed_tx, caller))?;
+            assert!(!result.is_success(), "the batch should fail");
+            Ok(result.tx_gas_used())
+        };
+
+        assert_eq!(
+            run(&create_reverts, false)?,
+            run(&create_reverts, true)?,
+            "a reverting AA CREATE call must refund its create_state_gas"
+        );
+        assert_eq!(
+            run(&batch_reverts_after_create, false)?,
+            run(&batch_reverts_after_create, true)?,
+            "a rolled-back deployed AA CREATE call must refund its create_state_gas"
         );
         Ok(())
     }

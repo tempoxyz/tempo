@@ -21,9 +21,9 @@ concurrency:
 jobs:
   add-hardfork:
     name: Add ${{ inputs.hardfork }} hardfork
-    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    if: ${{ github.repository == 'tempoxyz/tempo' && github.ref == 'refs/heads/main' }}
     runs-on: depot-ubuntu-latest-4
-    environment: release-pr
+    environment: add-hardfork
     permissions: {}
     steps:
       - name: Mint scoped app token

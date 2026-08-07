@@ -24,21 +24,14 @@ use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
-use super::{Config, ExecutionEngine, FinalizedBlockProvider, Marshal};
-use crate::{
-    consensus::{Digest, block::Block},
-    utils::OptionFuture,
+use super::{
+    Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message, target::Target,
 };
-
-#[derive(Clone, Copy, Debug)]
-struct FinalizedTip {
-    height: Height,
-    digest: Digest,
-}
+use crate::{consensus::block::Block, utils::OptionFuture};
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
-    mailbox: mpsc::UnboundedReceiver<Update<Block>>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
 
     execution_provider: P,
     execution_engine: E,
@@ -47,8 +40,8 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     epoch_strategy: FixedEpocher,
     floor: Height,
 
-    last_fcu: FinalizedTip,
-    latest_tip: FinalizedTip,
+    last_fcu: Target,
+    latest_tip: Target,
 
     block_queue: VecDeque<(Block, Exact)>,
     floor_candidate: Option<Height>,
@@ -69,7 +62,7 @@ where
     pub(super) fn new(
         context: TContext,
         config: Config<P, E, M>,
-        mailbox: mpsc::UnboundedReceiver<Update<Block>>,
+        mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
         let Config {
             execution_provider,
@@ -80,13 +73,10 @@ where
             fcu_heartbeat_interval,
         } = config;
 
-        let tip = execution_provider
-            .finalized_block_num_hash()
-            .expect("failed reading finalized execution tip");
-        let tip = FinalizedTip {
-            height: Height::new(tip.number),
-            digest: Digest(tip.hash),
-        };
+        let finalized_header = execution_provider
+            .finalized_header()
+            .expect("failed reading finalized execution header");
+        let tip = Target::from_header(&finalized_header);
 
         Self {
             context: ContextCell::new(context),
@@ -129,6 +119,9 @@ where
                     match result {
                         ExecutionTaskResult::Completed(last_fcu) => {
                             self.last_fcu = last_fcu;
+                            if last_fcu.supersedes(&self.latest_tip) {
+                                self.latest_tip = last_fcu;
+                            }
 
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
@@ -140,20 +133,27 @@ where
                     }
                 }
 
-                Some(update) = self.mailbox.next() => {
-                    match update {
-                        Update::Block(block, ack) => {
+                Some(message) = self.mailbox.next() => {
+                    match message {
+                        Message::Update(Update::Block(block, ack)) => {
                             self.block_queue.push_back(((*block).clone(), ack));
                         }
 
-                        // Finalization certificates for Tip updates must be available
-                        // making them a good candidates for setting marshal's floor.
-                        Update::Tip(_, height, digest) => {
+                        // A Tip update has a persisted finalization, so it can
+                        // start a new floor cycle.
+                        Message::Update(Update::Tip(round, height, digest)) => {
                             if self.floor_candidate.is_none() {
                                 self.floor_candidate = Some(height);
                             }
-                            if height > self.latest_tip.height {
-                                self.latest_tip = FinalizedTip { height, digest };
+                            let candidate = Target::from_finalization(round, digest);
+                            if candidate.supersedes(&self.latest_tip) {
+                                self.latest_tip = candidate;
+                            }
+                        }
+                        Message::Finalization { round, digest } => {
+                            let candidate = Target::from_finalization(round, digest);
+                            if candidate.supersedes(&self.latest_tip) {
+                                self.latest_tip = candidate;
                             }
                         }
                     }
@@ -164,6 +164,10 @@ where
                 }
             }
         }
+    }
+
+    fn should_send_forkchoice(&self) -> bool {
+        self.latest_tip.digest != self.last_fcu.digest && self.latest_tip.supersedes(&self.last_fcu)
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
@@ -184,7 +188,7 @@ where
 
         let request = if let Some((block, ack)) = self.block_queue.pop_front() {
             ExecutionRequest::Block(block, ack)
-        } else if self.latest_tip.height > self.last_fcu.height || heartbeat {
+        } else if self.should_send_forkchoice() || heartbeat {
             ExecutionRequest::Forkchoice(self.latest_tip)
         } else {
             return;
@@ -199,9 +203,12 @@ where
 
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
-        let finalized = self.execution_provider.finalized_block_num_hash()?;
-
-        let finalized_height = Height::new(finalized.number);
+        let finalized_height = Height::new(
+            self.execution_provider
+                .finalized_header()?
+                .num_hash()
+                .number,
+        );
         let epoch_length = self
             .epoch_strategy
             .containing(finalized_height)
@@ -244,19 +251,19 @@ where
 }
 
 enum ExecutionRequest {
-    Forkchoice(FinalizedTip),
+    Forkchoice(Target),
     Block(Block, Exact),
 }
 
 enum ExecutionTaskResult {
-    Completed(FinalizedTip),
+    Completed(Target),
     Fatal(Report),
 }
 
 async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     context: TContext,
     execution_engine: E,
-    last_fcu: FinalizedTip,
+    last_fcu: Target,
     request: ExecutionRequest,
 ) -> ExecutionTaskResult {
     match request {
@@ -267,16 +274,13 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
             }
         }
         ExecutionRequest::Block(block, ack) => {
-            let tip = FinalizedTip {
-                height: block.height(),
-                digest: block.digest(),
-            };
+            let tip = Target::from_block(&block);
 
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
 
-            let last_fcu = if tip.height > last_fcu.height {
+            let last_fcu = if tip.supersedes(&last_fcu) {
                 if let Err(error) =
                     submit_forkchoice_update(&context, &execution_engine, &tip).await
                 {
@@ -324,11 +328,11 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     Ok(())
 }
 
-#[instrument(skip_all, fields(height = %tip.height, digest = %tip.digest))]
+#[instrument(skip_all, fields(round = ?tip.round, digest = %tip.digest))]
 async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
-    tip: &FinalizedTip,
+    tip: &Target,
 ) -> eyre::Result<()> {
     let hash = tip.digest.0;
     let forkchoice = ForkchoiceState {

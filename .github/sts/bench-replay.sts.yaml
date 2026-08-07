@@ -1,6 +1,6 @@
 # Allow branch and pull-request replay benchmark workflows in Tempo to mint a
 # short-lived token for GitHub API calls.
-subject_pattern: repo:tempoxyz(@211589300)?/tempo(@994992847)?:((ref:refs/heads/.+)|pull_request)
+subject_pattern: repo:tempoxyz@211589300/tempo@994992847:((ref:refs/heads/.+)|pull_request)
 permissions:
   contents: read
   actions: read
