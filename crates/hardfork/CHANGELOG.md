@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-hardfork@1.11.0`
+
+### Minor Changes
+
+- Added the T10 hardfork and moved TIP-1091 activation (ZoneFactory precompile and shared Zone runtime installation) from T9 to T10, so the ZonePortal runtime can still change after the audit without reopening T9. (by @TanishkGoyal, [#7080](https://github.com/tempoxyz/tempo/pull/7080))
+
 ## `tempo-hardfork@1.10.1`
 
 
