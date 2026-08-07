@@ -557,7 +557,7 @@ where
                     // A now-stale in-flight body fetch is dropped by
                     // `update_notarized_block_fetch` on the next loop
                     // iteration.
-                    self.notarized_tree.advance_finalized(round, height, digest);
+                    self.notarized_tree.set_finalized_tip(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
                     self.pending_finalizations.push_back(FinalizedBlockRequest {
@@ -568,7 +568,7 @@ where
                 }
             },
             Command::PendingHeadReport(report) => {
-                self.record_pending_head_report(report.context);
+                self.record_pending_head(report.context);
             }
             Command::ValidateBlock(request) => {
                 let ValidateBlock {
@@ -605,8 +605,8 @@ where
     /// for `<epoch>`, the node must have finalized the boundary block of
     /// `<epoch>`, which is exactly that parent block. In fact, a node will not
     /// start a simplex engine for `<epoch>` if it does not have this block.
-    fn record_pending_head_report(&mut self, context: Context<Digest, PublicKey>) {
-        self.notarized_tree.record_reported_parent(
+    fn record_pending_head(&mut self, context: Context<Digest, PublicKey>) {
+        self.notarized_tree.set_pending_head(
             context.round,
             Round::new(context.round.epoch(), context.parent.0),
             context.parent.1,
@@ -688,16 +688,7 @@ where
         }
     }
 
-    /// The next notarized block to forward, gated on the local finalized
-    /// state having caught up with the observed finalized tip of the
-    /// network: the tree's canonicalization cursor may name the network
-    /// tip before the execution layer knows it (see
-    /// [`NotarizedTree::advance_finalized`]).
-    ///
-    /// When convergence is complete but the execution layer's head is not
-    /// the pending head — consensus switched to building on an older
-    /// notarized block — the pending head itself is returned, so that the
-    /// forward's forkchoice update repoints the head at it.
+    /// Returns the next notarized block to send to the execution layer.
     fn next_notarized_forward(&self) -> Option<&BlockEntry> {
         (self.last_canonicalized.finalized_height >= self.notarized_tree.finalized_tip_height())
             .then(|| {

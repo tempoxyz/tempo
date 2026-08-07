@@ -136,7 +136,7 @@ impl NotarizedTree {
     /// after nullifications, a later view may build on an older notarized
     /// block than its predecessor did. Parents covered by the finalized
     /// tip are not recorded; the finalization pipeline owns them.
-    pub(super) fn record_reported_parent(
+    pub(super) fn set_pending_head(
         &mut self,
         reported_in: Round,
         notarized_in: Round,
@@ -214,19 +214,25 @@ impl NotarizedTree {
     /// before any scheduling decision reads the tree, which keeps the
     /// recording methods simple inserts.
     ///
-    /// Idempotent, in two steps:
+    /// Idempotent, in three steps:
     ///
     /// 1. The finalized tip's ownership boundary is enforced: data at or
-    ///    below it is dropped, and a cursor it overtook is reset to it
-    ///    (the execution layer only knows the tip once the finalization
-    ///    pipeline has caught up, which forwarding is gated on - see
-    ///    [`super::Actor::next_notarized_forward`]).
+    ///    below it, and a pending head it covers, are dropped.
     /// 2. A cursor whose block is off the pending head's ancestry sinks to
     ///    the fork point: first against the pending head itself (consensus
     ///    builds on the pending head, so nothing above it is currently
     ///    built on), then along its ancestry for strandings below it (see
     ///    [`Self::sink_stranded_cursor`]). This step needs the pending
     ///    head's height and waits until its body has arrived.
+    /// 3. A cursor the finalized tip overtook is reset to the tip, the
+    ///    unique canonical block at its height (the execution layer only
+    ///    knows the tip once the finalization pipeline has caught up,
+    ///    which forwarding is gated on - see
+    ///    [`super::Actor::next_notarized_forward`]). This runs *after* the
+    ///    sinks: when a finalized block orphans the branch the cursor sits
+    ///    on, the sinks first walk the cursor down the retained orphaned
+    ///    branch into the tip's range, and the reset re-roots it onto the
+    ///    canonical chain in the same pass.
     ///
     /// Nothing beyond the finalized tip's sweep is pruned. Off-path
     /// bodies stay: a body off the
@@ -247,20 +253,19 @@ impl NotarizedTree {
         {
             self.pending_head = None;
         }
+
+        let pending_target = self.pending_head.as_ref().and_then(|pending| {
+            let entry = self.blocks.get(&pending.digest)?;
+            Some((entry.block.height(), pending.digest))
+        });
+        if let Some((pending_height, pending_digest)) = pending_target {
+            self.sink_cursor(pending_height, pending_digest);
+            self.sink_stranded_cursor();
+        }
+
         if self.notarized_cursor.0 <= finalized_height {
             self.notarized_cursor = (finalized_height, finalized_digest);
         }
-
-        let Some(pending) = &self.pending_head else {
-            return;
-        };
-        let pending_digest = pending.digest;
-        let Some(entry) = self.blocks.get(&pending_digest) else {
-            return;
-        };
-        let pending_height = entry.block.height();
-        self.sink_cursor(pending_height, pending_digest);
-        self.sink_stranded_cursor();
     }
 
     /// Sinks the canonicalization cursor below `height` when the caller has
@@ -349,7 +354,7 @@ impl NotarizedTree {
     /// Tips at or below the already tracked round (a tip replayed on
     /// startup) are ignored, so the boundary never regresses. The marshal
     /// actor guarantees that a newer round never finalizes a lower height.
-    pub(super) fn advance_finalized(&mut self, round: Round, height: Height, digest: Digest) {
+    pub(super) fn set_finalized_tip(&mut self, round: Round, height: Height, digest: Digest) {
         if round > self.finalized_tip.0 {
             self.finalized_tip = (round, height, digest);
         } else {

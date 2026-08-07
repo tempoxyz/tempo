@@ -61,7 +61,7 @@ fn block(view: u64, height: u64, parent: Digest) -> Block {
 /// Reports `block` as the notarized parent of a consensus context in
 /// `view` — as simplex does when the proposal of `view` builds on it.
 fn report_parent(tree: &mut NotarizedTree, view: u64, block: &Block) {
-    tree.record_reported_parent(round(view), block.context().round, block.digest());
+    tree.set_pending_head(round(view), block.context().round, block.digest());
 }
 
 /// Reports the block as the parent of a context in the view after its own
@@ -260,10 +260,10 @@ fn finalized_tip_bounds_recording() {
 
     // Parents notarized at or below the finalized round, or re-affirming
     // the finalized tip itself, do not become the pending head.
-    tree.record_reported_parent(round(6), round(5), b.digest());
-    tree.record_reported_parent(round(7), round(6), a.digest());
+    tree.set_pending_head(round(6), round(5), b.digest());
+    tree.set_pending_head(round(7), round(6), a.digest());
     assert!(tree.pending_head.is_none());
-    tree.record_reported_parent(round(7), round(6), b.digest());
+    tree.set_pending_head(round(7), round(6), b.digest());
     assert!(
         tree.pending_head
             .is_some_and(|pending| pending.digest == b.digest())
@@ -273,7 +273,7 @@ fn finalized_tip_bounds_recording() {
     // pending head naming it along, so that it is neither fetched nor
     // forwarded.
     let stale = block(7, 11, finalized);
-    tree.record_reported_parent(round(8), round(7), stale.digest());
+    tree.set_pending_head(round(8), round(7), stale.digest());
     tree.record_block(stale.clone().into());
     assert!(!tree.blocks.contains_key(&stale.digest()));
     assert!(tree.pending_head.is_none());
@@ -412,6 +412,42 @@ fn validation_cached_ancestors_reroot_the_cursor() {
 }
 
 #[test]
+fn finalized_tip_reroots_a_cursor_stranded_on_an_orphaned_branch() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    // The fork F - A1 - A2 is reported and forwarded in full ...
+    let a1 = block(1, 11, finalized);
+    let a2 = block(2, 12, a1.digest());
+    record(&mut tree, &a1);
+    record(&mut tree, &a2);
+    tree.record_execution_notarized(Height::new(12), a2.digest());
+
+    // ... when the network finalizes B1, A1's sibling, orphaning the
+    // branch the cursor sits on. The heal pass drops the fork's pending
+    // head, but the cursor - above the tip - stays put for now. (The
+    // actor separately rebases the execution layer's head onto B1; see
+    // `forward_finalized`.)
+    let b1 = block(3, 11, finalized);
+    let b2 = block(4, 12, b1.digest());
+    tree.advance_finalized(round(3), Height::new(11), b1.digest());
+    tree.heal();
+    assert!(tree.pending_head.is_none());
+    assert_eq!(tree.notarized_cursor, (Height::new(12), a2.digest()));
+
+    // The next report builds on B2: within a single heal pass, the sink
+    // walks the cursor down the retained orphaned branch into the tip's
+    // range, and the tip reset re-roots it onto the canonical chain -
+    // B2 is forwarded without any fetch.
+    report_parent(&mut tree, 5, &b2);
+    tree.record_block(b2.clone().into());
+    tree.heal();
+    assert_eq!(tree.notarized_cursor, (Height::new(11), b1.digest()));
+    let next = tree.next_to_forward(T0).expect("fork branch");
+    assert_eq!(next.block.digest(), b2.digest());
+}
+
+#[test]
 fn reported_parents_supersede_by_report_order_not_notarization_order() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
@@ -534,7 +570,7 @@ fn reaffirmed_finalized_tip_needs_no_fetch() {
     // A context re-affirming the finalized tip as parent is not
     // recorded (its digest is the tree's tip), so it neither
     // becomes the latest notarization nor triggers a fetch.
-    tree.record_reported_parent(round(3), round(2), finalized);
+    tree.set_pending_head(round(3), round(2), finalized);
 
     assert_eq!(tree.first_missing_ancestor(), None);
 }
