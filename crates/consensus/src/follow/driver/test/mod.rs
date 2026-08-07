@@ -277,6 +277,7 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         )
         .expect("driver should initialize");
 
+        let mut boundary_schemes = progress.boundary_schemes();
         actor.start();
 
         let block = make_block(EPOCH_LENGTH.get() * 2 + 1, None);
@@ -301,6 +302,13 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
         assert!(
             schemes.scoped(network_fixture.outcome.epoch).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
+        );
+        assert!(
+            matches!(
+                boundary_schemes.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "caching a successful fallback is not authenticated boundary progress",
         );
         assert_eq!(
             progress.watermark(),
@@ -474,10 +482,10 @@ fn gossiped_certificate_failing_registered_scheme_is_invalid() {
 /// need this scheme cannot be retried until the driver announces it. Polling
 /// cannot discover the new scheme.
 #[test_traced]
-fn installing_a_scheme_is_announced() {
+fn installing_a_boundary_scheme_is_announced() {
     deterministic::Runner::default().start(|mut context| async move {
         let rig = start_rig(&mut context);
-        let mut schemes = rig.progress.schemes();
+        let mut schemes = rig.progress.boundary_schemes();
         let next = dkg_fixture(&mut context, Epoch::new(1));
         let boundary = FixedEpocher::new(EPOCH_LENGTH)
             .last(Epoch::zero())
@@ -511,6 +519,10 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
         provider.add_header(&startup_block);
         let marshal = StubMarshal::default();
         let executor = StubExecutor::default();
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let expected_boundary = strategy
+            .last(Epoch::zero())
+            .expect("epoch zero has a boundary");
 
         let (actor, mailbox, progress) = try_init(
             context.child("driver"),
@@ -524,7 +536,7 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
                 last_finalized_height: Height::zero(),
                 marshal: marshal.clone(),
                 executor: executor.clone(),
-                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                epoch_strategy: strategy,
             },
         )
         .expect("driver should initialize");
@@ -551,6 +563,7 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
             "nothing was applied, so nothing advanced",
         );
         assert_eq!(marshal.report_count(), 0);
+        assert_eq!(marshal.hints(), vec![expected_boundary]);
         assert!(executor.finalizations().is_empty());
     });
 }
@@ -793,6 +806,60 @@ fn scheme_before_network_identity_epoch_is_required() {
         assert!(marshal.certified().is_empty());
         assert_eq!(marshal.report_count(), 0);
         assert!(marshal.hints().is_empty());
+    });
+}
+
+#[test_traced]
+fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
+        let missing_fixture = dkg_fixture(&mut context, Epoch::new(1));
+        let startup_block = make_block(0, Some(&fixture.outcome));
+        let provider = StubExecutionProvider::default();
+        provider.add_header(&startup_block);
+
+        let marshal = StubMarshal::default();
+        let executor = StubExecutor::default();
+        let (actor, mailbox, progress) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: missing_fixture.outcome.epoch.get() + 1,
+                    identity: *missing_fixture.outcome.network_identity(),
+                },
+                last_finalized_height: Height::zero(),
+                marshal: marshal.clone(),
+                executor: executor.clone(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+            },
+        )
+        .expect("driver should initialize");
+
+        actor.start();
+
+        let block = make_block(EPOCH_LENGTH.get() + 1, None);
+        let certificate = make_finalization(
+            &block,
+            missing_fixture.outcome.epoch,
+            &missing_fixture.schemes,
+        );
+        let result = mailbox
+            .verify_and_apply(certificate)
+            .await
+            .expect("driver should answer");
+
+        assert_eq!(
+            result,
+            Outcome::NeedsScheme {
+                epoch: missing_fixture.outcome.epoch,
+            }
+        );
+        assert_eq!(progress.watermark(), Round::zero());
+        assert_eq!(marshal.report_count(), 0);
+        assert!(marshal.hints().is_empty());
+        assert!(executor.finalizations().is_empty());
     });
 }
 

@@ -29,13 +29,13 @@ pub(crate) enum Outcome {
     Stale,
     /// The signature failed with an available scheme, so the sender is responsible.
     Invalid,
-    /// No usable scheme for the certificate's epoch.
+    /// No authenticated epoch scheme can currently verify the certificate.
     ///
-    /// Do not blame the sender. After an identity rotation, an honest peer may
-    /// send a certificate before this node learns the new key. Penalizing peers
-    /// here could disconnect gossip while it is needed for recovery.
+    /// Do not blame the sender. The network-identity fallback can reject an
+    /// honest certificate after an identity rotation but before this node learns
+    /// the new key from an authenticated boundary.
     NeedsScheme {
-        /// Certificate epoch, used to retry after its scheme or a later one is installed.
+        /// Certificate epoch, used to retry after a boundary installs its scheme or a later one.
         epoch: Epoch,
     },
 }
