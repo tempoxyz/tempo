@@ -58,21 +58,29 @@ use super::wire;
 
 const MAX_CONNECTIONS_PER_PEER: usize = 2;
 
-/// Logical peer lifecycle events.
+/// Events for the consensus-facing logical peer.
 ///
-/// These events use an unbounded channel so backpressure cannot drop them.
-/// Losing [`PeerEvent::Up`] would prevent relay to that peer. Losing
-/// [`PeerEvent::Down`] would leave stale peer state in consensus.
+/// The coordinator emits [`PeerEvent::Up`] when it accepts the first physical
+/// connection for a peer. A transient duplicate connection joins the same
+/// logical peer and does not produce another `Up`. [`PeerEvent::Down`] follows
+/// when the last physical connection disappears or when the coordinator removes
+/// the logical peer after a protocol breach.
+///
+/// An oversized frame produces [`PeerEvent::ProtocolBreach`] before `Down`. The
+/// transport closes the offending connection and any duplicate connection, but
+/// it has no access to Reth's peer-control handle. The receiver must apply the
+/// reputation penalty associated with the breach.
+///
+/// These events use an unbounded channel because losing lifecycle events would
+/// leave stale peer state, while losing a breach would skip its penalty.
 #[derive(Debug)]
 pub enum PeerEvent {
-    /// A peer gained its first accepted `tempo/1` connection.
-    ///
-    /// Always balanced with [`PeerEvent::Down`] events.
+    /// The logical peer became available for inbound and outbound traffic.
     Up(PeerId),
-    /// A peer lost its last accepted `tempo/1` connection.
-    ///
-    /// Always balanced with [`PeerEvent::Up`] events.
+    /// The logical peer no longer has an accepted physical connection.
     Down(PeerId),
+    /// An accepted physical connection breached the protocol and must be closed.
+    ProtocolBreach(PeerId),
 }
 
 /// An inbound frame that passed the transport's guards.
@@ -169,6 +177,7 @@ fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, Transp
     let shared = Arc::new(Shared {
         commands: commands_tx,
         frames: frames_tx,
+        peer_events: peer_events_tx.clone(),
         config,
         next_connection: AtomicU64::new(0),
         metrics: Arc::clone(&metrics),
@@ -201,27 +210,11 @@ fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, Transp
     (protocol_handler, coordinator, transport)
 }
 
-#[derive(Metrics)]
-#[metrics(scope = "tempo_gossip")]
-struct GossipMetrics {
-    /// tempo/1 frames received from peers.
-    frames_received: Counter,
-    /// tempo/1 frames dropped because this node does not ingest gossip.
-    dropped_not_ingesting: Counter,
-    /// tempo/1 frames dropped for exceeding the maximum frame size.
-    dropped_oversized: Counter,
-    /// tempo/1 frames dropped by the per-connection rate limit.
-    dropped_admission: Counter,
-    /// tempo/1 frames dropped because the queue to the consensus layer was full.
-    dropped_channel_full: Counter,
-    /// RLPx connections rejected after a peer reached its tempo/1 connection cap.
-    rejected_excess_connections: Counter,
-}
-
 #[derive(Debug)]
 struct Shared {
     commands: mpsc::UnboundedSender<ConnectionCommand>,
     frames: mpsc::Sender<Frame>,
+    peer_events: mpsc::UnboundedSender<PeerEvent>,
     config: Config,
     next_connection: AtomicU64,
     metrics: Arc<GossipMetrics>,
@@ -293,6 +286,7 @@ impl TransportCoordinator {
                 registration,
             } => self.register(peer, id, registration),
             ConnectionCommand::Unregister { peer, id } => self.unregister(peer, id),
+            ConnectionCommand::ProtocolBreach { peer, id } => self.protocol_breach(peer, id),
         }
     }
 
@@ -356,6 +350,20 @@ impl TransportCoordinator {
         };
         peer.outbound.send_replace(Some(outbound.frame));
     }
+
+    fn protocol_breach(&mut self, peer: PeerId, id: ConnectionId) {
+        let Some(connections) = self.peers.get(&peer) else {
+            return;
+        };
+        if !connections.ids.contains(&id) {
+            return;
+        }
+
+        // Removes the PeerConnections which drops the `outbound` stream. This serves as a signal
+        // for the associated connections to shutdown.
+        let _ = self.peers.remove(&peer);
+        let _ = self.peer_events.send(PeerEvent::Down(peer));
+    }
 }
 
 #[derive(Debug)]
@@ -366,6 +374,10 @@ enum ConnectionCommand {
         registration: oneshot::Sender<Registration>,
     },
     Unregister {
+        peer: PeerId,
+        id: ConnectionId,
+    },
+    ProtocolBreach {
         peer: PeerId,
         id: ConnectionId,
     },
@@ -461,8 +473,8 @@ impl ConnectionHandler for GossipProtocolHandler {
 /// A physical `tempo/1` connection polled by reth.
 ///
 /// Its underlying stream remains unpolled until the coordinator accepts its
-/// registration. Rejection ends this satellite stream and therefore the
-/// containing RLPx connection.
+/// registration. Registration rejection or a protocol breach ends this
+/// satellite stream and therefore the containing RLPx connection.
 #[derive(Debug)]
 pub struct Connection<S = ProtocolConnection> {
     peer: PeerId,
@@ -470,7 +482,7 @@ pub struct Connection<S = ProtocolConnection> {
     state: ConnectionState,
     shared: Arc<Shared>,
     conn: S,
-    // Duplicate physical connections to the same peer subscribe to the same logical peer value.
+    // Dropping the sender closes every physical connection for the logical peer.
     outbound: Option<WatchStream<Option<Bytes>>>,
     admission: Admission,
 }
@@ -490,22 +502,33 @@ impl<S> Connection<S> {
         Poll::Ready(matches!(self.state, ConnectionState::Active))
     }
 
-    fn on_inbound(&mut self, frame: BytesMut) {
+    fn on_inbound(&mut self, frame: BytesMut) -> bool {
         self.shared.metrics.frames_received.increment(1);
-
-        if !self.shared.config.ingest {
-            self.shared.metrics.dropped_not_ingesting.increment(1);
-            return;
-        }
 
         if frame.len() > wire::MAX_FRAME_BYTES {
             self.shared.metrics.dropped_oversized.increment(1);
-            return;
+            let _ = self
+                .shared
+                .peer_events
+                .send(PeerEvent::ProtocolBreach(self.peer));
+            let _ = self
+                .shared
+                .commands
+                .send(ConnectionCommand::ProtocolBreach {
+                    peer: self.peer,
+                    id: self.id,
+                });
+            return false;
         }
 
         if !self.admission.allow(Instant::now()) {
             self.shared.metrics.dropped_admission.increment(1);
-            return;
+            return true;
+        }
+
+        if !self.shared.config.ingest {
+            self.shared.metrics.dropped_not_ingesting.increment(1);
+            return true;
         }
 
         // This queue is lossy. A newer certificate also proves finality for
@@ -521,6 +544,8 @@ impl<S> Connection<S> {
         {
             self.shared.metrics.dropped_channel_full.increment(1);
         }
+
+        true
     }
 }
 
@@ -533,15 +558,31 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.get_mut();
 
+        // Reth treats this stream as the lifetime of the installed `tempo/1`
+        // satellite, not only as a source of outbound frames. Yielding a frame
+        // forwards it to the peer, while remaining pending keeps the RLPx session
+        // alive as we wait for more work. Once the stream ends, Reth considers the
+        // satellite closed and tears down the entire containing RLPx connection,
+        // including its other negotiated subprotocols.
+        //
+        // The coordinator must accept this physical connection before we touch its
+        // underlying stream. A rejected registration therefore closes the RLPx
+        // connection without processing any frames received from it. Once accepted,
+        // the shared outbound relay also acts as a shutdown signal. The coordinator
+        // closes that relay when it removes the logical peer, which ends every
+        // physical connection subscribed to it.
+        //
+        // Each poll also processes frames received through the underlying protocol
+        // connection. We check the outbound relay before reading each inbound frame
+        // so a peer that continuously sends data cannot prevent locally produced
+        // certificates from being forwarded. The loop continues until it can yield
+        // an outbound frame, must wait for more work, or encounters a condition that
+        // closes the connection.
         if !ready!(me.poll_registration(cx)) {
-            // Reth closes the containing RLPx connection when an installed
-            // satellite ends. This rejects an excess connection without
-            // processing any of its frames.
             return Poll::Ready(None);
         }
 
         loop {
-            // Prefer outbound relay so inbound traffic cannot starve it.
             if let Some(outbound) = me.outbound.as_mut() {
                 match outbound.poll_next_unpin(cx) {
                     Poll::Ready(Some(Some(frame))) => {
@@ -550,8 +591,7 @@ where
                         return Poll::Ready(Some(out));
                     }
                     Poll::Ready(Some(None)) => continue,
-                    // Keep the connection alive and continue to read inbound frames.
-                    Poll::Ready(None) => me.outbound = None,
+                    Poll::Ready(None) => return Poll::Ready(None),
                     Poll::Pending => {}
                 }
             }
@@ -559,7 +599,9 @@ where
             let Some(frame) = ready!(me.conn.poll_next_unpin(cx)) else {
                 return Poll::Ready(None);
             };
-            me.on_inbound(frame);
+            if !me.on_inbound(frame) {
+                return Poll::Ready(None);
+            }
         }
     }
 }
@@ -609,6 +651,23 @@ impl Admission {
             false
         }
     }
+}
+
+#[derive(Metrics)]
+#[metrics(scope = "tempo_gossip")]
+struct GossipMetrics {
+    /// tempo/1 frames received from peers.
+    frames_received: Counter,
+    /// tempo/1 frames dropped because this node does not ingest gossip.
+    dropped_not_ingesting: Counter,
+    /// tempo/1 frames dropped for exceeding the maximum frame size.
+    dropped_oversized: Counter,
+    /// tempo/1 frames dropped by the per-connection rate limit.
+    dropped_admission: Counter,
+    /// tempo/1 frames dropped because the queue to the consensus layer was full.
+    dropped_channel_full: Counter,
+    /// RLPx connections rejected after a peer reached its tempo/1 connection cap.
+    rejected_excess_connections: Counter,
 }
 
 #[cfg(test)]
@@ -738,8 +797,8 @@ mod tests {
 
         let from_first = BytesMut::from(&b"from-first"[..]);
         let from_second = BytesMut::from(&b"from-second"[..]);
-        first.on_inbound(from_first.clone());
-        second.on_inbound(from_second.clone());
+        assert!(first.on_inbound(from_first.clone()));
+        assert!(second.on_inbound(from_second.clone()));
         assert_eq!(
             transport.frames.try_recv().unwrap().frame.as_ref(),
             from_first.as_ref()
@@ -811,6 +870,38 @@ mod tests {
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Down(known)) if known == peer)
         );
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_closes_all_connections_for_peer() {
+        let mut config = test_config();
+        config.ingest = false;
+        let (handler, coordinator, mut transport) = build(config);
+        let _coordinator = tokio::spawn(coordinator.run());
+        let peer = PeerId::with_last_byte(4);
+        let shared = Arc::clone(&handler.shared);
+        let oversized = BytesMut::from(&vec![0; wire::MAX_FRAME_BYTES + 1][..]);
+        let mut first = Arc::clone(&shared).connection(peer, stream::iter([oversized]));
+        let mut second = shared.connection(peer, stream::pending::<BytesMut>());
+
+        assert!(register(&mut first).await);
+        assert!(register(&mut second).await);
+        assert!(
+            matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
+        );
+
+        assert!(first.next().await.is_none());
+        assert!(
+            matches!(transport.control.recv().await, Some(PeerEvent::ProtocolBreach(known)) if known == peer)
+        );
+        assert!(
+            matches!(transport.control.recv().await, Some(PeerEvent::Down(known)) if known == peer)
+        );
+        assert!(second.next().await.is_none());
+        assert!(matches!(
+            transport.frames.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]
