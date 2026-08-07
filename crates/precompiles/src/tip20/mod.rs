@@ -914,6 +914,46 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// Moves channel-reserve custody after the reserve applies operation-specific TIP-403 rules.
+    ///
+    /// This is an internal TIP-1034 integration, not an ABI entrypoint. At least one physical
+    /// endpoint must be the canonical channel reserve. The reserve checks the logical payer-payee
+    /// path before funding and capture, and derives refunds from authenticated channel state.
+    ///
+    /// `receive_policy_sender` is the sender presented to TIP-1028. It may differ from the physical
+    /// balance owner when reserve custody pays a channel's payee. Unlike ordinary TIP-20 transfers,
+    /// channel custody movements revert when TIP-1028 rejects delivery because channel accounting
+    /// cannot represent a pending guarded payment.
+    pub(crate) fn channel_reserve_transfer(
+        &mut self,
+        from: Address,
+        to: Recipient,
+        amount: U256,
+        receive_policy_sender: Address,
+    ) -> Result<()> {
+        if from != TIP20_CHANNEL_RESERVE_ADDRESS
+            && to.original_address() != TIP20_CHANNEL_RESERVE_ADDRESS
+        {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
+        self.check_not_paused()?;
+        to.validate()?;
+        self.check_and_update_spending_limit(from, amount)?;
+
+        if self.storage.spec().is_t6() && to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
+        }
+        self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
+
+        self._transfer(from, &to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
+
+        Ok(())
+    }
+
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
@@ -1159,6 +1199,25 @@ impl TIP20Token {
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        Ok(())
+    }
+
+    /// Ensures `receiver` currently accepts this token from `sender` under TIP-1028.
+    ///
+    /// Receive policies remain mutable, so a later policy change can still block delivery.
+    pub(crate) fn ensure_receive_policy_authorized(
+        &self,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<()> {
+        if self.storage.spec().is_t6()
+            && TIP403Registry::new()
+                .validate_receive_policy(self.address, sender, receiver)?
+                .is_some()
+        {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1436,6 +1495,11 @@ impl Recipient {
         })
     }
 
+    /// Returns the original recipient address used by the transfer.
+    fn original_address(&self) -> Address {
+        self.virtual_addr.unwrap_or(self.target)
+    }
+
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
@@ -1451,7 +1515,7 @@ impl Recipient {
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
+        TIP20Event::transfer(from, self.original_address(), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
