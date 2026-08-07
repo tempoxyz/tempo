@@ -94,7 +94,7 @@ on:
         required: false
       TS_OAUTH_CLIENT_ID:
         required: false
-      TS_OAUTH_SECRET:
+      TS_AUDIENCE:
         required: false
   workflow_dispatch:
     inputs:
@@ -338,7 +338,7 @@ jobs:
         if: env.BENCH_INPUT_VALSCOPE == 'true'
         env:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
           BENCH_LOGS_URL: ${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}
           BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
         run: |
@@ -346,7 +346,7 @@ jobs:
             VALSCOPE_CONTROL_URL
             VALSCOPE_INTERNAL_TOKEN
             TS_OAUTH_CLIENT_ID
-            TS_OAUTH_SECRET
+            TS_AUDIENCE
             BENCH_LOGS_URL
             BENCH_METRICS_URL
           )
@@ -359,11 +359,12 @@ jobs:
 
       - name: Connect to Tailscale for ValScope
         if: env.BENCH_INPUT_VALSCOPE == 'true'
-        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888 # v4.1.3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:github-actions-observability
+          targets: dev-eu-valscope
 
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

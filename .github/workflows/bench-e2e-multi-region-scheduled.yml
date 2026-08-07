@@ -184,7 +184,7 @@ jobs:
       VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
       VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
 
   save-state:
     needs: [resolve-refs, bench-e2e-multi-region]
