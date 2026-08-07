@@ -4,16 +4,23 @@
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
 //!
-//! Beyond finalizations, the agent tracks which blocks are notarized (learned
-//! from the parent contexts that consensus hands to the application on
-//! propose/verify: such a parent must be notarized for the proposal to be
-//! valid) and reconstructs the canonical notarized chain on top of the
-//! finalized tip. It drives the execution layer's head towards the tip of
-//! that notarized chain, fetching missing block bodies from the marshal
-//! actor in the background. This decouples updating the execution layer from
-//! the lifetime of individual consensus requests: even if simplex aborts a
-//! view (and with it the application's verify/propose future), the executor
+//! Beyond finalizations, the agent tracks the *pending head*: the parent of
+//! the most recent consensus context handed to the application on
+//! propose/verify. Such a parent is doubly informative - it must be
+//! notarized for the proposal to be valid, and it is the block consensus
+//! reports building on. The agent reconstructs the pending head's ancestry
+//! on top of the finalized tip and converges the execution layer's head
+//! onto it, fetching missing block bodies from the marshal actor in the
+//! background. This decouples updating the execution layer from the
+//! lifetime of individual consensus requests: even if simplex aborts a view
+//! (and with it the application's verify/propose future), the executor
 //! retains what it learned and keeps the execution layer in sync.
+//!
+//! Reported parents are not monotonic: after nullifications, a later view
+//! may build on an *older* notarized block than its predecessor did (a
+//! notarized-but-uncertified block is abandoned). Convergence therefore
+//! follows the report order, and may legitimately move the execution
+//! layer's head *backwards* onto the pending head.
 //!
 //! Execution-layer work is prioritized by consensus latency: validating a
 //! proposal, then building one, then forwarding notarized blocks, then
@@ -21,8 +28,8 @@
 //!
 //! Only notarized-block forwarding and the finalization pipeline ever move
 //! the execution layer's head. A build request is dispatched if and only if
-//! the head already is the build's parent — its forkchoice update
-//! re-affirms the head to register the build rather than moving it — and is
+//! the head already is the build's parent - its forkchoice update
+//! re-affirms the head to register the build rather than moving it - and is
 //! failed fast otherwise, so a build can never fight the notarized-chain
 //! convergence (see [`Actor::start_next_execution_task`]).
 //!
@@ -43,16 +50,16 @@
 //! repaired in the background instead of on the latency-critical path.
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::VecDeque,
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::B256;
 
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{
-    CertifiableBlock as _, Heightable as _,
+    Heightable as _,
     marshal::Update,
     simplex::types::Context,
     types::{Height, Round},
@@ -93,346 +100,8 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-/// How long a notarized block the execution layer failed to process is
-/// withheld from forwarding before it becomes eligible for a retry.
-const NOTARIZED_REJECTION_RETRY_DELAY: Duration = Duration::from_secs(10);
-
-/// A block known to the executor together with the validator set to validate
-/// it against.
-#[derive(Clone, Debug)]
-struct BlockEntry {
-    block: Arc<Block>,
-    rejected_at: Option<SystemTime>,
-}
-
-/// Tracks notarized blocks at the tip of the chain and returns which block can
-/// be forwarded to the EL next.
-///
-/// Notarization facts (a round and the digest notarized in it) are learned
-/// from the parent contexts that simplex hands to the application on
-/// propose/verify, and derived from blocks fetched along the latest
-/// notarization's ancestry. Block bodies are captured from validation
-/// requests and the node's own builds (the proposer never verifies its own
-/// block) or fetched from the marshal actor. Both are combined to
-/// reconstruct the
-/// canonical notarized chain on top of the finalized tip: the ancestry of
-/// the latest notarization, because a block can only be notarized if its
-/// parent is, so everything off that ancestry was forked out (its round
-/// nullified).
-///
-/// The directory holds data strictly above the finalized *network* tip,
-/// which it tracks itself: recording and pruning are guarded against it.
-///
-/// The directory is self-canonicalizing: it tracks how far along the
-/// canonical notarized path the execution layer's head has been advanced
-/// (the `notarized_cursor`) and hands out the block directly above the
-/// cursor as the next to forward. Forked-out blocks are deleted as they are
-/// discovered — a new latest notarization deletes everything at or above
-/// its height, a fetched ancestor deletes its same-height siblings — and
-/// the cursor sinks to the parent of its deleted block each time, so it
-/// converges on the fork point (a block the execution layer provably has)
-/// and the common trunk is never re-forwarded.
-#[derive(Debug)]
-struct NotarizedFactsDirectory {
-    /// The latest observed finalized tip of the network: the directory's
-    /// lower bound. Data at or below it is never recorded, and recorded data
-    /// is pruned once the tip moves past it.
-    finalized_tip: (Round, Height, Digest),
-    /// The canonicalization cursor: the most recent block on the canonical
-    /// notarized path that the execution layer provably has. Blocks are
-    /// forwarded strictly above it.
-    ///
-    /// The cursor never runs ahead of the execution layer's head, but it may
-    /// trail it: when the canonical path forks away, the cursor sinks to
-    /// the fork point (an ancestor of the head, hence still known to the
-    /// execution layer), and when the finalized tip advances past it, it is
-    /// reset to that tip — which the execution layer only knows once the
-    /// finalization pipeline has caught up, so the caller must gate
-    /// forwarding on that (see [`Actor::next_notarized_forward`]).
-    notarized_cursor: (Height, Digest),
-    /// Digests known to be notarized, keyed by the round they were notarized in.
-    notarized: BTreeMap<Round, Digest>,
-    /// Bodies of blocks at the tip of the chain, keyed by digest.
-    blocks: HashMap<Digest, BlockEntry>,
-}
-
-impl NotarizedFactsDirectory {
-    fn new(finalized_tip: (Round, Height, Digest), notarized_cursor: (Height, Digest)) -> Self {
-        Self {
-            finalized_tip,
-            notarized_cursor,
-            notarized: BTreeMap::new(),
-            blocks: HashMap::new(),
-        }
-    }
-
-    /// Records `digest` as notarized in `round` unless it is already covered
-    /// by the finalized tip.
-    fn record_notarized(&mut self, round: Round, digest: Digest) {
-        let (finalized_round, _, finalized_digest) = self.finalized_tip;
-        if round > finalized_round && digest != finalized_digest {
-            let is_latest = self
-                .notarized
-                .last_key_value()
-                .is_none_or(|(latest, _)| round > *latest);
-            self.notarized.insert(round, digest);
-            // A new latest notarization proves everything at or above its
-            // height forked out. Its height is only known once its body is;
-            // if the body is still missing, the deletion happens when the
-            // body arrives (see [`Self::record_block`]).
-            if is_latest && let Some(entry) = self.blocks.get(&digest) {
-                let height = entry.block.height();
-                self.delete_forked_out(height, digest);
-            }
-        }
-    }
-
-    /// Records the body of a block unless the finalized tip covers its
-    /// height. Such a stale block's notarization fact is dropped along with
-    /// its body so that the body is not fetched again.
-    fn record_block(&mut self, block: Arc<Block>) {
-        if block.height() <= self.finalized_tip.1 {
-            debug!(
-                digest = %block.digest(),
-                height = %block.height(),
-                "block is at or below the finalized tip; dropping it from the directory",
-            );
-            self.remove(&block.digest());
-            return;
-        }
-        let digest = block.digest();
-        let height = block.height();
-        self.blocks.insert(
-            digest,
-            BlockEntry {
-                block,
-                rejected_at: None,
-            },
-        );
-        // The body may have delivered the height of the latest notarization,
-        // enabling the fork-out deletion deferred by
-        // [`Self::record_notarized`].
-        if self
-            .notarized
-            .last_key_value()
-            .is_some_and(|(_, latest)| *latest == digest)
-        {
-            self.delete_forked_out(height, digest);
-        }
-    }
-
-    /// Records the body of a block fetched along the latest notarization's
-    /// ancestry.
-    ///
-    /// Being on the ancestry proves the block notarized, so its notarization
-    /// fact — at the round named by its own consensus context — is recorded
-    /// alongside the body. It also proves the block canonical at its height,
-    /// so any different block stored at the same height was forked out and
-    /// is deleted. Bodies from validation requests carry neither proof (a
-    /// stale validation of a forked-out block may arrive late) and must use
-    /// [`Self::record_block`].
-    fn record_fetched_block(&mut self, block: Arc<Block>) {
-        let height = block.height();
-        let digest = block.digest();
-        let round = block.context().round;
-        // Record before sweeping the siblings: the fetched block may be the
-        // latest notarization itself, whose fact must survive the sweep of
-        // bodiless facts.
-        self.record_block(block);
-        self.record_notarized(round, digest);
-        self.delete_forked_out_siblings(height, digest);
-    }
-
-    /// Records the execution layer's canonical head, advancing the
-    /// canonicalization cursor when the head sits on the canonical notarized
-    /// path above the cursor.
-    ///
-    /// Anything else is ignored: the cursor must never name a block off the
-    /// canonical path, and it only ever moves backwards through
-    /// [`Self::sink_cursor`] or [`Self::advance_finalized`], which uphold
-    /// that.
-    fn record_execution_notarized(&mut self, height: Height, head: Digest) {
-        if height <= self.notarized_cursor.0 || head == self.notarized_cursor.1 {
-            return;
-        }
-        let Some((_, tip)) = self.notarized.last_key_value() else {
-            return;
-        };
-        let mut digest = *tip;
-        while digest != self.notarized_cursor.1 {
-            if digest == head {
-                self.notarized_cursor = (height, head);
-                return;
-            }
-            let Some(entry) = self.blocks.get(&digest) else {
-                return;
-            };
-            digest = entry.block.parent_digest();
-        }
-    }
-
-    /// Deletes every block at or above `height` other than `canonical`,
-    /// along with the facts of the deleted blocks.
-    ///
-    /// The caller proves that the block `canonical` at `height` is the
-    /// latest notarization: everything else at or above that height was
-    /// forked out (at most one block per height is ever on the canonical
-    /// chain, and the newest notarization is on it).
-    fn delete_forked_out(&mut self, height: Height, canonical: Digest) {
-        self.sink_cursor(height, canonical);
-        self.blocks
-            .retain(|digest, entry| entry.block.height() < height || *digest == canonical);
-        self.drop_orphaned_facts();
-    }
-
-    /// Deletes the blocks at exactly `height` other than `canonical`, along
-    /// with their facts.
-    ///
-    /// The caller proves that the block `canonical` lies on the latest
-    /// notarization's ancestry: its same-height siblings were forked out.
-    /// Blocks above `height` are left alone — the ancestry continues above.
-    fn delete_forked_out_siblings(&mut self, height: Height, canonical: Digest) {
-        if self.notarized_cursor.0 == height {
-            self.sink_cursor(height, canonical);
-        }
-        self.blocks
-            .retain(|digest, entry| entry.block.height() != height || *digest == canonical);
-        self.drop_orphaned_facts();
-    }
-
-    /// Sinks the canonicalization cursor below `height` ahead of deleting
-    /// the forked-out blocks there.
-    ///
-    /// Each step moves the cursor to the parent of its current block — an
-    /// ancestor of the execution layer's head, hence known to it. Repeated
-    /// sinking converges on the fork point level by level as the forked-out
-    /// blocks are discovered. If a body is missing the cursor stays put and
-    /// forwarding stalls until the finalized tip catches up and resets it.
-    fn sink_cursor(&mut self, height: Height, canonical: Digest) {
-        while self.notarized_cursor.0 >= height && self.notarized_cursor.1 != canonical {
-            let Some(entry) = self.blocks.get(&self.notarized_cursor.1) else {
-                return;
-            };
-            let Some(parent_height) = entry.block.height().previous() else {
-                return;
-            };
-            self.notarized_cursor = (parent_height, entry.block.parent_digest());
-        }
-    }
-
-    /// Drops all facts whose block the directory does not hold.
-    ///
-    /// This may overprune facts whose body simply has not arrived yet, and
-    /// that is fine: nothing is lost, because a fact is implied by any
-    /// descendant's ancestry and the next context naming it records it
-    /// again. The exception is the *latest* fact, which defines the
-    /// canonical path; every deletion site guarantees its body is present
-    /// by the time this sweep runs, so it always survives.
-    fn drop_orphaned_facts(&mut self) {
-        let blocks = &self.blocks;
-        self.notarized
-            .retain(|_, digest| blocks.contains_key(digest));
-    }
-
-    /// Marks the block as rejected by the execution layer at `now`,
-    /// excluding it from forwarding until
-    /// [`NOTARIZED_REJECTION_RETRY_DELAY`] has elapsed or the entry is
-    /// expunged.
-    fn mark_rejected(&mut self, digest: &Digest, now: SystemTime) {
-        if let Some(entry) = self.blocks.get_mut(digest) {
-            entry.rejected_at = Some(now);
-        }
-    }
-
-    /// Removes a block from the directory.
-    fn remove(&mut self, digest: &Digest) {
-        self.blocks.remove(digest);
-        self.notarized.retain(|_, notarized| notarized != digest);
-    }
-
-    /// Advances the finalized tip of the network and drops all data at or
-    /// below its round and height, enforcing the ownership boundary with the
-    /// finalization pipeline.
-    ///
-    /// Tips at or below the already tracked round (a tip replayed on
-    /// startup) are ignored, so the boundary never regresses. The marshal
-    /// actor guarantees that a newer round never finalizes a lower height.
-    fn advance_finalized(&mut self, round: Round, height: Height, digest: Digest) {
-        if round > self.finalized_tip.0 {
-            self.finalized_tip = (round, height, digest);
-            self.notarized.retain(|notarized, _| *notarized > round);
-            self.blocks.retain(|_, entry| entry.block.height() > height);
-            // The finalized tip overtook the canonicalization cursor; continue
-            // forwarding from the tip. The execution layer only knows the tip
-            // once the finalization pipeline has caught up, which the caller
-            // must gate forwarding on.
-            if self.notarized_cursor.0 <= height {
-                self.notarized_cursor = (height, digest);
-            }
-        } else {
-            debug!(
-                %round,
-                %height,
-                %digest,
-                "ignoring finalized tip that does not advance the tracked one",
-            );
-        }
-    }
-
-    /// Returns the next notarized block to forward to the execution layer,
-    /// if any: the block directly above the canonicalization cursor on the
-    /// canonical notarized path.
-    ///
-    /// Returns nothing if we don't have the block yet - or if the block failed
-    /// execution and not enough time has passed between rejection and `now`.
-    fn next_to_forward(&self, now: SystemTime) -> Option<&BlockEntry> {
-        let (_, tip) = self.notarized.last_key_value()?;
-        let mut digest = *tip;
-        let mut child: Option<&BlockEntry> = None;
-        while digest != self.notarized_cursor.1 {
-            let entry = self.blocks.get(&digest)?;
-            child = Some(entry);
-            digest = entry.block.parent_digest();
-        }
-        child.filter(|entry| {
-            entry
-                .rejected_at
-                .is_none_or(|rejected_at| now >= rejected_at + NOTARIZED_REJECTION_RETRY_DELAY)
-        })
-    }
-
-    /// Returns the first missing ancestor on the latest notarization's path,
-    /// together with the round it was notarized in.
-    ///
-    /// A notarization implies the notarization of all its ancestors up to
-    /// the finalized tip, so a missing ancestor body must be fetched even if
-    /// no explicit notarization fact was observed for it.
-    fn first_missing_ancestor(&self) -> Option<(Round, Digest)> {
-        let (finalized_round, finalized_height, finalized_digest) = self.finalized_tip;
-        let (latest_round, tip) = self.notarized.last_key_value()?;
-        // The round of the latest notarization comes from its fact; further
-        // down the path it is derived from the context of the child walked
-        // through.
-        let mut round = *latest_round;
-        let mut digest = *tip;
-        // The stop conditions are evaluated for every candidate digest
-        // before it can be reported missing; otherwise the walk would
-        // report the finalized tip itself (whose body is deliberately never
-        // recorded) as a gap.
-        while digest != finalized_digest && round > finalized_round {
-            let Some(entry) = self.blocks.get(&digest) else {
-                return Some((round, digest));
-            };
-            if entry.block.height() <= finalized_height {
-                break;
-            }
-            let context = entry.block.context();
-            round = Round::new(context.round.epoch(), context.parent.0);
-            digest = entry.block.parent_digest();
-        }
-        None
-    }
-}
+mod notarized_tree;
+use notarized_tree::{BlockEntry, NotarizedTree};
 
 /// Tracks the latest forkchoice state accepted by the execution layer.
 ///
@@ -532,8 +201,8 @@ pub(crate) struct Actor<TContext> {
     /// Finalized blocks waiting to be forwarded to the execution layer.
     pending_finalizations: VecDeque<FinalizedBlockRequest>,
 
-    /// The latest not-yet-started consensus request — validating a proposed
-    /// block or building one — keyed by its round. The two kinds share one
+    /// The latest not-yet-started consensus request - validating a proposed
+    /// block or building one - keyed by its round. The two kinds share one
     /// slot because a node either verifies or proposes in a round, never
     /// both. A request from a newer round supersedes a queued older one;
     /// requests at or below the queued round are dropped on arrival. Either
@@ -545,7 +214,7 @@ pub(crate) struct Actor<TContext> {
     execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
 
     /// The fetch of a notarized block body that is missing from the
-    /// directory, driven concurrently with the execution task. At most one
+    /// tree, driven concurrently with the execution task. At most one
     /// fetch runs at a time.
     pending_notarized_block: OptionFuture<PendingNotarizedBlock>,
 
@@ -555,7 +224,7 @@ pub(crate) struct Actor<TContext> {
     /// and delivers it to the subscriber that requested the build. If the
     /// subscriber dropped its receiver in the meantime, the built payload is
     /// discarded. A delivered block is handed back as the job's output so
-    /// that its body can be recorded in the notarized block directory: the
+    /// that its body can be recorded in the notarized tree: the
     /// proposer is never asked to verify its own proposal, so no validation
     /// request would deliver it.
     payload_jobs: FuturesUnordered<BoxFuture<'static, Option<Arc<Block>>>>,
@@ -564,7 +233,7 @@ pub(crate) struct Actor<TContext> {
     /// by the latest observed finalized tip of the network. That tip is
     /// never forwarded to the execution layer; the finalized watermark
     /// advances exclusively through delivered finalized blocks.
-    notarized_facts_directory: NotarizedFactsDirectory,
+    notarized_tree: NotarizedTree,
 
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
@@ -646,7 +315,7 @@ where
             pending_notarized_block: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
 
-            notarized_facts_directory: NotarizedFactsDirectory::new(
+            notarized_tree: NotarizedTree::new(
                 finalized_tip,
                 (
                     Height::new(head_num_hash.number),
@@ -685,6 +354,12 @@ where
         });
 
         loop {
+            // All derived tree state - pruning and cursor re-rooting -
+            // is re-established here, before the scheduling
+            // decisions below read the tree. The select branches only
+            // record primary state.
+            self.notarized_tree.heal();
+
             self.start_next_execution_task();
             self.update_notarized_block_fetch();
             self.update_fcu_heartbeat_timer();
@@ -700,11 +375,11 @@ where
                                 // a time, and `last_canonicalized` is only
                                 // mutated here to keep a consistent view.
                                 self.last_canonicalized = canonicalized;
-                                // Feed head movements to the directory so
+                                // Feed head movements to the tree so
                                 // its canonicalization cursor tracks heads
                                 // set by builds and finalizations, not just
                                 // by notarized-block forwarding.
-                                self.notarized_facts_directory.record_execution_notarized(
+                                self.notarized_tree.record_execution_notarized(
                                     canonicalized.head_height,
                                     Digest(canonicalized.forkchoice.head_block_hash),
                                 );
@@ -728,7 +403,7 @@ where
                             // pipeline remains the fatal-on-failure
                             // backstop.
                             let now = self.context.current();
-                            self.notarized_facts_directory.mark_rejected(&digest, now);
+                            self.notarized_tree.mark_rejected(&digest, now);
                         }
                         ExecutionTaskResult::Fatal { error } => {
                             error_span!("shutdown").in_scope(|| error!(
@@ -747,7 +422,7 @@ where
                         // propose it; keep the body so the block can be
                         // forwarded to the execution layer once a later
                         // context proves it notarized.
-                        self.notarized_facts_directory.record_block(block);
+                        self.notarized_tree.record_block(block);
                     }
                 }
 
@@ -882,8 +557,7 @@ where
                     // A now-stale in-flight body fetch is dropped by
                     // `update_notarized_block_fetch` on the next loop
                     // iteration.
-                    self.notarized_facts_directory
-                        .advance_finalized(round, height, digest);
+                    self.notarized_tree.advance_finalized(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
                     self.pending_finalizations.push_back(FinalizedBlockRequest {
@@ -893,8 +567,8 @@ where
                     });
                 }
             },
-            Command::ParentNotarized(notarized) => {
-                self.record_notarized_parent(notarized.context);
+            Command::PendingHeadReport(report) => {
+                self.record_pending_head_report(report.context);
             }
             Command::ValidateBlock(request) => {
                 let ValidateBlock {
@@ -904,9 +578,9 @@ where
                     response,
                 } = *request;
                 // Keep the block body around even if this request is aborted:
-                // once the block is notarized, the directory needs the body to
+                // once the block is notarized, the tree needs the body to
                 // forward it to the execution layer.
-                self.notarized_facts_directory.record_block(block.clone());
+                self.notarized_tree.record_block(block.clone());
                 queue_consensus_request(
                     &mut self.pending_consensus_request,
                     round,
@@ -922,7 +596,8 @@ where
         Ok(())
     }
 
-    /// Records the context's parent as notarized.
+    /// Records the context's parent as the pending head that consensus
+    /// reports building on.
     ///
     /// NOTE: the first proposed block of an epoch will always have a round
     /// `round = (<epoch>, <view>) = (<epoch>, 0)`. This is not a real round
@@ -930,15 +605,16 @@ where
     /// for `<epoch>`, the node must have finalized the boundary block of
     /// `<epoch>`, which is exactly that parent block. In fact, a node will not
     /// start a simplex engine for `<epoch>` if it does not have this block.
-    fn record_notarized_parent(&mut self, context: Context<Digest, PublicKey>) {
-        self.notarized_facts_directory.record_notarized(
+    fn record_pending_head_report(&mut self, context: Context<Digest, PublicKey>) {
+        self.notarized_tree.record_reported_parent(
+            context.round,
             Round::new(context.round.epoch(), context.parent.0),
             context.parent.1,
         );
     }
 
     /// Keeps the fetch of missing notarized block bodies pointed at the
-    /// first gap on the latest notarization's ancestor path.
+    /// first gap on the pending head's ancestor path.
     ///
     /// A missing body prevents the reconstructed notarized chain from
     /// linking up with the finalized tip, stalling the convergence of the
@@ -953,12 +629,11 @@ where
         // actor upholds this: it reports a finalized tip before delivering
         // the finalized blocks covered by it.
         debug_assert!(
-            self.last_canonicalized.finalized_height
-                <= self.notarized_facts_directory.finalized_tip.1,
+            self.last_canonicalized.finalized_height <= self.notarized_tree.finalized_tip_height(),
             "the locally forwarded finalized tip must never run ahead of the \
             observed finalized tip of the network",
         );
-        let next = self.notarized_facts_directory.first_missing_ancestor();
+        let next = self.notarized_tree.first_missing_ancestor();
 
         // Drop an in-flight fetch that is no longer needed because its
         // digest was finalized or forked out: nobody is required to serve a
@@ -989,7 +664,7 @@ where
             ));
     }
 
-    /// Records a fetched notarized block body in the directory.
+    /// Records a fetched notarized block body in the tree.
     #[instrument(skip_all, fields(%digest, %round))]
     fn handle_fetched_notarized_block(
         &mut self,
@@ -999,11 +674,11 @@ where
     ) {
         match block {
             Some(fetched) => {
-                self.notarized_facts_directory.record_fetched_block(fetched);
+                self.notarized_tree.record_block(fetched);
             }
             None => {
-                // The block is still needed — it lies on the canonical
-                // notarized ancestry — so the directory is left untouched
+                // The block is still needed - it lies on the canonical
+                // notarized ancestry - so the tree is left untouched
                 // and the fetch is re-scheduled on the next loop iteration.
                 warn!(
                     "marshal dropped the channel before the notarized block \
@@ -1015,14 +690,25 @@ where
 
     /// The next notarized block to forward, gated on the local finalized
     /// state having caught up with the observed finalized tip of the
-    /// network: the directory's canonicalization cursor may name the network
+    /// network: the tree's canonicalization cursor may name the network
     /// tip before the execution layer knows it (see
-    /// [`NotarizedFactsDirectory::advance_finalized`]).
+    /// [`NotarizedTree::advance_finalized`]).
+    ///
+    /// When convergence is complete but the execution layer's head is not
+    /// the pending head — consensus switched to building on an older
+    /// notarized block — the pending head itself is returned, so that the
+    /// forward's forkchoice update repoints the head at it.
     fn next_notarized_forward(&self) -> Option<&BlockEntry> {
-        (self.last_canonicalized.finalized_height >= self.notarized_facts_directory.finalized_tip.1)
+        (self.last_canonicalized.finalized_height >= self.notarized_tree.finalized_tip_height())
             .then(|| {
-                self.notarized_facts_directory
-                    .next_to_forward(self.context.current())
+                let now = self.context.current();
+                let tree = &self.notarized_tree;
+                tree.next_to_forward(now).or_else(|| {
+                    tree.pending_head_to_repoint(
+                        Digest(self.last_canonicalized.forkchoice.head_block_hash),
+                        now,
+                    )
+                })
             })
             .flatten()
     }
@@ -1059,8 +745,8 @@ where
                 // its parent the head, so running it with the head anywhere
                 // else would fight the notarized-chain convergence. Only
                 // run it when the head already is the parent (the parent's
-                // notarization fact is sent ahead of the build request, so
-                // convergence usually got there first) — otherwise fail
+                // pending-head report is sent ahead of the build request, so
+                // convergence usually got there first) - otherwise fail
                 // fast: dropping the request drops its response channel,
                 // which signals the failure to the subscriber.
                 if self.last_canonicalized.forkchoice.head_block_hash == build.digest.0 {
@@ -1167,10 +853,10 @@ struct FinalizedBlockRequest {
 }
 
 /// An in-flight fetch of a notarized block body that is missing from the
-/// directory, keyed by the digest being fetched and the round it was
+/// tree, keyed by the digest being fetched and the round it was
 /// notarized in.
 ///
-/// Resolves to the digest, the round, and the fetched block — `None` for the
+/// Resolves to the digest, the round, and the fetched block - `None` for the
 /// block if the marshal actor dropped the channel before delivering it.
 struct PendingNotarizedBlock {
     digest: Digest,
@@ -1217,8 +903,8 @@ enum ConsensusRequest {
 /// Propose and verify are mutually exclusive within a round, but the
 /// application's handlers run concurrently, so a request sent by a dying
 /// older-round task can arrive after a newer one; the round guard keeps it
-/// from clobbering the newer request. Dropping a request — superseded or
-/// stale — drops its response channel, signalling the failure to the
+/// from clobbering the newer request. Dropping a request - superseded or
+/// stale - drops its response channel, signalling the failure to the
 /// subscriber.
 fn queue_consensus_request(
     slot: &mut Option<(Round, ConsensusRequest)>,
@@ -1413,7 +1099,7 @@ where
 /// this latency-critical path.
 ///
 /// The subscriber dropping its receiver (because consensus aborted the view)
-/// abandons the request; the notarized block directory retains the block body
+/// abandons the request; the notarized tree retains the block body
 /// recorded from the request, so the execution layer still converges on the
 /// notarized tip afterwards. Validation errors are not fatal for the executor
 /// because consensus treats a failed verification as a rejected proposal.
@@ -1450,7 +1136,7 @@ where
         res = &mut work => res,
 
         // Stops waiting for the verdict; the execution layer may still
-        // process the new-payload request. The notarized block directory
+        // process the new-payload request. The notarized tree
         // keeps driving the execution layer independently of this request's
         // lifetime.
         () = response.cancellation() => {
@@ -1549,7 +1235,7 @@ where
 /// the forkchoice update re-affirms the head instead of moving it; the
 /// Engine API requires the update regardless, because builds can only be
 /// registered through forkchoice updates. The update is still submitted
-/// when the build is dropped as canceled or stale below — a no-op
+/// when the build is dropped as canceled or stale below - a no-op
 /// re-affirmation, doubling as a head refresh.
 #[instrument(
     skip_all,
@@ -1683,7 +1369,7 @@ async fn run_payload_job<TContext: Pacer>(
                 return None;
             }
             // The application received the block and may propose it; hand
-            // the body to the actor loop for the notarized block directory.
+            // the body to the actor loop for the notarized tree.
             let (execution_block, block_access_list, _) =
                 retained.into_consensus_execution_payload();
             Some(Arc::new(Block::from_execution_block_unchecked(
@@ -1786,7 +1472,7 @@ async fn forward_finalized<TContext: Pacer>(
     // Startup aligns the consensus and execution layers before the executor
     // enters its loop: the tracked state is seeded from the execution
     // layer's own watermark and backfilled to the finalized floor, and the
-    // marshal actor delivers finalized blocks in order from there — all
+    // marshal actor delivers finalized blocks in order from there - all
     // sync is forced through it, there is no pipeline syncing. Every block
     // arriving here must therefore extend the tracked finalized state; one
     // at or below it means that alignment logic is broken.
@@ -1949,7 +1635,7 @@ async fn forward_notarized<TContext: Pacer>(
     let new_canonicalized = canonicalized.update_head(height, digest);
     // The forkchoice update is skipped when the block already is the head,
     // but the state is reported either way: the caller feeds it to the
-    // notarized block directory, whose canonicalization cursor may trail
+    // notarized tree, whose canonicalization cursor may trail
     // the head (a notarization arriving mid-forward has no body yet, which
     // keeps the head movement from being placed on the canonical path).
     // Re-reporting the head lets the cursor catch up; swallowing it would

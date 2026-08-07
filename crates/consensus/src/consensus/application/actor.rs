@@ -274,19 +274,20 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        // Forward this notarized fact to the executor so that it can get
-        // started on bringing the execution layer to the right state. On the
-        // happy path there should always be enough headroom between this and
-        // the eventual request to build a block.
+        // Report the parent we are asked to build on as the pending head,
+        // so that the executor can get started on bringing the execution
+        // layer to the right state. On the happy path there should always
+        // be enough headroom between this and the eventual request to build
+        // a block.
         //
         // If the EL is not (yet) in the correct state to build a block the
         // build will fail fast.
-        if let Err(error) = self.executor.parent_notarized(Context {
+        if let Err(error) = self.executor.report_pending_head(Context {
             round,
             leader: leader.clone(),
             parent: (parent_view, parent_digest),
         }) {
-            warn!(%error, "failed informing executor of the notarized proposal parent");
+            warn!(%error, "failed reporting the proposal parent as the pending head");
         }
 
         let proposal_block = {
@@ -685,15 +686,15 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<VerifyResult> {
-        // The parent handed to us by consensus must be notarized; let the
-        // executor know so that it can keep driving the execution layer even
-        // if this verification is aborted.
-        if let Err(error) = self.executor.parent_notarized(Context {
+        // Report the parent we are asked to verify against as the pending
+        // head, so that the executor keeps driving the execution layer
+        // towards it even if this verification is aborted.
+        if let Err(error) = self.executor.report_pending_head(Context {
             round,
             leader: proposer.clone(),
             parent: (parent_view, parent_digest),
         }) {
-            warn!(%error, "failed informing executor of the notarized verify parent");
+            warn!(%error, "failed reporting the verify parent as the pending head");
         }
 
         let block = subscribe(&self.execution_node, round, payload, &self.marshal)

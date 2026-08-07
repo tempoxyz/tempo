@@ -21,16 +21,24 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    /// Informs the agent that the parent in `context` is notarized (the
-    /// context itself is not).
+    /// Reports that, from simplex's point of view, `context`'s parent is
+    /// the pending head of the chain: the block the proposal of this
+    /// context builds on or is verified against. The agent converges the
+    /// execution layer's head onto it.
     ///
-    /// Consensus only hands out propose/verify contexts whose parent is
-    /// notarized, so every context doubles as evidence of its parent's
-    /// notarization.
-    pub(crate) fn parent_notarized(&self, context: Context<Digest, PublicKey>) -> eyre::Result<()> {
+    /// The parent is necessarily notarized — simplex only hands out
+    /// propose/verify contexts with notarized parents — so the report
+    /// doubles as a notarization proof. Reported parents are not monotonic
+    /// (after nullifications, a later view may build on an older notarized
+    /// block), so the newest *context* wins, and the head may legitimately
+    /// move backwards.
+    pub(crate) fn report_pending_head(
+        &self,
+        context: Context<Digest, PublicKey>,
+    ) -> eyre::Result<()> {
         self.inner
-            .unbounded_send(Message::in_current_span(ParentNotarized { context }))
-            .wrap_err("failed sending notarization info to agent, this means it exited")
+            .unbounded_send(Message::in_current_span(PendingHeadReport { context }))
+            .wrap_err("failed sending pending-head report to agent, this means it exited")
     }
 
     /// Requests the agent to validate the block proposed in `round` against
@@ -126,18 +134,19 @@ pub(super) enum Command {
     ValidateBlock(Box<ValidateBlock>),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
-    /// Informs the agent that the parent of the contained context is notarized.
-    ParentNotarized(ParentNotarized),
+    /// Reports the contained context's parent as the pending head that
+    /// consensus builds on.
+    PendingHeadReport(PendingHeadReport),
 }
 
 #[derive(Debug)]
-pub(super) struct ParentNotarized {
+pub(super) struct PendingHeadReport {
     pub(super) context: Context<Digest, PublicKey>,
 }
 
-impl From<ParentNotarized> for Command {
-    fn from(value: ParentNotarized) -> Self {
-        Self::ParentNotarized(value)
+impl From<PendingHeadReport> for Command {
+    fn from(value: PendingHeadReport) -> Self {
+        Self::PendingHeadReport(value)
     }
 }
 
