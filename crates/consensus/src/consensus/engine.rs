@@ -187,7 +187,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_floor,
-                finalized_tip,
+                finalized_tip: (finalized_tip.1, finalized_tip.2),
             },
         );
 

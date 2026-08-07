@@ -1,7 +1,7 @@
 //! The executor is sending fork-choice-updates to the execution layer.
 use std::sync::Arc;
 
-use commonware_consensus::types::Height;
+use commonware_consensus::types::{Height, Round};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
@@ -39,8 +39,9 @@ pub(crate) struct Config {
     /// above this value.
     pub(crate) finalized_floor: Height,
 
-    /// Finalized tip reported by marshal at startup.
-    pub(crate) finalized_tip: (Height, Digest),
+    /// Finalized tip reported by marshal at startup, together with the
+    /// round it was finalized in (the zero round for genesis).
+    pub(crate) finalized_tip: (Round, Height, Digest),
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(crate) marshal: crate::alias::marshal::Mailbox,
