@@ -57,7 +57,7 @@ use std::{
 
 use alloy_primitives::B256;
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
+use alloy_rpc_types_engine::PayloadId;
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -101,70 +101,7 @@ use crate::{
 mod tests;
 
 mod notarized_tree;
-use notarized_tree::{BlockEntry, NotarizedTree};
-
-/// Tracks the latest forkchoice state accepted by the execution layer.
-///
-/// Also tracks the corresponding heights corresponding to
-/// `forkchoice_state.head_block_hash` and
-/// `forkchoice_state.finalized_block_hash`, respectively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LastCanonicalized {
-    forkchoice: ForkchoiceState,
-    head_height: Height,
-    finalized_height: Height,
-}
-
-impl LastCanonicalized {
-    /// Updates the finalized height and finalized block hash to `height` and `digest`.
-    ///
-    /// `height` must be ahead of the latest canonicalized finalized height. If
-    /// it is not, then this is a no-op.
-    ///
-    /// Similarly, if `height` is ahead or the same as the latest canonicalized
-    /// head height, it also updates the head height.
-    ///
-    /// This is to ensure that the finalized block hash is never ahead of the
-    /// head hash.
-    fn update_finalized(self, height: Height, digest: Digest) -> Self {
-        let mut this = self;
-        if height > this.finalized_height {
-            this.finalized_height = height;
-            this.forkchoice.safe_block_hash = digest.0;
-            this.forkchoice.finalized_block_hash = digest.0;
-        }
-        if height >= this.head_height {
-            this.head_height = height;
-            this.forkchoice.head_block_hash = digest.0;
-        }
-        this
-    }
-
-    /// Updates the head height and head block hash to `height` and `digest`.
-    ///
-    /// If `height > self.finalized_height` or `digest` is the same as the finalized block hash,
-    /// this method will return a new canonical state with `self.head_height = height` and
-    /// `self.forkchoice.head = hash`.
-    ///
-    /// If `height <= self.finalized_height`, then this method will return
-    /// `self` unchanged.
-    fn update_head(self, height: Height, digest: Digest) -> Self {
-        let mut this = self;
-        if height > this.finalized_height || digest.0 == this.forkchoice.finalized_block_hash {
-            this.head_height = height;
-            this.forkchoice.head_block_hash = digest.0;
-        }
-        this
-    }
-
-    /// Sets the head height and hash to the finalized head and height.
-    fn force_head_to_finalized(self) -> Self {
-        let mut this = self;
-        this.head_height = this.finalized_height;
-        this.forkchoice.head_block_hash = this.forkchoice.finalized_block_hash;
-        this
-    }
-}
+use notarized_tree::{LocalState, NotarizedTree};
 
 pub(crate) struct Actor<TContext> {
     context: ContextCell<TContext>,
@@ -184,10 +121,6 @@ pub(crate) struct Actor<TContext> {
     /// The mailbox of the marshal actor. Used to backfill finalized blocks
     /// on startup and to fetch missing notarized block bodies.
     marshal: crate::alias::marshal::Mailbox,
-
-    /// The latest state that the executor canonicalized. On startup, contains
-    /// the latest execution layer state.
-    last_canonicalized: LastCanonicalized,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -290,21 +223,25 @@ where
             .get_finalized_num_hash()
             .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
+        // The forkchoice state the executor starts from: the execution
+        // layer's own view of its chain.
+        let local_state = LocalState {
+            head: (
+                Height::new(head_num_hash.number),
+                Digest(head_num_hash.hash),
+            ),
+            finalized: (
+                Height::new(execution_finalized_num_hash.number),
+                Digest(execution_finalized_num_hash.hash),
+            ),
+        };
+
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
             finalized_floor,
             mailbox,
             marshal,
-            last_canonicalized: LastCanonicalized {
-                forkchoice: ForkchoiceState {
-                    head_block_hash: head_num_hash.hash,
-                    safe_block_hash: execution_finalized_num_hash.hash,
-                    finalized_block_hash: execution_finalized_num_hash.hash,
-                },
-                head_height: Height::new(head_num_hash.number),
-                finalized_height: Height::new(execution_finalized_num_hash.number),
-            },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -315,13 +252,7 @@ where
             pending_notarized_block: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
 
-            notarized_tree: NotarizedTree::new(
-                finalized_tip,
-                (
-                    Height::new(head_num_hash.number),
-                    Digest(head_num_hash.hash),
-                ),
-            ),
+            notarized_tree: NotarizedTree::new(finalized_tip, local_state),
 
             public_key,
             metrics,
@@ -344,20 +275,20 @@ where
         }
 
         info_span!("start").in_scope(|| {
+            let canonicalized = self.notarized_tree.local_state();
             info!(
-                finalized_height = %self.last_canonicalized.finalized_height,
-                finalized_digest = %self.last_canonicalized.forkchoice.finalized_block_hash,
-                head_height = %self.last_canonicalized.head_height,
-                head_digest = %self.last_canonicalized.forkchoice.head_block_hash,
+                finalized_height = %canonicalized.finalized.0,
+                finalized_digest = %canonicalized.finalized.1,
+                head_height = %canonicalized.head.0,
+                head_digest = %canonicalized.head.1,
                 "entering executor loop",
             );
         });
 
         loop {
-            // All derived tree state - pruning and cursor re-rooting -
-            // is re-established here, before the scheduling
-            // decisions below read the tree. The select branches only
-            // record primary state.
+            // The tree is pruned to the advancing finalized tip here,
+            // before the scheduling decisions below read it. The select
+            // branches only record primary state.
             self.notarized_tree.heal();
 
             self.start_next_execution_task();
@@ -371,18 +302,10 @@ where
                     match task_result {
                         ExecutionTaskResult::Completed { canonicalized, payload_job } => {
                             if let Some(canonicalized) = canonicalized {
-                                // There is only one execution task running at
-                                // a time, and `last_canonicalized` is only
+                                // There is only one execution task running
+                                // at a time, and the tracked state is only
                                 // mutated here to keep a consistent view.
-                                self.last_canonicalized = canonicalized;
-                                // Feed head movements to the tree so
-                                // its canonicalization cursor tracks heads
-                                // set by builds and finalizations, not just
-                                // by notarized-block forwarding.
-                                self.notarized_tree.record_execution_notarized(
-                                    canonicalized.head_height,
-                                    Digest(canonicalized.forkchoice.head_block_hash),
-                                );
+                                self.notarized_tree.set_local_state(canonicalized);
                             }
                             if let Some(job) = payload_job {
                                 self.payload_jobs.push(
@@ -450,7 +373,7 @@ where
     }
 
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
-        let start = self.last_canonicalized.finalized_height.get() + 1;
+        let start = self.notarized_tree.local_state().finalized.0.get() + 1;
         let end = self.finalized_floor.get();
         let heights = start..=end;
         if !heights.is_empty() {
@@ -477,12 +400,12 @@ where
                 acknowledgment: ack,
             };
 
-            self.last_canonicalized = forward_finalized(
+            let canonicalized = forward_finalized(
                 self.context.as_present(),
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
-                self.last_canonicalized,
+                self.notarized_tree.local_state(),
                 request,
             )
             .await
@@ -492,6 +415,7 @@ where
                     to execution layer"
                 )
             })?;
+            self.notarized_tree.set_local_state(canonicalized);
         }
 
         Ok(())
@@ -536,7 +460,7 @@ where
         let task = execute_heartbeat(
             self.context.child("heartbeat"),
             self.execution_node.clone(),
-            self.last_canonicalized,
+            self.notarized_tree.local_state(),
             Span::current(),
         );
         self.execution_task.replace(task.boxed());
@@ -624,16 +548,6 @@ where
     /// with the execution task so that a slow fetch never delays validations
     /// or builds.
     fn update_notarized_block_fetch(&mut self) {
-        // `first_missing_ancestor` bounds its walk by the network's
-        // finalized tip alone, which is only correct while the locally
-        // forwarded finalized tip does not run ahead of it. The marshal
-        // actor upholds this: it reports a finalized tip before delivering
-        // the finalized blocks covered by it.
-        debug_assert!(
-            self.last_canonicalized.finalized_height <= self.notarized_tree.finalized_tip_height(),
-            "the locally forwarded finalized tip must never run ahead of the \
-            observed finalized tip of the network",
-        );
         let next = self.notarized_tree.first_missing_ancestor();
 
         // Drop an in-flight fetch that is no longer needed because its
@@ -689,22 +603,6 @@ where
         }
     }
 
-    /// Returns the next notarized block to send to the execution layer.
-    fn next_notarized_forward(&self) -> Option<&BlockEntry> {
-        (self.last_canonicalized.finalized_height >= self.notarized_tree.finalized_tip_height())
-            .then(|| {
-                let now = self.context.current();
-                let tree = &self.notarized_tree;
-                tree.next_to_forward(now).or_else(|| {
-                    tree.pending_head_to_repoint(
-                        Digest(self.last_canonicalized.forkchoice.head_block_hash),
-                        now,
-                    )
-                })
-            })
-            .flatten()
-    }
-
     fn start_next_execution_task(&mut self) {
         if !self.execution_task.is_none() {
             return;
@@ -719,7 +617,8 @@ where
         match self.pending_consensus_request.take() {
             Some((round, ConsensusRequest::Validate(request))) => {
                 let parent_is_next_notarized = self
-                    .next_notarized_forward()
+                    .notarized_tree
+                    .next_to_forward(self.context.current())
                     .is_some_and(|entry| entry.block.digest() == request.block.parent_digest());
                 if !parent_is_next_notarized {
                     let task = execute_validation(
@@ -741,11 +640,11 @@ where
                 // convergence usually got there first) - otherwise fail
                 // fast: dropping the request drops its response channel,
                 // which signals the failure to the subscriber.
-                if self.last_canonicalized.forkchoice.head_block_hash == build.digest.0 {
+                if self.notarized_tree.is_execution_head(build.digest) {
                     let task = execute_build(
                         self.context.child("build"),
                         self.execution_node.clone(),
-                        self.last_canonicalized,
+                        self.notarized_tree.local_state(),
                         cause,
                         build,
                     );
@@ -753,14 +652,15 @@ where
                     return;
                 }
                 let parent_is_next_notarized = self
-                    .next_notarized_forward()
+                    .notarized_tree
+                    .next_to_forward(self.context.current())
                     .is_some_and(|entry| entry.block.digest() == build.digest);
                 if parent_is_next_notarized {
                     self.pending_consensus_request =
                         Some((round, ConsensusRequest::Build { cause, build }));
                 } else {
                     info!(
-                        execution.head_hash = %self.last_canonicalized.forkchoice.head_block_hash,
+                        execution.head_hash = %self.notarized_tree.local_state().head.1,
                         build.parent = %build.digest,
                         "not ready to build new block, dropping it",
                     );
@@ -771,11 +671,11 @@ where
 
         // Drive the execution layer's head towards the tip of the
         // canonical notarized chain.
-        if let Some(entry) = self.next_notarized_forward() {
+        if let Some(entry) = self.notarized_tree.next_to_forward(self.context.current()) {
             let task = execute_notarization(
                 self.context.child("notarize"),
                 self.execution_node.clone(),
-                self.last_canonicalized,
+                self.notarized_tree.local_state(),
                 entry.block.clone(),
                 None,
             );
@@ -791,7 +691,7 @@ where
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
-                self.last_canonicalized,
+                self.notarized_tree.local_state(),
                 request,
             );
             self.execution_task.replace(task.boxed());
@@ -940,7 +840,7 @@ enum ForkchoiceUpdateKind {
 
 enum ExecutionTaskResult {
     Completed {
-        canonicalized: Option<LastCanonicalized>,
+        canonicalized: Option<LocalState>,
         /// A payload build that the forkchoice update kicked off on the
         /// execution layer and that still needs to be driven to completion.
         payload_job: Option<StartPayloadJob>,
@@ -971,7 +871,7 @@ struct StartPayloadJob {
 async fn execute_heartbeat<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     cause: Span,
 ) -> ExecutionTaskResult
 where
@@ -998,7 +898,7 @@ where
 async fn execute_build<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     cause: Span,
     build: Build,
 ) -> ExecutionTaskResult
@@ -1018,7 +918,7 @@ async fn execute_finalization<TContext>(
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskResult
 where
@@ -1045,7 +945,7 @@ where
 async fn execute_notarization<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
 ) -> ExecutionTaskResult
@@ -1240,7 +1140,7 @@ where
 async fn run_build_task<TContext: Pacer>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     cause: Span,
     Build {
         round: _,
@@ -1249,7 +1149,7 @@ async fn run_build_task<TContext: Pacer>(
         attributes,
         response,
     }: Build,
-) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
+) -> (Option<LocalState>, Option<StartPayloadJob>) {
     let new_canonicalized = canonicalized.update_head(height, digest);
 
     let mut build_attributes = Some((*attributes, response));
@@ -1267,7 +1167,7 @@ async fn run_build_task<TContext: Pacer>(
     // would register a build on top of the wrong block. Taking the
     // attributes drops the response channel, which signals the failure to
     // the subscriber.
-    if build_attributes.is_some() && new_canonicalized.forkchoice.head_block_hash != digest.0 {
+    if build_attributes.is_some() && new_canonicalized.head.1 != digest {
         info!("dropping payload build request: its parent cannot be made the head");
         build_attributes.take();
     }
@@ -1387,10 +1287,10 @@ async fn run_payload_job<TContext: Pacer>(
     skip_all,
     parent = &cause,
     fields(
-        head_block_hash = %canonicalized.forkchoice.head_block_hash,
-        head_block_height = %canonicalized.head_height,
-        finalized_block_hash = %canonicalized.forkchoice.finalized_block_hash,
-        finalized_block_height = %canonicalized.finalized_height,
+        head_block_hash = %canonicalized.head.1,
+        head_block_height = %canonicalized.head.0,
+        finalized_block_hash = %canonicalized.finalized.1,
+        finalized_block_height = %canonicalized.finalized.0,
         ?kind,
     ),
 )]
@@ -1398,14 +1298,14 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     execution_node: &TempoFullNode,
     context: &TContext,
     cause: Span,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     attrs: Option<TempoPayloadAttributes>,
     kind: ForkchoiceUpdateKind,
 ) -> eyre::Result<Option<PayloadId>> {
     let fcu_response = execution_node
         .add_ons_handle
         .beacon_engine_handle
-        .fork_choice_updated(canonicalized.forkchoice, attrs)
+        .fork_choice_updated(canonicalized.forkchoice_state(), attrs)
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed requesting execution layer to update forkchoice state")?;
@@ -1452,9 +1352,9 @@ async fn forward_finalized<TContext: Pacer>(
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     request: FinalizedBlockRequest,
-) -> eyre::Result<LastCanonicalized> {
+) -> eyre::Result<LocalState> {
     let FinalizedBlockRequest {
         cause,
         block,
@@ -1469,14 +1369,14 @@ async fn forward_finalized<TContext: Pacer>(
     // arriving here must therefore extend the tracked finalized state; one
     // at or below it means that alignment logic is broken.
     assert!(
-        block.height() > canonicalized.finalized_height,
+        block.height() > canonicalized.finalized.0,
         "finalized block with digest `{}` at height `{}` is at or below the \
         executor's tracked finalized block `{}` at height `{}`; finalized \
         blocks must only ever be delivered on top of the tracked state",
         block.digest(),
         block.height(),
-        canonicalized.forkchoice.finalized_block_hash,
-        canonicalized.finalized_height,
+        canonicalized.finalized.1,
+        canonicalized.finalized.0,
     );
 
     let consensus_context = block.header().consensus_context;
@@ -1589,10 +1489,10 @@ impl std::error::Error for NotarizedBlockInvalid {}
 async fn forward_notarized<TContext: Pacer>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LastCanonicalized,
+    canonicalized: LocalState,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
-) -> eyre::Result<LastCanonicalized> {
+) -> eyre::Result<LocalState> {
     let height = block.height();
     let digest = block.digest();
 
@@ -1625,14 +1525,9 @@ async fn forward_notarized<TContext: Pacer>(
     );
 
     let new_canonicalized = canonicalized.update_head(height, digest);
-    // The forkchoice update is skipped when the block already is the head,
-    // but the state is reported either way: the caller feeds it to the
-    // notarized tree, whose canonicalization cursor may trail
-    // the head (a notarization arriving mid-forward has no body yet, which
-    // keeps the head movement from being placed on the canonical path).
-    // Re-reporting the head lets the cursor catch up; swallowing it would
-    // re-select this block forever, starving all other execution-layer
-    // work.
+    // The forkchoice update is skipped when it would not change anything,
+    // but the state is reported either way so that the tree's tracked
+    // state stays consistent.
     if new_canonicalized == canonicalized {
         return Ok(new_canonicalized);
     }

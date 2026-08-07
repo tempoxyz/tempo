@@ -3,11 +3,11 @@ use commonware_consensus::types::{Epoch, Height, Round, View};
 use reth_node_core::primitives::SealedBlock;
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
-use commonware_consensus::CertifiableBlock as _;
+use commonware_consensus::{CertifiableBlock as _, Heightable as _};
 
 use std::time::{Duration, SystemTime};
 
-use super::{NOTARIZED_REJECTION_RETRY_DELAY, NotarizedTree};
+use super::{LocalState, NOTARIZED_REJECTION_RETRY_DELAY, NotarizedTree};
 use crate::consensus::{Digest, block::Block};
 
 /// The reference "now" for tree queries; tests state rejection times
@@ -15,13 +15,15 @@ use crate::consensus::{Digest, block::Block};
 const T0: SystemTime = SystemTime::UNIX_EPOCH;
 
 /// A tree whose observed finalized network tip is `finalized` at
-/// height 10, round 0, with the canonicalization cursor starting there
-/// as well — as for an execution layer whose head is at the finalized
-/// tip.
+/// height 10, round 0 — as for an execution layer whose head sits at the
+/// finalized tip.
 fn empty_tree(finalized: Digest) -> NotarizedTree {
     NotarizedTree::new(
         (round(0), Height::new(10), finalized),
-        (Height::new(10), finalized),
+        LocalState {
+            head: (Height::new(10), finalized),
+            finalized: (Height::new(10), finalized),
+        },
     )
 }
 
@@ -75,6 +77,16 @@ fn record(tree: &mut NotarizedTree, block: &Block) {
     tree.heal();
 }
 
+/// Simulates the completed forward of `block`: the execution layer
+/// accepted it as its new head, and the resulting forkchoice state is
+/// reported back into the tree.
+fn forwarded(tree: &mut NotarizedTree, block: &Block) {
+    let local_state = tree
+        .local_state()
+        .update_head(block.height(), block.digest());
+    tree.set_local_state(local_state);
+}
+
 #[test]
 fn forwards_chain_on_top_of_finalized_tip_in_order() {
     let finalized = Digest(B256::repeat_byte(0xff));
@@ -88,11 +100,11 @@ fn forwards_chain_on_top_of_finalized_tip_in_order() {
     let next = tree.next_to_forward(T0).expect("chain start");
     assert_eq!(next.block.digest(), a.digest());
 
-    tree.record_execution_notarized(Height::new(11), a.digest());
+    forwarded(&mut tree, &a);
     let next = tree.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b.digest());
 
-    tree.record_execution_notarized(Height::new(12), b.digest());
+    forwarded(&mut tree, &b);
     assert!(tree.next_to_forward(T0).is_none());
 }
 
@@ -105,17 +117,18 @@ fn sibling_notarized_in_later_round_supersedes() {
     let a2 = block(2, 11, finalized);
     record(&mut tree, &a1);
     // The stale sibling was forwarded and become the head ...
-    tree.record_execution_notarized(Height::new(11), a1.digest());
+    forwarded(&mut tree, &a1);
 
-    // ... but a notarization of its sibling re-roots the cursor to the
-    // finalized tip, and the superseding sibling is forwarded next.
+    // ... but a report of its sibling redefines the canonical path; the
+    // meet falls back to the finalized tip, and the superseding sibling
+    // is forwarded next.
     record(&mut tree, &a2);
     let next = tree.next_to_forward(T0).expect("supersede fork");
     assert_eq!(next.block.digest(), a2.digest());
 }
 
 #[test]
-fn fork_reroots_cursor_to_the_fork_point() {
+fn fork_is_forwarded_from_the_fork_point() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -126,37 +139,35 @@ fn fork_reroots_cursor_to_the_fork_point() {
     record(&mut tree, &n0);
     record(&mut tree, &n1);
     record(&mut tree, &n2);
-    tree.record_execution_notarized(Height::new(13), n2.digest());
+    forwarded(&mut tree, &n2);
     assert!(tree.next_to_forward(T0).is_none());
 
     // ... when F - N0 - N1' - N3 becomes the canonical chain. The report
-    // arrives before the bodies; the cursor stays put until the fork is
-    // resolved level by level.
+    // arrives before the bodies; forwarding stalls until the ancestry
+    // is walkable.
     let n1p = block(4, 12, n0.digest());
     let n3 = block(5, 13, n1p.digest());
     report_parent(&mut tree, 6, &n3);
     tree.heal();
     assert!(tree.next_to_forward(T0).is_none());
 
-    // N3's body proves everything at or above its height forked out; the
-    // heal pass sinks the cursor below N2.
+    // N3's body arrives, but its parent N1' is still missing: the
+    // ancestry does not reach down to a block the execution layer has.
     tree.record_block(n3.clone().into());
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(12), n1.digest()));
     assert!(tree.next_to_forward(T0).is_none());
 
-    // N1' arrives via the fetch machinery; the heal pass walks the
-    // now-complete ancestry and sinks the cursor past the forked-out
-    // sibling N1 to the fork point N0.
+    // N1' arrives via the fetch machinery, completing the ancestry: the
+    // meet of the head (N2) and the pending head (N3) is the fork point
+    // N0.
     tree.record_block(n1p.clone().into());
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(11), n0.digest()));
 
     // The common trunk is not replayed: the fork branch is forwarded
     // directly.
     let next = tree.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), n1p.digest());
-    tree.record_execution_notarized(Height::new(12), n1p.digest());
+    forwarded(&mut tree, &n1p);
     let next = tree.next_to_forward(T0).expect("fork tip");
     assert_eq!(next.block.digest(), n3.digest());
 }
@@ -171,7 +182,7 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     let n2 = block(2, 12, n1.digest());
     record(&mut tree, &n1);
     record(&mut tree, &n2);
-    tree.record_execution_notarized(Height::new(12), n2.digest());
+    forwarded(&mut tree, &n2);
 
     // ... when the chain forks to F - N3 - N4. N3's report arrives first
     // (from the context preceding N4's validation) and becomes the
@@ -184,11 +195,9 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     tree.record_block(n4.clone().into());
     tree.heal();
 
-    // N4's report supersedes: the heal pass sinks the cursor below its
-    // forked-out sibling N2 ...
+    // N4's report supersedes ...
     report_parent(&mut tree, 5, &n4);
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(11), n1.digest()));
 
     // ... and the fetch target is unchanged — N3, re-derived from N4's
     // context — so the in-flight fetch for N3 is kept, and forwarding
@@ -196,23 +205,23 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     assert_eq!(tree.first_missing_ancestor(), Some((round(3), n3.digest())),);
     assert!(tree.next_to_forward(T0).is_none());
 
-    // The landed fetch delivers N3's body; the heal pass sinks the cursor
-    // past the forked-out sibling N1 to the fork point F.
+    // The landed fetch delivers N3's body, completing the ancestry down
+    // to the finalized tip - the meet with the head on the orphaned
+    // branch.
     tree.record_block(n3.clone().into());
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(10), finalized));
 
     let next = tree.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), n3.digest());
-    tree.record_execution_notarized(Height::new(11), n3.digest());
+    forwarded(&mut tree, &n3);
     let next = tree.next_to_forward(T0).expect("fork tip");
     assert_eq!(next.block.digest(), n4.digest());
-    tree.record_execution_notarized(Height::new(12), n4.digest());
+    forwarded(&mut tree, &n4);
     assert!(tree.next_to_forward(T0).is_none());
 }
 
 #[test]
-fn stale_heads_do_not_advance_the_cursor() {
+fn heads_off_the_canonical_path_are_only_common_ground_up_to_the_meet() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -225,8 +234,8 @@ fn stale_heads_do_not_advance_the_cursor() {
 
     // A head off the canonical path (b1 was superseded by b2) is
     // ignored; forwarding continues from the fork point a.
-    tree.record_execution_notarized(Height::new(11), a.digest());
-    tree.record_execution_notarized(Height::new(12), b1.digest());
+    forwarded(&mut tree, &a);
+    forwarded(&mut tree, &b1);
     let next = tree.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b2.digest());
 }
@@ -244,7 +253,7 @@ fn missing_body_caps_the_chain() {
     report_parent(&mut tree, 3, &b);
     record(&mut tree, &c);
 
-    tree.record_execution_notarized(Height::new(11), a.digest());
+    forwarded(&mut tree, &a);
     assert!(tree.next_to_forward(T0).is_none());
 }
 
@@ -316,10 +325,10 @@ fn finalized_tip_never_regresses() {
     record(&mut tree, &b);
     tree.set_network_finalized_tip(round(1), Height::new(11), a.digest());
     tree.heal();
-    tree.record_execution_notarized(Height::new(12), b.digest());
+    forwarded(&mut tree, &b);
 
     // A tip below the tracked one (replayed on startup) is ignored: the
-    // boundary, the tree's data, and the cursor stay untouched.
+    // boundary, the tree's data, and the local head stay untouched.
     let old = Digest(B256::repeat_byte(0xee));
     tree.set_network_finalized_tip(round(0), Height::new(9), old);
     tree.heal();
@@ -328,12 +337,12 @@ fn finalized_tip_never_regresses() {
         (round(1), Height::new(11), a.digest()),
     );
     assert!(tree.blocks.contains_key(&b.digest()));
-    assert_eq!(tree.notarized_cursor, (Height::new(12), b.digest()));
+    assert_eq!(tree.local_head, (Height::new(12), b.digest()));
 
     // A re-report of the tracked tip itself is a no-op as well.
     tree.set_network_finalized_tip(round(1), Height::new(11), a.digest());
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(12), b.digest()));
+    assert_eq!(tree.local_head, (Height::new(12), b.digest()));
 }
 
 #[test]
@@ -382,14 +391,14 @@ fn first_missing_ancestor_walks_the_latest_notarization_backwards() {
 }
 
 #[test]
-fn validation_cached_ancestors_reroot_the_cursor() {
+fn validation_cached_ancestors_complete_the_ancestry_without_a_fetch() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
     // The old fork F - A is forwarded in full ...
     let a = block(1, 11, finalized);
     record(&mut tree, &a);
-    tree.record_execution_notarized(Height::new(11), a.digest());
+    forwarded(&mut tree, &a);
     assert!(tree.next_to_forward(T0).is_none());
 
     // ... while the winning fork's ancestor B1 is cached by its validation
@@ -408,17 +417,17 @@ fn validation_cached_ancestors_reroot_the_cursor() {
     assert_eq!(tree.first_missing_ancestor(), None);
 
     // ... but the heal pass walks the ancestry and re-roots the stranded
-    // cursor to the fork point, and the fork branch is forwarded from its
-    // start.
+    // meet down to the fork point, and the fork branch is forwarded
+    // from its start.
     let next = tree.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), b1.digest());
-    tree.record_execution_notarized(Height::new(11), b1.digest());
+    forwarded(&mut tree, &b1);
     let next = tree.next_to_forward(T0).expect("fork tip");
     assert_eq!(next.block.digest(), b2.digest());
 }
 
 #[test]
-fn finalized_tip_reroots_a_cursor_stranded_on_an_orphaned_branch() {
+fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -427,28 +436,32 @@ fn finalized_tip_reroots_a_cursor_stranded_on_an_orphaned_branch() {
     let a2 = block(2, 12, a1.digest());
     record(&mut tree, &a1);
     record(&mut tree, &a2);
-    tree.record_execution_notarized(Height::new(12), a2.digest());
+    forwarded(&mut tree, &a2);
 
     // ... when the network finalizes B1, A1's sibling, orphaning the
-    // branch the cursor sits on. The heal pass drops the fork's pending
-    // head, but the cursor - above the tip - stays put for now. (The
-    // actor separately rebases the execution layer's head onto B1; see
-    // `forward_finalized`.)
+    // branch the head sits on. The heal pass drops the fork's pending
+    // head.
     let b1 = block(3, 11, finalized);
     let b2 = block(4, 12, b1.digest());
     tree.set_network_finalized_tip(round(3), Height::new(11), b1.digest());
     tree.heal();
     assert!(tree.pending_head.is_none());
-    assert_eq!(tree.notarized_cursor, (Height::new(12), a2.digest()));
 
-    // The next report builds on B2: within a single heal pass, the sink
-    // walks the cursor down the retained orphaned branch into the tip's
-    // range, and the tip reset re-roots it onto the canonical chain -
-    // B2 is forwarded without any fetch.
+    // The finalization pipeline delivers B1; the head - sitting on the
+    // orphaned branch - is rebased onto it (mirroring
+    // `forward_finalized`), which also reopens the forwarding gate.
+    let local_state = tree
+        .local_state()
+        .update_finalized(Height::new(11), b1.digest())
+        .force_head_to_finalized();
+    tree.set_local_state(local_state);
+
+    // The next report builds on B2: the meet of the rebased head (B1)
+    // and the pending head (B2) is B1 itself, so B2 is forwarded without
+    // any fetch.
     report_parent(&mut tree, 5, &b2);
     tree.record_block(b2.clone().into());
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(11), b1.digest()));
     let next = tree.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), b2.digest());
 }
@@ -463,32 +476,29 @@ fn reported_parents_supersede_by_report_order_not_notarization_order() {
     let y = block(2, 12, x.digest());
     record(&mut tree, &x);
     record(&mut tree, &y);
-    tree.record_execution_notarized(Height::new(12), y.digest());
+    forwarded(&mut tree, &y);
     assert!(tree.next_to_forward(T0).is_none());
 
     // ... but Y never certifies, and a later context reports the *older*
-    // X as the parent being built on. The cursor sinks back onto X ...
+    // X as the parent being built on. The meet is X itself and - with the
+    // execution layer's head still on Y - X is handed out so that its
+    // forkchoice update repoints the head.
     report_parent(&mut tree, 7, &x);
     tree.heal();
-    assert_eq!(tree.notarized_cursor, (Height::new(11), x.digest()));
-    // ... nothing needs forwarding (the execution layer has X) ...
-    assert!(tree.next_to_forward(T0).is_none());
-    // ... but the head — still Y — must be repointed at X.
-    let next = tree
-        .pending_head_to_repoint(y.digest(), T0)
-        .expect("repoint to older parent");
+    let next = tree.next_to_forward(T0).expect("repoint to older parent");
     assert_eq!(next.block.digest(), x.digest());
     // Once the head is X, there is nothing left to do.
-    assert!(tree.pending_head_to_repoint(x.digest(), T0).is_none());
+    forwarded(&mut tree, &x);
+    assert!(tree.next_to_forward(T0).is_none());
 
     // A delayed report from an older context does not supersede.
     report_parent(&mut tree, 5, &y);
     tree.heal();
-    assert!(tree.pending_head_to_repoint(x.digest(), T0).is_none());
+    assert!(tree.next_to_forward(T0).is_none());
 
     // A newer context building on Y again re-roots forward: Y is the
-    // pending head once more and, with the cursor still on X, is simply
-    // the next block to forward.
+    // pending head once more and, with the head on X, is simply the next
+    // block to forward.
     report_parent(&mut tree, 8, &y);
     tree.heal();
     let next = tree.next_to_forward(T0).expect("flip back");
@@ -496,7 +506,7 @@ fn reported_parents_supersede_by_report_order_not_notarization_order() {
 }
 
 #[test]
-fn cursor_catches_up_with_a_head_it_could_not_be_placed_on() {
+fn head_reported_while_the_ancestry_was_unwalkable_is_found() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -506,27 +516,22 @@ fn cursor_catches_up_with_a_head_it_could_not_be_placed_on() {
     let next = tree.next_to_forward(T0).expect("chain start");
     assert_eq!(next.block.digest(), a.digest());
 
-    // ... and while the forward is in flight, B's notarization arrives
-    // without its body. The completed forward reports A as the head, but
-    // the walk from the bodiless latest notarization dead-ends, so the
-    // head cannot be placed on the canonical path and the cursor stays
-    // put.
+    // ... and while the forward is in flight, B's report arrives without
+    // its body. The completed forward makes A the head, but the pending
+    // head's ancestry is not walkable yet, so nothing can be handed out.
     let b = block(2, 12, a.digest());
     report_parent(&mut tree, 3, &b);
     tree.heal();
-    tree.record_execution_notarized(Height::new(11), a.digest());
+    forwarded(&mut tree, &a);
     assert!(tree.next_to_forward(T0).is_none());
 
-    // B's body closes the gap; the candidate is A — already the head. The
-    // actor re-reports the unchanged head after the no-op forward, which
-    // now walks through to A and advances the cursor past it instead of
-    // re-selecting A forever.
+    // B's body closes the gap: the meet — derived fresh — is the head A
+    // itself, and B is the next block to forward. (A cached convergence
+    // position would have missed A's head report while the ancestry was
+    // unwalkable and re-selected A forever.)
     tree.record_block(b.clone().into());
     tree.heal();
     let next = tree.next_to_forward(T0).expect("gap closed");
-    assert_eq!(next.block.digest(), a.digest());
-    tree.record_execution_notarized(Height::new(11), a.digest());
-    let next = tree.next_to_forward(T0).expect("cursor caught up");
     assert_eq!(next.block.digest(), b.digest());
 }
 
@@ -558,10 +563,10 @@ fn rejected_blocks_are_withheld_until_the_retry_delay_elapses() {
     let next = tree.next_to_forward(T0).expect("timestamp cleared");
     assert_eq!(next.block.digest(), a.digest());
 
-    // Blocks above the rejected one are unaffected once the cursor is
+    // Blocks above the rejected one are unaffected once the head is
     // past it.
     tree.mark_rejected(&a.digest(), T0);
-    tree.record_execution_notarized(Height::new(11), a.digest());
+    forwarded(&mut tree, &a);
     let next = tree.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b.digest());
 }
