@@ -120,15 +120,15 @@ fn sibling_notarized_in_later_round_supersedes() {
     forwarded(&mut tree, &a1);
 
     // ... but a report of its sibling redefines the canonical path; the
-    // meet falls back to the finalized tip, and the superseding sibling
-    // is forwarded next.
+    // walk anchors at the finalized tip, and the superseding sibling is
+    // forwarded next.
     record(&mut tree, &a2);
     let next = tree.next_to_forward(T0).expect("supersede fork");
     assert_eq!(next.block.digest(), a2.digest());
 }
 
 #[test]
-fn fork_is_forwarded_from_the_fork_point() {
+fn fork_replays_from_the_nearest_anchor() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -157,14 +157,17 @@ fn fork_is_forwarded_from_the_fork_point() {
     tree.heal();
     assert!(tree.next_to_forward(T0).is_none());
 
-    // N1' arrives via the fetch machinery, completing the ancestry: the
-    // meet of the head (N2) and the pending head (N3) is the fork point
-    // N0.
+    // N1' arrives via the fetch machinery, completing the ancestry. The
+    // head (N2) sits off the new canonical path and is no anchor, so the
+    // walk runs to the finalized tip and the path is replayed from there:
+    // the trunk block N0 - already known to the execution layer, which
+    // answers it from its caches - comes first, then the fork branch.
     tree.record_block(n1p.clone().into());
     tree.heal();
 
-    // The common trunk is not replayed: the fork branch is forwarded
-    // directly.
+    let next = tree.next_to_forward(T0).expect("trunk replay");
+    assert_eq!(next.block.digest(), n0.digest());
+    forwarded(&mut tree, &n0);
     let next = tree.next_to_forward(T0).expect("fork branch");
     assert_eq!(next.block.digest(), n1p.digest());
     forwarded(&mut tree, &n1p);
@@ -206,8 +209,8 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
     assert!(tree.next_to_forward(T0).is_none());
 
     // The landed fetch delivers N3's body, completing the ancestry down
-    // to the finalized tip - the meet with the head on the orphaned
-    // branch.
+    // to the finalized tip - the anchor while the head sits on the
+    // orphaned branch.
     tree.record_block(n3.clone().into());
     tree.heal();
 
@@ -221,7 +224,7 @@ fn fork_during_ancestor_fetch_keeps_the_fetch_target() {
 }
 
 #[test]
-fn heads_off_the_canonical_path_are_only_common_ground_up_to_the_meet() {
+fn heads_off_the_canonical_path_are_no_anchor() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);
 
@@ -232,10 +235,15 @@ fn heads_off_the_canonical_path_are_only_common_ground_up_to_the_meet() {
     record(&mut tree, &b1);
     record(&mut tree, &b2);
 
-    // A head off the canonical path (b1 was superseded by b2) is
-    // ignored; forwarding continues from the fork point a.
+    // A head off the canonical path (b1 was superseded by b2) is no
+    // anchor: the walk runs to the finalized tip, and the path is
+    // replayed from there - the common parent a first (a cached no-op
+    // for the execution layer), then the superseding sibling.
     forwarded(&mut tree, &a);
     forwarded(&mut tree, &b1);
+    let next = tree.next_to_forward(T0).expect("replayed parent");
+    assert_eq!(next.block.digest(), a.digest());
+    forwarded(&mut tree, &a);
     let next = tree.next_to_forward(T0).expect("chain continues");
     assert_eq!(next.block.digest(), b2.digest());
 }
@@ -456,9 +464,8 @@ fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
         .update_head(Height::new(11), b1.digest());
     tree.set_local_state(local_state);
 
-    // The next report builds on B2: the meet of the rebased head (B1)
-    // and the pending head (B2) is B1 itself, so B2 is forwarded without
-    // any fetch.
+    // The next report builds on B2: the rebased head B1 anchors the
+    // walk, so B2 is forwarded without any fetch.
     report_parent(&mut tree, 5, &b2);
     tree.record_block(b2.clone().into());
     tree.heal();
@@ -480,9 +487,9 @@ fn reported_parents_supersede_by_report_order_not_notarization_order() {
     assert!(tree.next_to_forward(T0).is_none());
 
     // ... but Y never certifies, and a later context reports the *older*
-    // X as the parent being built on. The meet is X itself and - with the
-    // execution layer's head still on Y - X is handed out so that its
-    // forkchoice update repoints the head.
+    // X as the parent being built on. With the head still on Y - not on
+    // X's ancestry - the walk anchors at the finalized tip and hands out
+    // X itself, so that its forkchoice update repoints the head.
     report_parent(&mut tree, 7, &x);
     tree.heal();
     let next = tree.next_to_forward(T0).expect("repoint to older parent");
@@ -525,10 +532,10 @@ fn head_reported_while_the_ancestry_was_unwalkable_is_found() {
     forwarded(&mut tree, &a);
     assert!(tree.next_to_forward(T0).is_none());
 
-    // B's body closes the gap: the meet — derived fresh — is the head A
-    // itself, and B is the next block to forward. (A cached convergence
-    // position would have missed A's head report while the ancestry was
-    // unwalkable and re-selected A forever.)
+    // B's body closes the gap: the head A - derived fresh as the anchor
+    // - is found, and B is the next block to forward. (A cached
+    // convergence position would have missed A's head report while the
+    // ancestry was unwalkable and re-selected A forever.)
     tree.record_block(b.clone().into());
     tree.heal();
     let next = tree.next_to_forward(T0).expect("gap closed");

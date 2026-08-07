@@ -113,12 +113,12 @@ impl LocalState {
 /// The tree holds data strictly above the finalized *network* tip,
 /// which it tracks itself: recording and pruning are guarded against it.
 ///
-/// The tree is self-canonicalizing: [`Self::next_to_forward`] derives the
-/// *meet* - the closest ancestor of the pending head that the execution
-/// layer provably has (the local head, one of its ancestors, or the
-/// finalized tip) - fresh on every query, and hands out the block directly
-/// above it. The common trunk is never re-forwarded, and there is no
-/// cached convergence state that could go stale against a fork.
+/// The tree is self-canonicalizing: [`Self::next_to_forward`] walks the
+/// pending head's ancestry down to the nearest *anchor* the execution
+/// layer provably has - its own head, or the network's finalized tip -
+/// and hands out the block directly above it, derived fresh on every
+/// query. There is no cached convergence state that could go stale
+/// against a fork.
 ///
 /// Recording methods only insert primary state (the pending head, the
 /// local state, and bodies, guarded against the finalized tip);
@@ -334,32 +334,17 @@ impl NotarizedTree {
         }
     }
 
-    /// Returns the next notarized block to forward to the execution layer,
-    /// if any: the block on the pending head's ancestry directly above the
-    /// *meet* - the closest ancestor of the pending head that the execution
-    /// layer provably has, i.e. the local head, one of its ancestors, or
-    /// the finalized tip. The meet is derived fresh from the recorded state
-    /// on every call; there is no cached convergence position that could
-    /// go stale against a fork.
+    /// Returns the next notarized block to forward to the execution layer:
+    /// the block directly above the first *anchor* - the local head or the
+    /// network's finalized tip, both provably known to the execution layer
+    /// - that the walk down the pending head's ancestry reaches.
     ///
-    /// Once the ancestry is fully forwarded (the meet *is* the pending
-    /// head) but the local head still points elsewhere, the pending head
-    /// itself is returned so that its forkchoice update repoints the head:
-    /// consensus switched to building on an *older* notarized block -
-    /// abandoning a notarized-but-uncertified child the head was already
-    /// advanced to - and only a forkchoice update moves the head back. The
-    /// repoint travels the ordinary forwarding machinery (its new-payload
-    /// request is answered from the execution layer's cache), so rejection
-    /// pacing applies as usual.
-    ///
-    /// Forwarding is gated on the locally canonicalized finalized tip
-    /// having caught up with the network's: until then the finalization
-    /// pipeline owns the execution layer, and the finalized tip cannot yet
-    /// serve as the fallback meet. Returns nothing when the gate is
-    /// closed, when the ancestry has a gap directly above the meet (the
-    /// fetch machinery repairs it), or when the candidate was rejected by
-    /// the execution layer less than [`NOTARIZED_REJECTION_RETRY_DELAY`]
-    /// before `now`.
+    /// A head off the ancestry is no anchor: the walk runs to the
+    /// finalized tip and forwarding replays the path from there (replayed
+    /// blocks are answered from the execution layer's caches, and the
+    /// forkchoice update may move the head backwards - which is also how
+    /// the head is repointed after consensus switched to building on an
+    /// older notarized block).
     pub(super) fn next_to_forward(&self, now: SystemTime) -> Option<&BlockEntry> {
         if self.local_finalized_tip.0 < self.network_finalized_tip.1 {
             return None;
@@ -367,56 +352,17 @@ impl NotarizedTree {
         let pending = self.pending_head.as_ref()?;
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
 
-        // The walkable prefix of the pending head's ancestry, pending head
-        // first, down to the finalized tip or the first missing body.
-        let mut ancestry = Vec::new();
+        let mut child: Option<&BlockEntry> = None;
         let mut digest = pending.digest;
-        while digest != finalized_digest {
-            let Some(entry) = self.blocks.get(&digest) else {
-                break;
-            };
+        while digest != self.local_head.1 && digest != finalized_digest {
+            let entry = self.blocks.get(&digest)?;
             if entry.block.height() <= finalized_height {
-                break;
+                return None;
             }
-            ancestry.push((digest, entry));
+            child = Some(entry);
             digest = entry.block.parent_digest();
         }
-
-        // The meet: walk the local head's ancestry - known to the execution
-        // layer in full - until it joins the pending head's. Where the walk
-        // leaves the recorded bodies, the finalized tip (which the gate
-        // above proves the execution layer has) is the remaining provable
-        // common ground.
-        let mut meet = finalized_digest;
-        let mut walk = self.local_head.1;
-        while walk != finalized_digest {
-            if ancestry.iter().any(|(digest, _)| *digest == walk) {
-                meet = walk;
-                break;
-            }
-            let Some(entry) = self.blocks.get(&walk) else {
-                break;
-            };
-            walk = entry.block.parent_digest();
-        }
-
-        let candidate = if meet == pending.digest {
-            // Fully converged; repoint the head at the pending head if it
-            // is not there already.
-            (self.local_head.1 != pending.digest)
-                .then(|| ancestry.first().map(|(_, entry)| *entry))
-                .flatten()
-        } else {
-            // The element of the ancestry directly above the meet. Absent
-            // when the ancestry's walkable prefix does not reach the meet:
-            // the gap is fetched before forwarding continues.
-            ancestry
-                .iter()
-                .rev()
-                .find(|(_, entry)| entry.block.parent_digest() == meet)
-                .map(|(_, entry)| *entry)
-        };
-        candidate.filter(|entry| entry.forwardable(now))
+        child.filter(|entry| entry.forwardable(now))
     }
 
     /// Returns the first missing ancestor on the pending head's path,
