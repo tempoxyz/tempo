@@ -20,6 +20,8 @@ pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub mod storage;
 pub(crate) mod subblocks;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub(crate) mod utils;
 pub(crate) mod validators;
 
