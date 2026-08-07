@@ -1107,14 +1107,14 @@ where
                 "failed validating block because payload was accepted, meaning \
                 that it was not actually executed by the execution layer for \
                 some reason"
-            )
+            );
         }
         PayloadStatusEnum::Syncing => {
             bail!(
                 "failed validating block because the execution layer reports \
                 syncing: it does not know the block's parent; the notarized \
                 chain convergence will repair the gap in the background"
-            )
+            );
         }
     }
 }
@@ -1369,7 +1369,7 @@ async fn forward_finalized<TContext: Pacer>(
     // This means that new finalized blocks must never unwind the execution
     // layer's finalized tip and repoint to a point below it.
     //
-    // Under normal operation, alls block arrive in sequence. Only at startup
+    // Under normal operation, all block arrive in sequence. Only at startup
     // does the marshal actor forward a block at the height of the finalized
     // floor (this can include genesis).
     ensure!(
