@@ -215,6 +215,14 @@ tempo_hardfork! (
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t10>.
         T10,
+        /// T11 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t11>.
+        T11,
+        /// T12 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t12>.
+        T12,
     }
 );
 
@@ -262,9 +270,15 @@ impl TempoHardfork {
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    /// - T11+: back to the EIP-7825 Osaka limit (16,777,216 gas). TIP-1016 moves state
+    ///   creation gas into the reservoir (a tx's total gas_limit may exceed this cap),
+    ///   so the regular-gas budget no longer needs to cover state creation costs.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        if self.is_t11() {
+            return Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
         if self.is_t1a() {
             return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
         }
@@ -330,6 +344,8 @@ impl TempoHardfork {
             Self::T8 => None,
             Self::T9 => None,
             Self::T10 => None,
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -352,6 +368,8 @@ impl TempoHardfork {
             Self::T8 => Some(MAINNET_T8_TIMESTAMP),
             Self::T9 => Some(MAINNET_T9_TIMESTAMP),
             Self::T10 => None,
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -374,6 +392,8 @@ impl TempoHardfork {
             Self::T8 => None,
             Self::T9 => None,
             Self::T10 => None,
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 
@@ -396,6 +416,8 @@ impl TempoHardfork {
             Self::T8 => Some(MODERATO_T8_TIMESTAMP),
             Self::T9 => Some(MODERATO_T9_TIMESTAMP),
             Self::T10 => None,
+            Self::T11 => None,
+            Self::T12 => None,
         }
     }
 }

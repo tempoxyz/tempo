@@ -235,11 +235,10 @@ pub(crate) fn bench_env(
     block_timestamp: u64,
 ) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
     let spec = hardfork;
-    let amsterdam_eip8037_enabled = false;
     let mut cfg_env = CfgEnv::default();
     cfg_env.chain_id = CHAIN_ID;
     cfg_env.spec = spec;
-    cfg_env.gas_params = tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled);
+    cfg_env.gas_params = tempo_gas_params_with_amsterdam(spec);
     cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
     EvmEnv {

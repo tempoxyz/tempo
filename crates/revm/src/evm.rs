@@ -232,6 +232,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.fee_token = None;
         self.key_expiry = None;
         self.non_creditable_slots.borrow_mut().clear();
+        self.intrinsic_gas_exceeds_limit = false;
     }
 }
 
@@ -506,7 +507,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T4;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T11);
         cfg.enable_amsterdam_eip8037 = true;
 
         let ctx = Context::mainnet()
@@ -527,7 +528,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T7;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7);
         cfg.enable_amsterdam_eip8037 = false;
 
         let ctx = Context::mainnet()
@@ -549,7 +550,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T7;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7);
         cfg.enable_amsterdam_eip8037 = false;
 
         let mut block = TempoBlockEnv::default();
@@ -3930,7 +3931,7 @@ mod tests {
         let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
 
         assert!(
-            tempo_gas_params_with_amsterdam(TempoHardfork::T4, true).create_state_gas() > 0,
+            tempo_gas_params_with_amsterdam(TempoHardfork::T11).create_state_gas() > 0,
             "T4 must price CREATE state gas for this test to be meaningful"
         );
 

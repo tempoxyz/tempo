@@ -162,7 +162,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
                 },
                 false,
             );
-            sstore_storage_credits(self, address, Some(key), &state_load)?;
+            let tip1016 = self.amsterdam_eip8037_enabled;
+            sstore_storage_credits(self, address, Some(key), &state_load, tip1016)?;
         }
 
         Ok(())

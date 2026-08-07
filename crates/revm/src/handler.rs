@@ -266,28 +266,51 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 /// NOTE: in AA batches, non-refundable state-gas charges that are known upfront, are already
 /// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure
 /// plus the batch's intrinsic EIP-8037 CREATE state gas (`create_state_refund`).
+///
+/// State gas that prior successful steps spilled into regular gas because the reservoir was
+/// empty (`accumulated_state_gas_spilled`) is rolled back the way
+/// `GasTracker::rollback_state_gas` does it: credited back to regular gas on revert, consumed on
+/// halt, and never refunded to the reservoir.
 fn normalize_failed_batch_result_gas(
     frame_result: &mut FrameResult,
     final_gas_limit: u64,
     accumulated_state_gas_spent: i64,
+    accumulated_state_gas_spilled: u64,
     create_state_refund: u64,
 ) {
     // Create new Gas with correct limit, because Gas does not have a set_limit method
     // (the frame_result limit only covers the failed step).
     let mut corrected_gas = Gas::new_spent_with_reservoir(final_gas_limit, 0);
     if frame_result.instruction_result().is_revert() {
-        corrected_gas.erase_cost(frame_result.gas().remaining());
+        // Mirror `GasTracker::rollback_state_gas`: state gas is rolled back in
+        // LIFO order, so the spilled portion (state gas the prior successful
+        // steps drew from regular gas because the reservoir was empty) is
+        // credited back to regular gas, not the reservoir. On a halt the
+        // spilled portion is consumed along with the rest of the regular gas
+        // (`handle_reservoir_remaining_gas` halts with `spend_all`), so only
+        // the revert arm returns it. The failed step's own spill was already
+        // settled into `remaining` by `last_frame_result`.
+        corrected_gas.erase_cost(
+            frame_result
+                .gas()
+                .remaining()
+                .saturating_add(accumulated_state_gas_spilled),
+        );
     }
     // No refunds when batch fails and all state is reverted.
     corrected_gas.set_refund(0);
     // No state gas spending for failed calls
     corrected_gas.set_state_gas_spent(0);
-    // Reservoir and state gas are refunded on failure
+    // The reservoir is restored to the value it held before the batch, as in
+    // `rollback_state_gas`: it regains the accumulated state gas minus the
+    // spilled portion (which never came from the reservoir and is handled
+    // above).
     corrected_gas.set_reservoir(
         frame_result
             .gas()
             .reservoir()
             .saturating_add_signed(accumulated_state_gas_spent)
+            .saturating_sub(accumulated_state_gas_spilled)
             .saturating_add_signed(frame_result.gas().state_gas_spent()),
     );
     // The AA intrinsic gas charged `create_state_gas` upfront for every CREATE
@@ -334,9 +357,12 @@ fn translate_allowed_calls_for_precompile(
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
 ///
-/// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
-/// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
-/// per TIP-1016.
+/// Returns `(regular_gas, state_gas)`; the caller charges both.
+///
+/// The 245k creditable portion of each storage-creating SSTORE lives in
+/// `sstore_set_state_gas` on the T7+ tables and must be charged exactly once:
+/// on T7..T10 (TIP-1060, no EIP-8037 reservoir) it is added to regular gas, on
+/// T11+ (TIP-1016) it is reported as state gas.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
@@ -380,9 +406,10 @@ fn calculate_key_authorization_gas(
         }
 
         let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
-        if spec.is_t7() {
-            // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
-            // intrinsic-only, we must also add the creditable portion here.
+        if spec.is_t7() && !spec.is_t11() {
+            // T7..T10 expose only the SSTORE residual in the gas table. Since key-auth storage
+            // is intrinsic-only, we must also add the creditable portion here. On T11+ the
+            // creditable portion is charged as TIP-1016 state gas below instead.
             sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
         }
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
@@ -400,10 +427,17 @@ fn calculate_key_authorization_gas(
             regular_gas += call_scope_extra_gas(&key_auth.authorization);
         }
 
-        // TIP-1016: each storage-creating SSTORE also incurs state gas.
-        let state_gas = gas_params
-            .get(GasId::sstore_set_state_gas())
-            .saturating_mul(num_sstores);
+        // TIP-1016 (T11+): each storage-creating SSTORE incurs the creditable portion as
+        // state gas. Before T11 `sstore_set_state_gas` is charged as execution gas (above
+        // on T7..T10, via the full `sstore_set_without_load_cost` on T1B..T6), so reading
+        // it into state gas here would double-count it.
+        let state_gas = if spec.is_t11() {
+            gas_params
+                .get(GasId::sstore_set_state_gas())
+                .saturating_mul(num_sstores)
+        } else {
+            0
+        };
 
         (regular_gas, state_gas)
     } else {
@@ -651,6 +685,7 @@ where
         let checkpoint = evm.ctx().journal_mut().checkpoint();
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
+        let mut accumulated_state_gas_spilled = 0u64;
 
         // Intrinsic EIP-8037 CREATE state gas charged upfront for the whole
         // batch (see `calculate_batch_intrinsic_gas`), refunded when the batch
@@ -675,6 +710,7 @@ where
                 &mut frame_result,
                 evm.ctx().tx().gas_limit(),
                 accumulated_state_gas_spent,
+                accumulated_state_gas_spilled,
                 create_state_refund,
             );
             return Ok(frame_result);
@@ -744,6 +780,7 @@ where
                     &mut frame_result,
                     evm.ctx().tx().gas_limit(),
                     accumulated_state_gas_spent,
+                    accumulated_state_gas_spilled,
                     create_state_refund,
                 );
 
@@ -755,6 +792,8 @@ where
                 accumulated_gas_refund.saturating_add(frame_result.gas().refunded());
             accumulated_state_gas_spent =
                 accumulated_state_gas_spent.saturating_add(frame_result.gas().state_gas_spent());
+            accumulated_state_gas_spilled = accumulated_state_gas_spilled
+                .saturating_add(frame_result.gas().state_gas_spilled());
 
             // Update gas limit and reservoir to remaining values
             remaining_gas = frame_result.gas().remaining();
@@ -776,6 +815,7 @@ where
         corrected_gas.set_remaining(result.gas().remaining());
         corrected_gas.set_refund(accumulated_gas_refund);
         corrected_gas.set_state_gas_spent(accumulated_state_gas_spent);
+        corrected_gas.set_state_gas_spilled(accumulated_state_gas_spilled);
         corrected_gas.set_reservoir(reservoir);
 
         *result.gas_mut() = corrected_gas;

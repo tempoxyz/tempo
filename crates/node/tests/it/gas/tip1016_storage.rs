@@ -73,7 +73,6 @@ async fn total_receipt_gas_for_block<P: Provider>(
 /// code storage), so block header gas_used should be less than the sum of receipt gas_used.
 ///
 /// The difference is the storage creation gas that TIP-1016 exempts from protocol limits.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -106,26 +105,45 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
     let block_number = block.header().inner.number;
     let block_gas_used = block.header().inner.gas_used;
 
-    // Verify user tx was included (non-system txs have gas_limit > 0)
+    // Verify only the deploy tx was included (non-system txs have gas_limit > 0)
     let user_tx_count = block
         .body()
         .transactions()
         .filter(|tx| (*tx).gas_limit() > 0)
         .count();
-    assert!(user_tx_count > 0, "deploy tx should be included in block");
+    assert_eq!(user_tx_count, 1, "exactly the deploy tx should be included");
 
     let receipts_total_gas = total_receipt_gas_for_block(&provider, block_number).await?;
 
-    // TIP-1016: block header gas_used should be LESS than the sum of all receipt gas_used
-    // because state gas is exempted from the block header but charged to users.
-    //
-    // State gas includes: account creation, code deposit (32 * 2300 = 73600),
-    // and other state-affecting operations tracked by the EVM.
+    // TIP-1016 state gas (permanent storage burden), exempt from the block header:
+    //   468,000  CREATE contract metadata (create_state_gas)
+    //    73,600  code deposit: 32 bytes * 2,300 (code_deposit_state_gas)
+    //   225,000  sender account creation, tx nonce == 0 (new_account_state_gas intrinsic)
+    const EXPECTED_STATE_GAS: u64 = 468_000 + 73_600 + 225_000; // 766,600
+
+    // Execution (regular) gas, the only component counted in the block header:
+    // 21,000 intrinsic + calldata + CreateX dispatch + 32,000 CREATE regular
+    // + 32 * 200 code-deposit regular + 25,000 nonce-0 account-creation regular.
+    const EXPECTED_EXECUTION_GAS: u64 = 87_023;
+
+    // Block header gas_used reflects only execution gas: state gas is exempted
+    // from protocol limits but still charged to the user via the receipt.
+    assert_eq!(
+        block_gas_used, EXPECTED_EXECUTION_GAS,
+        "block header must count execution gas only"
+    );
+    assert_eq!(
+        receipts_total_gas,
+        EXPECTED_EXECUTION_GAS + EXPECTED_STATE_GAS,
+        "receipt gas must include execution + state gas"
+    );
+
+    // there is not floor gas or refund so we can simply subtract it.
     let state_gas = receipts_total_gas - block_gas_used;
-    assert!(
-        state_gas >= 73_600,
-        "state gas should be at least 73,600 (code_deposit_state_gas), \
-         got {state_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
+    assert_eq!(
+        state_gas, EXPECTED_STATE_GAS,
+        "state gas exemption must be exactly CREATE + code deposit + nonce-0 account creation \
+         (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
     Ok(())
@@ -135,7 +153,6 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
 /// triggers the storage creation gas exemption.
 ///
 /// SSTORE zero->non-zero costs 250,000 gas total (5,000 exec + 245,000 storage).
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -199,14 +216,15 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     let block_gas_used = call_payload.block().header().inner.gas_used;
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_block_number).await?;
 
-    // TIP-1016: block gas_used should be less than receipt gas because
-    // the SSTORE zero->non-zero has 230,000 storage creation gas exempted.
+    // TIP-1016: block gas_used should be less than receipt gas because the SSTORE
+    // zero->non-zero has its creditable portion exempted as storage creation gas.
     //
-    // sstore_set_state_gas = 250,000 - 20,000 = 230,000 per TIP-1016 spec
+    // Under the TIP-1060 credit model the creditable portion is STORAGE_CREDIT_VALUE
+    // (245,000), charged as state gas by the storage-credit hook (sstore_set_state_gas).
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
-        storage_creation_gas, 230_000,
-        "storage creation gas should be exactly 230,000 (sstore_set_state_gas), \
+        storage_creation_gas, 245_000,
+        "storage creation gas should be exactly 245,000 (STORAGE_CREDIT_VALUE), \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -216,7 +234,6 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
 /// Happy path: a SSTORE that modifies an existing slot (non-zero -> non-zero) should
 /// NOT have any storage creation gas component, so block gas_used and total receipt gas
 /// should be equal.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -299,7 +316,6 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
 
 /// Happy path: a TIP-20 transfer to an existing account (no new storage slots created)
 /// should have identical block gas_used and total receipt gas.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -381,7 +397,6 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
 /// revm preserves state_gas_spent on all result paths (ok, revert, halt) via
 /// `last_frame_result`, so the block header gas_used should still exclude the 245,000
 /// storage creation gas.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -465,7 +480,6 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
 ///
 /// Storage creation gas should be additive: N slots x 245,000 per slot.
 /// Block header gas_used should only include the execution component (5,000 per slot).
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -533,8 +547,8 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
         storage_creation_gas,
-        3 * 230_000,
-        "storage creation gas should be 3 x 230,000 = 690,000, \
+        3 * 245_000,
+        "storage creation gas should be 3 x 245,000 = 735,000, \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -547,7 +561,6 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
 /// should be the sum of both (2 x 230,000 = 460,000). This tests that the inner
 /// executor's `block_regular_gas_used` correctly excludes state gas across
 /// multiple transactions.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -632,8 +645,8 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     let storage_creation_gas = receipts_total_gas - block_gas_used;
     assert_eq!(
         storage_creation_gas,
-        2 * 230_000,
-        "storage creation gas should be 2 x 230,000 = 460,000 for two txs in same block, \
+        2 * 245_000,
+        "storage creation gas should be 2 x 245,000 = 490,000 for two txs in same block, \
          got {storage_creation_gas} (block_gas_used={block_gas_used}, receipts_total_gas={receipts_total_gas})"
     );
 
@@ -646,7 +659,6 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
 /// the failure and STOPs successfully. Since B's frame reverted, `handle_reservoir_remaining_gas`
 /// does NOT propagate B's state_gas_spent to A. The overall tx has state_gas_spent == 0,
 /// so block gas_used should equal total receipt gas_used (no exemption).
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -788,7 +800,6 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 /// 2. The receipt gas_used includes all gas (execution + state creation).
 /// 3. The block header gas_used excludes state gas (TIP-1016 exemption).
 /// 4. The state gas from many TIP-20 balance slot creations is correctly exempted.
-#[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()> {
     use alloy::signers::SignerSync;
@@ -899,12 +910,12 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
 
     // Receipt gas includes state gas; block header excludes it.
     // Each transfer to a fresh address: 230,000 state gas per new balance slot.
-    let expected_state_gas = num_transfers * 230_000;
+    let expected_state_gas = num_transfers * 245_000;
     let state_gas = receipt_gas.saturating_sub(block_gas_used);
     assert_eq!(
         state_gas, expected_state_gas,
         "state gas ({state_gas}) should {expected_state_gas} \
-         ({num_transfers} transfers × 230,000), \
+         ({num_transfers} transfers × 245,000), \
          block_gas_used={block_gas_used}, receipt_gas={receipt_gas}"
     );
 

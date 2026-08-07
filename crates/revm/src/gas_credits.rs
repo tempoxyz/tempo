@@ -10,10 +10,8 @@ use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
     interpreter::{
-        Gas, InstructionContext, InstructionResult, StateLoad,
-        gas::GasTracker,
-        instructions::host::{sstore_default_gas_accounting, sstore_with_gas_accounting},
-        interpreter::EthInterpreter,
+        Gas, InstructionContext, InstructionResult, StateLoad, gas, gas::GasTracker,
+        instructions::host::sstore_with_gas_accounting, interpreter::EthInterpreter,
     },
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
@@ -156,6 +154,7 @@ pub(crate) fn sstore<DB: Database>(
     sstore_with_gas_accounting(context, |context, owner, state_load| {
         {
             let InstructionContext { interpreter, host } = context;
+            let tip1016 = host.cfg.enable_amsterdam_eip8037;
             sstore_storage_credits(
                 &mut StorageCreditsContext {
                     context: host,
@@ -164,11 +163,28 @@ pub(crate) fn sstore<DB: Database>(
                 owner,
                 None,
                 state_load,
+                tip1016,
             )?;
         }
 
         // Storage-credit hook only handles TIP-1060 bookkeeping + state gas. Keep default
         // gas/refunds for cold, update, and residual costs. T7 gas table ensures no double-charge.
-        sstore_default_gas_accounting(context, owner, state_load)
+        gas!(
+            context.interpreter,
+            context.host.gas_params().sstore_dynamic_gas(
+                true,
+                &state_load.data,
+                state_load.is_cold
+            )
+        );
+
+        // refund
+        context.interpreter.gas.record_refund(
+            context
+                .host
+                .gas_params()
+                .sstore_refund(true, &state_load.data),
+        );
+        Ok(())
     })
 }
