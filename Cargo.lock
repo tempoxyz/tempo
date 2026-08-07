@@ -13763,6 +13763,7 @@ dependencies = [
  "test-case",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "url",
  "vergen",
  "vergen-git2",
