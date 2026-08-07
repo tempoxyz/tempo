@@ -1361,23 +1361,45 @@ async fn forward_finalized<TContext: Pacer>(
         acknowledgment,
     } = request;
 
-    // Startup aligns the consensus and execution layers before the executor
-    // enters its loop: the tracked state is seeded from the execution
-    // layer's own watermark and backfilled to the finalized floor, and the
-    // marshal actor delivers finalized blocks in order from there - all
-    // sync is forced through it, there is no pipeline syncing. Every block
-    // arriving here must therefore extend the tracked finalized state; one
-    // at or below it means that alignment logic is broken.
-    assert!(
-        block.height() > canonicalized.finalized.0,
-        "finalized block with digest `{}` at height `{}` is at or below the \
+    // Startup aligns consensus and execution layers. Also, all blocks
+    // (finalized and notarized) arrive in the EL via the executor actor. There
+    // is no pipeline sync and no other way to drive the EL forward at this
+    // point.
+    //
+    // This means that new finalized blocks must never unwind the execution
+    // layer's finalized tip and repoint to a point below it.
+    //
+    // Under normal operation, alls blocks arrive in sequence. Only at startup
+    // does the marshal actor forward a block at the height of the finalized
+    // floor (this can include genesis).
+    ensure!(
+        block.height() >= canonicalized.finalized.0,
+        "finalized block with digest `{}` at height `{}` is below the \
         executor's tracked finalized block `{}` at height `{}`; finalized \
-        blocks must only ever be delivered on top of the tracked state",
+        blocks must only ever be delivered at or on top of the tracked state",
         block.digest(),
         block.height(),
         canonicalized.finalized.1,
         canonicalized.finalized.0,
     );
+
+    if block.height() == canonicalized.finalized.0 {
+        ensure!(
+            block.digest() == canonicalized.finalized.1,
+            "finalized block with digest `{}` at height `{}` conflicts with \
+            the executor's tracked finalized block `{}` at the same height; \
+            two different blocks must never be finalized at the same height",
+            block.digest(),
+            block.height(),
+            canonicalized.finalized.1,
+        );
+        debug!(
+            "finalized block matches the tracked finalized block; \
+            acknowledging re-delivery without re-execution"
+        );
+        acknowledgment.acknowledge();
+        return Ok(canonicalized);
+    }
 
     let consensus_context = block.header().consensus_context;
     let head_descends_from_finalized = {
