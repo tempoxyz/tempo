@@ -2,7 +2,7 @@ use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
-    types::{Epoch, Epocher as _, Height, Round},
+    types::{Epoch, Epocher as _, Height},
 };
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
@@ -16,22 +16,12 @@ use super::{
     Config, ExecutionProvider, Executor, FollowerProgress, Mailbox, Marshal, ingress::Message,
 };
 use crate::{
-    consensus::{Block, Digest},
+    consensus::Block,
     finalization_verifier::{
         CertificateVerificationError, Error as VerificationError, FinalizationVerifier,
     },
     gossip::{Certificate, Outcome},
 };
-
-/// Outcome of checking a certificate's signature.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Verdict {
-    Verified,
-    /// Failed with an available scheme, so the sender is responsible.
-    Invalid,
-    /// No available scheme can verify it.
-    NeedsScheme,
-}
 
 pub(super) fn try_init<TContext, P, M, E>(
     context: TContext,
@@ -236,41 +226,28 @@ where
             .decode_and_verify(&mut self.context, &certified)
         {
             Ok(finalization) => finalization,
-            Err(error @ VerificationError::NetworkIdentityMismatch) => {
+            Err(
+                error @ VerificationError::CertificateVerification(
+                    CertificateVerificationError::NetworkIdentityMismatch,
+                ),
+            ) => {
                 debug!(%error, "failed to verify finalization certificate");
-
-                // This network may have rotated identity, so hint the boundary of
-                // the node's current epoch to unblock syncing through the next
-                // onchain scheme.
-                let boundary_height = self
-                    .config
-                    .epoch_strategy
-                    .last(self.current_epoch)
-                    .expect("strategy is valid for all heights and epochs");
-
-                debug!(
-                    current_epoch = %self.current_epoch,
-                    %boundary_height,
-                    "hinting current epoch boundary after finalization verification failed",
-                );
-
-                self.config.marshal.hint_finalized(boundary_height).await;
-
+                self.hint_current_epoch_boundary().await;
                 return Ok(());
             }
-            Err(VerificationError::VerificationFailed) => return Ok(()),
+            Err(VerificationError::CertificateVerification(
+                CertificateVerificationError::Invalid,
+            )) => return Ok(()),
             Err(error) => return Err(Report::new(error)),
         };
 
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
 
         let round = finalization.round();
-        let digest = consensus_block.digest();
-
         // Always give the block to marshal, even if the round is stale. An RPC
         // event includes the block, and storing it may close a gap.
         let _ = self.config.marshal.certified(round, consensus_block).await;
-        self.report_verified(round, digest, finalization).await;
+        self.report_verified(finalization).await;
 
         Ok(())
     }
@@ -282,18 +259,35 @@ where
     /// points the execution layer at the same hash.
     #[instrument(skip_all, fields(round = %certificate.round(), digest = %certificate.proposal.payload))]
     async fn verify_and_apply(&mut self, certificate: Certificate) -> Outcome {
-        self.judge(certificate).await
-    }
-
-    async fn judge(&mut self, certificate: Certificate) -> Outcome {
         if certificate.round() <= self.progress.watermark() {
             return Outcome::Stale;
         }
 
-        match self.verify(&certificate).await {
-            Verdict::Verified => {}
-            Verdict::Invalid => return Outcome::Invalid,
-            Verdict::NeedsScheme => {
+        match self
+            .verifier
+            .verify_certificate(&mut self.context, &certificate)
+        {
+            Ok(()) => {}
+            Err(CertificateVerificationError::Invalid) => {
+                debug!(
+                    epoch = %certificate.epoch(),
+                    digest = %certificate.proposal.payload,
+                    "certificate failed verification against a registered scheme",
+                );
+                return Outcome::Invalid;
+            }
+            Err(CertificateVerificationError::IdentityUnavailable { .. }) => {
+                return Outcome::NeedsScheme {
+                    epoch: certificate.epoch(),
+                };
+            }
+            Err(CertificateVerificationError::NetworkIdentityMismatch) => {
+                debug!(
+                    epoch = %certificate.epoch(),
+                    digest = %certificate.proposal.payload,
+                    "certificate failed verification against the network identity",
+                );
+                self.hint_current_epoch_boundary().await;
                 return Outcome::NeedsScheme {
                     epoch: certificate.epoch(),
                 };
@@ -302,12 +296,13 @@ where
 
         let round = certificate.round();
         let digest = certificate.proposal.payload;
-        self.report_verified(round, digest, certificate).await;
+        self.report_verified(certificate).await;
+        self.config.executor.finalization(round, digest);
 
         Outcome::Admitted
     }
 
-    /// Hands a verified finalization to the rest of the follower.
+    /// Reports a verified finalization to marshal and publishes its progress.
     ///
     /// # Invariant
     ///
@@ -316,48 +311,16 @@ where
     /// an unchecked certificate would let an unauthenticated peer create
     /// unlimited state or stop the node by naming any epoch. Verification and
     /// reporting stay in one call chain so this rule is easy to check.
-    async fn report_verified(&mut self, round: Round, digest: Digest, finalization: Certificate) {
+    async fn report_verified(&mut self, finalization: Certificate) {
+        let round = finalization.round();
         self.progress.advance(round);
         self.config
             .marshal
             .report(Activity::Finalization(finalization))
             .await;
-        self.config.executor.finalization(round, digest);
     }
 
-    /// Selects the verifier for a certificate's epoch and checks the signature.
-    ///
-    /// A failure with a registered scheme is invalid and can be blamed on the
-    /// peer. A failure with the built-in network identity may mean the identity
-    /// has rotated. Do not blame the peer in that case. Doing so could disconnect
-    /// honest relayers while gossip is needed for recovery.
-    async fn verify(&mut self, finalization: &Certificate) -> Verdict {
-        match self
-            .verifier
-            .verify_certificate(&mut self.context, finalization)
-        {
-            Ok(()) => return Verdict::Verified,
-            Err(CertificateVerificationError::Invalid) => {
-                let epoch = finalization.epoch();
-                debug!(
-                    %epoch,
-                    digest = %finalization.proposal.payload,
-                    "certificate failed verification against a registered scheme",
-                );
-                return Verdict::Invalid;
-            }
-            Err(CertificateVerificationError::IdentityUnavailable { .. }) => {
-                return Verdict::NeedsScheme;
-            }
-            Err(CertificateVerificationError::NetworkIdentityMismatch) => {}
-        }
-
-        debug!(
-            epoch = %finalization.epoch(),
-            digest = %finalization.proposal.payload,
-            "certificate failed verification against the network identity",
-        );
-
+    async fn hint_current_epoch_boundary(&self) {
         // A failed built-in identity may mean it has rotated. Ask marshal for
         // the local epoch boundary, which contains the next scheme. Do not take
         // the height from the certificate because an unauthenticated peer could
@@ -374,8 +337,6 @@ where
             "hinting current epoch boundary after the network identity fallback failed",
         );
         self.config.marshal.hint_finalized(boundary_height).await;
-
-        Verdict::NeedsScheme
     }
 
     #[instrument(skip_all)]
