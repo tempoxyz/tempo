@@ -329,6 +329,38 @@ impl TempoTransaction {
         self.nonce_key == TEMPO_EXPIRING_NONCE_KEY
     }
 
+    /// Ensures `valid_before`, when present, is strictly greater than `min_allowed`.
+    pub fn ensure_valid_before(&self, min_allowed: u64) -> Result<(), InvalidValidBefore> {
+        let Some(valid_before) = self.valid_before.map(NonZeroU64::get) else {
+            return Ok(());
+        };
+
+        if valid_before <= min_allowed {
+            return Err(InvalidValidBefore {
+                valid_before,
+                min_allowed,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Ensures `valid_after`, when present, does not exceed `max_allowed`.
+    pub fn ensure_valid_after(&self, max_allowed: u64) -> Result<(), InvalidValidAfter> {
+        let Some(valid_after) = self.valid_after.map(NonZeroU64::get) else {
+            return Ok(());
+        };
+
+        if valid_after > max_allowed {
+            return Err(InvalidValidAfter {
+                valid_after,
+                max_allowed,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Validates the transaction according to invariant rules.
     ///
     /// This performs structural validation that is always required, regardless of hardfork.
@@ -947,6 +979,49 @@ mod serde_input {
     }
 }
 
+/// Error returned when a transaction's `valid_before` timestamp is not strictly greater than the
+/// required minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidValidBefore {
+    /// The transaction's `valid_before` timestamp.
+    pub valid_before: u64,
+    /// The exclusive lower timestamp bound supplied by the caller.
+    pub min_allowed: u64,
+}
+
+impl core::fmt::Display for InvalidValidBefore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "'valid_before' {} is too close to current time (min allowed: {})",
+            self.valid_before, self.min_allowed
+        )
+    }
+}
+
+impl core::error::Error for InvalidValidBefore {}
+
+/// Error returned when a transaction's `valid_after` timestamp exceeds the allowed maximum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidValidAfter {
+    /// The transaction's `valid_after` timestamp.
+    pub valid_after: u64,
+    /// The inclusive upper timestamp bound supplied by the caller.
+    pub max_allowed: u64,
+}
+
+impl core::fmt::Display for InvalidValidAfter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "'valid_after' {} is too far in the future (max allowed: {})",
+            self.valid_after, self.max_allowed
+        )
+    }
+}
+
+impl core::error::Error for InvalidValidAfter {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,6 +1123,64 @@ mod tests {
             ..Default::default()
         };
         assert!(tx5.validate().is_err());
+    }
+
+    #[test]
+    fn test_ensure_valid_before() {
+        let mut tx = TempoTransaction::default();
+        assert_eq!(tx.ensure_valid_before(100), Ok(()));
+
+        tx.valid_before = Some(nz(99));
+        assert!(tx.ensure_valid_before(100).is_err());
+
+        tx.valid_before = Some(nz(100));
+        let err = tx.ensure_valid_before(100).unwrap_err();
+        assert_eq!(
+            err,
+            InvalidValidBefore {
+                valid_before: 100,
+                min_allowed: 100
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "'valid_before' 100 is too close to current time (min allowed: 100)"
+        );
+
+        tx.valid_before = Some(nz(101));
+        assert_eq!(tx.ensure_valid_before(100), Ok(()));
+
+        tx.valid_before = Some(nz(u64::MAX));
+        assert!(tx.ensure_valid_before(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn test_ensure_valid_after() {
+        let mut tx = TempoTransaction::default();
+        assert_eq!(tx.ensure_valid_after(100), Ok(()));
+
+        tx.valid_after = Some(nz(99));
+        assert_eq!(tx.ensure_valid_after(100), Ok(()));
+
+        tx.valid_after = Some(nz(100));
+        assert_eq!(tx.ensure_valid_after(100), Ok(()));
+
+        tx.valid_after = Some(nz(101));
+        let err = tx.ensure_valid_after(100).unwrap_err();
+        assert_eq!(
+            err,
+            InvalidValidAfter {
+                valid_after: 101,
+                max_allowed: 100
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "'valid_after' 101 is too far in the future (max allowed: 100)"
+        );
+
+        tx.valid_after = Some(nz(u64::MAX));
+        assert_eq!(tx.ensure_valid_after(u64::MAX), Ok(()));
     }
 
     #[test]
