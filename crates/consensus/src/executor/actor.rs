@@ -1369,7 +1369,7 @@ async fn forward_finalized<TContext: Pacer>(
     // This means that new finalized blocks must never unwind the execution
     // layer's finalized tip and repoint to a point below it.
     //
-    // Under normal operation, alls blocks arrive in sequence. Only at startup
+    // Under normal operation, alls block arrive in sequence. Only at startup
     // does the marshal actor forward a block at the height of the finalized
     // floor (this can include genesis).
     ensure!(
