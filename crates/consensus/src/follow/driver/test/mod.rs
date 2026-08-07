@@ -170,13 +170,24 @@ fn valid_finalization_is_certified_and_reported() {
 
         let mut reporter = mailbox.to_event_reporter();
         assert!(reporter.report(event).accepted());
-        wait_until(&context, || marshal.certified().len() == 1).await;
+
+        let (ack, processed) = Exact::handle();
+        let _ = mailbox
+            .to_marshal_reporter()
+            .report(Update::Block(make_block(2, None).into(), ack));
+        processed
+            .await
+            .expect("the marker update should be acknowledged");
 
         let certified = marshal.certified();
         assert_eq!(certified[0].0, finalization.proposal.round);
         assert_eq!(certified[0].1, block);
         assert_eq!(marshal.report_count(), 1);
         assert!(marshal.hints().is_empty());
+        assert!(
+            executor.finalizations().is_empty(),
+            "marshal's durable tip drives execution for upstream finalizations",
+        );
     });
 }
 

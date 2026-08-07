@@ -111,20 +111,7 @@ impl FinalizationVerifier {
             });
         }
 
-        self.verify_certificate(rng, &finalization)
-            .map_err(|error| match error {
-                CertificateVerificationError::IdentityUnavailable {
-                    epoch,
-                    identity_from_epoch,
-                } => Error::IdentityUnavailable {
-                    epoch,
-                    identity_from_epoch,
-                },
-                CertificateVerificationError::Invalid => Error::VerificationFailed,
-                CertificateVerificationError::NetworkIdentityMismatch => {
-                    Error::NetworkIdentityMismatch
-                }
-            })?;
+        self.verify_certificate(rng, &finalization)?;
 
         Ok(finalization)
     }
@@ -168,16 +155,21 @@ impl FinalizationVerifier {
 }
 
 /// Why an already decoded certificate could not be verified.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CertificateVerificationError {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CertificateVerificationError {
     /// No trusted identity is available for the certificate's epoch.
+    #[error(
+        "finalization epoch `{epoch}` behind network identity starting epoch `{identity_from_epoch}`"
+    )]
     IdentityUnavailable {
         epoch: u64,
         identity_from_epoch: u64,
     },
     /// The signature failed against a scheme learned from a finalized boundary.
+    #[error("finalization certificate verification failed")]
     Invalid,
     /// The signature failed against the configured network identity.
+    #[error("finalization certificate did not verify against the network identity")]
     NetworkIdentityMismatch,
 }
 
@@ -199,20 +191,22 @@ pub enum Error {
         expected: u64,
         actual: u64,
     },
-    /// No trusted identity is available for the certificate's epoch.
-    #[error(
-        "finalization epoch `{epoch}` behind network identity starting epoch `{identity_from_epoch}`"
-    )]
-    IdentityUnavailable {
-        epoch: u64,
-        identity_from_epoch: u64,
-    },
-    /// The threshold signature did not verify against the trusted identity.
-    #[error("finalization certificate verification failed")]
-    VerificationFailed,
-    /// The threshold signature did not verify against the configured network identity.
-    #[error("finalization certificate did not verify against the network identity")]
-    NetworkIdentityMismatch,
+    /// The certificate could not be verified against an available identity.
+    #[error(transparent)]
+    CertificateVerification(#[from] CertificateVerificationError),
+}
+
+impl Error {
+    /// Whether the certificate's signature mismatched an available identity.
+    pub(crate) const fn is_signature_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::CertificateVerification(
+                CertificateVerificationError::Invalid
+                    | CertificateVerificationError::NetworkIdentityMismatch
+            )
+        )
+    }
 }
 
 /// The concrete decoding error for a malformed finalization certificate.
