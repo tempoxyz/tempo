@@ -15,6 +15,10 @@
 //! transport limits frame size and inbound rate per connection but otherwise
 //! treats frames as opaque bytes. Consensus decodes them, removes replays,
 //! enforces fairness, verifies certificates, and manages peer reputation.
+//!
+//! Outbound buffering keeps only the latest frame for a logical peer. This is
+//! safe while `tempo/1` carries only finalization certificates because a newer
+//! certificate supersedes an older one.
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -47,7 +51,8 @@ use reth_ethereum::{
 };
 use reth_metrics::{Metrics, metrics::Counter};
 use reth_tracing::tracing::warn;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio_stream::wrappers::WatchStream;
 
 use super::wire;
 
@@ -102,9 +107,9 @@ impl TransportSender {
     /// Queues a frame for `peer`.
     ///
     /// Success means the coordinator queue accepted the frame. It does not
-    /// acknowledge delivery: the peer may have no route when the frame is
-    /// processed, and each physical connection can independently drop it if its
-    /// queue is full or closed.
+    /// acknowledge delivery because the peer may disconnect before the frame is
+    /// routed. Once routed, current and replacement connections can observe it
+    /// until a newer frame replaces it.
     pub fn try_send(&self, peer: PeerId, frame: Bytes) -> SendResult {
         (self.send)(peer, frame)
     }
@@ -131,8 +136,6 @@ pub struct Config {
     pub frame_queue: usize,
     /// Depth of the outbound queue to the transport coordinator.
     pub route_queue: usize,
-    /// Depth of each connection's outbound relay queue.
-    pub outbound_queue: usize,
 }
 
 /// The consensus-facing, peer-keyed view of the transport.
@@ -213,10 +216,6 @@ struct GossipMetrics {
     dropped_channel_full: Counter,
     /// RLPx connections rejected after a peer reached its tempo/1 connection cap.
     rejected_excess_connections: Counter,
-    /// Outbound tempo/1 frames dropped because a connection queue was full.
-    dropped_outbound_full: Counter,
-    /// Outbound tempo/1 frames dropped because a connection queue was closed.
-    dropped_outbound_closed: Counter,
 }
 
 #[derive(Debug)]
@@ -231,12 +230,10 @@ struct Shared {
 impl Shared {
     fn connection<S>(self: Arc<Self>, peer: PeerId, conn: S) -> Connection<S> {
         let id = self.next_connection_id();
-        let (outbound_tx, outbound_rx) = mpsc::channel(self.config.outbound_queue);
         let (registration_tx, registration_rx) = oneshot::channel();
         let _ = self.commands.send(ConnectionCommand::Register {
             peer,
             id,
-            outbound: outbound_tx,
             registration: registration_tx,
         });
 
@@ -247,7 +244,7 @@ impl Shared {
             admission: Admission::new(self.config.peer_frame_rate, Instant::now()),
             shared: self,
             conn,
-            outbound: Some(outbound_rx),
+            outbound: None,
         }
     }
 
@@ -267,7 +264,7 @@ impl Shared {
 struct TransportCoordinator {
     commands: mpsc::UnboundedReceiver<ConnectionCommand>,
     outbound: mpsc::Receiver<OutboundFrame>,
-    peers: HashMap<PeerId, Vec<ConnectionSlot>>,
+    peers: HashMap<PeerId, PeerConnections>,
     peer_events: mpsc::UnboundedSender<PeerEvent>,
     metrics: Arc<GossipMetrics>,
 }
@@ -293,9 +290,8 @@ impl TransportCoordinator {
             ConnectionCommand::Register {
                 peer,
                 id,
-                outbound,
                 registration,
-            } => self.register(peer, id, outbound, registration),
+            } => self.register(peer, id, registration),
             ConnectionCommand::Unregister { peer, id } => self.unregister(peer, id),
         }
     }
@@ -304,33 +300,34 @@ impl TransportCoordinator {
         &mut self,
         peer: PeerId,
         id: ConnectionId,
-        outbound: mpsc::Sender<Bytes>,
         registration: oneshot::Sender<Registration>,
     ) {
-        let first = match self.peers.entry(peer) {
+        let outbound = match self.peers.entry(peer) {
             Entry::Vacant(entry) => {
-                entry.insert(vec![ConnectionSlot { id, outbound }]);
-                true
+                let connections = entry.insert(PeerConnections::new(id));
+                let outbound = connections.outbound.subscribe();
+
+                // The actor prioritizes lifecycle events over frames. Enqueueing `Up`
+                // before accepting registration ensures it creates peer state before
+                // this connection can forward inbound bytes.
+                let _ = self.peer_events.send(PeerEvent::Up(peer));
+
+                outbound
             }
-            Entry::Occupied(mut entry) if entry.get().len() < MAX_CONNECTIONS_PER_PEER => {
-                entry.get_mut().push(ConnectionSlot { id, outbound });
-                false
-            }
-            Entry::Occupied(_) => {
-                self.metrics.rejected_excess_connections.increment(1);
-                let _ = registration.send(Registration::Rejected);
-                return;
+            Entry::Occupied(mut entry) => {
+                let connections = entry.get_mut();
+                if connections.ids.len() >= MAX_CONNECTIONS_PER_PEER {
+                    self.metrics.rejected_excess_connections.increment(1);
+                    let _ = registration.send(Registration::Rejected);
+                    return;
+                }
+
+                connections.ids.push(id);
+                connections.outbound.subscribe()
             }
         };
 
-        // The actor prioritizes lifecycle events over frames. Enqueueing `Up`
-        // before accepting registration ensures it creates peer state before
-        // this connection can forward inbound bytes.
-        if first {
-            let _ = self.peer_events.send(PeerEvent::Up(peer));
-        }
-
-        if registration.send(Registration::Accepted).is_err() {
+        if registration.send(Registration::Accepted(outbound)).is_err() {
             self.unregister(peer, id);
         }
     }
@@ -340,11 +337,11 @@ impl TransportCoordinator {
             let Some(known) = self.peers.get_mut(&peer) else {
                 return;
             };
-            let Some(index) = known.iter().position(|slot| slot.id == id) else {
+            let Some(index) = known.ids.iter().position(|known| *known == id) else {
                 return;
             };
-            known.swap_remove(index);
-            known.is_empty()
+            known.ids.swap_remove(index);
+            known.ids.is_empty()
         };
 
         if empty {
@@ -354,21 +351,10 @@ impl TransportCoordinator {
     }
 
     fn on_outbound(&mut self, outbound: OutboundFrame) {
-        let Some(slots) = self.peers.get(&outbound.peer) else {
+        let Some(peer) = self.peers.get(&outbound.peer) else {
             return;
         };
-
-        for slot in slots {
-            match slot.outbound.try_send(outbound.frame.clone()) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    self.metrics.dropped_outbound_full.increment(1);
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    self.metrics.dropped_outbound_closed.increment(1);
-                }
-            }
-        }
+        peer.outbound.send_replace(Some(outbound.frame));
     }
 }
 
@@ -377,7 +363,6 @@ enum ConnectionCommand {
     Register {
         peer: PeerId,
         id: ConnectionId,
-        outbound: mpsc::Sender<Bytes>,
         registration: oneshot::Sender<Registration>,
     },
     Unregister {
@@ -393,9 +378,19 @@ struct OutboundFrame {
 }
 
 #[derive(Debug)]
-struct ConnectionSlot {
-    id: ConnectionId,
-    outbound: mpsc::Sender<Bytes>,
+struct PeerConnections {
+    ids: Vec<ConnectionId>,
+    outbound: watch::Sender<Option<Bytes>>,
+}
+
+impl PeerConnections {
+    fn new(id: ConnectionId) -> Self {
+        let (outbound, _) = watch::channel(None);
+        Self {
+            ids: vec![id],
+            outbound,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,9 +403,9 @@ enum ConnectionState {
     Rejected,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 enum Registration {
-    Accepted,
+    Accepted(watch::Receiver<Option<Bytes>>),
     Rejected,
 }
 
@@ -475,9 +470,8 @@ pub struct Connection<S = ProtocolConnection> {
     state: ConnectionState,
     shared: Arc<Shared>,
     conn: S,
-    // Set to `None` when the coordinator drops this connection's sender.
-    // Inbound remains active.
-    outbound: Option<mpsc::Receiver<Bytes>>,
+    // Duplicate physical connections to the same peer subscribe to the same logical peer value.
+    outbound: Option<WatchStream<Option<Bytes>>>,
     admission: Admission,
 }
 
@@ -485,7 +479,10 @@ impl<S> Connection<S> {
     fn poll_registration(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         if let ConnectionState::Registering(registration) = &mut self.state {
             self.state = match ready!(Pin::new(registration).poll(cx)) {
-                Ok(Registration::Accepted) => ConnectionState::Active,
+                Ok(Registration::Accepted(outbound)) => {
+                    self.outbound = Some(WatchStream::new(outbound));
+                    ConnectionState::Active
+                }
                 Ok(Registration::Rejected) | Err(_) => ConnectionState::Rejected,
             };
         }
@@ -546,12 +543,13 @@ where
         loop {
             // Prefer outbound relay so inbound traffic cannot starve it.
             if let Some(outbound) = me.outbound.as_mut() {
-                match outbound.poll_recv(cx) {
-                    Poll::Ready(Some(frame)) => {
+                match outbound.poll_next_unpin(cx) {
+                    Poll::Ready(Some(Some(frame))) => {
                         let mut out = BytesMut::with_capacity(frame.len());
                         out.put_slice(&frame);
                         return Poll::Ready(Some(out));
                     }
+                    Poll::Ready(Some(None)) => continue,
                     // Keep the connection alive and continue to read inbound frames.
                     Poll::Ready(None) => me.outbound = None,
                     Poll::Pending => {}
@@ -627,12 +625,26 @@ mod tests {
             peer_frame_rate: 8,
             frame_queue: 8,
             route_queue: 8,
-            outbound_queue: 8,
         }
     }
 
     async fn register<S>(connection: &mut Connection<S>) -> bool {
         poll_fn(|cx| connection.poll_registration(cx)).await
+    }
+
+    async fn next_outbound<S>(connection: &mut Connection<S>) -> Bytes {
+        loop {
+            if let Some(frame) = connection
+                .outbound
+                .as_mut()
+                .expect("registered connection")
+                .next()
+                .await
+                .expect("logical peer is registered")
+            {
+                return frame;
+            }
+        }
     }
 
     #[tokio::test]
@@ -721,14 +733,8 @@ mod tests {
 
         let outbound = Bytes::from_static(b"outbound");
         transport.sender.try_send(peer, outbound.clone()).unwrap();
-        assert_eq!(
-            first.outbound.as_mut().unwrap().recv().await,
-            Some(outbound.clone())
-        );
-        assert_eq!(
-            second.outbound.as_mut().unwrap().recv().await,
-            Some(outbound)
-        );
+        assert_eq!(next_outbound(&mut first).await, outbound);
+        assert_eq!(next_outbound(&mut second).await, outbound);
 
         let from_first = BytesMut::from(&b"from-first"[..]);
         let from_second = BytesMut::from(&b"from-second"[..]);
@@ -751,10 +757,7 @@ mod tests {
 
         let remaining = Bytes::from_static(b"remaining");
         transport.sender.try_send(peer, remaining.clone()).unwrap();
-        assert_eq!(
-            second.outbound.as_mut().unwrap().recv().await,
-            Some(remaining)
-        );
+        assert_eq!(next_outbound(&mut second).await, remaining);
 
         drop(second);
         assert!(
@@ -767,76 +770,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_fans_out_independently_to_each_connection() {
-        let mut config = test_config();
-        config.outbound_queue = 1;
-        let (handler, mut coordinator, mut transport) = build(config);
+    async fn slow_and_replacement_connections_receive_latest_frame() {
+        let (handler, mut coordinator, mut transport) = build(test_config());
         let peer = PeerId::with_last_byte(3);
         let shared = Arc::clone(&handler.shared);
         let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
-        let mut second = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
-        for _ in 0..2 {
-            let command = coordinator.commands.recv().await.unwrap();
-            coordinator.on_command(command);
-        }
+        let command = coordinator.commands.recv().await.unwrap();
+        coordinator.on_command(command);
         assert!(register(&mut first).await);
-        assert!(register(&mut second).await);
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
         );
 
-        let blocked = Bytes::from_static(b"blocked");
-        transport.sender.try_send(peer, blocked.clone()).unwrap();
-        let outbound = coordinator.outbound.recv().await.unwrap();
-        coordinator.on_outbound(outbound);
-        assert_eq!(
-            second.outbound.as_mut().unwrap().recv().await,
-            Some(blocked.clone())
-        );
-
-        let delivered = Bytes::from_static(b"delivered");
-        assert_eq!(transport.sender.try_send(peer, delivered.clone()), Ok(()));
-        let outbound = coordinator.outbound.recv().await.unwrap();
-        coordinator.on_outbound(outbound);
-        assert_eq!(
-            second.outbound.as_mut().unwrap().recv().await,
-            Some(delivered)
-        );
-
-        let second_full = Bytes::from_static(b"second-full");
         transport
             .sender
-            .try_send(peer, second_full.clone())
+            .try_send(peer, Bytes::from_static(b"stale"))
             .unwrap();
         let outbound = coordinator.outbound.recv().await.unwrap();
         coordinator.on_outbound(outbound);
-        transport
-            .sender
-            .try_send(peer, Bytes::from_static(b"dropped"))
-            .unwrap();
-        let outbound = coordinator.outbound.recv().await.unwrap();
-        coordinator.on_outbound(outbound);
-        assert_eq!(first.outbound.as_mut().unwrap().recv().await, Some(blocked));
-        assert_eq!(
-            second.outbound.as_mut().unwrap().recv().await,
-            Some(second_full)
-        );
 
-        let final_frame = Bytes::from_static(b"final");
-        transport
-            .sender
-            .try_send(peer, final_frame.clone())
-            .unwrap();
+        let latest = Bytes::from_static(b"latest");
+        transport.sender.try_send(peer, latest.clone()).unwrap();
         let outbound = coordinator.outbound.recv().await.unwrap();
         coordinator.on_outbound(outbound);
-        assert_eq!(
-            first.outbound.as_mut().unwrap().recv().await,
-            Some(final_frame.clone())
-        );
-        assert_eq!(
-            second.outbound.as_mut().unwrap().recv().await,
-            Some(final_frame)
-        );
+
+        let mut second = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let command = coordinator.commands.recv().await.unwrap();
+        coordinator.on_command(command);
+        assert!(register(&mut second).await);
+
+        assert_eq!(next_outbound(&mut first).await, latest);
+        assert_eq!(next_outbound(&mut second).await, latest);
 
         drop(first);
         drop(second);
