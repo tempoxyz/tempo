@@ -288,6 +288,12 @@ impl TempoHardfork {
     }
 
     /// Returns the expiring nonce replay-protection capacity.
+    ///
+    /// Sized to hold one maximum expiry window's worth of transactions at 10k TPS:
+    /// - Pre-T10: 300,000 entries (30s window)
+    /// - T10+: 3,000,000 entries (300s window, [TIP-1093])
+    ///
+    /// [TIP-1093]: <https://docs.tempo.xyz/protocol/tips/tip-1093>
     pub const fn expiring_nonce_set_capacity(&self) -> u32 {
         const PRE_T10_CAPACITY: u32 = 300_000;
         const POST_T10_CAPACITY: u32 = 3_000_000;
@@ -300,6 +306,12 @@ impl TempoHardfork {
     }
 
     /// Returns the maximum expiring nonce validity window in seconds.
+    ///
+    /// - Pre-T10: 30s ([TIP-1009])
+    /// - T10+: 300s ([TIP-1093])
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
+    /// [TIP-1093]: <https://docs.tempo.xyz/protocol/tips/tip-1093>
     pub const fn expiring_nonce_max_expiry_secs(&self) -> u64 {
         const PRE_T10_MAX_EXPIRY_SECS: u64 = 30;
         const POST_T10_MAX_EXPIRY_SECS: u64 = 300;

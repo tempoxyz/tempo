@@ -458,6 +458,26 @@ mod tests {
     }
 
     #[test]
+    fn test_ring_buffer_pointer_crosses_pre_t10_capacity_at_t10() -> eyre::Result<()> {
+        // At the fork boundary the ring pointer may sit at the old wrap position; under the
+        // T10 spec it must keep advancing into the extended ring instead of wrapping to 0.
+        let pre_t10_capacity = TempoHardfork::T9.expiring_nonce_set_capacity();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            mgr.expiring_nonce_ring_ptr.write(pre_t10_capacity - 1)?;
+            mgr.check_and_mark_expiring_nonce(B256::repeat_byte(0x99), now + 20)?;
+
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, pre_t10_capacity);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_initialize_sets_storage_state() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
