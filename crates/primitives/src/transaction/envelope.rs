@@ -13,7 +13,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
-use core::fmt;
+use core::{fmt, num::NonZeroU64};
 use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
@@ -102,6 +102,26 @@ impl alloy_consensus::InMemorySize for TempoTxType {
 }
 
 impl TempoTxEnvelope {
+    /// Returns an AA transaction's `valid_before` timestamp, if set.
+    ///
+    /// Other transaction types do not carry this bound.
+    pub fn valid_before(&self) -> Option<u64> {
+        match self {
+            Self::AA(tx) => tx.tx().valid_before.map(NonZeroU64::get),
+            _ => None,
+        }
+    }
+
+    /// Returns an AA transaction's `valid_after` timestamp, if set.
+    ///
+    /// Other transaction types do not carry this bound.
+    pub fn valid_after(&self) -> Option<u64> {
+        match self {
+            Self::AA(tx) => tx.tx().valid_after.map(NonZeroU64::get),
+            _ => None,
+        }
+    }
+
     /// Ensures an AA transaction's `valid_before`, when present, is strictly greater than
     /// `min_allowed`.
     ///
