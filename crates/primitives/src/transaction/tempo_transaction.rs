@@ -34,49 +34,6 @@ pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
 /// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
 pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 
-/// Error returned when a transaction's `valid_before` timestamp is not strictly greater than the
-/// required minimum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidValidBefore {
-    /// The transaction's `valid_before` timestamp.
-    pub valid_before: u64,
-    /// The exclusive lower timestamp bound supplied by the caller.
-    pub min_allowed: u64,
-}
-
-impl core::fmt::Display for InvalidValidBefore {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "'valid_before' {} is too close to current time (min allowed: {})",
-            self.valid_before, self.min_allowed
-        )
-    }
-}
-
-impl core::error::Error for InvalidValidBefore {}
-
-/// Error returned when a transaction's `valid_after` timestamp exceeds the allowed maximum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidValidAfter {
-    /// The transaction's `valid_after` timestamp.
-    pub valid_after: u64,
-    /// The inclusive upper timestamp bound supplied by the caller.
-    pub max_allowed: u64,
-}
-
-impl core::fmt::Display for InvalidValidAfter {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "'valid_after' {} is too far in the future (max allowed: {})",
-            self.valid_after, self.max_allowed
-        )
-    }
-}
-
-impl core::error::Error for InvalidValidAfter {}
-
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1021,6 +978,49 @@ mod serde_input {
             .into_owned())
     }
 }
+
+/// Error returned when a transaction's `valid_before` timestamp is not strictly greater than the
+/// required minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidValidBefore {
+    /// The transaction's `valid_before` timestamp.
+    pub valid_before: u64,
+    /// The exclusive lower timestamp bound supplied by the caller.
+    pub min_allowed: u64,
+}
+
+impl core::fmt::Display for InvalidValidBefore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "'valid_before' {} is too close to current time (min allowed: {})",
+            self.valid_before, self.min_allowed
+        )
+    }
+}
+
+impl core::error::Error for InvalidValidBefore {}
+
+/// Error returned when a transaction's `valid_after` timestamp exceeds the allowed maximum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidValidAfter {
+    /// The transaction's `valid_after` timestamp.
+    pub valid_after: u64,
+    /// The inclusive upper timestamp bound supplied by the caller.
+    pub max_allowed: u64,
+}
+
+impl core::fmt::Display for InvalidValidAfter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "'valid_after' {} is too far in the future (max allowed: {})",
+            self.valid_after, self.max_allowed
+        )
+    }
+}
+
+impl core::error::Error for InvalidValidAfter {}
 
 #[cfg(test)]
 mod tests {
