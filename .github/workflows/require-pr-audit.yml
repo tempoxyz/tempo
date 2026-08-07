@@ -1,0 +1,100 @@
+name: Require pull request audit
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted]
+  # Without this, PRs get stuck in the merge queue waiting for this status.
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # GitHub user ID 258930814 is tempoxyz-bot.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (
+        github.event_name == 'pull_request_review' &&
+        github.event.review.user.id == 258930814 &&
+        startsWith(github.event.review.body, ':eye: **Cyclops Review**') &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login != 'dependabot[bot]'
+      )
+    permissions:
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Report audit status
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
+            const cyclopsBotId = 258930814; // tempoxyz-bot
+            const fork = pull.head.repo?.full_name !== repoFullName;
+            const dependabot = pull.user.login === 'dependabot[bot]';
+            let completedReview;
+
+            if (!fork && !dependabot) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pull.number,
+                per_page: 100,
+              });
+              completedReview = reviews.find(review =>
+                review.user?.id === cyclopsBotId &&
+                review.body?.startsWith(':eye: **Cyclops Review**')
+              );
+            }
+
+            const passed = fork || dependabot || completedReview;
+            const description = fork
+              ? 'External fork PR is exempt from Cyclops audit'
+              : dependabot
+                ? 'Dependabot PR is exempt from Cyclops audit'
+                : completedReview
+                  ? 'A Cyclops audit completed for this pull request'
+                  : 'Waiting for a completed Cyclops audit';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pull.head.sha,
+              state: passed ? 'success' : 'pending',
+              context: 'Cyclops audit run',
+              description,
+              target_url: completedReview?.html_url ?? pull.html_url,
+            });
+
+  merge-group:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'merge_group'
+    permissions:
+      statuses: write
+    steps:
+      - name: Pass merge group
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // The audit is enforced on the pull request before it can enter
+            // the merge queue, so merge group commits pass through.
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.merge_group.head_sha,
+              state: 'success',
+              context: 'Cyclops audit run',
+              description: 'Audit enforced on the pull request',
+            });
