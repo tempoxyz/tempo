@@ -96,12 +96,12 @@ impl LocalState {
 ///
 /// The canonical target is `pending_head`: the parent of the most recent
 /// consensus context. This is expected to be reported by the simplex engine via
-/// the application actor, and consitutes the view (/block) that simplex expects
-/// to verify or build blocks on top of.
+/// the application actor, and constitutes the view (/block) that simplex
+/// expects to verify or build blocks on top of.
 ///
 /// Contexts double as notarization proofs for their parents, but parents are
 /// not monotonic: after nullifications, a later view may build on an *older*
-/// notarized block than its predecssor, and so supersession is arbitrated by
+/// notarized block than its predecessor, and so supersession is arbitrated by
 /// the round of the *reporting* context, and the canonical path is the pending
 /// head's ancestry rather than the highest known notarization's.
 ///
