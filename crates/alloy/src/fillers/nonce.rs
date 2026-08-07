@@ -97,9 +97,11 @@ impl Default for ExpiringNonceFiller {
 }
 
 impl ExpiringNonceFiller {
-    /// Default expiry window in seconds (25s, within the protocol maximum).
+    /// Default expiry window in seconds (25s, within the 30s pre-T10 maximum from [TIP-1009];
+    /// [TIP-1093] extends the maximum to 300s at T10).
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
+    /// [TIP-1093]: <https://docs.tempo.xyz/protocol/tips/tip-1093>
     pub const DEFAULT_EXPIRY_SECS: u64 = 25;
 
     /// Create a new filler with a custom expiry window.

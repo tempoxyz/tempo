@@ -4031,11 +4031,29 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     uint64 private constant PRE_T10_MAX_EXPIRY_SECS = 30;
     uint64 private constant T10_MAX_EXPIRY_SECS = 300;
 
+    /// @dev Mirrors the Rust `is_t10()` "T10 or later" semantics so future forks (t11, ...)
+    /// keep the extended window instead of silently falling back to the pre-T10 value.
     function _maxExpirySecs() internal view returns (uint64) {
-        string memory hardfork = vm.getEvmVersion();
-        return keccak256(bytes(hardfork)) == keccak256(bytes("t10"))
-            ? T10_MAX_EXPIRY_SECS
-            : PRE_T10_MAX_EXPIRY_SECS;
+        return
+            _tempoForkNumber(vm.getEvmVersion()) >= 10
+                ? T10_MAX_EXPIRY_SECS
+                : PRE_T10_MAX_EXPIRY_SECS;
+    }
+
+    /// @dev Parses the numeric portion of a tempo hardfork version string
+    /// ("t9" => 9, "t1a" => 1, "t10" => 10). Returns 0 for non-numeric versions.
+    function _tempoForkNumber(string memory hardfork) internal pure returns (uint256 number) {
+        bytes memory b = bytes(hardfork);
+        bool seenDigit;
+        for (uint256 i = 0; i < b.length; i++) {
+            bytes1 c = b[i];
+            if (c >= "0" && c <= "9") {
+                seenDigit = true;
+                number = number * 10 + (uint8(c) - uint8(bytes1("0")));
+            } else if (seenDigit) {
+                break;
+            }
+        }
     }
 
     /// @notice Build an expiring nonce transaction
