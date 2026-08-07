@@ -160,13 +160,7 @@ where
                     if latest_finalization.block.number() < start_after.number
                         || verifier
                             .decode_and_verify(&mut rng, &latest_finalization)
-                            .is_err_and(|error| {
-                                matches!(
-                                    error,
-                                    VerificationError::VerificationFailed
-                                        | VerificationError::NetworkIdentityMismatch
-                                )
-                            })
+                            .is_err_and(|error| error.is_signature_mismatch())
                     {
                         verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
                     }
@@ -230,10 +224,7 @@ where
                     // If we can verify the latest finalization, trust it as the new chain tip.
                     self.plan = self.plan_to(certified.block.num_hash()).await?;
                 }
-                Err(
-                    VerificationError::VerificationFailed
-                    | VerificationError::NetworkIdentityMismatch,
-                ) => {
+                Err(error) if error.is_signature_mismatch() => {
                     // If we can't verify the finalization, attempt to sync to the first epoch transition we can verify.
                     let epoch = self
                         .epoch_strategy
@@ -376,10 +367,7 @@ where
                         .plan_to(BlockNumHash::new(boundary, certified.block.hash()))
                         .await;
                 }
-                Err(
-                    VerificationError::VerificationFailed
-                    | VerificationError::NetworkIdentityMismatch,
-                ) => {
+                Err(error) if error.is_signature_mismatch() => {
                     certificate_epoch = previous_epoch;
                 }
                 Err(error) => return Err(error.into()),
