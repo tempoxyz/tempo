@@ -3997,10 +3997,13 @@ mod tests {
         Ok(())
     }
 
-    /// Same regression for the AA batch path: a failed batch must refund the
-    /// intrinsic CREATE state gas of every CREATE call in the batch — both the
-    /// reverting CREATE itself and a successfully deployed CREATE whose state
-    /// is rolled back by the atomic batch revert.
+    /// Same regression for the AA batch path: a failed batch step's settled
+    /// gas carries `last_frame_result`'s refund of the reverting CREATE's
+    /// intrinsic state gas into the surfaced batch result.
+    ///
+    /// NOTE: a successfully deployed CREATE rolled back by a later step's
+    /// batch failure keeps its intrinsic CREATE state-gas charge — the batch
+    /// path follows revm's per-frame settle and adds no batch-wide refund.
     #[test]
     fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -4008,23 +4011,11 @@ mod tests {
 
         // PUSH1 0 PUSH1 0 REVERT
         let reverting_initcode = bytes!("60006000fd");
-        // PUSH1 0 PUSH1 0 RETURN — deploys an empty contract
-        let empty_initcode = bytes!("60006000f3");
-        // Contract whose runtime code reverts immediately.
-        let reverting_contract = Address::repeat_byte(0x42);
 
-        // Scenario 1: the CREATE call itself reverts.
+        // The CREATE call itself reverts.
         let create_reverts = key_pair.sign_tx(
             TxBuilder::new()
                 .create(&reverting_initcode)
-                .gas_limit(5_000_000)
-                .build(),
-        )?;
-        // Scenario 2: the CREATE deploys, then a later call fails the batch.
-        let batch_reverts_after_create = key_pair.sign_tx(
-            TxBuilder::new()
-                .create(&empty_initcode)
-                .call(reverting_contract, &[])
                 .gas_limit(5_000_000)
                 .build(),
         )?;
@@ -4039,13 +4030,6 @@ mod tests {
                     0,
                 )]);
             }
-            evm.ctx.db_mut().insert_account_info(
-                reverting_contract,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("60006000fd"))),
-                    ..Default::default()
-                },
-            );
 
             let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(signed_tx, caller))?;
             assert!(!result.is_success(), "the batch should fail");
@@ -4056,11 +4040,6 @@ mod tests {
             run(&create_reverts, false)?,
             run(&create_reverts, true)?,
             "a reverting AA CREATE call must refund its create_state_gas"
-        );
-        assert_eq!(
-            run(&batch_reverts_after_create, false)?,
-            run(&batch_reverts_after_create, true)?,
-            "a rolled-back deployed AA CREATE call must refund its create_state_gas"
         );
         Ok(())
     }

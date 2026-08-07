@@ -1907,10 +1907,10 @@ fn test_t3_scope_validation_empty_calls_returns_custom_error() {
 
     let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
     let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-    let mut remaining_gas = 100_000;
+    let mut gas = GasTracker::new(100_000, 100_000, 0);
 
     let err = handler
-        .prevalidate_keychain_call_scopes(&mut evm, &[], &mut remaining_gas, 0)
+        .prevalidate_keychain_call_scopes(&mut evm, &[], &mut gas)
         .expect_err("empty calls should return an error instead of panicking");
 
     match err {
@@ -1972,81 +1972,6 @@ fn test_refund_cap_removed_on_t7() {
         refunded_for_spec(TempoHardfork::T7),
         REFUND,
         "T7 must credit the full refund, with no EIP-3529 cap"
-    );
-}
-
-fn failed_batch_frame_result(result: InstructionResult, gas: Gas) -> FrameResult {
-    FrameResult::Call(CallOutcome::new(
-        InterpreterResult::new(result, Bytes::new(), gas),
-        0..0,
-    ))
-}
-
-#[test]
-fn test_normalize_failed_batch_spill_returned_to_regular_gas_on_revert() {
-    // Failed step settled at tx level: 10k regular gas left, reservoir 5k.
-    let mut gas = Gas::new_with_regular_gas_and_reservoir(50_000, 5_000);
-    gas.set_remaining(10_000);
-    let mut frame_result = failed_batch_frame_result(InstructionResult::Revert, gas);
-
-    // Prior successful steps spent 8k state gas, 3k of which spilled into
-    // regular gas because the reservoir was empty.
-    normalize_failed_batch_result_gas(&mut frame_result, 100_000, 8_000, 3_000, 0);
-
-    let gas = frame_result.gas();
-    assert_eq!(gas.limit(), 100_000);
-    assert_eq!(
-        gas.remaining(),
-        13_000,
-        "spilled state gas must be credited back to regular gas on revert"
-    );
-    assert_eq!(
-        gas.reservoir(),
-        10_000,
-        "reservoir must regain only the non-spilled state gas"
-    );
-    assert_eq!(gas.refunded(), 0);
-    assert_eq!(gas.state_gas_spent(), 0);
-}
-
-#[test]
-fn test_normalize_failed_batch_spill_consumed_on_halt() {
-    let mut gas = Gas::new_with_regular_gas_and_reservoir(50_000, 5_000);
-    gas.set_remaining(0);
-    let mut frame_result = failed_batch_frame_result(InstructionResult::OutOfGas, gas);
-
-    normalize_failed_batch_result_gas(&mut frame_result, 100_000, 8_000, 3_000, 0);
-
-    let gas = frame_result.gas();
-    assert_eq!(
-        gas.remaining(),
-        0,
-        "halt consumes regular gas including the rolled-back spill"
-    );
-    assert_eq!(
-        gas.reservoir(),
-        10_000,
-        "reservoir is still restored without the spilled portion"
-    );
-}
-
-#[test]
-fn test_normalize_failed_batch_create_refund_cancels_step_refill() {
-    // `last_frame_result` already refunded the failed CREATE step's own state
-    // charge: the reservoir includes it and `state_gas_spent` went negative.
-    let create_state = 468_000;
-    let mut gas = Gas::new_with_regular_gas_and_reservoir(50_000, create_state);
-    gas.set_remaining(0);
-    gas.set_state_gas_spent(-(create_state as i64));
-    let mut frame_result = failed_batch_frame_result(InstructionResult::OutOfGas, gas);
-
-    // The batch charged two CREATEs upfront.
-    normalize_failed_batch_result_gas(&mut frame_result, 100_000, 0, 0, 2 * create_state);
-
-    assert_eq!(
-        frame_result.gas().reservoir(),
-        2 * create_state,
-        "the step's own refill is canceled and the whole batch charge refunded once"
     );
 }
 
@@ -3736,8 +3661,7 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
 
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        cfg.gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
         cfg.enable_amsterdam_eip8037 = true;
     });
 
@@ -3888,8 +3812,7 @@ fn test_state_gas_tx_gas_limit_above_cap_allowed() {
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(30_000_000);
         cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        cfg.gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
     });
 
     // validate_env should pass even though gas_limit > cap
@@ -3951,8 +3874,7 @@ fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(CAP);
         cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        cfg.gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
     });
 
     // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
@@ -4017,8 +3939,7 @@ fn test_subblock_paused_fee_token_halts_as_fee_payment_failure() {
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(30_000_000);
         cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        cfg.gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T11);
     });
 
     let err = EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused {
