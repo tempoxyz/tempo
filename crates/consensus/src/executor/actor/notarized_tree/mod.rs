@@ -44,11 +44,6 @@ impl BlockEntry {
 
 /// A snapshot of the execution layer's local state - its head and
 /// finalized tip - for execution tasks to extend and report back.
-///
-/// The tracked state lives unzipped in [`NotarizedTree`] (`local_head` and
-/// `local_finalized_tip`); tasks take snapshots of it via
-/// [`NotarizedTree::local_state`], and the states the execution layer
-/// accepts are reported back via [`NotarizedTree::set_local_state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LocalState {
     pub(super) head: (Height, Digest),
@@ -56,10 +51,9 @@ pub(super) struct LocalState {
 }
 
 impl LocalState {
-    /// The forkchoice state to submit to the execution layer: the head,
-    /// with both the safe and the finalized hash pinned to the finalized
-    /// tip.
-    pub(super) fn forkchoice_state(&self) -> ForkchoiceState {
+    /// Transform a [`LocalState`] to a [`ForkchoiceState`] to submit to the
+    /// execution layer.
+    pub(super) fn to_forkchoice_state(self) -> ForkchoiceState {
         ForkchoiceState {
             head_block_hash: self.head.1.0,
             safe_block_hash: self.finalized.1.0,
@@ -95,22 +89,15 @@ impl LocalState {
         }
         this
     }
-
-    /// Sets the head to the finalized tip unconditionally.
-    pub(super) fn force_head_to_finalized(self) -> Self {
-        let mut this = self;
-        this.head = this.finalized;
-        this
-    }
 }
 
 /// Tracks notarized blocks at the tip of the chain and returns which block can
 /// be forwarded to the EL next.
 ///
-/// The canonical target `pending_head`: the parent of the most recent consensus
-/// context. This is expected to be reported by the simplex engine via the
-/// application actor, and consitutes the view (/block) that simplex expects to
-/// verify or build blocks on top of.
+/// The canonical target is `pending_head`: the parent of the most recent
+/// consensus context. This is expected to be reported by the simplex engine via
+/// the application actor, and consitutes the view (/block) that simplex expects
+/// to verify or build blocks on top of.
 ///
 /// Contexts double as notarization proofs for their parents, but parents are
 /// not monotonic: after nullifications, a later view may build on an *older*

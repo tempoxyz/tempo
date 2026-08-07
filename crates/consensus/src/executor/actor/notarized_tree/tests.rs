@@ -453,7 +453,7 @@ fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
     let local_state = tree
         .local_state()
         .update_finalized(Height::new(11), b1.digest())
-        .force_head_to_finalized();
+        .update_head(Height::new(11), b1.digest());
     tree.set_local_state(local_state);
 
     // The next report builds on B2: the meet of the rebased head (B1)

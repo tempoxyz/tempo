@@ -1305,7 +1305,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     let fcu_response = execution_node
         .add_ons_handle
         .beacon_engine_handle
-        .fork_choice_updated(canonicalized.forkchoice_state(), attrs)
+        .fork_choice_updated(canonicalized.to_forkchoice_state(), attrs)
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed requesting execution layer to update forkchoice state")?;
@@ -1400,7 +1400,7 @@ async fn forward_finalized<TContext: Pacer>(
     } else {
         canonicalized
             .update_finalized(block.height(), block.digest())
-            .force_head_to_finalized()
+            .update_head(block.height(), block.digest())
     };
 
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
