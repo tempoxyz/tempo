@@ -14,7 +14,7 @@ use alloy_primitives::{B256, B512, Bytes};
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::{Epoch, Round, View};
 use commonware_macros::test_traced;
-use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
+use commonware_runtime::{Clock as _, Metrics as _, Runner as _, Supervisor as _, deterministic};
 use parking_lot::Mutex;
 use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
@@ -23,7 +23,7 @@ use super::{CertSink, Certificate, Outcome};
 use crate::{
     consensus::Digest,
     follow::FollowerProgress,
-    test_support::{DkgFixture, dkg_fixture, make_certificate},
+    test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
 const WAIT_ATTEMPTS: usize = 200;
@@ -44,6 +44,16 @@ fn peer(byte: u8) -> B512 {
 
 fn round(view: u64) -> Round {
     Round::new(Epoch::zero(), View::new(view))
+}
+
+fn metric(context: &impl commonware_runtime::Metrics, name: &str) -> i64 {
+    let prefix = format!("{name} ");
+    context
+        .encode()
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("metric `{name}` was not registered"))
 }
 
 /// Records verification requests and returns outcomes chosen by each test.
@@ -332,6 +342,11 @@ fn terminal_outcome_settles_frame_for_every_peer() {
             1,
             "the same bytes are only judged once",
         );
+        assert_eq!(
+            rig.peer_control.penalized().len(),
+            1,
+            "only the judged source is penalized",
+        );
     });
 }
 
@@ -381,9 +396,8 @@ fn disconnected_peer_is_ignored() {
     });
 }
 
-/// A certificate can become verifiable when its missing scheme arrives. The
-/// actor must hold it without retrying in a loop that consumes the verify
-/// budget.
+/// Quarantine is sticky until a relevant authenticated boundary arrives. Time
+/// and replacement offers cannot cause another verification or peer penalty.
 #[test_traced]
 fn certificate_awaiting_scheme_is_held_without_retrying() {
     deterministic::Runner::default().start(|mut context| async move {
@@ -397,9 +411,16 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
 
         let frame = rig.frame(11);
         rig.send(peer(1), frame).await;
-        wait_until(&context, || !rig.sink.requests().is_empty()).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        context.sleep(Duration::from_millis(200)).await;
+        rig.send(peer(1), rig.frame(12)).await;
+        rig.send(peer(1), rig.frame(13)).await;
+        wait_until(&context, || {
+            metric(&context, "gossip_dropped_locked_replacement_total") == 2
+        })
+        .await;
+
+        context.sleep(Duration::from_secs(3)).await;
         assert_eq!(rig.sink.requests().len(), 1, "no retry loop");
         assert!(
             rig.peer_control.penalized().is_empty(),
@@ -410,10 +431,14 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
         rig.progress.boundary_scheme_installed(Epoch::new(3));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests().len(), 1, "still held");
+        assert_eq!(metric(&context, "gossip_quarantined"), 1);
 
         // The scheme it was waiting for releases it.
         rig.progress.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 2).await;
+        wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
+        assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
+        assert_eq!(metric(&context, "gossip_quarantined"), 0);
     });
 }
 
@@ -451,24 +476,48 @@ fn malformed_frames_are_penalized_without_reaching_the_driver() {
     });
 }
 
-/// A peer can replace its slot while a judgement is pending. The actor must
-/// relay the verified bytes, not the replacement that the driver did not check.
+/// Slot locking applies only after decoding. A quarantined peer cannot hide
+/// malformed protocol data behind its existing certificate.
 #[test_traced]
-fn only_the_verified_frame_is_relayed() {
+fn malformed_frame_from_a_quarantined_peer_is_penalized() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+
+        rig.send(peer(1), rig.frame(11)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.send(peer(1), Bytes::from_static(&[0x00, 0xff])).await;
+        wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
+
+        assert_eq!(rig.sink.requests(), vec![round(11)]);
+        assert_eq!(metric(&context, "gossip_quarantined"), 1);
+    });
+}
+
+/// Once judgment begins, a higher-round offer cannot replace the attributed
+/// frame or become a second verification request.
+#[test_traced]
+fn higher_round_cannot_replace_a_slot_being_judged() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        // Hold the judgement open while the peer replaces its slot.
+        // Hold the judgment open while the peer offers a replacement.
         let verified = rig.frame(70);
         let replacement = rig.frame(71);
         rig.send(peer(1), verified.clone()).await;
         wait_until(&context, || rig.sink.requests().len() == 1).await;
         rig.send(peer(1), replacement.clone()).await;
-        context.sleep(Duration::from_millis(10)).await;
+        wait_until(&context, || {
+            metric(&context, "gossip_dropped_locked_replacement_total") == 1
+        })
+        .await;
 
-        // Now answer the original.
         rig.sink.release(Outcome::Admitted);
 
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
@@ -479,6 +528,210 @@ fn only_the_verified_frame_is_relayed() {
             "only the judged bytes may be relayed",
         );
         assert!(!relayed.contains(&replacement));
+        assert_eq!(rig.sink.requests(), vec![round(70)]);
+    });
+}
+
+/// A rate-limited slot has not consumed verification work, so the peer may
+/// still replace it with a more useful certificate.
+#[test_traced]
+fn higher_round_replaces_a_ready_slot() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start_with_verify_rate(&mut context, 1);
+        rig.sink.always(Outcome::Invalid);
+        rig.connect(peer(1));
+
+        rig.send(peer(1), rig.frame(90)).await;
+        wait_until(&context, || rig.peer_control.penalized().len() == 1).await;
+
+        rig.send(peer(1), rig.frame(91)).await;
+        context.sleep(Duration::from_millis(100)).await;
+        rig.send(peer(1), rig.frame(92)).await;
+        context.sleep(Duration::from_millis(100)).await;
+        assert_eq!(rig.sink.requests(), vec![round(90)]);
+
+        context.sleep(Duration::from_secs(2)).await;
+        assert_eq!(rig.sink.requests(), vec![round(90), round(92)]);
+    });
+}
+
+/// Once the watermark passes a quarantined certificate, a boundary event only
+/// removes it. The actor does not spend another verification to rediscover that
+/// it is stale.
+#[test_traced]
+fn stale_quarantine_is_pruned_without_reverification() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+
+        rig.send(peer(1), rig.frame(11)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.progress.advance(round(11));
+        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
+
+        assert_eq!(rig.sink.requests(), vec![round(11)]);
+        assert!(rig.peer_control.penalized().is_empty());
+    });
+}
+
+/// A relevant boundary releases a live certificate through the normal
+/// admission path. The real driver advances progress before returning
+/// `Admitted`, which the stub mirrors before completing its held response.
+#[test_traced]
+fn successful_quarantine_retry_is_relayed() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+
+        let frame = rig.frame(11);
+        rig.send(peer(1), frame.clone()).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        wait_until(&context, || rig.sink.requests().len() == 2).await;
+        rig.progress.advance(round(11));
+        rig.sink.release(Outcome::Admitted);
+
+        wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
+        assert_eq!(rig.relayed(peer(2)), vec![frame]);
+        assert!(rig.relayed(peer(1)).is_empty());
+        assert_eq!(rig.progress.watermark(), round(11));
+        assert!(rig.peer_control.penalized().is_empty());
+        assert_eq!(metric(&context, "gossip_quarantined"), 0);
+    });
+}
+
+/// Progress from the first useful retry settles lower quarantines before their
+/// schemes arrive, avoiding retrospective verification work.
+#[test_traced]
+fn successful_retry_prunes_lower_quarantines() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
+
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(5),
+        });
+        rig.send(peer(1), rig.frame(9)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+        rig.send(peer(2), rig.frame(10)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
+
+        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        wait_until(&context, || rig.sink.requests().len() == 3).await;
+        rig.progress.advance(round(10));
+        rig.sink.release(Outcome::Admitted);
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
+
+        rig.progress.boundary_scheme_installed(Epoch::new(5));
+        context.sleep(Duration::from_millis(50)).await;
+        assert_eq!(rig.sink.requests(), vec![round(9), round(10), round(10)],);
+    });
+}
+
+/// If a live retry fails the newly installed scheme, only the source of that
+/// retry is penalized. Other quarantined peers are not reverified for blame.
+#[test_traced]
+fn failed_retry_penalizes_only_its_source() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
+
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+        rig.send(peer(1), rig.frame(10)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(5),
+        });
+        rig.send(peer(2), rig.frame(20)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
+
+        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        wait_until(&context, || rig.sink.requests().len() == 3).await;
+        rig.sink.release(Outcome::Invalid);
+        wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
+
+        assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
+        assert_eq!(metric(&context, "gossip_quarantined"), 1);
+        assert_eq!(rig.sink.requests().len(), 3);
+    });
+}
+
+/// Quarantine belongs to a live logical connection. Disconnect drops it, and
+/// reconnecting the same peer starts with an empty slot.
+#[test_traced]
+fn disconnect_discards_quarantine() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.sink.answer(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+
+        let frame = rig.frame(11);
+        rig.send(peer(1), frame.clone()).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.disconnect(peer(1));
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
+        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        context.sleep(Duration::from_millis(50)).await;
+        assert_eq!(rig.sink.requests().len(), 1);
+
+        rig.connect(peer(1));
+        rig.sink.answer(Outcome::Invalid);
+        rig.send(peer(1), frame).await;
+        wait_until(&context, || rig.sink.requests().len() == 2).await;
+    });
+}
+
+/// Released quarantines re-enter the same global rate limiter as fresh
+/// candidates; a boundary event cannot trigger a verification burst.
+#[test_traced]
+fn released_quarantines_share_the_global_verify_limit() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start_with_verify_rate(&mut context, 1);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
+        rig.sink.always(Outcome::NeedsScheme {
+            epoch: Epoch::new(4),
+        });
+
+        rig.send(peer(1), rig.frame(11)).await;
+        rig.send(peer(2), rig.frame(12)).await;
+        context.sleep(Duration::from_secs(2)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
+        assert_eq!(rig.sink.requests().len(), 2);
+
+        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        wait_until(&context, || rig.sink.requests().len() == 3).await;
+        context.sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            rig.sink.requests().len(),
+            3,
+            "only one retry used the burst"
+        );
+
+        context.sleep(Duration::from_secs(2)).await;
+        assert_eq!(rig.sink.requests().len(), 4);
     });
 }
 
