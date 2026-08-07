@@ -20,6 +20,18 @@ use tempo_node::rpc::consensus::CertifiedBlock;
 
 use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
 
+pub(crate) type CertifiedFinalization =
+    CertifiedBlock<Finalization<Scheme<PublicKey, MinSig>, Digest>>;
+
+pub(crate) fn decode_certified_finalization(
+    certified: CertifiedBlock,
+) -> Result<CertifiedFinalization, MalformedCertificateError> {
+    certified.try_map_certificate(|certificate| {
+        let bytes = alloy_primitives::hex::decode(certificate)?;
+        Finalization::decode(&*bytes).map_err(Into::into)
+    })
+}
+
 #[cfg(test)]
 mod test;
 
@@ -79,18 +91,13 @@ impl FinalizationVerifier {
         Ok(outcome)
     }
 
-    /// Decode and verify a certified block returned by the Tempo consensus RPC.
-    pub(crate) fn decode_and_verify(
+    /// Verify a decoded certified block returned by the Tempo consensus RPC.
+    pub(crate) fn verify(
         &self,
         rng: &mut impl CryptoRng,
-        certified: &CertifiedBlock,
+        certified: &CertifiedFinalization,
     ) -> Result<Finalization<Scheme<PublicKey, MinSig>, Digest>, Error> {
-        // TODO: Decode certificates when constructing `CertifiedBlock` instead of keeping their
-        // bytes opaque and decoding them at each consumer.
-        let bytes = alloy_primitives::hex::decode(&certified.certificate)
-            .map_err(|error| Error::MalformedCertificate(error.into()))?;
-        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes)
-            .map_err(|error| Error::MalformedCertificate(error.into()))?;
+        let finalization = &certified.certificate;
 
         if finalization.proposal.payload.0 != certified.block.hash() {
             return Err(Error::BlockDigestMismatch);
@@ -134,7 +141,7 @@ impl FinalizationVerifier {
             self.scheme_provider.register(epoch, (*scheme).clone());
         }
 
-        Ok(finalization)
+        Ok(finalization.clone())
     }
 }
 

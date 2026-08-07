@@ -15,7 +15,10 @@ use tracing::{debug, instrument, warn};
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
     consensus::Block,
-    finalization_verifier::{Error as VerificationError, FinalizationVerifier},
+    finalization_verifier::{
+        CertifiedFinalization, Error as VerificationError, FinalizationVerifier,
+        decode_certified_finalization,
+    },
 };
 
 pub(super) fn try_init<TContext, P, M>(
@@ -207,10 +210,13 @@ where
         err(Display)
     )]
     async fn process_event(&mut self, certified: CertifiedBlock) -> eyre::Result<()> {
-        let finalization = match self
-            .verifier
-            .decode_and_verify(&mut self.context, &certified)
-        {
+        let certified = decode_certified_finalization(certified)
+            .wrap_err("failed decoding finalization certificate")?;
+        self.process_finalization(certified).await
+    }
+
+    async fn process_finalization(&mut self, certified: CertifiedFinalization) -> eyre::Result<()> {
+        let finalization = match self.verifier.verify(&mut self.context, &certified) {
             Ok(finalization) => finalization,
             Err(error @ VerificationError::VerificationFailed) => {
                 debug!(%error, "failed to verify finalization certificate");

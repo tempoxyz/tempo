@@ -13,20 +13,36 @@ use tokio::sync::broadcast;
 /// A block with a threshold BLS certificate (notarization or finalization).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct CertifiedBlock {
+pub struct CertifiedBlock<C = String> {
     pub epoch: u64,
     pub view: u64,
     pub digest: B256,
 
     /// Hex-encoded full notarization or finalization.
-    pub certificate: String,
+    pub certificate: C,
 
     /// The Tempo block.
     #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
 }
 
-impl Display for CertifiedBlock {
+impl<C> CertifiedBlock<C> {
+    /// Transform the certificate while preserving its associated consensus metadata and block.
+    pub fn try_map_certificate<T, E>(
+        self,
+        f: impl FnOnce(C) -> Result<T, E>,
+    ) -> Result<CertifiedBlock<T>, E> {
+        Ok(CertifiedBlock {
+            epoch: self.epoch,
+            view: self.view,
+            digest: self.digest,
+            certificate: f(self.certificate)?,
+            block: self.block,
+        })
+    }
+}
+
+impl<C: Serialize> Display for CertifiedBlock<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match serde_json::to_string(self) {
             Ok(s) => f.write_str(&s),

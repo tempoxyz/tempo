@@ -4,7 +4,7 @@ use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use tempo_chainspec::NetworkIdentity;
 
-use super::{Error, FinalizationVerifier};
+use super::{Error, FinalizationVerifier, decode_certified_finalization};
 use crate::follow::test_utils::{
     EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
 };
@@ -24,9 +24,11 @@ fn tracks_boundary_identity() {
 
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&next.outcome));
         let finalization = make_finalization(&boundary, Epoch::zero(), &current.schemes);
-        let certified = make_certified_block(boundary.clone(), &finalization);
+        let certified =
+            decode_certified_finalization(make_certified_block(boundary.clone(), &finalization))
+                .unwrap();
         verifier
-            .decode_and_verify(&mut context, &certified)
+            .verify(&mut context, &certified)
             .expect("current identity should verify the boundary");
 
         verifier
@@ -35,9 +37,10 @@ fn tracks_boundary_identity() {
 
         let block = make_block(EPOCH_LENGTH.get(), None);
         let finalization = make_finalization(&block, Epoch::new(1), &next.schemes);
-        let certified = make_certified_block(block, &finalization);
+        let certified =
+            decode_certified_finalization(make_certified_block(block, &finalization)).unwrap();
         verifier
-            .decode_and_verify(&mut context, &certified)
+            .verify(&mut context, &certified)
             .expect("installed identity should verify the next epoch");
     });
 }
@@ -56,9 +59,10 @@ fn rejects_epoch_mismatching_block_height() {
 
         let block = make_block(EPOCH_LENGTH.get(), None);
         let finalization = make_finalization(&block, Epoch::zero(), &fixture.schemes);
-        let certified = make_certified_block(block, &finalization);
+        let certified =
+            decode_certified_finalization(make_certified_block(block, &finalization)).unwrap();
         assert!(matches!(
-            verifier.decode_and_verify(&mut context, &certified),
+            verifier.verify(&mut context, &certified),
             Err(Error::EpochMismatch {
                 height,
                 expected: 1,

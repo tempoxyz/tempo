@@ -28,7 +28,9 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Query};
 use tempo_primitives::TempoHeader;
 use tracing::{instrument, warn};
 
-use crate::finalization_verifier::{Error as VerificationError, FinalizationVerifier};
+use crate::finalization_verifier::{
+    Error as VerificationError, FinalizationVerifier, decode_certified_finalization,
+};
 
 #[cfg(test)]
 mod test;
@@ -153,13 +155,15 @@ where
                     // Always fetch identity from start block if it's the last block in its epoch.
                     verifier = verifier_from_start(&rpc, &epoch_strategy, start_after).await?;
                 } else {
-                    let latest_finalization = rpc.finalization(Query::Latest).await?;
+                    let latest_finalization =
+                        decode_certified_finalization(rpc.finalization(Query::Latest).await?)
+                            .map_err(VerificationError::MalformedCertificate)?;
 
                     // If the latest finalization we can obtain is older than the start block or it
                     // does not verify against the initial identity, always fetch identity via the start block.
                     if latest_finalization.block.number() < start_after.number
                         || verifier
-                            .decode_and_verify(&mut rng, &latest_finalization)
+                            .verify(&mut rng, &latest_finalization)
                             .is_err_and(|error| {
                                 matches!(error, VerificationError::VerificationFailed)
                             })
@@ -214,14 +218,16 @@ where
             }
 
             // If we don't have any more headers, advance by following the latest finalization.
-            let certified = self.rpc.finalization(Query::Latest).await?;
+            let certified =
+                decode_certified_finalization(self.rpc.finalization(Query::Latest).await?)
+                    .map_err(VerificationError::MalformedCertificate)?;
 
             if certified.block.number() <= self.cursor.number {
                 tokio::time::sleep(self.poll_interval).await;
                 continue;
             }
 
-            match self.verifier.decode_and_verify(&mut self.rng, &certified) {
+            match self.verifier.verify(&mut self.rng, &certified) {
                 Ok(_) => {
                     // If we can verify the latest finalization, trust it as the new chain tip.
                     self.plan = self.plan_to(certified.block.num_hash()).await?;
@@ -355,6 +361,8 @@ where
                     height: boundary,
                     source,
                 })?;
+            let certified = decode_certified_finalization(certified)
+                .map_err(VerificationError::MalformedCertificate)?;
             let actual = certified.block.number();
             if actual != boundary {
                 return Err(Error::TransitionHeightMismatch {
@@ -363,7 +371,7 @@ where
                 });
             }
 
-            match self.verifier.decode_and_verify(&mut self.rng, &certified) {
+            match self.verifier.verify(&mut self.rng, &certified) {
                 Ok(_) => {
                     return self
                         .plan_to(BlockNumHash::new(boundary, certified.block.hash()))

@@ -11,13 +11,9 @@ use std::{
 };
 
 use bytes::Bytes;
-use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_consensus::{
-    marshal::resolver::handler,
-    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-    types::Height,
-};
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_codec::Encode as _;
+use commonware_consensus::{marshal::resolver::handler, types::Height};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_resolver::opaque;
 use commonware_runtime::{Clock, Metrics, Spawner, telemetry::metrics::Registered};
 use eyre::Report;
@@ -34,7 +30,10 @@ use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
 use tempo_primitives::Block as TempoBlock;
 use tracing::{debug, error, instrument, warn};
 
-use crate::consensus::{Block, Digest};
+use crate::{
+    consensus::{Block, Digest},
+    finalization_verifier::decode_certified_finalization,
+};
 
 #[cfg(test)]
 mod test;
@@ -257,13 +256,11 @@ async fn resolve_block<P: BlockProvider, U: Upstream>(
 async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<Bytes> {
     let certified_block = upstream.get_finalization(height).await?;
 
-    let finalization = alloy_primitives::hex::decode(&certified_block.certificate)
+    let certified_block = decode_certified_finalization(certified_block)
         .map_err(Report::new)
-        .and_then(|bytes| {
-            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(&*bytes).map_err(Report::new)
-        })
         .inspect_err(|error| warn!(%error, "failed decoding certificate"))
         .ok()?;
+    let finalization = certified_block.certificate;
 
     // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
     // is available when reconstructing this consensus block.
