@@ -11,7 +11,10 @@ use std::{
 };
 
 use alloy_primitives::{B256, Bytes, keccak256};
-use commonware_consensus::types::{Epoch, Round};
+use commonware_consensus::{
+    Epochable as _,
+    types::{Epoch, Round},
+};
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Quota, RateLimiter, Spawner, spawn_cell,
 };
@@ -33,18 +36,20 @@ use crate::{follow::FollowerProgress, utils::OptionFuture};
 /// would let a forged certificate suppress a valid certificate for that block.
 type FrameId = B256;
 
-/// A peer's most interesting unjudged certificate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotState {
+    Ready,
+    Judging,
+    NeedsScheme(Epoch),
+}
+
+/// A peer's current candidate or quarantined certificate.
 struct Slot {
     round: Round,
     certificate: Certificate,
     frame: Bytes,
     id: FrameId,
-    /// Scheme needed before the driver can retry this certificate.
-    ///
-    /// This stays in the peer's single slot, so replacement or disconnect
-    /// removes it. A separate map could grow without limit because a missing
-    /// scheme does not count as peer misconduct.
-    blocked_until: Option<Epoch>,
+    state: SlotState,
 }
 
 struct Peer {
@@ -90,22 +95,19 @@ struct Pending {
     peer: PeerKey,
     round: Round,
     id: FrameId,
-    /// Exact frame bytes for the certificate sent to the driver.
-    ///
-    /// A peer can replace its slot while the judgement is pending. Reading the
-    /// slot after completion could relay a different certificate that the
-    /// driver did not verify.
+    /// Exact bytes are retained outside the slot so a disconnect cannot erase
+    /// the evidence or change what a completed judgment relays.
     frame: Bytes,
 }
 
 type PeerKey = alloy_primitives::B512;
-type SchemeStream = BoxStream<'static, Result<Epoch, BroadcastStreamRecvError>>;
+type BoundarySchemeStream = BoxStream<'static, Result<Epoch, BroadcastStreamRecvError>>;
 
-/// Returns scheme notifications or a stream that remains pending.
+/// Returns authenticated boundary-scheme notifications or a stream that remains pending.
 ///
 /// The pending tail keeps the actor's select branch dormant if the source is
 /// absent or closes.
-fn scheme_stream(progress: Option<&FollowerProgress>) -> SchemeStream {
+fn boundary_scheme_stream(progress: Option<&FollowerProgress>) -> BoundarySchemeStream {
     match progress {
         Some(progress) => BroadcastStream::new(progress.boundary_schemes())
             .chain(stream::pending())
@@ -151,8 +153,8 @@ where
     let metrics = Metrics::init(&context);
     let quota =
         Quota::per_second(NonZeroU32::new(config.verify_rate.max(1)).expect("clamped above zero"));
-    let recent = Recent::with_capacity(config.recent_frames);
-    let schemes = scheme_stream(config.progress.as_ref());
+    let recent = SettledFrames::with_capacity(config.recent_frames);
+    let boundary_schemes = boundary_scheme_stream(config.progress.as_ref());
 
     let limiter_context = context.child("verify_limiter");
 
@@ -162,12 +164,13 @@ where
         config,
         peers: HashMap::new(),
         slots: HashMap::new(),
-        recent,
+        settled_frames: recent,
         latest: None,
         pending: OptionFuture::none(),
         budget_wakeup: OptionFuture::none(),
-        schemes,
+        boundary_schemes,
         cursor: 0,
+        slots_pruned_through: Round::zero(),
         metrics,
     }
 }
@@ -178,16 +181,20 @@ pub(crate) struct Actor<TContext: Clock, K> {
 
     peers: HashMap<PeerKey, Peer>,
     slots: HashMap<PeerKey, Slot>,
-    recent: Recent,
+    settled_frames: SettledFrames,
     latest: Option<Published>,
 
     pending: OptionFuture<futures::future::BoxFuture<'static, (Pending, Option<Outcome>)>>,
     budget_wakeup: OptionFuture<futures::future::BoxFuture<'static, ()>>,
 
-    schemes: SchemeStream,
+    boundary_schemes: BoundarySchemeStream,
 
     /// Round-robin position used to share the verify budget between peers.
     cursor: usize,
+
+    /// Last watermark applied to every slot. New frames are checked against the
+    /// live watermark before insertion, so unchanged progress needs no rescan.
+    slots_pruned_through: Round,
 
     verify_limiter: RateLimiter<TContext>,
     metrics: Metrics,
@@ -220,10 +227,11 @@ where
 
                 Some(message) = self.config.mailbox.recv() => self.on_message(message),
 
-                Some(scheme) = self.schemes.next() => match scheme {
-                    Ok(epoch) => self.unblock(Some(epoch)),
-                    // Some notifications were lost, so retry every blocked slot.
-                    Err(BroadcastStreamRecvError::Lagged(_)) => self.unblock(None),
+                Some(scheme) = self.boundary_schemes.next() => match scheme {
+                    Ok(epoch) => self.release_quarantines(epoch),
+                    Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                        debug!(skipped, "boundary scheme notifications lagged");
+                    }
                 },
 
                 _ = (&mut self.budget_wakeup).fuse() => {
@@ -268,7 +276,7 @@ where
                 if self.peers.remove(&peer).is_some() {
                     self.slots.remove(&peer);
                     self.metrics.peers.set(self.peers.len() as i64);
-                    self.metrics.slots.set(self.slots.len() as i64);
+                    self.update_slot_metrics();
                 }
             }
         }
@@ -283,7 +291,7 @@ where
         }
 
         let id = keccak256(&frame);
-        if let Some(round) = self.recent.round(&id) {
+        if let Some(round) = self.settled_frames.round(&id) {
             self.peers
                 .get_mut(&peer)
                 .expect("peer was checked above")
@@ -309,24 +317,33 @@ where
             return;
         }
 
-        // One slot per peer limits a flood to replacing that peer's own offer.
-        let replace = self
-            .slots
-            .get(&peer)
-            .is_none_or(|current| round > current.round);
-        if replace {
-            self.slots.insert(
-                peer,
-                Slot {
-                    round,
-                    certificate,
-                    frame,
-                    id,
-                    blocked_until: None,
-                },
-            );
-            self.metrics.slots.set(self.slots.len() as i64);
+        // A peer may improve a candidate that has not consumed verification
+        // work. However, once judgment starts replacing is not allowed to
+        // make the peer on the hook in case the certificate turns out to be
+        // forged. Should that happen the peer gets penalized.
+        let replace = match self.slots.get(&peer) {
+            None => true,
+            Some(current) if current.state == SlotState::Ready => round > current.round,
+            Some(_) => {
+                self.metrics.dropped_locked_replacement.inc();
+                false
+            }
+        };
+        if !replace {
+            return;
         }
+
+        self.slots.insert(
+            peer,
+            Slot {
+                round,
+                certificate,
+                frame,
+                id,
+                state: SlotState::Ready,
+            },
+        );
+        self.update_slot_metrics();
     }
 
     fn on_message(&mut self, message: Message) {
@@ -349,7 +366,8 @@ where
                 }
 
                 let id = keccak256(&frame);
-                self.recent.insert(id, round);
+                self.settled_frames.insert(id, round);
+                self.forget(id);
                 self.latest = Some(Published {
                     round,
                     frame: frame.clone(),
@@ -359,21 +377,31 @@ where
         }
     }
 
-    /// Releases slots that an installed scheme may now verify.
-    ///
-    /// `None` means the receiver lost notifications, so every blocked slot is
-    /// retried. An early retry costs one verification and becomes blocked again
-    /// if its scheme is still missing. A known epoch only releases certificates
-    /// waiting for this epoch or an earlier one. Future epochs stay blocked.
-    fn unblock(&mut self, epoch: Option<Epoch>) {
-        for slot in self.slots.values_mut() {
-            let release = epoch
-                .is_none_or(|installed| slot.blocked_until.is_some_and(|held| held <= installed));
-            if release {
-                slot.blocked_until = None;
+    /// Releases live quarantines covered by an authenticated boundary scheme.
+    fn release_quarantines(&mut self, installed: Epoch) {
+        // Progress may make a quarantine stale while it waits. Prune before
+        // changing states so metrics and release logs describe only live retries.
+        // Dispatch repeats this guard, but an unchanged watermark does not rescan slots.
+        self.prune_stale_slots();
+
+        for (peer, slot) in &mut self.slots {
+            let SlotState::NeedsScheme(required) = slot.state else {
+                continue;
+            };
+            if required <= installed {
+                debug!(
+                    %peer,
+                    %required,
+                    %installed,
+                    round = %slot.round,
+                    digest = %slot.certificate.proposal.payload,
+                    "releasing quarantined certificate after boundary scheme installation",
+                );
+                slot.state = SlotState::Ready;
             }
         }
-        self.metrics.schemes_installed.inc();
+        self.metrics.boundary_scheme_events.inc();
+        self.update_slot_metrics();
     }
 
     /// Removes slots at or below the driver's watermark.
@@ -388,8 +416,13 @@ where
         self.metrics
             .watermark_view
             .set(watermark.view().get() as i64);
+        if watermark <= self.slots_pruned_through {
+            return;
+        }
+
+        self.slots_pruned_through = watermark;
         self.slots.retain(|_, slot| slot.round > watermark);
-        self.metrics.slots.set(self.slots.len() as i64);
+        self.update_slot_metrics();
     }
 
     /// Starts the next fair judgement if the budget allows it.
@@ -402,6 +435,8 @@ where
             return;
         }
 
+        self.prune_stale_slots();
+
         let Some(peer) = self.next_candidate() else {
             return;
         };
@@ -413,14 +448,22 @@ where
             return;
         }
 
-        let slot = &self.slots[&peer];
-        let pending = Pending {
-            peer,
-            round: slot.round,
-            id: slot.id,
-            frame: slot.frame.clone(),
+        let (pending, certificate) = {
+            let slot = self.slots.get_mut(&peer).expect("selected peer has a slot");
+            debug_assert_eq!(slot.state, SlotState::Ready);
+            slot.state = SlotState::Judging;
+
+            (
+                Pending {
+                    peer,
+                    round: slot.round,
+                    id: slot.id,
+                    frame: slot.frame.clone(),
+                },
+                slot.certificate.clone(),
+            )
         };
-        let receiver = self.config.sink.verify_and_apply(slot.certificate.clone());
+        let receiver = self.config.sink.verify_and_apply(certificate);
 
         self.pending
             .replace(async move { (pending, receiver.await.ok()) }.boxed());
@@ -445,7 +488,7 @@ where
             let peer = peers[index];
             let slot = &self.slots[&peer];
 
-            if slot.round > watermark && slot.blocked_until.is_none() {
+            if slot.round > watermark && slot.state == SlotState::Ready {
                 self.cursor = index + 1;
                 return Some(peer);
             }
@@ -460,33 +503,43 @@ where
             // the same slot again on every loop and consume the full budget.
             debug!("no judgement for certificate; treating it as settled");
             self.metrics.unanswered.inc();
-            self.recent.insert(pending.id, pending.round);
+            self.settled_frames.insert(pending.id, pending.round);
             self.forget(pending.id);
             return;
         };
 
         match result {
             Outcome::Admitted => {
-                self.recent.insert(pending.id, pending.round);
+                self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.admitted.inc();
                 self.forward(pending.round, &pending.frame, pending.peer);
+                self.forget(pending.id);
             }
             Outcome::Stale => {
-                self.recent.insert(pending.id, pending.round);
+                self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.stale.inc();
                 self.forget(pending.id);
             }
             Outcome::Invalid => {
-                self.recent.insert(pending.id, pending.round);
+                self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.invalid.inc();
                 self.forget(pending.id);
                 self.penalize(pending.peer);
             }
             Outcome::NeedsScheme { epoch } => {
-                // Do not cache this result. The same bytes may pass after the
-                // scheme is installed.
+                // `NeedsScheme` is provisional.
+                //
+                // This means that we cannot get a definitive judgement for the pending certificate.
+                // We might be lacking the scheme for the epoch the certificate requires or perhaps
+                // the certificate is forged.
+                //
+                // Because of that, we do not forget it nor settle it, we are going to quarantine it
+                // until the scheme for the epoch is installed.
+                //
+                // Once the scheme is installed, the pending certificate will be released and can be
+                // settled, potentially punishing the peer if forgery is detected.
                 self.metrics.needs_scheme.inc();
-                self.block(pending.id, epoch);
+                self.quarantine(&pending, epoch);
             }
         }
 
@@ -537,15 +590,38 @@ where
     /// not terminal, so that outcome does not call this method.
     fn forget(&mut self, id: FrameId) {
         self.slots.retain(|_, slot| slot.id != id);
-        self.metrics.slots.set(self.slots.len() as i64);
+        self.update_slot_metrics();
     }
 
-    fn block(&mut self, id: FrameId, epoch: Epoch) {
-        for slot in self.slots.values_mut() {
-            if slot.id == id {
-                slot.blocked_until = Some(epoch);
-            }
+    fn quarantine(&mut self, pending: &Pending, required: Epoch) {
+        let Some(slot) = self.slots.get_mut(&pending.peer) else {
+            return;
+        };
+        if slot.id != pending.id || slot.state != SlotState::Judging {
+            return;
         }
+
+        debug!(
+            peer = %pending.peer,
+            %required,
+            certificate_epoch = %slot.certificate.epoch(),
+            round = %pending.round,
+            digest = %slot.certificate.proposal.payload,
+            "quarantining certificate until an authenticated boundary installs its scheme",
+        );
+        slot.state = SlotState::NeedsScheme(required);
+        self.update_slot_metrics();
+    }
+
+    fn update_slot_metrics(&self) {
+        self.metrics.slots.set(self.slots.len() as i64);
+        // The peer count is bounded and thus does not pose a performance concern here.
+        let quarantined_cnt = self
+            .slots
+            .values()
+            .filter(|slot| matches!(slot.state, SlotState::NeedsScheme(_)))
+            .count() as i64;
+        self.metrics.quarantined.set(quarantined_cnt);
     }
 
     fn penalize(&mut self, peer: PeerKey) {
@@ -560,13 +636,13 @@ fn decode(frame: &Bytes) -> Option<Certificate> {
 }
 
 /// Bounded cache of settled or published frames and their rounds.
-struct Recent {
+struct SettledFrames {
     seen: HashMap<FrameId, Round>,
     order: VecDeque<FrameId>,
     capacity: usize,
 }
 
-impl Recent {
+impl SettledFrames {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             seen: HashMap::with_capacity(capacity),

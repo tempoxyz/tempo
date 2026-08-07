@@ -6,6 +6,7 @@ use commonware_runtime::{
 pub(super) struct Metrics {
     pub(super) peers: Gauge,
     pub(super) slots: Gauge,
+    pub(super) quarantined: Gauge,
     pub(super) watermark_epoch: Gauge,
     pub(super) watermark_view: Gauge,
     pub(super) dispatched: Counter,
@@ -18,18 +19,23 @@ pub(super) struct Metrics {
     pub(super) relayed: Counter,
     pub(super) relay_dropped: Counter,
     pub(super) penalties: Counter,
-    pub(super) schemes_installed: Counter,
+    pub(super) boundary_scheme_events: Counter,
     pub(super) dropped_disconnected_peer: Counter,
     pub(super) dropped_replay: Counter,
     pub(super) dropped_malformed: Counter,
     pub(super) dropped_stale: Counter,
+    pub(super) dropped_locked_replacement: Counter,
 }
 
 impl Metrics {
     pub(super) fn init(context: &impl RuntimeMetrics) -> Self {
         Self {
             peers: context.gauge("peers", "peers offering tempo/1"),
-            slots: context.gauge("slots", "peers with a pending certificate"),
+            slots: context.gauge("slots", "peers with a candidate or quarantined certificate"),
+            quarantined: context.gauge(
+                "quarantined",
+                "peer certificates waiting for an authenticated boundary scheme",
+            ),
             // A round is (epoch, view). View resets each epoch, so it is only
             // meaningful next to the epoch; exposing both keeps the pair
             // monotonic instead of jumping backward at an epoch boundary.
@@ -41,7 +47,10 @@ impl Metrics {
             dispatched: context.counter("dispatched", "certificates sent for judgement"),
             admitted: context.counter("admitted", "certificates verified and applied"),
             stale: context.counter("stale", "certificates judged at or below the watermark"),
-            invalid: context.counter("invalid", "certificates that failed verification"),
+            invalid: context.counter(
+                "invalid",
+                "certificates rejected by an installed epoch scheme",
+            ),
             needs_scheme: context.counter(
                 "needs_scheme",
                 "certificates held back for want of a scheme; rising while admitted stays flat \
@@ -59,9 +68,9 @@ impl Metrics {
                 "relays rejected because a peer's queue was full or closed",
             ),
             penalties: context.counter("penalties", "peer reputation penalties applied"),
-            schemes_installed: context.counter(
-                "schemes_installed",
-                "scheme-channel events that triggered retry scans",
+            boundary_scheme_events: context.counter(
+                "boundary_scheme_events",
+                "authenticated boundary scheme events that triggered quarantine scans",
             ),
             dropped_disconnected_peer: context.counter(
                 "dropped_disconnected_peer",
@@ -73,6 +82,10 @@ impl Metrics {
             dropped_stale: context.counter(
                 "dropped_stale",
                 "frames at or below the watermark on arrival",
+            ),
+            dropped_locked_replacement: context.counter(
+                "dropped_locked_replacement",
+                "well-formed frames rejected while the peer's slot is being judged or quarantined",
             ),
         }
     }
