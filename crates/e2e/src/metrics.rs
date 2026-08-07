@@ -99,18 +99,6 @@ impl Metrics {
             .map(Sample::value)
     }
 
-    /// Every sample whose name contains `fragment`, as name and raw value.
-    ///
-    /// Useful in a failure message when the expected metric is absent and the
-    /// question is what was actually registered.
-    pub fn matching(&self, fragment: &str) -> Vec<(String, String)> {
-        self.samples
-            .iter()
-            .filter(|sample| sample.name.contains(fragment))
-            .map(|sample| (sample.name.clone(), sample.value.clone()))
-            .collect()
-    }
-
     pub fn values<'a, T>(&'a self, metric_suffix: &'a str) -> impl Iterator<Item = T> + 'a
     where
         T: FromStr + 'a,
