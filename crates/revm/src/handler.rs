@@ -2235,7 +2235,13 @@ where
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         let init_and_floor_gas = self.validate(evm)?;
         let mut gas = self.tx_gas(evm, &init_and_floor_gas);
-        self.pre_execution(evm, &mut gas)?;
+        // `pre_execution` leaves the EIP-2780 runtime gas phase checkpoint
+        // open for `execution` to settle. Validation never runs execution, so
+        // commit it here to discard the checkpoint. On `None` (runtime
+        // out-of-gas) `pre_execution` already reverted it.
+        if self.pre_execution(evm, &mut gas)?.is_some() {
+            evm.ctx().journal_mut().checkpoint_commit();
+        }
         let result = ValidationContext {
             fee_token: evm
                 .fee_token
