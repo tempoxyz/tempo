@@ -138,7 +138,7 @@ impl FinalizationVerifier {
 
         if !finalization.verify(rng, scheme.as_ref(), &Sequential) {
             return Err(if used_network_identity {
-                CertificateVerificationError::NetworkIdentityMismatch
+                CertificateVerificationError::FallbackVerificationFailed
             } else {
                 CertificateVerificationError::Invalid
             });
@@ -168,9 +168,10 @@ pub enum CertificateVerificationError {
     /// The signature failed against a scheme learned from a finalized boundary.
     #[error("finalization certificate verification failed")]
     Invalid,
-    /// The signature failed against the configured network identity.
-    #[error("finalization certificate did not verify against the network identity")]
-    NetworkIdentityMismatch,
+    /// The signature failed against the static fallback identity. The epoch-specific identity may
+    /// have rotated while the follower was offline.
+    #[error("finalization certificate did not verify against the network identity fallback")]
+    FallbackVerificationFailed,
 }
 
 /// An error returned while verifying a Tempo finalization certificate.
@@ -203,7 +204,7 @@ impl Error {
             self,
             Self::CertificateVerification(
                 CertificateVerificationError::Invalid
-                    | CertificateVerificationError::NetworkIdentityMismatch
+                    | CertificateVerificationError::FallbackVerificationFailed
             )
         )
     }

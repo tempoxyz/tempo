@@ -11,12 +11,12 @@ use tokio::sync::broadcast;
 /// certificates. Other components receive clones that they can read.
 ///
 /// The watermark is shared state because readers only need its latest value. A
-/// scheme installation is an event that must reach components holding
-/// certificates for that epoch, so it is broadcast.
+/// scheme learned from an authenticated boundary is an event that must reach
+/// components holding certificates for that epoch, so it is broadcast.
 #[derive(Clone, Debug)]
 pub(crate) struct FollowerProgress {
     watermark: Arc<RwLock<Round>>,
-    schemes: broadcast::Sender<Epoch>,
+    boundary_schemes: broadcast::Sender<Epoch>,
 }
 
 /// Schemes change only at epoch boundaries. This queue only needs to hold the
@@ -25,10 +25,10 @@ const SCHEME_BACKLOG: usize = 8;
 
 impl FollowerProgress {
     pub(crate) fn new() -> Self {
-        let (schemes, _) = broadcast::channel(SCHEME_BACKLOG);
+        let (boundary_schemes, _) = broadcast::channel(SCHEME_BACKLOG);
         Self {
             watermark: Arc::new(RwLock::new(Round::zero())),
-            schemes,
+            boundary_schemes,
         }
     }
 
@@ -43,18 +43,18 @@ impl FollowerProgress {
         *watermark = (*watermark).max(round);
     }
 
-    /// Reports that a scheme is now available for its epoch.
-    pub(crate) fn scheme_installed(&self, epoch: Epoch) {
+    /// Reports that an authenticated boundary installed a scheme for its epoch.
+    pub(crate) fn boundary_scheme_installed(&self, epoch: Epoch) {
         // The scheme is already installed; this notification only wakes gossip
         // retries. Ignore the error because gossip may be disabled with no receivers.
-        let _ = self.schemes.send(epoch);
+        let _ = self.boundary_schemes.send(epoch);
     }
 
     #[allow(
         dead_code,
         reason = "consumed by the gossip actor in a following commit"
     )]
-    pub(crate) fn schemes(&self) -> broadcast::Receiver<Epoch> {
-        self.schemes.subscribe()
+    pub(crate) fn boundary_schemes(&self) -> broadcast::Receiver<Epoch> {
+        self.boundary_schemes.subscribe()
     }
 }

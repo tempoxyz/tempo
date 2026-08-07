@@ -228,7 +228,7 @@ where
             Ok(finalization) => finalization,
             Err(
                 error @ VerificationError::CertificateVerification(
-                    CertificateVerificationError::NetworkIdentityMismatch,
+                    CertificateVerificationError::FallbackVerificationFailed,
                 ),
             ) => {
                 debug!(%error, "failed to verify finalization certificate");
@@ -281,11 +281,11 @@ where
                     epoch: certificate.epoch(),
                 };
             }
-            Err(CertificateVerificationError::NetworkIdentityMismatch) => {
+            Err(CertificateVerificationError::FallbackVerificationFailed) => {
                 debug!(
                     epoch = %certificate.epoch(),
                     digest = %certificate.proposal.payload,
-                    "certificate failed verification against the network identity",
+                    "certificate failed verification against the network identity fallback",
                 );
                 self.hint_current_epoch_boundary().await;
                 return Outcome::NeedsScheme {
@@ -378,7 +378,8 @@ where
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
 
-            self.progress.scheme_installed(onchain_outcome.epoch);
+            self.progress
+                .boundary_scheme_installed(onchain_outcome.epoch);
         }
 
         // Always acknowledge last. Marshal waits for every consumer before it
