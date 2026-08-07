@@ -279,6 +279,7 @@ where
                     self.update_slot_metrics();
                 }
             }
+            PeerEvent::ProtocolBreach(peer) => self.penalize(peer),
         }
     }
 
