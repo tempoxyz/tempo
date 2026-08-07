@@ -42,6 +42,10 @@ impl Target {
     pub(super) fn supersedes(&self, current: &Self) -> bool {
         match (self.round, current.round) {
             (Some(new), Some(old)) => new > old,
+            // TIP-1031 is active. In supported startup states, a roundless
+            // execution target is genesis; restoring partially synchronized
+            // pre-TIP execution state is unsupported. Any newly verified
+            // finalization therefore supersedes it.
             (Some(_), None) => true,
             _ => false,
         }
