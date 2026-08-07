@@ -326,7 +326,7 @@ def tempo-hardforks [] {
         | get config
         | columns
         | where { |key| $key =~ '^t[0-9]+[a-z]?Time$' }
-        | each { |key| $key | str replace "Time" "" | str uppercase }
+        | each { |key| $key | str replace "Time" "" | str upcase }
     )
     if ($forks | is-empty) {
         print "Error: failed to read Tempo hardforks from crates/node/tests/assets/test-genesis.json"
@@ -337,7 +337,7 @@ def tempo-hardforks [] {
 
 def normalize-hardfork [fork: string] {
     let hardforks = (tempo-hardforks)
-    let fork_upper = ($fork | str uppercase)
+    let fork_upper = ($fork | str upcase)
     let idx = ($hardforks | enumerate | where item == $fork_upper)
     if ($idx | length) == 0 {
         print $"Error: unknown hardfork '($fork)'. Valid: ($hardforks | str join ', ')"
@@ -2544,14 +2544,14 @@ def "main bench" [
     # Validate hardfork names
     let tempo_hardforks = (tempo-hardforks)
     if $baseline_hardfork != "" {
-        let valid = ($tempo_hardforks | any { |f| $f == ($baseline_hardfork | str uppercase) })
+        let valid = ($tempo_hardforks | any { |f| $f == ($baseline_hardfork | str upcase) })
         if not $valid {
             print $"Error: unknown baseline hardfork '($baseline_hardfork)'. Valid: ($tempo_hardforks | str join ', ')"
             exit 1
         }
     }
     if $feature_hardfork != "" {
-        let valid = ($tempo_hardforks | any { |f| $f == ($feature_hardfork | str uppercase) })
+        let valid = ($tempo_hardforks | any { |f| $f == ($feature_hardfork | str upcase) })
         if not $valid {
             print $"Error: unknown feature hardfork '($feature_hardfork)'. Valid: ($tempo_hardforks | str join ', ')"
             exit 1
@@ -2683,8 +2683,8 @@ def "main bench" [
                 and $marker != null
                 and ($marker.bloat_mib | into int) == $bloat
                 and ($marker.accounts | into int) == $genesis_accounts
-                and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str uppercase)
-                and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str uppercase)
+                and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
+                and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
                 and ($marker | get -o gas_limit | default "") == $gas_limit
                 and ($marker | get -o general_gas_limit | default "") == $general_gas_limit
                 and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic)
@@ -2760,8 +2760,8 @@ def "main bench" [
                     bloat_mib: $bloat
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
-                    baseline_hardfork: ($baseline_hardfork | str uppercase)
-                    feature_hardfork: ($feature_hardfork | str uppercase)
+                    baseline_hardfork: ($baseline_hardfork | str upcase)
+                    feature_hardfork: ($feature_hardfork | str upcase)
                     gas_limit: $gas_limit
                     general_gas_limit: $general_gas_limit
                     txgen_mnemonic: (txgen-account-mnemonic)
@@ -2910,8 +2910,8 @@ def "main bench" [
         }
 
         # Generate summary report
-        let baseline_hardfork_label = if $dual_hardfork { $baseline_hardfork | str uppercase } else { "" }
-        let feature_hardfork_label = if $dual_hardfork { $feature_hardfork | str uppercase } else { "" }
+        let baseline_hardfork_label = if $dual_hardfork { $baseline_hardfork | str upcase } else { "" }
+        let feature_hardfork_label = if $dual_hardfork { $feature_hardfork | str upcase } else { "" }
         generate-summary $results_dir $baseline $feature $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --baseline-hardfork $baseline_hardfork_label --feature-hardfork $feature_hardfork_label
 
         # Cleanup worktrees (only those we created)
