@@ -476,6 +476,25 @@ fn malformed_frames_are_penalized_without_reaching_the_driver() {
     });
 }
 
+/// A transport-level protocol breach penalizes the logical peer before its
+/// connections are reported down.
+#[test_traced]
+fn protocol_breaches_are_penalized() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.connect(peer(1));
+        rig.control
+            .send(PeerEvent::ProtocolBreach(peer(1)))
+            .expect("actor is running");
+        rig.disconnect(peer(1));
+
+        wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
+
+        assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
+        assert!(rig.sink.requests().is_empty());
+    });
+}
+
 /// Slot locking applies only after decoding. A quarantined peer cannot hide
 /// malformed protocol data behind its existing certificate.
 #[test_traced]
