@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     consensus::Block,
-    gossip::{Certificate, CertificateMailbox, Outcome},
+    gossip::{Certificate, CertificateError, CertificateMailbox},
 };
 
 #[derive(Debug)]
@@ -15,7 +15,7 @@ pub(super) enum Message {
     /// A `tempo/1` certificate waiting for verification.
     Certificate {
         certificate: Box<Certificate>,
-        response: oneshot::Sender<Outcome>,
+        response: oneshot::Sender<eyre::Result<(), CertificateError>>,
     },
 }
 
@@ -33,7 +33,10 @@ impl From<marshal::Update<Block>> for Message {
 
 /// Routes certificates to the driver because it owns the epoch schemes.
 impl CertificateMailbox for Mailbox {
-    fn process_certificate(&self, certificate: Certificate) -> oneshot::Receiver<Outcome> {
+    fn process_certificate(
+        &self,
+        certificate: Certificate,
+    ) -> oneshot::Receiver<eyre::Result<(), CertificateError>> {
         let (response, receiver) = oneshot::channel();
         // If the driver has stopped, the response sender is dropped and the
         // caller receives an error.

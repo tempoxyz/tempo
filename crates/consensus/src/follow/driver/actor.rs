@@ -18,7 +18,7 @@ use crate::{
     finalization_verifier::{
         CertificateVerificationError, Error as VerificationError, FinalizationVerifier,
     },
-    gossip::{Certificate, Outcome},
+    gossip::{Certificate, CertificateError},
 };
 
 pub(super) fn try_init<TContext, P, M, E>(
@@ -254,9 +254,12 @@ where
 
     /// Verifies a gossiped certificate and applies it if valid.
     #[instrument(skip_all, fields(round = %certificate.round(), digest = %certificate.proposal.payload))]
-    async fn process_certificate(&mut self, certificate: Certificate) -> Outcome {
+    async fn process_certificate(
+        &mut self,
+        certificate: Certificate,
+    ) -> eyre::Result<(), CertificateError> {
         if certificate.round() <= self.latest_verified_round {
-            return Outcome::Stale;
+            return Ok(());
         }
 
         match self
@@ -270,12 +273,12 @@ where
                     digest = %certificate.proposal.payload,
                     "certificate failed verification against a registered scheme",
                 );
-                return Outcome::Invalid;
+                return Err(CertificateError::Invalid);
             }
             Err(CertificateVerificationError::IdentityUnavailable { .. }) => {
-                return Outcome::NeedsScheme {
+                return Err(CertificateError::NeedsScheme {
                     epoch: certificate.epoch(),
-                };
+                });
             }
             Err(CertificateVerificationError::FallbackVerificationFailed) => {
                 debug!(
@@ -284,9 +287,9 @@ where
                     "certificate failed verification against the network identity fallback",
                 );
                 self.hint_current_epoch_boundary().await;
-                return Outcome::NeedsScheme {
+                return Err(CertificateError::NeedsScheme {
                     epoch: certificate.epoch(),
-                };
+                });
             }
         }
 
@@ -300,7 +303,7 @@ where
             .await;
 
         self.config.executor.finalization(round, digest);
-        Outcome::Admitted
+        Ok(())
     }
 
     async fn hint_current_epoch_boundary(&self) {

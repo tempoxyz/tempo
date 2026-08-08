@@ -7,11 +7,10 @@ pub(super) struct Metrics {
     pub(super) peers: Gauge,
     pub(super) slots: Gauge,
     pub(super) quarantined: Gauge,
-    pub(super) watermark_epoch: Gauge,
-    pub(super) watermark_view: Gauge,
+    pub(super) latest_verified_epoch: Gauge,
+    pub(super) latest_verified_view: Gauge,
     pub(super) dispatched: Counter,
-    pub(super) admitted: Counter,
-    pub(super) stale: Counter,
+    pub(super) settled: Counter,
     pub(super) invalid: Counter,
     pub(super) needs_scheme: Counter,
     pub(super) shed: Counter,
@@ -39,21 +38,24 @@ impl Metrics {
             // A round is (epoch, view). View resets each epoch, so it is only
             // meaningful next to the epoch; exposing both keeps the pair
             // monotonic instead of jumping backward at an epoch boundary.
-            watermark_epoch: context.gauge("watermark_epoch", "highest applied round epoch"),
-            watermark_view: context.gauge(
-                "watermark_view",
-                "highest applied view within `watermark_epoch`",
+            latest_verified_epoch: context
+                .gauge("latest_verified_epoch", "latest verified round epoch"),
+            latest_verified_view: context.gauge(
+                "latest_verified_view",
+                "latest verified view within `latest_verified_epoch`",
             ),
             dispatched: context.counter("dispatched", "certificates sent for judgement"),
-            admitted: context.counter("admitted", "certificates verified and applied"),
-            stale: context.counter("stale", "certificates judged at or below the watermark"),
+            settled: context.counter(
+                "settled",
+                "certificates accepted or already known by the driver",
+            ),
             invalid: context.counter(
                 "invalid",
                 "certificates rejected by an installed epoch scheme",
             ),
             needs_scheme: context.counter(
                 "needs_scheme",
-                "certificates held back for want of a scheme; rising while admitted stays flat \
+                "certificates held back for want of a scheme; rising while settled stays flat \
                  may mean this node is behind an identity rotation",
             ),
             shed: context.counter("shed", "judgements delayed by the verify budget"),
@@ -62,10 +64,10 @@ impl Metrics {
                 "certificates the driver never judged, which on a publish-only node \
                  means gossip ingest was enabled without anything able to verify",
             ),
-            relayed: context.counter("relayed", "frames relayed to peers"),
+            relayed: context.counter("relayed", "durable certificate frames offered to peers"),
             relay_dropped: context.counter(
                 "relay_dropped",
-                "relays rejected because a peer's queue was full or closed",
+                "durable publications rejected because a peer's queue was full or closed",
             ),
             penalties: context.counter("penalties", "peer reputation penalties applied"),
             boundary_scheme_events: context.counter(
@@ -81,7 +83,7 @@ impl Metrics {
             dropped_malformed: context.counter("dropped_malformed", "frames that did not decode"),
             dropped_stale: context.counter(
                 "dropped_stale",
-                "frames at or below the watermark on arrival",
+                "frames at or below the latest verified round on arrival",
             ),
             dropped_locked_replacement: context.counter(
                 "dropped_locked_replacement",
