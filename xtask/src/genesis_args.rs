@@ -209,6 +209,10 @@ pub(crate) struct GenesisArgs {
     /// T10 hardfork activation time.
     #[arg(long, default_value = "0")]
     t10_time: u64,
+
+    /// T11 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t11_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -643,6 +647,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t10Time".to_string(), self.t10_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t11Time".to_string(), self.t11_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
