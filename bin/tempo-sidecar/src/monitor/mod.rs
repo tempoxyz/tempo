@@ -8,7 +8,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use eyre::{Result, eyre};
-use futures::future::{join_all, try_join_all};
+use futures::future::try_join_all;
 use itertools::Itertools;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -136,6 +136,12 @@ impl MonitorConfig {
     }
 
     /// Discovers existing pools by querying all token permutations in parallel.
+    ///
+    /// # Errors
+    /// Propagates `getPool` RPC failures instead of treating them as "pool does not
+    /// exist". Silently swallowing a transient RPC error here would let `init` finish
+    /// with an incomplete `known_pairs` set, and that pool would then only be picked
+    /// back up if a matching `Mint` event happens to occur after startup.
     async fn discover_pools<P: Provider + Clone>(
         &self,
         provider: &Arc<P>,
@@ -148,27 +154,28 @@ impl MonitorConfig {
                 let (token_a, token_b) = (*pair[0], *pair[1]);
                 let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
                 async move {
-                    match fee_amm.getPool(token_a, token_b).call().await {
-                        Ok(pool) => {
-                            // Skip if pool isn't initialized.
-                            if pool.reserveUserToken.is_zero() {
-                                None
-                            } else {
-                                debug!(%token_a, %token_b, "discovered pool");
-                                Some((token_a, token_b))
-                            }
-                        }
-                        Err(e) => {
+                    let pool = fee_amm
+                        .getPool(token_a, token_b)
+                        .call()
+                        .await
+                        .map_err(|e| {
                             counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
                             error!(%token_a, %token_b, "failed to fetch pool: {}", e);
-                            None
-                        }
+                            eyre!("failed to fetch pool for {token_a}/{token_b}: {e}")
+                        })?;
+
+                    // Skip if pool isn't initialized.
+                    if pool.reserveUserToken.is_zero() {
+                        Ok::<_, eyre::Report>(None)
+                    } else {
+                        debug!(%token_a, %token_b, "discovered pool");
+                        Ok::<_, eyre::Report>(Some((token_a, token_b)))
                     }
                 }
             })
             .collect();
 
-        let results = join_all(check_pool_futures).await;
+        let results = try_join_all(check_pool_futures).await?;
         Ok(results.into_iter().flatten().collect())
     }
 }
@@ -324,4 +331,38 @@ fn parse_mint_tokens(log: &Log) -> (Address, Address) {
         Address::from_word(log.topics()[2]),
         Address::from_word(log.topics()[3]),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::providers::mock::Asserter;
+
+    fn mock_provider(asserter: Asserter) -> impl Provider + Clone {
+        ProviderBuilder::new().connect_mocked_client(asserter)
+    }
+
+    /// A transient RPC failure while discovering pools must fail `discover_pools`
+    /// outright, not be silently treated as "pool does not exist" (see #7082).
+    #[tokio::test]
+    async fn discover_pools_propagates_rpc_errors() {
+        let token_a = Address::repeat_byte(0xAA);
+        let token_b = Address::repeat_byte(0xBB);
+        let target_tokens: AddressSet = [token_a, token_b].into_iter().collect();
+
+        let asserter = Asserter::new();
+        // Two tokens -> two ordered permutations -> two `getPool` calls. Fail both so
+        // the assertion doesn't depend on which permutation the mock transport sees first.
+        asserter.push_failure_msg("transient rpc error");
+        asserter.push_failure_msg("transient rpc error");
+
+        let provider = Arc::new(mock_provider(asserter));
+        let config = MonitorConfig::new("http://localhost:8545".parse().unwrap(), 1, target_tokens);
+
+        let result = config.discover_pools(&provider).await;
+        assert!(
+            result.is_err(),
+            "expected discover_pools to propagate the RPC failure, got {result:?}"
+        );
+    }
 }
