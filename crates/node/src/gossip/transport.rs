@@ -13,8 +13,9 @@
 //!
 //! Reth polls each physical [`Connection`] from its RLPx session task. The
 //! transport limits frame size and inbound rate per connection but otherwise
-//! treats frames as opaque bytes. Consensus decodes them, removes replays,
-//! enforces fairness, verifies certificates, and manages peer reputation.
+//! treats frames as opaque bytes. It reports byte-level protocol violations;
+//! consensus decodes certificates, removes replays, enforces fairness, verifies
+//! certificates, and reports invalid certificates.
 //!
 //! Outbound buffering keeps only the latest frame for a logical peer. This is
 //! safe while `tempo/1` carries only finalization certificates because a newer
@@ -45,7 +46,10 @@ use reth_ethereum::{
         eth_wire::{
             capability::SharedCapabilities, multiplex::ProtocolConnection, protocol::Protocol,
         },
-        protocol::{ConnectionHandler, OnNotSupported, ProtocolHandler},
+        protocol::{
+            ConnectionHandler, IntoRlpxSubProtocol as _, OnNotSupported, ProtocolHandler,
+            RlpxSubProtocol,
+        },
     },
     tasks::TaskExecutor,
 };
@@ -54,7 +58,7 @@ use reth_tracing::tracing::warn;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::WatchStream;
 
-use super::wire;
+use super::{PeerControl, wire};
 
 const MAX_CONNECTIONS_PER_PEER: usize = 2;
 
@@ -66,21 +70,14 @@ const MAX_CONNECTIONS_PER_PEER: usize = 2;
 /// when the last physical connection disappears or when the coordinator removes
 /// the logical peer after a protocol breach.
 ///
-/// An oversized frame produces [`PeerEvent::ProtocolBreach`] before `Down`. The
-/// transport closes the offending connection and any duplicate connection, but
-/// it has no access to Reth's peer-control handle. The receiver must apply the
-/// reputation penalty associated with the breach.
-///
 /// These events use an unbounded channel because losing lifecycle events would
-/// leave stale peer state, while losing a breach would skip its penalty.
+/// leave stale peer state.
 #[derive(Debug)]
 pub enum PeerEvent {
     /// The logical peer became available for inbound and outbound traffic.
     Up(PeerId),
     /// The logical peer no longer has an accepted physical connection.
     Down(PeerId),
-    /// An accepted physical connection breached the protocol and must be closed.
-    ProtocolBreach(PeerId),
 }
 
 /// An inbound frame that passed the transport's guards.
@@ -159,15 +156,14 @@ pub struct TransportHandle {
     pub sender: TransportSender,
 }
 
-/// Creates both ends of the transport and starts the required coordinator as a
-/// critical Reth task.
-pub fn init(config: Config, tasks: &TaskExecutor) -> (GossipProtocolHandler, TransportHandle) {
-    let (protocol_handler, coordinator, transport) = build(config);
+/// Creates the protocol and the consensus-facing end of its transport.
+pub fn init(config: Config, tasks: &TaskExecutor) -> (GossipProtocol, TransportHandle) {
+    let (protocol, coordinator, transport) = build(config);
     tasks.spawn_critical_task("tempo gossip coordinator", coordinator.run());
-    (protocol_handler, transport)
+    (protocol, transport)
 }
 
-fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, TransportHandle) {
+fn build(config: Config) -> (GossipProtocol, TransportCoordinator, TransportHandle) {
     let (peer_events_tx, peer_events_rx) = mpsc::unbounded_channel();
     let (frames_tx, frames_rx) = mpsc::channel(config.frame_queue);
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
@@ -177,7 +173,6 @@ fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, Transp
     let shared = Arc::new(Shared {
         commands: commands_tx,
         frames: frames_tx,
-        peer_events: peer_events_tx.clone(),
         config,
         next_connection: AtomicU64::new(0),
         metrics: Arc::clone(&metrics),
@@ -193,7 +188,7 @@ fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, Transp
             }
         }
     });
-    let protocol_handler = GossipProtocolHandler { shared };
+    let protocol = GossipProtocol { shared };
     let coordinator = TransportCoordinator {
         commands: commands_rx,
         outbound: outbound_rx,
@@ -207,21 +202,48 @@ fn build(config: Config) -> (GossipProtocolHandler, TransportCoordinator, Transp
         sender,
     };
 
-    (protocol_handler, coordinator, transport)
+    (protocol, coordinator, transport)
 }
 
 #[derive(Debug)]
 struct Shared {
     commands: mpsc::UnboundedSender<ConnectionCommand>,
     frames: mpsc::Sender<Frame>,
-    peer_events: mpsc::UnboundedSender<PeerEvent>,
     config: Config,
     next_connection: AtomicU64,
     metrics: Arc<GossipMetrics>,
 }
 
+/// The `tempo/1` protocol before it is installed into Reth's network.
+///
+/// Reth clones node definitions while it assembles their components, so this
+/// value contains only shared transport state. [`Self::install`] binds it to
+/// the network before Reth can create a `tempo/1` connection.
+#[derive(Debug, Clone)]
+pub struct GossipProtocol {
+    shared: Arc<Shared>,
+}
+
+impl GossipProtocol {
+    pub(crate) fn install(self, network: impl PeerControl) -> RlpxSubProtocol {
+        self.into_handler(network).into_rlpx_sub_protocol()
+    }
+
+    fn into_handler(self, peer_control: impl PeerControl) -> GossipProtocolHandler {
+        GossipProtocolHandler {
+            shared: self.shared,
+            peer_control: Arc::new(peer_control),
+        }
+    }
+}
+
 impl Shared {
-    fn connection<S>(self: Arc<Self>, peer: PeerId, conn: S) -> Connection<S> {
+    fn connection<S>(
+        self: &Arc<Self>,
+        peer: PeerId,
+        conn: S,
+        peer_control: Arc<dyn PeerControl>,
+    ) -> Connection<S> {
         let id = self.next_connection_id();
         let (registration_tx, registration_rx) = oneshot::channel();
         let _ = self.commands.send(ConnectionCommand::Register {
@@ -235,7 +257,8 @@ impl Shared {
             id,
             state: ConnectionState::Registering(registration_rx),
             admission: Admission::new(self.config.peer_frame_rate, Instant::now()),
-            shared: self,
+            shared: Arc::clone(self),
+            peer_control,
             conn,
             outbound: None,
         }
@@ -266,7 +289,9 @@ impl TransportCoordinator {
     async fn run(mut self) {
         loop {
             tokio::select! {
-                Some(command) = self.commands.recv() => self.on_command(command),
+                Some(command) = self.commands.recv() => {
+                    self.on_command(command).await
+                },
                 Some(outbound) = self.outbound.recv() => self.on_outbound(outbound),
                 else => {
                     // Critical tasks report panics, not normal completion. Keep
@@ -278,7 +303,7 @@ impl TransportCoordinator {
         }
     }
 
-    fn on_command(&mut self, command: ConnectionCommand) {
+    async fn on_command(&mut self, command: ConnectionCommand) {
         match command {
             ConnectionCommand::Register {
                 peer,
@@ -286,7 +311,11 @@ impl TransportCoordinator {
                 registration,
             } => self.register(peer, id, registration),
             ConnectionCommand::Unregister { peer, id } => self.unregister(peer, id),
-            ConnectionCommand::ProtocolBreach { peer, id } => self.protocol_breach(peer, id),
+            ConnectionCommand::ProtocolBreach {
+                peer,
+                id,
+                peer_control,
+            } => self.protocol_breach(peer, id, peer_control).await,
         }
     }
 
@@ -351,13 +380,20 @@ impl TransportCoordinator {
         peer.outbound.send_replace(Some(outbound.frame));
     }
 
-    fn protocol_breach(&mut self, peer: PeerId, id: ConnectionId) {
+    async fn protocol_breach(
+        &mut self,
+        peer: PeerId,
+        id: ConnectionId,
+        peer_control: Arc<dyn PeerControl>,
+    ) {
         let Some(connections) = self.peers.get(&peer) else {
             return;
         };
         if !connections.ids.contains(&id) {
             return;
         }
+
+        peer_control.protocol_breach(peer).await;
 
         // Removes the PeerConnections which drops the `outbound` stream. This serves as a signal
         // for the associated connections to shutdown.
@@ -366,7 +402,6 @@ impl TransportCoordinator {
     }
 }
 
-#[derive(Debug)]
 enum ConnectionCommand {
     Register {
         peer: PeerId,
@@ -380,6 +415,7 @@ enum ConnectionCommand {
     ProtocolBreach {
         peer: PeerId,
         id: ConnectionId,
+        peer_control: Arc<dyn PeerControl>,
     },
 }
 
@@ -412,6 +448,7 @@ struct ConnectionId(u64);
 enum ConnectionState {
     Registering(oneshot::Receiver<Registration>),
     Active,
+    Breached,
     Rejected,
 }
 
@@ -421,10 +458,25 @@ enum Registration {
     Rejected,
 }
 
+enum InboundAction {
+    Continue,
+    WaitForShutdown,
+    Close,
+}
+
 /// Offers `tempo/1` on every connection.
-#[derive(Debug, Clone)]
-pub struct GossipProtocolHandler {
+#[derive(Clone)]
+struct GossipProtocolHandler {
     shared: Arc<Shared>,
+    peer_control: Arc<dyn PeerControl>,
+}
+
+impl fmt::Debug for GossipProtocolHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GossipProtocolHandler")
+            .field("shared", &self.shared)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProtocolHandler for GossipProtocolHandler {
@@ -466,7 +518,7 @@ impl ConnectionHandler for GossipProtocolHandler {
         peer_id: PeerId,
         conn: ProtocolConnection,
     ) -> Self::Connection {
-        self.shared.connection(peer_id, conn)
+        self.shared.connection(peer_id, conn, self.peer_control)
     }
 }
 
@@ -475,12 +527,12 @@ impl ConnectionHandler for GossipProtocolHandler {
 /// Its underlying stream remains unpolled until the coordinator accepts its
 /// registration. Registration rejection or a protocol breach ends this
 /// satellite stream and therefore the containing RLPx connection.
-#[derive(Debug)]
 pub struct Connection<S = ProtocolConnection> {
     peer: PeerId,
     id: ConnectionId,
     state: ConnectionState,
     shared: Arc<Shared>,
+    peer_control: Arc<dyn PeerControl>,
     conn: S,
     // Dropping the sender closes every physical connection for the logical peer.
     outbound: Option<WatchStream<Option<Bytes>>>,
@@ -488,7 +540,10 @@ pub struct Connection<S = ProtocolConnection> {
 }
 
 impl<S> Connection<S> {
-    fn poll_registration(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+    fn poll_registration(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // The coordinator owns admission to the logical peer. Do not poll the
+        // underlying protocol stream before it accepts this physical connection;
+        // rejection must close RLPx without processing any frames from it.
         if let ConnectionState::Registering(registration) = &mut self.state {
             self.state = match ready!(Pin::new(registration).poll(cx)) {
                 Ok(Registration::Accepted(outbound)) => {
@@ -499,36 +554,44 @@ impl<S> Connection<S> {
             };
         }
 
-        Poll::Ready(matches!(self.state, ConnectionState::Active))
+        Poll::Ready(())
     }
 
-    fn on_inbound(&mut self, frame: BytesMut) -> bool {
+    fn protocol_breach(&mut self) -> InboundAction {
+        self.shared.metrics.dropped_oversized.increment(1);
+        let command = ConnectionCommand::ProtocolBreach {
+            peer: self.peer,
+            id: self.id,
+            peer_control: Arc::clone(&self.peer_control),
+        };
+
+        match self.shared.commands.send(command) {
+            Ok(()) => {
+                self.state = ConnectionState::Breached;
+                InboundAction::WaitForShutdown
+            }
+            Err(_) => {
+                self.state = ConnectionState::Rejected;
+                InboundAction::Close
+            }
+        }
+    }
+
+    fn on_inbound(&mut self, frame: BytesMut) -> InboundAction {
         self.shared.metrics.frames_received.increment(1);
 
         if frame.len() > wire::MAX_FRAME_BYTES {
-            self.shared.metrics.dropped_oversized.increment(1);
-            let _ = self
-                .shared
-                .peer_events
-                .send(PeerEvent::ProtocolBreach(self.peer));
-            let _ = self
-                .shared
-                .commands
-                .send(ConnectionCommand::ProtocolBreach {
-                    peer: self.peer,
-                    id: self.id,
-                });
-            return false;
+            return self.protocol_breach();
         }
 
         if !self.admission.allow(Instant::now()) {
             self.shared.metrics.dropped_admission.increment(1);
-            return true;
+            return InboundAction::Continue;
         }
 
         if !self.shared.config.ingest {
             self.shared.metrics.dropped_not_ingesting.increment(1);
-            return true;
+            return InboundAction::Continue;
         }
 
         // This queue is lossy. A newer certificate also proves finality for
@@ -545,7 +608,55 @@ impl<S> Connection<S> {
             self.shared.metrics.dropped_channel_full.increment(1);
         }
 
-        true
+        InboundAction::Continue
+    }
+
+    fn poll_active(&mut self, cx: &mut Context<'_>) -> Poll<Option<BytesMut>>
+    where
+        S: Stream<Item = BytesMut> + Unpin,
+    {
+        // Check the outbound relay before each inbound frame so a peer that sends
+        // continuously cannot starve locally produced certificates.
+        loop {
+            if let Some(outbound) = self.outbound.as_mut() {
+                match outbound.poll_next_unpin(cx) {
+                    Poll::Ready(Some(Some(frame))) => {
+                        let mut out = BytesMut::with_capacity(frame.len());
+                        out.put_slice(&frame);
+                        return Poll::Ready(Some(out));
+                    }
+                    Poll::Ready(Some(None)) => continue,
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => {}
+                }
+            }
+
+            let Some(frame) = ready!(self.conn.poll_next_unpin(cx)) else {
+                return Poll::Ready(None);
+            };
+            match self.on_inbound(frame) {
+                InboundAction::Continue => {}
+                InboundAction::WaitForShutdown => return self.poll_breached(cx),
+                InboundAction::Close => return Poll::Ready(None),
+            }
+        }
+    }
+
+    fn poll_breached(&mut self, cx: &mut Context<'_>) -> Poll<Option<BytesMut>> {
+        // The coordinator drops this relay only after Reth acknowledges the
+        // penalty. Ignore any queued values and keep polling until closure so the
+        // connection remains alive, with a registered waker, in the meantime.
+        let outbound = self
+            .outbound
+            .as_mut()
+            .expect("a breached connection must have completed registration");
+
+        loop {
+            match ready!(outbound.poll_next_unpin(cx)) {
+                Some(_) => {}
+                None => return Poll::Ready(None),
+            }
+        }
     }
 }
 
@@ -565,43 +676,18 @@ where
         // satellite closed and tears down the entire containing RLPx connection,
         // including its other negotiated subprotocols.
         //
-        // The coordinator must accept this physical connection before we touch its
-        // underlying stream. A rejected registration therefore closes the RLPx
-        // connection without processing any frames received from it. Once accepted,
-        // the shared outbound relay also acts as a shutdown signal. The coordinator
-        // closes that relay when it removes the logical peer, which ends every
-        // physical connection subscribed to it.
-        //
-        // Each poll also processes frames received through the underlying protocol
-        // connection. We check the outbound relay before reading each inbound frame
-        // so a peer that continuously sends data cannot prevent locally produced
-        // certificates from being forwarded. The loop continues until it can yield
-        // an outbound frame, must wait for more work, or encounters a condition that
-        // closes the connection.
-        if !ready!(me.poll_registration(cx)) {
-            return Poll::Ready(None);
+        // After a protocol breach, returning `None` must wait until Reth processes
+        // the penalty. Ending the stream sooner could remove an unknown inbound
+        // peer before its ban is recorded.
+        if matches!(me.state, ConnectionState::Registering(_)) {
+            ready!(me.poll_registration(cx));
         }
 
-        loop {
-            if let Some(outbound) = me.outbound.as_mut() {
-                match outbound.poll_next_unpin(cx) {
-                    Poll::Ready(Some(Some(frame))) => {
-                        let mut out = BytesMut::with_capacity(frame.len());
-                        out.put_slice(&frame);
-                        return Poll::Ready(Some(out));
-                    }
-                    Poll::Ready(Some(None)) => continue,
-                    Poll::Ready(None) => return Poll::Ready(None),
-                    Poll::Pending => {}
-                }
-            }
-
-            let Some(frame) = ready!(me.conn.poll_next_unpin(cx)) else {
-                return Poll::Ready(None);
-            };
-            if !me.on_inbound(frame) {
-                return Poll::Ready(None);
-            }
+        match me.state {
+            ConnectionState::Active => me.poll_active(cx),
+            ConnectionState::Breached => me.poll_breached(cx),
+            ConnectionState::Rejected => Poll::Ready(None),
+            ConnectionState::Registering(_) => unreachable!(),
         }
     }
 }
@@ -674,7 +760,11 @@ struct GossipMetrics {
 mod tests {
     use std::time::Duration;
 
-    use futures::{future::poll_fn, stream};
+    use crate::gossip::NoPeerControl;
+    use futures::{
+        future::{BoxFuture, poll_fn},
+        stream,
+    };
 
     use super::*;
 
@@ -687,8 +777,44 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct StubPeerControl {
+        breaches: mpsc::UnboundedSender<(PeerId, oneshot::Sender<()>)>,
+    }
+
+    impl PeerControl for StubPeerControl {
+        fn penalize(&self, _peer: PeerId) {}
+
+        fn protocol_breach(&self, peer: PeerId) -> BoxFuture<'_, ()> {
+            let (release, released) = oneshot::channel();
+            let _ = self.breaches.send((peer, release));
+            Box::pin(async move {
+                let _ = released.await;
+            })
+        }
+    }
+
+    fn build_with_peer_control(
+        config: Config,
+        peer_control: impl PeerControl,
+    ) -> (GossipProtocolHandler, TransportCoordinator, TransportHandle) {
+        let (protocol, coordinator, transport) = build(config);
+        (protocol.into_handler(peer_control), coordinator, transport)
+    }
+
+    fn spawn_coordinator(coordinator: TransportCoordinator) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(coordinator.run())
+    }
+
+    fn connection<S>(handler: &GossipProtocolHandler, peer: PeerId, conn: S) -> Connection<S> {
+        handler
+            .shared
+            .connection(peer, conn, Arc::clone(&handler.peer_control))
+    }
+
     async fn register<S>(connection: &mut Connection<S>) -> bool {
-        poll_fn(|cx| connection.poll_registration(cx)).await
+        poll_fn(|cx| connection.poll_registration(cx)).await;
+        matches!(connection.state, ConnectionState::Active)
     }
 
     async fn next_outbound<S>(connection: &mut Connection<S>) -> Bytes {
@@ -708,12 +834,11 @@ mod tests {
 
     #[tokio::test]
     async fn connection_waits_for_registration_before_polling_frames() {
-        let (handler, mut coordinator, mut transport) = build(test_config());
+        let (handler, mut coordinator, mut transport) =
+            build_with_peer_control(test_config(), NoPeerControl);
         let peer = PeerId::with_last_byte(0);
         let inbound = BytesMut::from(&b"inbound"[..]);
-        let mut connection = handler
-            .shared
-            .connection(peer, stream::iter([inbound.clone()]));
+        let mut connection = connection(&handler, peer, stream::iter([inbound.clone()]));
 
         assert!(futures::poll!(connection.next()).is_pending());
         assert!(matches!(
@@ -722,7 +847,7 @@ mod tests {
         ));
 
         let command = coordinator.commands.recv().await.unwrap();
-        coordinator.on_command(command);
+        coordinator.on_command(command).await;
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
         );
@@ -735,30 +860,30 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_connections_share_one_peer_lifecycle() {
-        let (handler, coordinator, mut transport) = build(test_config());
-        let _coordinator = tokio::spawn(coordinator.run());
+        let (handler, coordinator, mut transport) =
+            build_with_peer_control(test_config(), NoPeerControl);
+        let _coordinator = spawn_coordinator(coordinator);
         let peer = PeerId::with_last_byte(1);
-        let shared = Arc::clone(&handler.shared);
 
-        let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut first = connection(&handler, peer, stream::pending::<BytesMut>());
         assert!(register(&mut first).await);
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
         );
 
-        let mut second = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut second = connection(&handler, peer, stream::pending::<BytesMut>());
         assert!(register(&mut second).await);
         assert!(matches!(
             transport.control.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
 
-        let mut rejected = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut rejected = connection(&handler, peer, stream::pending::<BytesMut>());
         assert!(!register(&mut rejected).await);
         assert!(rejected.next().await.is_none());
 
         drop(second);
-        let mut replacement = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut replacement = connection(&handler, peer, stream::pending::<BytesMut>());
         assert!(register(&mut replacement).await);
         assert!(matches!(
             transport.control.try_recv(),
@@ -778,12 +903,12 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_connections_are_equivalent_routes() {
-        let (handler, coordinator, mut transport) = build(test_config());
-        let _coordinator = tokio::spawn(coordinator.run());
+        let (handler, coordinator, mut transport) =
+            build_with_peer_control(test_config(), NoPeerControl);
+        let _coordinator = spawn_coordinator(coordinator);
         let peer = PeerId::with_last_byte(2);
-        let shared = Arc::clone(&handler.shared);
-        let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
-        let mut second = shared.connection(peer, stream::pending::<BytesMut>());
+        let mut first = connection(&handler, peer, stream::pending::<BytesMut>());
+        let mut second = connection(&handler, peer, stream::pending::<BytesMut>());
         assert!(register(&mut first).await);
         assert!(register(&mut second).await);
         assert!(
@@ -797,8 +922,14 @@ mod tests {
 
         let from_first = BytesMut::from(&b"from-first"[..]);
         let from_second = BytesMut::from(&b"from-second"[..]);
-        assert!(first.on_inbound(from_first.clone()));
-        assert!(second.on_inbound(from_second.clone()));
+        assert!(matches!(
+            first.on_inbound(from_first.clone()),
+            InboundAction::Continue
+        ));
+        assert!(matches!(
+            second.on_inbound(from_second.clone()),
+            InboundAction::Continue
+        ));
         assert_eq!(
             transport.frames.try_recv().unwrap().frame.as_ref(),
             from_first.as_ref()
@@ -830,12 +961,12 @@ mod tests {
 
     #[tokio::test]
     async fn slow_and_replacement_connections_receive_latest_frame() {
-        let (handler, mut coordinator, mut transport) = build(test_config());
+        let (handler, mut coordinator, mut transport) =
+            build_with_peer_control(test_config(), NoPeerControl);
         let peer = PeerId::with_last_byte(3);
-        let shared = Arc::clone(&handler.shared);
-        let mut first = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut first = connection(&handler, peer, stream::pending::<BytesMut>());
         let command = coordinator.commands.recv().await.unwrap();
-        coordinator.on_command(command);
+        coordinator.on_command(command).await;
         assert!(register(&mut first).await);
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
@@ -853,9 +984,9 @@ mod tests {
         let outbound = coordinator.outbound.recv().await.unwrap();
         coordinator.on_outbound(outbound);
 
-        let mut second = Arc::clone(&shared).connection(peer, stream::pending::<BytesMut>());
+        let mut second = connection(&handler, peer, stream::pending::<BytesMut>());
         let command = coordinator.commands.recv().await.unwrap();
-        coordinator.on_command(command);
+        coordinator.on_command(command).await;
         assert!(register(&mut second).await);
 
         assert_eq!(next_outbound(&mut first).await, latest);
@@ -865,7 +996,7 @@ mod tests {
         drop(second);
         for _ in 0..2 {
             let command = coordinator.commands.recv().await.unwrap();
-            coordinator.on_command(command);
+            coordinator.on_command(command).await;
         }
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Down(known)) if known == peer)
@@ -873,16 +1004,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_frame_closes_all_connections_for_peer() {
+    async fn oversized_frame_is_penalized_before_connections_close() {
         let mut config = test_config();
         config.ingest = false;
-        let (handler, coordinator, mut transport) = build(config);
-        let _coordinator = tokio::spawn(coordinator.run());
+        let (breaches, mut reported_breaches) = mpsc::unbounded_channel();
+        let (handler, coordinator, mut transport) =
+            build_with_peer_control(config, StubPeerControl { breaches });
+        let _coordinator = spawn_coordinator(coordinator);
         let peer = PeerId::with_last_byte(4);
-        let shared = Arc::clone(&handler.shared);
         let oversized = BytesMut::from(&vec![0; wire::MAX_FRAME_BYTES + 1][..]);
-        let mut first = Arc::clone(&shared).connection(peer, stream::iter([oversized]));
-        let mut second = shared.connection(peer, stream::pending::<BytesMut>());
+        let mut first = connection(&handler, peer, stream::iter([oversized]));
+        let mut second = connection(&handler, peer, stream::pending::<BytesMut>());
 
         assert!(register(&mut first).await);
         assert!(register(&mut second).await);
@@ -890,10 +1022,18 @@ mod tests {
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
         );
 
+        assert!(futures::poll!(first.next()).is_pending());
+        let (reported, release) = reported_breaches.recv().await.unwrap();
+        assert_eq!(reported, peer);
+        assert!(futures::poll!(first.next()).is_pending());
+        assert!(futures::poll!(second.next()).is_pending());
+        assert!(matches!(
+            transport.control.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        release.send(()).unwrap();
         assert!(first.next().await.is_none());
-        assert!(
-            matches!(transport.control.recv().await, Some(PeerEvent::ProtocolBreach(known)) if known == peer)
-        );
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Down(known)) if known == peer)
         );
