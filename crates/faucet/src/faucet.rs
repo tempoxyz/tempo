@@ -11,6 +11,7 @@ use tempo_precompiles::tip20::ITIP20;
 #[rpc(server, namespace = "tempo")]
 pub trait TempoFaucetExtApi {
     #[method(name = "fundAddress")]
+    #[must_use = "the faucet request does nothing unless awaited"]
     async fn fund_address(&self, address: Address) -> RpcResult<Vec<B256>>;
 }
 

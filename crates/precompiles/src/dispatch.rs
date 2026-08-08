@@ -155,7 +155,7 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
         // spilled portion back to regular gas and restores the reservoir to the
         // value this call inherited.
         output.reservoir = storage.reservoir();
-        output.state_gas_used = storage.state_gas_used() as i64;
+        output.state_gas_used = storage.state_gas_used();
         output.state_gas_spilled = storage.state_gas_spilled();
     }
 }

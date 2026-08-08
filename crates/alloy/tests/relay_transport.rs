@@ -47,6 +47,9 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
         }
     };
 
+    // Reqwest is provider-neutral, so standalone test binaries must select a Rustls provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let signer: alloy_signer_local::PrivateKeySigner = TEST_PRIVATE_KEY.parse()?;
     let sender = signer.address();
 
@@ -94,6 +97,8 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
                 println!(
                     "Sponsor relay broadcast failed because the sponsor's fee payer account is unfunded: {err_str}"
                 );
+            } else if err_str.contains("too many connections from this IP") {
+                println!("Sponsor relay broadcast was rate limited by the testnet RPC: {err_str}");
             } else {
                 return Err(e.into());
             }
