@@ -33,14 +33,12 @@ use crate::{
 
 mod actor;
 mod ingress;
-mod progress;
 
 #[cfg(test)]
 mod test;
 
 pub(super) use actor::Driver;
 pub(super) use ingress::Mailbox;
-pub(crate) use progress::FollowerProgress;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
@@ -53,16 +51,14 @@ pub(super) struct Config<P, M, E = crate::follow::executor::Mailbox> {
 
     pub(super) marshal: M,
     pub(super) executor: E,
+    /// Gossip actor notified after authenticated boundary schemes are installed.
+    pub(super) gossip: Option<crate::gossip::Mailbox>,
 
     pub(super) epoch_strategy: FixedEpocher,
 }
 
-/// A driver, its mailbox, and a read-only progress handle.
-///
-/// The driver owns the progress because it is the only writer. Other components
-/// receive a clone that they can read.
-pub(super) type Initialized<TContext, P, M, E> =
-    (Driver<TContext, P, M, E>, Mailbox, FollowerProgress);
+/// A driver and its mailbox.
+pub(super) type Initialized<TContext, P, M, E> = (Driver<TContext, P, M, E>, Mailbox);
 
 pub(super) fn try_init<TContext, P, M, E>(
     context: TContext,

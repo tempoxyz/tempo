@@ -19,6 +19,8 @@ mod metrics;
 mod test;
 
 pub(crate) use actor::{Actor, Config, init};
+#[cfg(test)]
+pub(crate) use ingress::Message;
 pub(crate) use ingress::{Mailbox, channel};
 
 use commonware_consensus::{
@@ -61,13 +63,13 @@ pub(crate) enum Outcome {
 ///
 /// This trait lets transport-facing actor tests use a stub instead of a driver,
 /// marshal, and scheme provider.
-pub(crate) trait CertSink: Clone + Send + 'static {
+pub(crate) trait CertificateMailbox: Clone + Send + 'static {
     /// Submits a certificate for verification.
     ///
     /// The receiver returns the sink's result. It can close without a value if
     /// the sink cannot judge the certificate, such as during shutdown or on a
     /// publish-only node.
-    fn verify_and_apply(&self, certificate: Certificate) -> oneshot::Receiver<Outcome>;
+    fn process_certificate(&self, certificate: Certificate) -> oneshot::Receiver<Outcome>;
 }
 
 /// A sink for nodes that publish but never ingest.
@@ -78,8 +80,8 @@ pub(crate) trait CertSink: Clone + Send + 'static {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PublishOnlySink;
 
-impl CertSink for PublishOnlySink {
-    fn verify_and_apply(&self, _certificate: Certificate) -> oneshot::Receiver<Outcome> {
+impl CertificateMailbox for PublishOnlySink {
+    fn process_certificate(&self, _certificate: Certificate) -> oneshot::Receiver<Outcome> {
         let (_sender, receiver) = oneshot::channel();
         receiver
     }

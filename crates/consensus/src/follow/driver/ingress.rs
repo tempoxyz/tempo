@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     consensus::Block,
-    gossip::{CertSink, Certificate, Outcome},
+    gossip::{Certificate, CertificateMailbox, Outcome},
 };
 
 #[derive(Debug)]
@@ -32,8 +32,8 @@ impl From<marshal::Update<Block>> for Message {
 }
 
 /// Routes certificates to the driver because it owns the epoch schemes.
-impl CertSink for Mailbox {
-    fn verify_and_apply(&self, certificate: Certificate) -> oneshot::Receiver<Outcome> {
+impl CertificateMailbox for Mailbox {
+    fn process_certificate(&self, certificate: Certificate) -> oneshot::Receiver<Outcome> {
         let (response, receiver) = oneshot::channel();
         // If the driver has stopped, the response sender is dropped and the
         // caller receives an error.

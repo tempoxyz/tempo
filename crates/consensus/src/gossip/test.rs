@@ -19,10 +19,9 @@ use parking_lot::Mutex;
 use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{CertSink, Certificate, Outcome};
+use super::{Certificate, CertificateMailbox, Outcome};
 use crate::{
     consensus::Digest,
-    follow::FollowerProgress,
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
@@ -105,8 +104,8 @@ impl StubSink {
     }
 }
 
-impl CertSink for StubSink {
-    fn verify_and_apply(&self, certificate: Certificate) -> oneshot::Receiver<Outcome> {
+impl CertificateMailbox for StubSink {
+    fn process_certificate(&self, certificate: Certificate) -> oneshot::Receiver<Outcome> {
         let (sender, receiver) = oneshot::channel();
         self.inner.requests.lock().push(certificate.round());
 
@@ -143,6 +142,10 @@ impl PeerControl for StubPeerControl {
     fn penalize(&self, peer: B512) {
         self.penalized.lock().push(peer);
     }
+
+    fn protocol_breach(&self, _peer: B512) -> futures::future::BoxFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
 }
 
 struct Rig {
@@ -151,7 +154,6 @@ struct Rig {
     mailbox: super::Mailbox,
     sink: StubSink,
     peer_control: StubPeerControl,
-    progress: FollowerProgress,
     routes: Arc<Mutex<HashMap<B512, mpsc::Sender<Bytes>>>>,
     outbound: HashMap<B512, mpsc::Receiver<Bytes>>,
     seen: HashMap<B512, Vec<Bytes>>,
@@ -245,7 +247,6 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
 
     let sink = StubSink::new();
     let peer_control = StubPeerControl::default();
-    let progress = FollowerProgress::new();
     let (mailbox, receiver) = super::channel();
     let actor = super::init(
         context.child("gossip"),
@@ -257,7 +258,6 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
             mailbox: receiver,
             peer_control: Arc::new(peer_control.clone()),
             sink: sink.clone(),
-            progress: Some(progress.clone()),
         },
     );
     actor.start();
@@ -268,7 +268,6 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
         mailbox,
         sink,
         peer_control,
-        progress,
         routes,
         outbound: HashMap::new(),
         seen: HashMap::new(),
@@ -428,13 +427,13 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
         );
 
         // A scheme for an earlier epoch cannot verify it, so it stays held.
-        rig.progress.boundary_scheme_installed(Epoch::new(3));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(3));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests().len(), 1, "still held");
         assert_eq!(metric(&context, "gossip_quarantined"), 1);
 
         // The scheme it was waiting for releases it.
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 2).await;
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
         assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
@@ -472,25 +471,6 @@ fn malformed_frames_are_penalized_without_reaching_the_driver() {
         rig.send(peer(1), Bytes::from_static(&[0x00, 0xff])).await;
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
 
-        assert!(rig.sink.requests().is_empty());
-    });
-}
-
-/// A transport-level protocol breach penalizes the logical peer before its
-/// connections are reported down.
-#[test_traced]
-fn protocol_breaches_are_penalized() {
-    deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start(&mut context);
-        rig.connect(peer(1));
-        rig.control
-            .send(PeerEvent::ProtocolBreach(peer(1)))
-            .expect("actor is running");
-        rig.disconnect(peer(1));
-
-        wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
-
-        assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
         assert!(rig.sink.requests().is_empty());
     });
 }
@@ -589,8 +569,8 @@ fn stale_quarantine_is_pruned_without_reverification() {
         rig.send(peer(1), rig.frame(11)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        rig.progress.advance(round(11));
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.finalized_tip(round(11));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
         assert_eq!(rig.sink.requests(), vec![round(11)]);
@@ -599,8 +579,8 @@ fn stale_quarantine_is_pruned_without_reverification() {
 }
 
 /// A relevant boundary releases a live certificate through the normal
-/// admission path. The real driver advances progress before returning
-/// `Admitted`, which the stub mirrors before completing its held response.
+/// admission path. A marshal tip arriving with the admitted result prunes the
+/// settled quarantine without suppressing its relay.
 #[test_traced]
 fn successful_quarantine_retry_is_relayed() {
     deterministic::Runner::default().start(|mut context| async move {
@@ -615,15 +595,15 @@ fn successful_quarantine_retry_is_relayed() {
         rig.send(peer(1), frame.clone()).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 2).await;
-        rig.progress.advance(round(11));
+        rig.mailbox.finalized_tip(round(11));
         rig.sink.release(Outcome::Admitted);
 
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
         assert_eq!(rig.relayed(peer(2)), vec![frame]);
         assert!(rig.relayed(peer(1)).is_empty());
-        assert_eq!(rig.progress.watermark(), round(11));
+        assert_eq!(metric(&context, "gossip_watermark_view"), 11);
         assert!(rig.peer_control.penalized().is_empty());
         assert_eq!(metric(&context, "gossip_quarantined"), 0);
     });
@@ -650,13 +630,13 @@ fn successful_retry_prunes_lower_quarantines() {
         rig.send(peer(2), rig.frame(10)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
 
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
-        rig.progress.advance(round(10));
+        rig.mailbox.finalized_tip(round(10));
         rig.sink.release(Outcome::Admitted);
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
-        rig.progress.boundary_scheme_installed(Epoch::new(5));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(5));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests(), vec![round(9), round(10), round(10)],);
     });
@@ -683,7 +663,7 @@ fn failed_retry_penalizes_only_its_source() {
         rig.send(peer(2), rig.frame(20)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
 
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
         rig.sink.release(Outcome::Invalid);
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
@@ -711,7 +691,7 @@ fn disconnect_discards_quarantine() {
 
         rig.disconnect(peer(1));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(rig.sink.requests().len(), 1);
 
@@ -740,7 +720,7 @@ fn released_quarantines_share_the_global_verify_limit() {
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
         assert_eq!(rig.sink.requests().len(), 2);
 
-        rig.progress.boundary_scheme_installed(Epoch::new(4));
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
         context.sleep(Duration::from_millis(100)).await;
         assert_eq!(
