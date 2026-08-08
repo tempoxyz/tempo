@@ -89,6 +89,8 @@ pub struct ZonePortalStorage {
     leader_epoch: u64,
     /// Tempo block at which the current leader became active, stored in slot 24.
     leader_activation_tempo_block: u64,
+    /// Append-only commitment to the enabled token sequence and metadata, stored in slot 25.
+    token_enablement_hash: B256,
 }
 
 impl ZonePortalStorage {
@@ -100,6 +102,7 @@ impl ZonePortalStorage {
         &mut self,
         zone_id: u32,
         params: &IZoneFactory::CreateZoneParams,
+        token_enablement_hash: B256,
     ) -> Result<()> {
         if self.initialized.read()? {
             return Err(ZoneFactoryError::already_initialized().into());
@@ -136,6 +139,7 @@ impl ZonePortalStorage {
         self.leader_epoch.write(1)?;
         self.leader_activation_tempo_block
             .write(self.storage.block_number())?;
+        self.token_enablement_hash.write(token_enablement_hash)?;
         for gateway in &params.zoneGateways {
             self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
         }
