@@ -50,10 +50,6 @@ impl FollowerProgress {
         let _ = self.boundary_schemes.send(epoch);
     }
 
-    #[allow(
-        dead_code,
-        reason = "consumed by the gossip actor in a following commit"
-    )]
     pub(crate) fn boundary_schemes(&self) -> broadcast::Receiver<Epoch> {
         self.boundary_schemes.subscribe()
     }

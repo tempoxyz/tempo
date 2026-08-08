@@ -1,9 +1,25 @@
 //! Consensus-side half of the `tempo/1` subprotocol.
 //!
-//! The transport in `tempo-node` only moves bytes. Consensus decides what each
-//! frame means. This module defines the types shared by the transport-facing
-//! actor and follower driver. The driver owns the epoch schemes, so only the
-//! driver can verify a certificate.
+//! The transport in `tempo-node` treats frame payloads as opaque and presents a
+//! logical peer lifecycle. Consensus decides what each frame means. This module
+//! defines the types shared by the transport-facing actor and follower driver.
+//! The driver owns the epoch schemes, so only the driver can verify a
+//! certificate.
+
+#![allow(
+    dead_code,
+    unused_imports,
+    reason = "production wiring is added by the following stack layer"
+)]
+
+mod actor;
+mod ingress;
+mod metrics;
+#[cfg(test)]
+mod test;
+
+pub(crate) use actor::{Actor, Config, init};
+pub(crate) use ingress::{Mailbox, channel};
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
@@ -27,7 +43,8 @@ pub(crate) enum Outcome {
     Admitted,
     /// At or below the highest round already applied.
     Stale,
-    /// The signature failed with an available scheme, so the sender is responsible.
+    /// The signature failed with an available scheme, so the sender is
+    /// responsible.
     Invalid,
     /// No authenticated epoch scheme can currently verify the certificate.
     ///
@@ -44,14 +61,26 @@ pub(crate) enum Outcome {
 ///
 /// This trait lets transport-facing actor tests use a stub instead of a driver,
 /// marshal, and scheme provider.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to the gossip actor in a following commit")
-)]
 pub(crate) trait CertSink: Clone + Send + 'static {
     /// Submits a certificate for verification.
     ///
-    /// The receiver returns the driver's result. It closes without a value if
-    /// the driver is shutting down.
+    /// The receiver returns the sink's result. It can close without a value if
+    /// the sink cannot judge the certificate, such as during shutdown or on a
+    /// publish-only node.
     fn verify_and_apply(&self, certificate: Certificate) -> oneshot::Receiver<Outcome>;
+}
+
+/// A sink for nodes that publish but never ingest.
+///
+/// Validators use this sink because they receive certificates over their
+/// authenticated consensus network. Their `tempo/1` transport discards inbound
+/// frames, so this sink is not called.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PublishOnlySink;
+
+impl CertSink for PublishOnlySink {
+    fn verify_and_apply(&self, _certificate: Certificate) -> oneshot::Receiver<Outcome> {
+        let (_sender, receiver) = oneshot::channel();
+        receiver
+    }
 }

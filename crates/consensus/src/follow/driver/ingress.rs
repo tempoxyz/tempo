@@ -13,10 +13,6 @@ pub(super) enum Message {
     Event(Box<Event>),
     Finalized(marshal::Update<Block>),
     /// A `tempo/1` certificate waiting for verification.
-    #[allow(
-        dead_code,
-        reason = "constructed by the gossip actor in a following commit"
-    )]
     Certificate {
         certificate: Box<Certificate>,
         response: oneshot::Sender<Outcome>,
