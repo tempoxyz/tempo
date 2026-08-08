@@ -158,7 +158,7 @@ pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> 
     >,
     budget_wakeup: OptionFuture<futures::future::BoxFuture<'static, ()>>,
 
-    /// Highest verified round learned from a durable marshal tip.
+    /// Highest verified round learned from driver judgment or a durable marshal tip.
     latest_verified_round: Round,
 
     /// Round-robin position used to share the verify budget between peers.
@@ -470,6 +470,7 @@ where
 
         match result {
             Ok(()) => {
+                self.advance_latest_verified_round(pending.round);
                 self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.settled.inc();
                 self.forget(pending.id);
