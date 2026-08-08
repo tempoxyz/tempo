@@ -47,6 +47,9 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
         }
     };
 
+    // Reqwest is provider-neutral, so standalone test binaries must select a Rustls provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let signer: alloy_signer_local::PrivateKeySigner = TEST_PRIVATE_KEY.parse()?;
     let sender = signer.address();
 
