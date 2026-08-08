@@ -38,7 +38,10 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -307,7 +310,7 @@ impl GenesisArgs {
 
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
-        let mut evm = setup_tempo_evm(self.chain_id);
+        let mut evm = setup_tempo_evm(self.chain_id, self.latest_hardfork());
 
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
@@ -676,6 +679,33 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
+
+    /// Returns the activation time of the given hardfork
+    fn hardfork_time(&self, fork: TempoHardfork) -> Option<u64> {
+        macro_rules! fork_time_match {
+            ($($variant:ident),* $(,)?) => {
+                paste::paste! {
+                    match fork {
+                        TempoHardfork::Genesis => Some(0),
+                        $(TempoHardfork::$variant => Some(self.[<$variant:lower _time>]),)*
+                        _ => None,
+                    }
+                }
+            };
+        }
+
+        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
+    }
+
+    /// Returns the latest hardfork active at genesis.
+    fn latest_hardfork(&self) -> TempoHardfork {
+        TempoHardfork::VARIANTS
+            .iter()
+            .rev()
+            .copied()
+            .find(|fork| self.hardfork_time(*fork) == Some(0))
+            .unwrap_or(TempoHardfork::Genesis)
+    }
 }
 
 fn insert_zone_state_at_genesis(
@@ -699,11 +729,13 @@ fn insert_zone_state_at_genesis(
     }
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
+fn setup_tempo_evm(chain_id: u64, spec: TempoHardfork) -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     env.cfg_env.chain_id = chain_id;
+    env.cfg_env.spec = spec;
+    env.cfg_env.gas_params = tempo_revm::gas_params::tempo_gas_params(spec);
 
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
