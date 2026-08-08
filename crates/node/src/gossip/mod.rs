@@ -22,5 +22,5 @@ pub mod wire;
 
 pub use peer_control::{NoPeerControl, PeerControl};
 pub use transport::{
-    Config, Frame, GossipProtocolHandler, PeerEvent, TransportHandle, TransportSender, init,
+    Config, Frame, GossipProtocol, PeerEvent, TransportHandle, TransportSender, init,
 };

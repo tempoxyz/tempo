@@ -1,7 +1,7 @@
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
-    gossip::GossipProtocolHandler,
+    gossip::GossipProtocol,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
@@ -11,10 +11,7 @@ use crate::{
 };
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
-use reth_ethereum::network::{
-    NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives,
-    protocol::IntoRlpxSubProtocol as _,
-};
+use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
@@ -163,12 +160,12 @@ impl TempoNodeArgs {
 /// provider used by the `eth` request handler does not change.
 #[derive(Debug, Default, Clone)]
 pub struct TempoNetworkBuilder {
-    gossip: Option<GossipProtocolHandler>,
+    gossip: Option<GossipProtocol>,
 }
 
 impl TempoNetworkBuilder {
     /// Announces `tempo/1` on every session this node establishes.
-    pub fn with_gossip(gossip: GossipProtocolHandler) -> Self {
+    pub fn with_gossip(gossip: GossipProtocol) -> Self {
         Self {
             gossip: Some(gossip),
         }
@@ -192,9 +189,8 @@ where
     ) -> eyre::Result<Self::Network> {
         let mut network = ctx.network_builder().await?;
         if let Some(gossip) = self.gossip {
-            network
-                .network_mut()
-                .add_rlpx_sub_protocol(gossip.into_rlpx_sub_protocol());
+            let gossip = gossip.install(network.handle());
+            network.network_mut().add_rlpx_sub_protocol(gossip);
         }
 
         let handle = ctx.start_network(network, pool);
@@ -238,7 +234,7 @@ impl TempoNode {
     /// Call this before the node starts. `RLPx` capabilities are negotiated
     /// during the handshake, so existing sessions do not learn about protocols
     /// added later.
-    pub fn with_gossip(mut self, gossip: crate::gossip::GossipProtocolHandler) -> Self {
+    pub fn with_gossip(mut self, gossip: crate::gossip::GossipProtocol) -> Self {
         self.network_builder = TempoNetworkBuilder::with_gossip(gossip);
         self
     }
