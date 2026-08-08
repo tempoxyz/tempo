@@ -1212,9 +1212,11 @@ impl TIP20Token {
         //
         // We can't just use `decrement_balance` in both pre- and post-T8 codepaths, because `decrement_balance`
         // charges gas for balance SLOAD that we already do above for pre-T8.
-        if let Some(from_balance) = from_balance {
-            // pre-T8 path
-            let new_from_balance = from_balance
+        if from_balance.is_some() {
+            // pre-T8 path: re-read balance after handle_rewards_on_transfer to avoid
+            // silently overwriting any mutations it applied to the sender's balance
+            let current_balance = self.get_balance(from)?;
+            let new_from_balance = current_balance
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
