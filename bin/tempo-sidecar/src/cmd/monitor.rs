@@ -1,4 +1,6 @@
-use crate::monitor::{Monitor, prometheus_metrics};
+use crate::monitor::{
+    Monitor, USER_TOKEN_RESERVES_METRIC, VALIDATOR_TOKEN_RESERVES_METRIC, prometheus_metrics,
+};
 use alloy::primitives::Address;
 use clap::Parser;
 use eyre::{Context, eyre};
@@ -56,11 +58,11 @@ impl MonitorArgs {
         .context("failed to initialize monitor")?;
 
         describe_gauge!(
-            "tempo_fee_amm_user_reserves",
+            USER_TOKEN_RESERVES_METRIC,
             "User token reserves in the FeeAMM pool"
         );
         describe_gauge!(
-            "tempo_fee_amm_validator_reserves",
+            VALIDATOR_TOKEN_RESERVES_METRIC,
             "Validator token reserves in the FeeAMM pool"
         );
 
