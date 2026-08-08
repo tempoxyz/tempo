@@ -667,7 +667,6 @@ fn successful_retry_prunes_lower_quarantines() {
 
         rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
-        rig.tip(10);
         rig.sink.release(Ok(()));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
