@@ -997,7 +997,9 @@ impl StablecoinDEX {
         let orderbook = self.books[order.book_key()].read()?;
 
         // Update order remaining amount
-        let new_remaining = order.remaining() - fill_amount;
+        let new_remaining = order.remaining()
+            .checked_sub(fill_amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
         self.orders[order.order_id()]
             .remaining()?
             .write(new_remaining)?;
