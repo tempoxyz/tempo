@@ -9,7 +9,7 @@ use alloy_rpc_client::{BuiltInConnectionString, ConnectionConfig};
 use alloy_transport::{
     Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind,
 };
-use std::str::FromStr;
+use std::{future::Future, str::FromStr};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -25,9 +25,21 @@ use crate::{
     transport::{AuthHeaderTransport, RelayConnector, SponsorshipMode},
 };
 
+#[cfg(not(target_family = "wasm"))]
+macro_rules! provider_future {
+    ($output:ty) => {
+        impl Future<Output = $output> + Send
+    };
+}
+
+#[cfg(target_family = "wasm")]
+macro_rules! provider_future {
+    ($output:ty) => {
+        impl Future<Output = $output>
+    };
+}
+
 /// Extension trait for [`Provider`] with Tempo-specific functionality.
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 pub trait TempoProviderExt: Provider<TempoNetwork> {
     /// Returns a typed instance for the Account Keychain precompile.
     fn account_keychain(&self) -> IAccountKeychainInstance<&Self, TempoNetwork>
@@ -49,124 +61,136 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
     ///
     /// Protocol nonce key `0` uses `eth_getTransactionCount`. Expiring nonce transactions always
     /// use nonce `0`; all other nonce keys are read from the Nonce Manager precompile.
-    async fn get_transaction_count_with_nonce_key(
+    fn get_transaction_count_with_nonce_key(
         &self,
         account: Address,
         nonce_key: U256,
-    ) -> ContractResult<u64>
+    ) -> provider_future!(ContractResult<u64>)
     where
         Self: Sized,
     {
-        if nonce_key.is_zero() {
-            return self
-                .get_transaction_count(account)
+        async move {
+            if nonce_key.is_zero() {
+                return self
+                    .get_transaction_count(account)
+                    .await
+                    .map_err(Into::into);
+            }
+
+            if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                return Ok(0);
+            }
+
+            self.nonce_manager()
+                .getNonce(account, nonce_key)
+                .call()
                 .await
-                .map_err(Into::into);
         }
-
-        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-            return Ok(0);
-        }
-
-        self.nonce_manager()
-            .getNonce(account, nonce_key)
-            .call()
-            .await
     }
 
     /// Returns information about a key authorized for an account.
-    async fn get_keychain_key(&self, account: Address, key_id: Address) -> ContractResult<KeyInfo>
+    fn get_keychain_key(
+        &self,
+        account: Address,
+        key_id: Address,
+    ) -> provider_future!(ContractResult<KeyInfo>)
     where
         Self: Sized,
     {
-        self.account_keychain().getKey(account, key_id).call().await
+        async move { self.account_keychain().getKey(account, key_id).call().await }
     }
 
     /// Returns the remaining spending limit for an account/key/token tuple.
-    async fn get_keychain_remaining_limit(
+    fn get_keychain_remaining_limit(
         &self,
         account: Address,
         key_id: Address,
         token: Address,
-    ) -> ContractResult<U256>
+    ) -> provider_future!(ContractResult<U256>)
     where
         Self: Sized,
     {
-        self.get_keychain_remaining_limit_with_period(account, key_id, token)
-            .await
-            .map(|getRemainingLimitReturn { remaining, .. }| remaining)
+        async move {
+            self.get_keychain_remaining_limit_with_period(account, key_id, token)
+                .await
+                .map(|getRemainingLimitReturn { remaining, .. }| remaining)
+        }
     }
 
     /// Returns the remaining spending limit together with the current period end.
-    async fn get_keychain_remaining_limit_with_period(
+    fn get_keychain_remaining_limit_with_period(
         &self,
         account: Address,
         key_id: Address,
         token: Address,
-    ) -> ContractResult<getRemainingLimitReturn>
+    ) -> provider_future!(ContractResult<getRemainingLimitReturn>)
     where
         Self: Sized,
     {
-        self.account_keychain()
-            .getRemainingLimitWithPeriod(account, key_id, token)
-            .call()
-            .await
+        async move {
+            self.account_keychain()
+                .getRemainingLimitWithPeriod(account, key_id, token)
+                .call()
+                .await
+        }
     }
 
     /// Returns the configured call scopes for an account key.
     ///
     /// `None` means unrestricted. `Some(vec![])` means scoped deny-all.
-    async fn get_keychain_allowed_calls(
+    fn get_keychain_allowed_calls(
         &self,
         account: Address,
         key_id: Address,
-    ) -> ContractResult<Option<Vec<CallScope>>>
+    ) -> provider_future!(ContractResult<Option<Vec<CallScope>>>)
     where
         Self: Sized,
     {
-        self.account_keychain()
-            .getAllowedCalls(account, key_id)
-            .call()
-            .await
-            .map(|getAllowedCallsReturn { isScoped, scopes }| {
-                isScoped.then(|| scopes.into_iter().map(Into::into).collect())
-            })
+        async move {
+            self.account_keychain()
+                .getAllowedCalls(account, key_id)
+                .call()
+                .await
+                .map(|getAllowedCallsReturn { isScoped, scopes }| {
+                    isScoped.then(|| scopes.into_iter().map(Into::into).collect())
+                })
+        }
     }
 
     /// Returns the key ID used in the current transaction context.
-    async fn get_keychain_transaction_key(&self) -> ContractResult<Address>
+    fn get_keychain_transaction_key(&self) -> provider_future!(ContractResult<Address>)
     where
         Self: Sized,
     {
-        self.account_keychain().getTransactionKey().call().await
+        async move { self.account_keychain().getTransactionKey().call().await }
     }
 
     /// Returns `true` if the given Tempo hardfork is active on the connected chain.
     ///
     /// Queries the node's `tempo_forkSchedule` RPC to determine the currently active hardfork.
-    async fn is_hardfork_active(
+    fn is_hardfork_active(
         &self,
         hardfork: TempoHardfork,
-    ) -> Result<bool, alloy_transport::TransportError>
+    ) -> provider_future!(Result<bool, alloy_transport::TransportError>)
     where
         Self: Sized,
     {
-        #[derive(Debug, serde::Deserialize)]
-        struct Response {
-            active: String,
+        async move {
+            #[derive(Debug, serde::Deserialize)]
+            struct Response {
+                active: String,
+            }
+
+            let resp: Response = self.raw_request("tempo_forkSchedule".into(), ()).await?;
+
+            Ok(resp
+                .active
+                .parse::<TempoHardfork>()
+                .is_ok_and(|h| h >= hardfork))
         }
-
-        let resp: Response = self.raw_request("tempo_forkSchedule".into(), ()).await?;
-
-        Ok(resp
-            .active
-            .parse::<TempoHardfork>()
-            .is_ok_and(|h| h >= hardfork))
     }
 }
 
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 impl<P> TempoProviderExt for P where P: Provider<TempoNetwork> {}
 
 /// Config for sponsor requests via provider builder: mode, auth, and request-header forwarding.
