@@ -112,8 +112,8 @@ pub(crate) struct Config<K, M = crate::alias::marshal::Mailbox> {
     pub(crate) mailbox: mpsc::UnboundedReceiver<Message>,
     /// Reputation control for peers that misbehave.
     pub(crate) peer_control: Arc<dyn PeerControl>,
-    /// Driver mailbox that verifies and processes peer certificates.
-    pub(crate) driver_mailbox: K,
+    /// Driver capability that verifies and processes peer certificates.
+    pub(crate) driver: K,
     /// Retrieves certificates after marshal announces their persisted tips.
     pub(crate) marshal: M,
 }
@@ -424,7 +424,7 @@ where
             )
         };
 
-        let receiver = self.config.driver_mailbox.process_certificate(certificate);
+        let receiver = self.config.driver.process_certificate(certificate);
         self.pending
             .replace(async move { (pending, receiver.await.ok()) }.boxed());
 

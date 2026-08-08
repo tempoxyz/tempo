@@ -297,7 +297,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
             transport,
             mailbox: receiver,
             peer_control: Arc::new(peer_control.clone()),
-            driver_mailbox: sink.clone(),
+            driver: sink.clone(),
             marshal: marshal.clone(),
         },
     );
