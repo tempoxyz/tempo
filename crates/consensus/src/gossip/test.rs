@@ -12,14 +12,18 @@ use std::{
 
 use alloy_primitives::{B256, B512, Bytes};
 use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_consensus::types::{Epoch, Round, View};
+use commonware_consensus::{
+    Reporter as _,
+    marshal::Update,
+    types::{Epoch, Height, Round, View},
+};
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Metrics as _, Runner as _, Supervisor as _, deterministic};
 use parking_lot::Mutex;
 use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Certificate, CertificateMailbox, Outcome};
+use super::{Certificate, CertificateError, CertificateMailbox, Marshal};
 use crate::{
     consensus::Digest,
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
@@ -63,10 +67,10 @@ struct StubSink {
 
 struct StubSinkInner {
     requests: Mutex<Vec<Round>>,
-    answers: Mutex<VecDeque<Outcome>>,
-    fallback: Mutex<Option<Outcome>>,
+    answers: Mutex<VecDeque<eyre::Result<(), CertificateError>>>,
+    fallback: Mutex<Option<eyre::Result<(), CertificateError>>>,
     /// Requests held open while a test changes other actor state.
-    held: Mutex<Vec<oneshot::Sender<Outcome>>>,
+    held: Mutex<Vec<oneshot::Sender<eyre::Result<(), CertificateError>>>>,
 }
 
 impl StubSink {
@@ -81,31 +85,34 @@ impl StubSink {
         }
     }
 
-    fn answer(&self, outcome: Outcome) {
-        self.inner.answers.lock().push_back(outcome);
+    fn answer(&self, result: eyre::Result<(), CertificateError>) {
+        self.inner.answers.lock().push_back(result);
     }
 
-    fn always(&self, outcome: Outcome) {
-        *self.inner.fallback.lock() = Some(outcome);
+    fn always(&self, result: eyre::Result<(), CertificateError>) {
+        *self.inner.fallback.lock() = Some(result);
     }
 
     fn requests(&self) -> Vec<Round> {
         self.inner.requests.lock().clone()
     }
 
-    fn release(&self, outcome: Outcome) {
+    fn release(&self, result: eyre::Result<(), CertificateError>) {
         let sender = self
             .inner
             .held
             .lock()
             .pop()
             .expect("a request should be awaiting a judgement");
-        let _ = sender.send(outcome);
+        let _ = sender.send(result);
     }
 }
 
 impl CertificateMailbox for StubSink {
-    fn process_certificate(&self, certificate: Certificate) -> oneshot::Receiver<Outcome> {
+    fn process_certificate(
+        &self,
+        certificate: Certificate,
+    ) -> oneshot::Receiver<eyre::Result<(), CertificateError>> {
         let (sender, receiver) = oneshot::channel();
         self.inner.requests.lock().push(certificate.round());
 
@@ -124,6 +131,23 @@ impl CertificateMailbox for StubSink {
         }
 
         receiver
+    }
+}
+
+#[derive(Clone, Default)]
+struct StubMarshal {
+    finalizations: Arc<Mutex<HashMap<u64, Certificate>>>,
+}
+
+impl StubMarshal {
+    fn insert(&self, height: Height, certificate: Certificate) {
+        self.finalizations.lock().insert(height.get(), certificate);
+    }
+}
+
+impl Marshal for StubMarshal {
+    async fn get_finalization(&self, height: Height) -> Option<Certificate> {
+        self.finalizations.lock().get(&height.get()).cloned()
     }
 }
 
@@ -152,6 +176,7 @@ struct Rig {
     control: mpsc::UnboundedSender<PeerEvent>,
     frames: mpsc::Sender<Frame>,
     mailbox: super::Mailbox,
+    marshal: StubMarshal,
     sink: StubSink,
     peer_control: StubPeerControl,
     routes: Arc<Mutex<HashMap<B512, mpsc::Sender<Bytes>>>>,
@@ -179,13 +204,32 @@ impl Rig {
 
     /// Builds a frame carrying a real certificate over a synthetic block.
     fn frame(&self, view: u64) -> Bytes {
-        let certificate = make_certificate(
+        gossip::wire::encode(&self.certificate(view).encode())
+            .freeze()
+            .into()
+    }
+
+    fn certificate(&self, view: u64) -> Certificate {
+        make_certificate(
             Digest(B256::with_last_byte(view as u8)),
             Epoch::zero(),
             view,
             &self.fixture.schemes,
-        );
-        gossip::wire::encode(&certificate.encode()).freeze().into()
+        )
+    }
+
+    fn publish(&mut self, view: u64) {
+        self.tip(view);
+    }
+
+    fn tip(&mut self, view: u64) {
+        let height = Height::new(view);
+        self.marshal.insert(height, self.certificate(view));
+        let _ = self.mailbox.report(Update::Tip(
+            round(view),
+            height,
+            Digest(B256::with_last_byte(view as u8)),
+        ));
     }
 
     async fn send(&self, peer: B512, frame: Bytes) {
@@ -213,18 +257,14 @@ impl Rig {
 const UNLIMITED_VERIFY_RATE: u32 = 1_000;
 
 fn start(context: &mut deterministic::Context) -> Rig {
-    start_with(context, UNLIMITED_VERIFY_RATE, true)
+    start_with(context, UNLIMITED_VERIFY_RATE)
 }
 
 fn start_with_verify_rate(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
-    start_with(context, verify_rate, true)
+    start_with(context, verify_rate)
 }
 
-fn start_without_forwarding(context: &mut deterministic::Context) -> Rig {
-    start_with(context, UNLIMITED_VERIFY_RATE, false)
-}
-
-fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: bool) -> Rig {
+fn start_with(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
     let fixture = dkg_fixture(context, Epoch::zero());
 
     let (control_tx, control_rx) = mpsc::unbounded_channel();
@@ -246,6 +286,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
     };
 
     let sink = StubSink::new();
+    let marshal = StubMarshal::default();
     let peer_control = StubPeerControl::default();
     let (mailbox, receiver) = super::channel();
     let actor = super::init(
@@ -253,11 +294,11 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
         super::Config {
             verify_rate,
             recent_frames: 64,
-            relay,
             transport,
             mailbox: receiver,
             peer_control: Arc::new(peer_control.clone()),
-            sink: sink.clone(),
+            driver_mailbox: sink.clone(),
+            marshal: marshal.clone(),
         },
     );
     actor.start();
@@ -266,6 +307,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32, relay: boo
         control: control_tx,
         frames: frames_tx,
         mailbox,
+        marshal,
         sink,
         peer_control,
         routes,
@@ -299,7 +341,7 @@ fn full_frame_layout_is_frozen() {
 fn scheduling_is_fair_across_peers() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.sink.always(Outcome::Invalid);
+        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
         rig.connect(peer(2));
 
@@ -324,7 +366,7 @@ fn scheduling_is_fair_across_peers() {
 fn terminal_outcome_settles_frame_for_every_peer() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.sink.always(Outcome::Invalid);
+        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
         rig.connect(peer(2));
 
@@ -349,25 +391,24 @@ fn terminal_outcome_settles_frame_for_every_peer() {
     });
 }
 
-/// Relaying lets a follower learn the tip when its upstream is unavailable. The
-/// source peer does not need the certificate back.
+/// A certificate settled by the driver is not propagated until marshal reports
+/// that its block and certificate are durable.
 #[test_traced]
-fn admitted_certificate_is_relayed_excluding_its_source() {
+fn settled_certificate_is_not_optimistically_relayed() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        rig.sink.answer(Outcome::Admitted);
+        rig.sink.answer(Ok(()));
 
         let frame = rig.frame(9);
         rig.send(peer(1), frame).await;
-        wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
+        wait_until(&context, || !rig.sink.requests().is_empty()).await;
+        context.sleep(Duration::from_millis(10)).await;
 
-        assert!(
-            rig.relayed(peer(1)).is_empty(),
-            "the sender does not need it back",
-        );
+        assert!(rig.relayed(peer(1)).is_empty());
+        assert!(rig.relayed(peer(2)).is_empty());
     });
 }
 
@@ -376,7 +417,7 @@ fn admitted_certificate_is_relayed_excluding_its_source() {
 fn disconnected_peer_is_ignored() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.sink.always(Outcome::Invalid);
+        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
         rig.disconnect(peer(1));
 
@@ -403,10 +444,10 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
 
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
-        rig.sink.always(Outcome::Invalid);
+        }));
+        rig.sink.always(Err(CertificateError::Invalid));
 
         let frame = rig.frame(11);
         rig.send(peer(1), frame).await;
@@ -446,7 +487,7 @@ fn certificate_awaiting_scheme_is_held_without_retrying() {
 fn repeated_invalid_certificates_are_penalized() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.sink.always(Outcome::Invalid);
+        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
 
         let first = rig.frame(21);
@@ -482,9 +523,9 @@ fn malformed_frame_from_a_quarantined_peer_is_penalized() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
 
         rig.send(peer(1), rig.frame(11)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
@@ -517,16 +558,10 @@ fn higher_round_cannot_replace_a_slot_being_judged() {
         })
         .await;
 
-        rig.sink.release(Outcome::Admitted);
+        rig.sink.release(Ok(()));
 
-        wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
-        let relayed = rig.relayed(peer(2));
-        assert_eq!(
-            relayed,
-            vec![verified],
-            "only the judged bytes may be relayed",
-        );
-        assert!(!relayed.contains(&replacement));
+        context.sleep(Duration::from_millis(10)).await;
+        assert!(rig.relayed(peer(2)).is_empty());
         assert_eq!(rig.sink.requests(), vec![round(70)]);
     });
 }
@@ -537,7 +572,7 @@ fn higher_round_cannot_replace_a_slot_being_judged() {
 fn higher_round_replaces_a_ready_slot() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start_with_verify_rate(&mut context, 1);
-        rig.sink.always(Outcome::Invalid);
+        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
 
         rig.send(peer(1), rig.frame(90)).await;
@@ -554,22 +589,22 @@ fn higher_round_replaces_a_ready_slot() {
     });
 }
 
-/// Once the watermark passes a quarantined certificate, a boundary event only
-/// removes it. The actor does not spend another verification to rediscover that
-/// it is stale.
+/// Once the latest verified round passes a quarantined certificate, a boundary
+/// event only removes it. The actor does not spend another verification to
+/// rediscover that it is stale.
 #[test_traced]
 fn stale_quarantine_is_pruned_without_reverification() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
 
         rig.send(peer(1), rig.frame(11)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        rig.mailbox.finalized_tip(round(11));
+        rig.tip(11);
         rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
@@ -579,17 +614,17 @@ fn stale_quarantine_is_pruned_without_reverification() {
 }
 
 /// A relevant boundary releases a live certificate through the normal
-/// admission path. A marshal tip arriving with the admitted result prunes the
-/// settled quarantine without suppressing its relay.
+/// admission path. A durable marshal tip can publish and prune it while its
+/// judgment is pending.
 #[test_traced]
-fn successful_quarantine_retry_is_relayed() {
+fn durable_tip_supersedes_pending_quarantine_retry() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
         rig.connect(peer(2));
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
 
         let frame = rig.frame(11);
         rig.send(peer(1), frame.clone()).await;
@@ -597,13 +632,13 @@ fn successful_quarantine_retry_is_relayed() {
 
         rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 2).await;
-        rig.mailbox.finalized_tip(round(11));
-        rig.sink.release(Outcome::Admitted);
+        rig.tip(11);
+        rig.sink.release(Ok(()));
 
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
         assert_eq!(rig.relayed(peer(2)), vec![frame]);
         assert!(rig.relayed(peer(1)).is_empty());
-        assert_eq!(metric(&context, "gossip_watermark_view"), 11);
+        assert_eq!(metric(&context, "gossip_latest_verified_view"), 11);
         assert!(rig.peer_control.penalized().is_empty());
         assert_eq!(metric(&context, "gossip_quarantined"), 0);
     });
@@ -618,22 +653,22 @@ fn successful_retry_prunes_lower_quarantines() {
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(5),
-        });
+        }));
         rig.send(peer(1), rig.frame(9)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
         rig.send(peer(2), rig.frame(10)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
 
         rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
-        rig.mailbox.finalized_tip(round(10));
-        rig.sink.release(Outcome::Admitted);
+        rig.tip(10);
+        rig.sink.release(Ok(()));
         wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
 
         rig.mailbox.boundary_scheme_installed(Epoch::new(5));
@@ -651,21 +686,21 @@ fn failed_retry_penalizes_only_its_source() {
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
         rig.send(peer(1), rig.frame(10)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
 
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(5),
-        });
+        }));
         rig.send(peer(2), rig.frame(20)).await;
         wait_until(&context, || metric(&context, "gossip_quarantined") == 2).await;
 
         rig.mailbox.boundary_scheme_installed(Epoch::new(4));
         wait_until(&context, || rig.sink.requests().len() == 3).await;
-        rig.sink.release(Outcome::Invalid);
+        rig.sink.release(Err(CertificateError::Invalid));
         wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
 
         assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
@@ -681,9 +716,9 @@ fn disconnect_discards_quarantine() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
-        rig.sink.answer(Outcome::NeedsScheme {
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
 
         let frame = rig.frame(11);
         rig.send(peer(1), frame.clone()).await;
@@ -696,7 +731,7 @@ fn disconnect_discards_quarantine() {
         assert_eq!(rig.sink.requests().len(), 1);
 
         rig.connect(peer(1));
-        rig.sink.answer(Outcome::Invalid);
+        rig.sink.answer(Err(CertificateError::Invalid));
         rig.send(peer(1), frame).await;
         wait_until(&context, || rig.sink.requests().len() == 2).await;
     });
@@ -710,9 +745,9 @@ fn released_quarantines_share_the_global_verify_limit() {
         let mut rig = start_with_verify_rate(&mut context, 1);
         rig.connect(peer(1));
         rig.connect(peer(2));
-        rig.sink.always(Outcome::NeedsScheme {
+        rig.sink.always(Err(CertificateError::NeedsScheme {
             epoch: Epoch::new(4),
-        });
+        }));
 
         rig.send(peer(1), rig.frame(11)).await;
         rig.send(peer(2), rig.frame(12)).await;
@@ -741,7 +776,7 @@ fn shed_candidate_is_retried_when_budget_replenishes() {
     deterministic::Runner::default().start(|mut context| async move {
         // One judgement per second, and the first frame consumes the burst.
         let mut rig = start_with_verify_rate(&mut context, 1);
-        rig.sink.always(Outcome::Invalid);
+        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
 
         let first = rig.frame(90);
@@ -768,29 +803,25 @@ fn shed_candidate_is_retried_when_budget_replenishes() {
     });
 }
 
-/// A certificate the node already relayed on the way in is not sent a second
-/// time when its block later lands and the feed offers it again.
+/// A settled certificate is propagated once marshal reports its durable tip.
 #[test_traced]
-fn publishing_a_frame_already_relayed_is_suppressed() {
+fn settled_certificate_is_published_after_tip() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        rig.sink.answer(Outcome::Admitted);
+        rig.sink.answer(Ok(()));
 
         let frame = rig.frame(50);
         rig.send(peer(1), frame.clone()).await;
-        wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
-        let after_ingest = rig.relayed(peer(2)).len();
+        wait_until(&context, || !rig.sink.requests().is_empty()).await;
+        assert!(rig.relayed(peer(2)).is_empty());
 
-        rig.mailbox.publish(round(50), frame);
-        context.sleep(Duration::from_millis(20)).await;
-        assert_eq!(
-            rig.relayed(peer(2)).len(),
-            after_ingest,
-            "already relayed on the way in",
-        );
+        rig.publish(50);
+        wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
+        assert_eq!(rig.relayed(peer(2)), vec![frame]);
+        assert!(rig.relayed(peer(1)).is_empty());
     });
 }
 
@@ -812,7 +843,7 @@ fn local_publication_takes_priority_over_peer_traffic() {
                 frame: frame.clone(),
             })
             .expect("frame queue has capacity");
-        rig.mailbox.publish(round(51), frame);
+        rig.publish(51);
 
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
         assert!(
@@ -822,31 +853,16 @@ fn local_publication_takes_priority_over_peer_traffic() {
     });
 }
 
-/// Publishing makes a stored certificate available to peers. The setting that
-/// controls forwarding of peer traffic must not disable local publication.
+/// A settled peer certificate waits for durable publication, which still skips
+/// a peer that claimed a newer round.
 #[test_traced]
-fn publishing_is_not_governed_by_forwarding() {
+fn durable_publication_skips_peer_with_newer_claim() {
     deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_without_forwarding(&mut context);
-        rig.connect(peer(1));
-
-        rig.mailbox.publish(round(61), rig.frame(61));
-
-        wait_until(&context, || !rig.relayed(peer(1)).is_empty()).await;
-    });
-}
-
-/// With forwarding off, a peer's verified certificate is not forwarded. Local
-/// publication still reaches eligible peers, but skips a peer that claimed a
-/// newer round.
-#[test_traced]
-fn verified_frame_is_not_forwarded_when_forwarding_is_off() {
-    deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start_without_forwarding(&mut context);
+        let mut rig = start(&mut context);
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        rig.sink.answer(Outcome::Admitted);
+        rig.sink.answer(Ok(()));
         let claimed = rig.frame(63);
         rig.send(peer(1), claimed).await;
 
@@ -854,11 +870,11 @@ fn verified_frame_is_not_forwarded_when_forwarding_is_off() {
         context.sleep(Duration::from_millis(10)).await;
         assert!(
             rig.relayed(peer(2)).is_empty(),
-            "a verified frame must not be forwarded with relay off",
+            "a settled frame must wait for durable publication",
         );
 
         let published = rig.frame(62);
-        rig.mailbox.publish(round(62), published.clone());
+        rig.publish(62);
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
         assert_eq!(rig.relayed(peer(2)), vec![published]);
         assert!(
@@ -878,10 +894,12 @@ fn publishing_an_unseen_frame_reaches_every_peer() {
         rig.connect(peer(2));
 
         let frame = rig.frame(60);
-        rig.mailbox.publish(round(60), frame);
+        rig.publish(60);
 
         wait_until(&context, || !rig.relayed(peer(1)).is_empty()).await;
         wait_until(&context, || !rig.relayed(peer(2)).is_empty()).await;
+        assert_eq!(rig.relayed(peer(1)), vec![frame.clone()]);
+        assert_eq!(rig.relayed(peer(2)), vec![frame]);
     });
 }
 
@@ -893,12 +911,11 @@ fn new_peer_receives_latest_publication() {
         let mut rig = start(&mut context);
         rig.connect(peer(1));
 
-        let first = rig.frame(63);
-        rig.mailbox.publish(round(63), first);
+        rig.publish(63);
         wait_until(&context, || !rig.relayed(peer(1)).is_empty()).await;
 
         let latest = rig.frame(64);
-        rig.mailbox.publish(round(64), latest.clone());
+        rig.publish(64);
         wait_until(&context, || rig.relayed(peer(1)).len() == 2).await;
 
         rig.connect(peer(2));
@@ -916,15 +933,15 @@ fn failed_publication_can_be_retried() {
         rig.connect(peer(1));
 
         for view in 1..=8 {
-            rig.mailbox.publish(round(view), rig.frame(view));
+            rig.publish(view);
         }
         let latest = rig.frame(9);
-        rig.mailbox.publish(round(9), latest.clone());
+        rig.publish(9);
 
         context.sleep(Duration::from_millis(20)).await;
         assert_eq!(rig.relayed(peer(1)).len(), 8, "the queue filled");
 
-        rig.mailbox.publish(round(9), latest.clone());
+        rig.publish(9);
         wait_until(&context, || rig.relayed(peer(1)).len() == 9).await;
         assert_eq!(rig.relayed(peer(1)).last(), Some(&latest));
     });

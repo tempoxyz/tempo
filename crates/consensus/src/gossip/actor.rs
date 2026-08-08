@@ -1,8 +1,8 @@
 //! The `tempo/1` actor.
 //!
-//! The actor admits, schedules, and relays gossiped certificates. The driver
-//! judges them because it owns the epoch schemes. The actor uses the runtime
-//! clock so its scheduling and rate limits work in deterministic tests.
+//! The actor admits and schedules peer certificates for driver judgment, then
+//! publishes certificates after marshal confirms they are durable. It uses the
+//! runtime clock so scheduling and rate limits work in deterministic tests.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -11,6 +11,7 @@ use std::{
 };
 
 use alloy_primitives::{B256, Bytes, keccak256};
+use commonware_codec::Encode as _;
 use commonware_consensus::{
     Epochable as _,
     types::{Epoch, Round},
@@ -23,7 +24,9 @@ use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, Transpo
 use tokio::{select, sync::mpsc};
 use tracing::debug;
 
-use super::{Certificate, CertificateMailbox, Outcome, ingress::Message, metrics::Metrics};
+use super::{
+    Certificate, CertificateError, CertificateMailbox, Marshal, ingress::Message, metrics::Metrics,
+};
 use crate::utils::OptionFuture;
 
 /// Hash of the exact frame bytes used to track settled or published frames.
@@ -43,7 +46,6 @@ enum SlotState {
 struct Slot {
     round: Round,
     certificate: Certificate,
-    frame: Bytes,
     id: FrameId,
     state: SlotState,
 }
@@ -91,14 +93,11 @@ struct Pending {
     peer: PeerKey,
     round: Round,
     id: FrameId,
-    /// Exact bytes are retained outside the slot so a disconnect cannot erase
-    /// the evidence or change what a completed judgment relays.
-    frame: Bytes,
 }
 
 type PeerKey = alloy_primitives::B512;
 /// Inputs and limits for the `tempo/1` actor.
-pub(crate) struct Config<K> {
+pub(crate) struct Config<K, M = crate::alias::marshal::Mailbox> {
     /// Maximum driver judgements per second across all peers.
     ///
     /// Each signature check runs on the driver task, which also acknowledges
@@ -107,22 +106,19 @@ pub(crate) struct Config<K> {
     pub(crate) verify_rate: u32,
     /// Frames remembered as already settled or published.
     pub(crate) recent_frames: usize,
-    /// Whether to forward certificates verified from a peer.
-    ///
-    /// Does not govern publishing: a certificate this node stored itself is
-    /// offered regardless.
-    pub(crate) relay: bool,
     /// The consensus layer's end of the `tempo/1` transport.
     pub(crate) transport: TransportHandle,
-    /// Certificates published after the feed confirms their blocks are stored.
+    /// Marshal notifications that trigger durable publication and scheme retries.
     pub(crate) mailbox: mpsc::UnboundedReceiver<Message>,
     /// Reputation control for peers that misbehave.
     pub(crate) peer_control: Arc<dyn PeerControl>,
-    /// Judges certificates. A publish-only node uses a sink with no outcome.
-    pub(crate) sink: K,
+    /// Driver mailbox that verifies and processes peer certificates.
+    pub(crate) driver_mailbox: K,
+    /// Retrieves certificates after marshal announces their persisted tips.
+    pub(crate) marshal: M,
 }
 
-pub(crate) fn init<TContext, K>(context: TContext, config: Config<K>) -> Actor<TContext, K>
+pub(crate) fn init<TContext, K, M>(context: TContext, config: Config<K, M>) -> Actor<TContext, K, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
 {
@@ -142,43 +138,41 @@ where
         latest: None,
         pending: OptionFuture::none(),
         budget_wakeup: OptionFuture::none(),
-        watermark: Round::zero(),
+        latest_verified_round: Round::zero(),
         cursor: 0,
-        slots_pruned_through: Round::zero(),
         metrics,
     }
 }
 
-pub(crate) struct Actor<TContext: Clock, K> {
+pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
-    config: Config<K>,
+    config: Config<K, M>,
 
     peers: HashMap<PeerKey, Peer>,
     slots: HashMap<PeerKey, Slot>,
     settled_frames: SettledFrames,
     latest: Option<Published>,
 
-    pending: OptionFuture<futures::future::BoxFuture<'static, (Pending, Option<Outcome>)>>,
+    pending: OptionFuture<
+        futures::future::BoxFuture<'static, (Pending, Option<eyre::Result<(), CertificateError>>)>,
+    >,
     budget_wakeup: OptionFuture<futures::future::BoxFuture<'static, ()>>,
 
-    /// Highest finalized tip delivered through the actor mailbox.
-    watermark: Round,
+    /// Highest verified round learned from a durable marshal tip.
+    latest_verified_round: Round,
 
     /// Round-robin position used to share the verify budget between peers.
     cursor: usize,
-
-    /// Last watermark applied to every slot. New frames are checked against the
-    /// live watermark before insertion, so unchanged progress needs no rescan.
-    slots_pruned_through: Round,
 
     verify_limiter: RateLimiter<TContext>,
     metrics: Metrics,
 }
 
-impl<TContext, K> Actor<TContext, K>
+impl<TContext, K, M> Actor<TContext, K, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner + Send + 'static,
     K: CertificateMailbox,
+    M: Marshal,
 {
     pub(crate) fn start(mut self) -> Handle<()> {
         spawn_cell!(self.context, self.run())
@@ -195,12 +189,12 @@ where
 
                 (pending, result) = &mut self.pending => {
                     self.pending = OptionFuture::none();
-                    self.on_judged(pending, result).await;
+                    self.on_judged(pending, result);
                 }
 
                 Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
-                Some(message) = self.config.mailbox.recv() => self.on_message(message),
+                Some(message) = self.config.mailbox.recv() => self.on_message(message).await,
 
                 _ = (&mut self.budget_wakeup).fuse() => {
                     self.budget_wakeup = OptionFuture::none();
@@ -280,7 +274,7 @@ where
             .expect("peer was checked above")
             .observe(round);
 
-        if round <= self.watermark() {
+        if round <= self.latest_verified_round {
             self.metrics.dropped_stale.inc();
             return;
         }
@@ -306,7 +300,6 @@ where
             Slot {
                 round,
                 certificate,
-                frame,
                 id,
                 state: SlotState::Ready,
             },
@@ -314,49 +307,49 @@ where
         self.update_slot_metrics();
     }
 
-    fn on_message(&mut self, message: Message) {
+    async fn on_message(&mut self, message: Message) {
         match message {
-            Message::Publish { round, frame } => {
-                // Keep one publication for the latest round. Repeating that round
-                // retries only peers whose coordinator enqueue failed because
-                // `offer` skips attempts accepted by the coordinator. Reuse the
-                // cached bytes so another frame for the same round cannot replace
-                // what we advertised.
-                if let Some(latest) = &self.latest {
-                    if latest.round > round {
-                        return;
-                    }
-                    if latest.round == round {
-                        let frame = latest.frame.clone();
-                        self.relay(round, &frame, None);
-                        return;
-                    }
-                }
-
-                let id = keccak256(&frame);
-                self.settled_frames.insert(id, round);
-                self.forget(id);
-                self.latest = Some(Published {
-                    round,
-                    frame: frame.clone(),
-                });
-                self.relay(round, &frame, None);
-            }
-            Message::FinalizedTip { round } => {
-                self.watermark = self.watermark.max(round);
-                self.prune_stale_slots();
-            }
             Message::BoundarySchemeInstalled { epoch } => self.release_quarantines(epoch),
+            Message::FinalizedTip { round, height } => {
+                let Some(certificate) = self.config.marshal.get_finalization(height).await else {
+                    debug!(%height, "finalized tip is missing its persisted certificate");
+                    return;
+                };
+                self.advance_latest_verified_round(round);
+                let frame = wire::encode(&certificate.encode()).freeze().into();
+                self.publish(round, frame);
+            }
         }
+    }
+
+    fn publish(&mut self, round: Round, frame: Bytes) {
+        // Keep one publication for the latest round. Repeating that round
+        // retries only peers whose coordinator enqueue failed because `offer`
+        // skips attempts accepted by the coordinator. Reuse the cached bytes so
+        // another frame for the same round cannot replace what we advertised.
+        if let Some(latest) = &self.latest {
+            if latest.round > round {
+                return;
+            }
+            if latest.round == round {
+                let frame = latest.frame.clone();
+                self.relay(round, &frame);
+                return;
+            }
+        }
+
+        let id = keccak256(&frame);
+        self.settled_frames.insert(id, round);
+        self.forget(id);
+        self.latest = Some(Published {
+            round,
+            frame: frame.clone(),
+        });
+        self.relay(round, &frame);
     }
 
     /// Releases live quarantines covered by an authenticated boundary scheme.
     fn release_quarantines(&mut self, installed: Epoch) {
-        // Progress may make a quarantine stale while it waits. Prune before
-        // changing states so metrics and release logs describe only live retries.
-        // Dispatch repeats this guard, but an unchanged watermark does not rescan slots.
-        self.prune_stale_slots();
-
         for (peer, slot) in &mut self.slots {
             let SlotState::NeedsScheme(required) = slot.state else {
                 continue;
@@ -377,24 +370,21 @@ where
         self.update_slot_metrics();
     }
 
-    /// Removes slots at or below the driver's watermark.
-    ///
-    /// Selection also checks the watermark, so this is bounded cleanup and not
-    /// a correctness requirement.
-    fn prune_stale_slots(&mut self) {
-        let watermark = self.watermark();
-        self.metrics
-            .watermark_epoch
-            .set(watermark.epoch().get() as i64);
-        self.metrics
-            .watermark_view
-            .set(watermark.view().get() as i64);
-        if watermark <= self.slots_pruned_through {
+    /// Advances verified progress and removes slots that it makes stale.
+    fn advance_latest_verified_round(&mut self, round: Round) {
+        if round <= self.latest_verified_round {
             return;
         }
 
-        self.slots_pruned_through = watermark;
-        self.slots.retain(|_, slot| slot.round > watermark);
+        self.latest_verified_round = round;
+        self.metrics
+            .latest_verified_epoch
+            .set(round.epoch().get() as i64);
+        self.metrics
+            .latest_verified_view
+            .set(round.view().get() as i64);
+
+        self.slots.retain(|_, slot| slot.round > round);
         self.update_slot_metrics();
     }
 
@@ -407,8 +397,6 @@ where
         if !self.pending.is_none() {
             return;
         }
-
-        self.prune_stale_slots();
 
         let Some(peer) = self.next_candidate() else {
             return;
@@ -431,15 +419,15 @@ where
                     peer,
                     round: slot.round,
                     id: slot.id,
-                    frame: slot.frame.clone(),
                 },
                 slot.certificate.clone(),
             )
         };
-        let receiver = self.config.sink.process_certificate(certificate);
 
+        let receiver = self.config.driver_mailbox.process_certificate(certificate);
         self.pending
             .replace(async move { (pending, receiver.await.ok()) }.boxed());
+
         self.metrics.dispatched.inc();
     }
 
@@ -452,7 +440,6 @@ where
             return None;
         }
 
-        let watermark = self.watermark();
         let peers: Vec<PeerKey> = self.slots.keys().copied().collect();
         let start = self.cursor % peers.len();
 
@@ -461,7 +448,7 @@ where
             let peer = peers[index];
             let slot = &self.slots[&peer];
 
-            if slot.round > watermark && slot.state == SlotState::Ready {
+            if slot.state == SlotState::Ready {
                 self.cursor = index + 1;
                 return Some(peer);
             }
@@ -470,7 +457,7 @@ where
         None
     }
 
-    async fn on_judged(&mut self, pending: Pending, result: Option<Outcome>) {
+    fn on_judged(&mut self, pending: Pending, result: Option<eyre::Result<(), CertificateError>>) {
         let Some(result) = result else {
             // No result will arrive. Settle the frame so the actor does not send
             // the same slot again on every loop and consume the full budget.
@@ -482,24 +469,18 @@ where
         };
 
         match result {
-            Outcome::Admitted => {
+            Ok(()) => {
                 self.settled_frames.insert(pending.id, pending.round);
-                self.metrics.admitted.inc();
-                self.forward(pending.round, &pending.frame, pending.peer);
+                self.metrics.settled.inc();
                 self.forget(pending.id);
             }
-            Outcome::Stale => {
-                self.settled_frames.insert(pending.id, pending.round);
-                self.metrics.stale.inc();
-                self.forget(pending.id);
-            }
-            Outcome::Invalid => {
+            Err(CertificateError::Invalid) => {
                 self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.invalid.inc();
                 self.forget(pending.id);
                 self.penalize(pending.peer);
             }
-            Outcome::NeedsScheme { epoch } => {
+            Err(CertificateError::NeedsScheme { epoch }) => {
                 // `NeedsScheme` is provisional.
                 //
                 // This means that we cannot get a definitive judgement for the pending certificate.
@@ -515,34 +496,12 @@ where
                 self.quarantine(&pending, epoch);
             }
         }
-
-        self.prune_stale_slots();
     }
 
-    /// Forwards a verified certificate when peer forwarding is enabled.
-    ///
-    /// Local publications do not use this flag. Publishing a stored certificate
-    /// is what makes it available to the network.
-    fn forward(&mut self, round: Round, frame: &Bytes, from: PeerKey) {
-        if !self.config.relay {
-            return;
-        }
-
-        self.relay(round, frame, Some(from));
-    }
-
-    /// Highest marshal tip delivered to this actor, or zero on a publish-only node.
-    fn watermark(&self) -> Round {
-        self.watermark
-    }
-
-    fn relay(&mut self, round: Round, frame: &Bytes, exclude: Option<PeerKey>) {
+    fn relay(&mut self, round: Round, frame: &Bytes) {
         let mut sent = 0u64;
         let mut full = 0u64;
         for (peer, state) in &mut self.peers {
-            if Some(*peer) == exclude {
-                continue;
-            }
             match state.offer(&self.config.transport.sender, *peer, round, frame) {
                 Ok(true) => sent += 1,
                 Ok(false) => {}
@@ -584,13 +543,14 @@ where
     }
 
     fn update_slot_metrics(&self) {
-        self.metrics.slots.set(self.slots.len() as i64);
         // The peer count is bounded and thus does not pose a performance concern here.
         let quarantined_cnt = self
             .slots
             .values()
             .filter(|slot| matches!(slot.state, SlotState::NeedsScheme(_)))
             .count() as i64;
+
+        self.metrics.slots.set(self.slots.len() as i64);
         self.metrics.quarantined.set(quarantined_cnt);
     }
 

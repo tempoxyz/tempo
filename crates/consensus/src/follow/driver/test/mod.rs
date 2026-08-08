@@ -21,7 +21,7 @@ use crate::{
         DkgFixture, EPOCH_LENGTH, StubExecutionProvider, StubExecutor, StubMarshal, dkg_fixture,
         make_block, make_certified_block, make_finalization,
     },
-    gossip::{CertificateMailbox as _, Outcome},
+    gossip::{CertificateError, CertificateMailbox as _},
 };
 
 const WAIT_ATTEMPTS: usize = 100;
@@ -304,7 +304,7 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
             .process_certificate(finalization)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Admitted);
+        assert_eq!(result, Ok(()));
         assert!(
             schemes.scoped(network_fixture.outcome.epoch).is_some(),
             "marshal needs the successful fallback to re-verify the resolved block",
@@ -328,7 +328,7 @@ fn gossiped_certificate_is_admitted_and_nudges_the_execution_layer() {
             .process_certificate(repeat)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Stale);
+        assert_eq!(result, Ok(()));
         assert_eq!(marshal.report_count(), 1);
     });
 }
@@ -393,7 +393,7 @@ fn newer_certificate_advances_latest_verified_round() {
             .process_certificate(first_certificate)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Admitted);
+        assert_eq!(result, Ok(()));
         let second = make_block(2, None);
         let second_certificate = make_finalization(&second, Epoch::zero(), &rig.fixture.schemes);
         let result = rig
@@ -402,7 +402,7 @@ fn newer_certificate_advances_latest_verified_round() {
             .await
             .expect("driver should answer");
 
-        assert_eq!(result, Outcome::Admitted);
+        assert_eq!(result, Ok(()));
 
         let repeated_second = make_finalization(&second, Epoch::zero(), &rig.fixture.schemes);
         let result = rig
@@ -410,7 +410,7 @@ fn newer_certificate_advances_latest_verified_round() {
             .process_certificate(repeated_second)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Stale);
+        assert_eq!(result, Ok(()));
     });
 }
 
@@ -435,7 +435,7 @@ fn upstream_event_advances_p2p_admission() {
             .process_certificate(certificate)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Stale);
+        assert_eq!(result, Ok(()));
         assert_eq!(rig.marshal.report_count(), 1);
     });
 }
@@ -461,7 +461,7 @@ fn marshal_tip_advances_latest_verified_round() {
             .process_certificate(certificate)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Stale);
+        assert_eq!(result, Ok(()));
     });
 }
 
@@ -481,7 +481,7 @@ fn gossiped_certificate_failing_registered_scheme_is_invalid() {
             .await
             .expect("driver should answer");
 
-        assert_eq!(result, Outcome::Invalid);
+        assert_eq!(result, Err(CertificateError::Invalid));
         assert_eq!(rig.marshal.report_count(), 0);
 
         let valid = make_finalization(&block, Epoch::zero(), &rig.fixture.schemes);
@@ -490,7 +490,7 @@ fn gossiped_certificate_failing_registered_scheme_is_invalid() {
             .process_certificate(valid)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Admitted);
+        assert_eq!(result, Ok(()));
     });
 }
 
@@ -570,9 +570,9 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
             .expect("driver should answer");
         assert_eq!(
             result,
-            Outcome::NeedsScheme {
+            Err(CertificateError::NeedsScheme {
                 epoch: Epoch::new(1)
-            }
+            })
         );
         assert_eq!(marshal.report_count(), 0);
         assert_eq!(marshal.hints(), vec![expected_boundary]);
@@ -584,7 +584,7 @@ fn unverifiable_gossiped_certificate_is_not_blamed_on_the_sender() {
             .process_certificate(valid)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Admitted);
+        assert_eq!(result, Ok(()));
     });
 }
 
@@ -877,9 +877,9 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
 
         assert_eq!(
             result,
-            Outcome::NeedsScheme {
+            Err(CertificateError::NeedsScheme {
                 epoch: missing_fixture.outcome.epoch,
-            }
+            })
         );
         assert_eq!(marshal.report_count(), 0);
         assert!(marshal.hints().is_empty());
@@ -891,7 +891,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
             .process_certificate(valid)
             .await
             .expect("driver should answer");
-        assert_eq!(result, Outcome::Admitted);
+        assert_eq!(result, Ok(()));
     });
 }
 

@@ -1,11 +1,10 @@
 //! Mailbox for the `tempo/1` actor.
 
-use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
     marshal::Update,
-    types::{Epoch, Round},
+    types::{Epoch, Height, Round},
 };
 use commonware_utils::Acknowledgement as _;
 use tokio::sync::mpsc;
@@ -15,10 +14,8 @@ use crate::consensus::Block;
 
 #[derive(Debug)]
 pub(crate) enum Message {
-    /// Publish a certificate whose block is available locally.
-    Publish { round: Round, frame: Bytes },
-    /// Advance the actor's stale-certificate watermark.
-    FinalizedTip { round: Round },
+    /// Publish the persisted certificate at a finalized marshal tip.
+    FinalizedTip { round: Round, height: Height },
     /// Retry quarantines now covered by an authenticated boundary scheme.
     BoundarySchemeInstalled { epoch: Epoch },
 }
@@ -31,30 +28,17 @@ pub(crate) struct Mailbox {
 
 /// Creates the actor's mailbox and the receiving half it is started with.
 ///
-/// Marshal and the driver need the mailbox, while the actor needs the driver as
-/// its sink. Creating the channel first breaks this initialization cycle.
+/// Marshal and the driver need the mailbox, while the actor needs the driver's
+/// certificate mailbox. Creating the channel first breaks this initialization cycle.
 pub(crate) fn channel() -> (Mailbox, mpsc::UnboundedReceiver<Message>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     (Mailbox { sender }, receiver)
 }
 
 impl Mailbox {
-    /// Publishes a certificate with a block stored locally.
-    ///
-    /// The node publishes only after it can serve the block to a peer.
-    pub(crate) fn publish(&self, round: Round, frame: Bytes) {
-        self.send(Message::Publish { round, frame });
-    }
-
     /// Reports that the follower installed an authenticated epoch scheme.
     pub(crate) fn boundary_scheme_installed(&self, epoch: Epoch) {
         self.send(Message::BoundarySchemeInstalled { epoch });
-    }
-
-    /// Advances the actor to a finalized marshal tip.
-    #[cfg(test)]
-    pub(crate) fn finalized_tip(&self, round: Round) {
-        self.send(Message::FinalizedTip { round });
     }
 
     fn send(&self, message: Message) -> Feedback {
@@ -67,14 +51,14 @@ impl Mailbox {
     }
 }
 
-/// Marshal tips drive the actor's watermark. Blocks are irrelevant to gossip,
-/// but their acknowledgement must be completed so marshal can keep delivering.
+/// Marshal tips drive publication and the actor's latest verified round. Blocks
+/// are irrelevant to gossip, but must be acknowledged so marshal can continue.
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         match update {
-            Update::Tip(round, _, _) => self.send(Message::FinalizedTip { round }),
+            Update::Tip(round, height, _) => self.send(Message::FinalizedTip { round, height }),
             Update::Block(_, ack) => {
                 ack.acknowledge();
                 Feedback::Ok
@@ -110,7 +94,10 @@ mod tests {
             ));
             assert!(matches!(
                 receiver.recv().await,
-                Some(Message::FinalizedTip { round: received }) if received == round
+                Some(Message::FinalizedTip {
+                    round: received,
+                    height: received_height,
+                }) if received == round && received_height == Height::new(7)
             ));
 
             let (ack, acknowledged) = Exact::handle();
