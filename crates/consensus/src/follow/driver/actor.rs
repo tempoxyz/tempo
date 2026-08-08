@@ -2,7 +2,7 @@ use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, Epocher as _, Height, Round},
 };
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
@@ -12,9 +12,7 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
 
-use super::{
-    Config, ExecutionProvider, Executor, FollowerProgress, Mailbox, Marshal, ingress::Message,
-};
+use super::{Config, ExecutionProvider, Executor, Mailbox, Marshal, ingress::Message};
 use crate::{
     consensus::Block,
     finalization_verifier::{
@@ -85,7 +83,6 @@ where
 
     let current_epoch = onchain_outcome.epoch;
 
-    let progress = FollowerProgress::new();
     let actor = Driver {
         context: ContextCell::new(context),
         config,
@@ -93,9 +90,9 @@ where
         startup_execution_boundary,
         current_epoch,
         verifier,
-        progress: progress.clone(),
+        latest_verified_round: Round::zero(),
     };
-    Ok((actor, mailbox, progress))
+    Ok((actor, mailbox))
 }
 
 pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
@@ -105,7 +102,7 @@ pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
     startup_execution_boundary: Height,
     current_epoch: Epoch,
     verifier: FinalizationVerifier,
-    progress: FollowerProgress,
+    latest_verified_round: Round,
 }
 
 impl<C, P, M, E> Driver<C, P, M, E>
@@ -145,7 +142,7 @@ where
                             self.process_update(update).await;
                         }
                         Message::Certificate { certificate, response } => {
-                            let result = self.verify_and_apply(*certificate).await;
+                            let result = self.process_certificate(*certificate).await;
                             let _ = response.send(result);
                         }
                     }
@@ -244,22 +241,21 @@ where
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
 
         let round = finalization.round();
-        // Always give the block to marshal, even if the round is stale. An RPC
-        // event includes the block, and storing it may close a gap.
+        self.latest_verified_round = self.latest_verified_round.max(round);
+
         let _ = self.config.marshal.certified(round, consensus_block).await;
-        self.report_verified(finalization).await;
+        self.config
+            .marshal
+            .report(Activity::Finalization(finalization))
+            .await;
 
         Ok(())
     }
 
     /// Verifies a gossiped certificate and applies it if valid.
-    ///
-    /// A certificate contains a block hash but no block. Applying it sends the
-    /// finalization to marshal so the resolver can fetch the block. It also
-    /// points the execution layer at the same hash.
     #[instrument(skip_all, fields(round = %certificate.round(), digest = %certificate.proposal.payload))]
-    async fn verify_and_apply(&mut self, certificate: Certificate) -> Outcome {
-        if certificate.round() <= self.progress.watermark() {
+    async fn process_certificate(&mut self, certificate: Certificate) -> Outcome {
+        if certificate.round() <= self.latest_verified_round {
             return Outcome::Stale;
         }
 
@@ -296,28 +292,15 @@ where
 
         let round = certificate.round();
         let digest = certificate.proposal.payload;
-        self.report_verified(certificate).await;
-        self.config.executor.finalization(round, digest);
 
-        Outcome::Admitted
-    }
-
-    /// Reports a verified finalization to marshal and publishes its progress.
-    ///
-    /// # Invariant
-    ///
-    /// The caller must verify the signature first. Marshal creates an archive
-    /// for the certificate's epoch and stops the node if that fails. Reporting
-    /// an unchecked certificate would let an unauthenticated peer create
-    /// unlimited state or stop the node by naming any epoch. Verification and
-    /// reporting stay in one call chain so this rule is easy to check.
-    async fn report_verified(&mut self, finalization: Certificate) {
-        let round = finalization.round();
-        self.progress.advance(round);
+        self.latest_verified_round = self.latest_verified_round.max(round);
         self.config
             .marshal
-            .report(Activity::Finalization(finalization))
+            .report(Activity::Finalization(certificate))
             .await;
+
+        self.config.executor.finalization(round, digest);
+        Outcome::Admitted
     }
 
     async fn hint_current_epoch_boundary(&self) {
@@ -342,10 +325,10 @@ where
     #[instrument(skip_all)]
     async fn process_update(&mut self, update: marshal::Update<Block>) {
         // Marshal sends its startup tip and each finalization it stores. These
-        // durable tips provide the initial watermark and later progress.
+        // durable tips recover the latest verified round and provide later progress.
         let (block, ack) = match update {
             marshal::Update::Tip(round, _, _) => {
-                self.progress.advance(round);
+                self.latest_verified_round = self.latest_verified_round.max(round);
                 return;
             }
             marshal::Update::Block(block, ack) => (block, ack),
@@ -378,8 +361,9 @@ where
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
 
-            self.progress
-                .boundary_scheme_installed(onchain_outcome.epoch);
+            if let Some(gossip) = &self.config.gossip {
+                gossip.boundary_scheme_installed(onchain_outcome.epoch);
+            }
         }
 
         // Always acknowledge last. Marshal waits for every consumer before it

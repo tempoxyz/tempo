@@ -18,17 +18,13 @@ use commonware_consensus::{
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Quota, RateLimiter, Spawner, spawn_cell,
 };
-use futures::{
-    FutureExt as _, StreamExt as _,
-    stream::{self, BoxStream},
-};
+use futures::FutureExt as _;
 use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, TransportSender, wire};
 use tokio::{select, sync::mpsc};
-use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use tracing::debug;
 
-use super::{CertSink, Certificate, Outcome, ingress::Message, metrics::Metrics};
-use crate::{follow::FollowerProgress, utils::OptionFuture};
+use super::{Certificate, CertificateMailbox, Outcome, ingress::Message, metrics::Metrics};
+use crate::utils::OptionFuture;
 
 /// Hash of the exact frame bytes used to track settled or published frames.
 ///
@@ -101,21 +97,6 @@ struct Pending {
 }
 
 type PeerKey = alloy_primitives::B512;
-type BoundarySchemeStream = BoxStream<'static, Result<Epoch, BroadcastStreamRecvError>>;
-
-/// Returns authenticated boundary-scheme notifications or a stream that remains pending.
-///
-/// The pending tail keeps the actor's select branch dormant if the source is
-/// absent or closes.
-fn boundary_scheme_stream(progress: Option<&FollowerProgress>) -> BoundarySchemeStream {
-    match progress {
-        Some(progress) => BroadcastStream::new(progress.boundary_schemes())
-            .chain(stream::pending())
-            .boxed(),
-        None => stream::pending().boxed(),
-    }
-}
-
 /// Inputs and limits for the `tempo/1` actor.
 pub(crate) struct Config<K> {
     /// Maximum driver judgements per second across all peers.
@@ -139,11 +120,6 @@ pub(crate) struct Config<K> {
     pub(crate) peer_control: Arc<dyn PeerControl>,
     /// Judges certificates. A publish-only node uses a sink with no outcome.
     pub(crate) sink: K,
-    /// The follower's progress, when this node follows one.
-    ///
-    /// A publish-only node has no progress because it does not ingest or judge
-    /// certificates.
-    pub(crate) progress: Option<FollowerProgress>,
 }
 
 pub(crate) fn init<TContext, K>(context: TContext, config: Config<K>) -> Actor<TContext, K>
@@ -154,8 +130,6 @@ where
     let quota =
         Quota::per_second(NonZeroU32::new(config.verify_rate.max(1)).expect("clamped above zero"));
     let recent = SettledFrames::with_capacity(config.recent_frames);
-    let boundary_schemes = boundary_scheme_stream(config.progress.as_ref());
-
     let limiter_context = context.child("verify_limiter");
 
     Actor {
@@ -168,7 +142,7 @@ where
         latest: None,
         pending: OptionFuture::none(),
         budget_wakeup: OptionFuture::none(),
-        boundary_schemes,
+        watermark: Round::zero(),
         cursor: 0,
         slots_pruned_through: Round::zero(),
         metrics,
@@ -187,7 +161,8 @@ pub(crate) struct Actor<TContext: Clock, K> {
     pending: OptionFuture<futures::future::BoxFuture<'static, (Pending, Option<Outcome>)>>,
     budget_wakeup: OptionFuture<futures::future::BoxFuture<'static, ()>>,
 
-    boundary_schemes: BoundarySchemeStream,
+    /// Highest finalized tip delivered through the actor mailbox.
+    watermark: Round,
 
     /// Round-robin position used to share the verify budget between peers.
     cursor: usize,
@@ -203,7 +178,7 @@ pub(crate) struct Actor<TContext: Clock, K> {
 impl<TContext, K> Actor<TContext, K>
 where
     TContext: Clock + RuntimeMetrics + Spawner + Send + 'static,
-    K: CertSink,
+    K: CertificateMailbox,
 {
     pub(crate) fn start(mut self) -> Handle<()> {
         spawn_cell!(self.context, self.run())
@@ -226,13 +201,6 @@ where
                 Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
                 Some(message) = self.config.mailbox.recv() => self.on_message(message),
-
-                Some(scheme) = self.boundary_schemes.next() => match scheme {
-                    Ok(epoch) => self.release_quarantines(epoch),
-                    Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                        debug!(skipped, "boundary scheme notifications lagged");
-                    }
-                },
 
                 _ = (&mut self.budget_wakeup).fuse() => {
                     self.budget_wakeup = OptionFuture::none();
@@ -279,7 +247,6 @@ where
                     self.update_slot_metrics();
                 }
             }
-            PeerEvent::ProtocolBreach(peer) => self.penalize(peer),
         }
     }
 
@@ -375,6 +342,11 @@ where
                 });
                 self.relay(round, &frame, None);
             }
+            Message::FinalizedTip { round } => {
+                self.watermark = self.watermark.max(round);
+                self.prune_stale_slots();
+            }
+            Message::BoundarySchemeInstalled { epoch } => self.release_quarantines(epoch),
         }
     }
 
@@ -464,7 +436,7 @@ where
                 slot.certificate.clone(),
             )
         };
-        let receiver = self.config.sink.verify_and_apply(certificate);
+        let receiver = self.config.sink.process_certificate(certificate);
 
         self.pending
             .replace(async move { (pending, receiver.await.ok()) }.boxed());
@@ -559,12 +531,9 @@ where
         self.relay(round, frame, Some(from));
     }
 
-    /// Highest applied follower round, or zero on a publish-only node.
+    /// Highest marshal tip delivered to this actor, or zero on a publish-only node.
     fn watermark(&self) -> Round {
-        self.config
-            .progress
-            .as_ref()
-            .map_or_else(Round::zero, FollowerProgress::watermark)
+        self.watermark
     }
 
     fn relay(&mut self, round: Round, frame: &Bytes, exclude: Option<PeerKey>) {
