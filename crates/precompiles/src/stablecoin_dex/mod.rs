@@ -1758,9 +1758,16 @@ impl StablecoinDEX {
     /// Returns a vector of addresses starting with the token and ending with pathUSD
     fn find_path_to_root(&self, mut token: Address) -> Result<Vec<Address>> {
         let mut path = vec![token];
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(token);
 
         while token != PATH_USD_ADDRESS {
             token = TIP20Token::from_address(token)?.quote_token()?;
+            // Detect cycles: if we've seen this token before, the quote_token
+            // chain never reaches PATH_USD_ADDRESS and would loop forever.
+            if !visited.insert(token) {
+                return Err(StablecoinDEXError::invalid_token().into());
+            }
             path.push(token);
         }
 
