@@ -296,13 +296,23 @@ async fn install_consensus_archive(
     let (archive_file, actual_archive_hash) =
         write_consensus_archive_to_temp(&loaded.archive_source).await?;
 
-    if let Some(expected) = &loaded.manifest.consensus_archive.blake3 {
-        let actual_archive_hash = actual_archive_hash.to_hex().to_string();
-        ensure!(
-            &actual_archive_hash == expected,
-            "consensus archive checksum mismatch: expected {expected}, got {actual_archive_hash}",
-        );
-    }
+    // The archive-level checksum is the only integrity check that covers the entire
+    // downloaded archive; `verify_consensus_output_files` below only checks the files it
+    // already knows to expect, so an archive containing extra, unlisted entries would
+    // otherwise be extracted without ever being checksummed. Manifests produced by
+    // `snapshot_manifest.rs` always populate this field, so requiring it here does not
+    // affect any legitimate manifest.
+    let expected = loaded
+        .manifest
+        .consensus_archive
+        .blake3
+        .as_deref()
+        .ok_or_eyre("consensus archive manifest is missing a required blake3 checksum")?;
+    let actual_archive_hash = actual_archive_hash.to_hex().to_string();
+    ensure!(
+        actual_archive_hash == expected,
+        "consensus archive checksum mismatch: expected {expected}, got {actual_archive_hash}",
+    );
 
     fs::create_dir_all(consensus_dir)
         .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
@@ -797,6 +807,45 @@ mod tests {
 
         assert_eq!(fs::read(archive_file.path()).unwrap(), b"archive");
         assert_eq!(hash, blake3::hash(b"archive"));
+    }
+
+    #[tokio::test]
+    async fn install_consensus_archive_rejects_missing_blake3() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("consensus.tar.zst");
+        fs::write(&source_path, b"archive").unwrap();
+        let consensus_dir = dir.path().join("consensus");
+
+        let loaded = LoadedConsensusManifest {
+            manifest: TempoConsensusManifest {
+                execution_finalized_height: 0,
+                execution_finalized_digest: B256::with_last_byte(0x00),
+                tip_finalization_height: 0,
+                tip_finalization_digest: B256::with_last_byte(0x00),
+                anchor_finalization_height: 0,
+                anchor_finalization_digest: B256::with_last_byte(0x00),
+                consensus_archive: reth_cli_commands::download::manifest::SingleArchive {
+                    file: "consensus.tar.zst".to_string(),
+                    size: 7,
+                    decompressed_size: 7,
+                    blake3: None,
+                    output_files: Vec::new(),
+                },
+            },
+            archive_source: ConsensusArchiveSource::Path(source_path),
+        };
+
+        let err = install_consensus_archive(&consensus_dir, &loaded, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing a required blake3 checksum")
+        );
+        assert!(
+            !consensus_dir.exists(),
+            "archive must not be extracted without a verified checksum"
+        );
     }
 
     #[test]
