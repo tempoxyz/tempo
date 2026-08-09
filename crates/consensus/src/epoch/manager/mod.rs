@@ -7,6 +7,7 @@ pub(crate) use actor::Actor;
 use commonware_cryptography::ed25519::PublicKey;
 pub(crate) use ingress::Mailbox;
 
+use commonware_consensus::simplex::config::ForwardingPolicy;
 use commonware_consensus::types::{FixedEpocher, ViewDelta};
 use commonware_p2p::Blocker;
 use commonware_runtime::{
@@ -34,6 +35,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
     pub(crate) views_until_leader_skip: ViewDelta,
+    pub(crate) forwarding: ForwardingPolicy,
 }
 
 pub(crate) fn init<TContext, TBlocker>(
