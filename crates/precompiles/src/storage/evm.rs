@@ -225,23 +225,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
                 .sstore_dynamic_gas(true, &result.data, result.is_cold),
         )?;
 
-        // Track state gas (cold SSTORE zero->non-zero only). When the TIP-1060
-        // storage-credit hook is active it owns the creation charge (and mints credits
-        // on clears), so the plain TIP-1016 state charge and its 0→x→0 reservoir
-        // refill apply only when the hook is disabled — otherwise every creation
-        // would be charged twice.
-        if !self.tip1060_storage_credits_enabled {
-            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
-
-            // EIP-8037: a 0→x→0 restoration returns the state-gas portion directly to
-            // the reservoir, mirroring revm's `sstore_default_gas_accounting`. The
-            // regular-gas portion flows through the capped `sstore_refund` counter below.
-            let refill = self.gas_params.sstore_state_gas_refill(&result.data);
-            if refill > 0 {
-                self.gas_tracker.refill_reservoir(refill);
-            }
-        }
-
         // refund gas.
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
 
@@ -759,7 +742,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
-    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+    use tempo_revm::gas_params::tempo_gas_params;
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
@@ -784,7 +767,7 @@ mod tests {
             cfg.enable_amsterdam_eip8037 = amsterdam_eip8037_enabled;
             // TIP-1016 activates with T11: when a test forces the flag on an earlier
             // spec, give it the T11 gas table so the state-gas split is in effect.
-            cfg.gas_params = tempo_gas_params_with_amsterdam(if amsterdam_eip8037_enabled {
+            cfg.gas_params = tempo_gas_params(if amsterdam_eip8037_enabled {
                 TempoHardfork::T11
             } else {
                 spec

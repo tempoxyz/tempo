@@ -38,14 +38,14 @@ const TIP1016_CODE_DEPOSIT_STATE: u64 = 2_300;
 /// The TIP-1016 regular/state gas split activates with the T11 hardfork; earlier
 /// T1+ specs use the TIP-1000 (T1) / TIP-1060 (T7) costs.
 #[inline]
-pub fn tempo_gas_params_with_amsterdam(spec: TempoHardfork) -> GasParams {
+pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     // TIP-1016 (T11): storage creation costs split into regular + state gas.
     // SSTORE keeps the upstream regular cost (100 static + 19,900 = 20,000,
     // exactly the pre-TIP-1000 EVM cost); the 245k creditable portion is
     // charged as state gas by the storage-credit hook.
     if spec.is_t11() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(amsterdam_gas_params).clone();
+        return TABLE.get_or_init(t11_gas_params).clone();
     }
 
     // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
@@ -94,8 +94,17 @@ fn t7_gas_params() -> GasParams {
     gas_params
 }
 
-/// Builds the Amsterdam gas table with the TIP-1016 regular/state split.
-fn amsterdam_gas_params() -> GasParams {
+/// Builds the T11 gas table: the TIP-1016 regular/state gas split.
+///
+/// Storage creation costs are split into a regular component (computational
+/// overhead, at least the pre-TIP-1000 EVM cost) counted toward protocol
+/// limits, and a state component (permanent storage burden) that is charged
+/// to the user but exempt from block capacity: SSTORE set 20k + 245k,
+/// CREATE 32k + 468k, new account 25k + 225k, code deposit 200 + 2,300 per
+/// byte, EIP-7702 auth 25k + 225k (bytecode state gas deliberately zeroed).
+/// Starts from the upstream Osaka table, so the TIP-1000/TIP-1060 regular
+/// creation surcharges are dropped in favor of the state dimension.
+fn t11_gas_params() -> GasParams {
     let mut gas_params = GasParams::new_spec(TempoHardfork::T4.into());
     // TIP-1016: Split storage creation costs into regular gas + state gas.
     // Regular gas (computational overhead) = at least pre-TIP-1000 EVM cost.
@@ -151,30 +160,21 @@ fn t1_gas_params() -> GasParams {
     gas_params
 }
 
-/// Backward-compatible alias for [`tempo_gas_params_with_amsterdam`].
-///
-/// External consumers (e.g. foundry) that depend on this name continue to work.
-/// TIP-1016 activates with the T11 hardfork.
-#[inline]
-pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
-    tempo_gas_params_with_amsterdam(spec)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_tempo_override_gas_params_are_cached() {
-        let t1 = tempo_gas_params_with_amsterdam(TempoHardfork::T1);
-        let t5 = tempo_gas_params_with_amsterdam(TempoHardfork::T5);
+        let t1 = tempo_gas_params(TempoHardfork::T1);
+        let t5 = tempo_gas_params(TempoHardfork::T5);
         assert!(
             std::ptr::eq(t1.table(), t5.table()),
             "T1+ TIP-1000 gas params should share the cached table"
         );
 
-        let amsterdam_a = tempo_gas_params_with_amsterdam(TempoHardfork::T11);
-        let amsterdam_b = tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        let amsterdam_a = tempo_gas_params(TempoHardfork::T11);
+        let amsterdam_b = tempo_gas_params(TempoHardfork::T11);
         assert!(
             std::ptr::eq(amsterdam_a.table(), amsterdam_b.table()),
             "T11 Amsterdam gas params should share the cached table"
@@ -187,7 +187,7 @@ mod tests {
     /// hook, which charges it as execution gas (T7 runs with EIP-8037 disabled).
     #[test]
     fn test_t7_gas_params_sstore_residual() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7);
+        let gas_params = tempo_gas_params(TempoHardfork::T7);
 
         // SSTORE creation cost drops to the 5k residual; the 245k creditable
         // portion is charged by the storage-credit hook, not the gas function.
@@ -223,7 +223,7 @@ mod tests {
         );
 
         // T7+ shares the cached table.
-        let t8 = tempo_gas_params_with_amsterdam(TempoHardfork::T8);
+        let t8 = tempo_gas_params(TempoHardfork::T8);
         assert!(
             std::ptr::eq(gas_params.table(), t8.table()),
             "T7+ TIP-1060 gas params should share the cached table"
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_t1_gas_params_no_state_gas_split() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T1);
+        let gas_params = tempo_gas_params(TempoHardfork::T1);
 
         // T1 has full 250k costs in regular gas, no state gas split
         assert_eq!(
@@ -279,7 +279,7 @@ mod tests {
     /// surcharge (2,100) when cold.
     #[test]
     fn test_t11_gas_params_splits_storage_costs() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        let gas_params = tempo_gas_params(TempoHardfork::T11);
 
         // T11 execution gas (regular/computational overhead)
         // SSTORE keeps revm's upstream decomposed accounting: static(100) +
@@ -379,7 +379,7 @@ mod tests {
     /// T11 cold SSTORE = warm path + cold_slot_access(2,100) = 267,100.
     #[test]
     fn test_t11_totals_match_spec() {
-        let t11 = tempo_gas_params_with_amsterdam(TempoHardfork::T11);
+        let t11 = tempo_gas_params(TempoHardfork::T11);
 
         // Warm SSTORE total: write component(19,900) + warm read(100) + state(245,000)
         let warm_sstore_regular =

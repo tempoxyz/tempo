@@ -52,7 +52,7 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
-use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params};
 
 pub use tempo_revm::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
@@ -183,7 +183,7 @@ impl ConfigureEvm for TempoEvmConfig {
         // gas table carries the regular/state split and `enable_amsterdam_eip8037` turns
         // on the split everywhere it is checked downstream.
         let mut cfg_env =
-            cfg_env.with_spec_and_gas_params(spec, tempo_gas_params_with_amsterdam(spec));
+            cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
@@ -230,7 +230,7 @@ impl ConfigureEvm for TempoEvmConfig {
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 activates with the
         // T11 hardfork (see `evm_env_for_block` for details).
         let mut cfg_env =
-            cfg_env.with_spec_and_gas_params(spec, tempo_gas_params_with_amsterdam(spec));
+            cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 

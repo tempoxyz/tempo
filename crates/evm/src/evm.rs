@@ -381,7 +381,7 @@ mod tests {
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
-    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params};
 
     use super::*;
 
@@ -941,7 +941,7 @@ mod tests {
             // Mirror production cfg wiring (`evm_env_for_block`): Tempo gas tables per
             // spec, with TIP-1016 (EIP-8037) activating on T11.
             let mut cfg = CfgEnv::<TempoHardfork>::default()
-                .with_spec_and_gas_params(*hardfork, tempo_gas_params_with_amsterdam(*hardfork));
+                .with_spec_and_gas_params(*hardfork, tempo_gas_params(*hardfork));
             cfg.enable_amsterdam_eip8037 = hardfork.is_t11();
 
             let mut evm = TempoEvm::new(
@@ -1273,7 +1273,7 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params_with_amsterdam(spec)),
+            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
             TempoBlockEnv::default(),
         )
     }

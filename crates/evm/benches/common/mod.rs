@@ -52,7 +52,7 @@ use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
 };
-use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+use tempo_revm::gas_params::tempo_gas_params;
 
 pub(crate) const CHAIN_ID: u64 = 1337;
 pub(crate) const TXGEN_MNEMONIC: &str =
@@ -238,7 +238,7 @@ pub(crate) fn bench_env(
     let mut cfg_env = CfgEnv::default();
     cfg_env.chain_id = CHAIN_ID;
     cfg_env.spec = spec;
-    cfg_env.gas_params = tempo_gas_params_with_amsterdam(spec);
+    cfg_env.gas_params = tempo_gas_params(spec);
     cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
     EvmEnv {
