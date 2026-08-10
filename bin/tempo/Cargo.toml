@@ -26,6 +26,7 @@ zstd.workspace = true
 tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
+tempo-flatmpt.workspace = true
 tempo-consensus.workspace = true
 tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true

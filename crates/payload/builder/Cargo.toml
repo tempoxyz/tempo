@@ -21,12 +21,16 @@ tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
+tempo-flatmpt.workspace = true
+parking_lot.workspace = true
+anyhow = "1"
 tempo-payload-types.workspace = true
 
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-tree.workspace = true
+reth-execution-cache.workspace = true
 reth-errors.workspace = true
 reth-evm.workspace = true
 reth-execution-types.workspace = true
