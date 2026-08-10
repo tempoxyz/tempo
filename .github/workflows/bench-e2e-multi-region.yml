@@ -375,7 +375,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: dd3a85c1029a239ad7e260dc4de08b0f14f272bd # PR tempoxyz/tempo-multi-region-benchmark#359
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
