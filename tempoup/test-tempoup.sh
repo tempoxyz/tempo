@@ -208,3 +208,41 @@ fi
 [[ "$(cat "$ROLLBACK_DIR/tempo")" == "old tempo" ]] || fail "failed upgrade did not restore old tempo"
 [[ ! -e "$ROLLBACK_DIR/tempo.old" ]] || fail "failed upgrade left backup behind"
 ok "failed upgrade restores old tempo"
+
+# `version_gt` gates GPG signature verification, so its boundary behaviour is
+# security relevant: a version that is wrongly reported as older than
+# LAST_UNSIGNED_VERSION silently installs without a signature check.
+version_gt_case() {
+    local newer="$1" older="$2" expected="$3"
+    local actual
+
+    if run_tempoup "version_gt $(q "$newer") $(q "$older")"; then
+        actual="gt"
+    else
+        actual="not-gt"
+    fi
+
+    [[ "$actual" == "$expected" ]] ||
+        fail "version_gt $newer $older returned $actual, expected $expected"
+}
+
+version_gt_case "v1.1.3" "1.1.2" "gt"
+version_gt_case "v1.2.0" "1.1.2" "gt"
+version_gt_case "v1.12.0" "1.1.2" "gt"
+version_gt_case "v2.0.0" "1.1.2" "gt"
+version_gt_case "v1.1.2" "1.1.2" "not-gt"
+version_gt_case "v1.1.1" "1.1.2" "not-gt"
+version_gt_case "v1.0.9" "1.1.2" "not-gt"
+ok "version_gt orders release tags around the signing boundary"
+
+# The gate and the message it prints must reference the same constant,
+# otherwise the message names a different release than the one that actually
+# skips signature verification.
+TEMPOUP_SCRIPT="$ROOT_DIR/tempoup/tempoup"
+grep -q 'version_gt "$VERSION_TAG" "$LAST_UNSIGNED_VERSION"' "$TEMPOUP_SCRIPT" ||
+    fail "signature gate no longer compares against LAST_UNSIGNED_VERSION"
+grep -q 'Skipping GPG signature verification.*\${LAST_UNSIGNED_VERSION}' "$TEMPOUP_SCRIPT" ||
+    fail "skip message no longer names LAST_UNSIGNED_VERSION"
+grep -qE '^\s*warn "Skipping GPG signature verification' "$TEMPOUP_SCRIPT" ||
+    fail "unsigned-release skip is not reported at warn level"
+ok "unsigned-release skip message is tied to the gating version"

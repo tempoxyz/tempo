@@ -6,11 +6,14 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.14"
+TEMPOUP_INSTALLER_VERSION="0.0.15"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
 GPG_KEY_FINGERPRINT="EE3C5D41EA963E896F310EC3CBBFA54B20D33446"
+# Releases up to and including this version were published without a detached
+# GPG signature, so there is no `.asc` asset to verify for them.
+LAST_UNSIGNED_VERSION="1.1.2"
 BIN_DIR="${TEMPO_BIN_DIR:-$HOME/.tempo/bin}"
 TEMPOUP_BIN_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
 TEMPOUP_BIN_PATH="$BIN_DIR/tempoup"
@@ -520,7 +523,7 @@ main() {
         warn "Release integrity verification skipped (--unsafe-skip-verify)."
     elif gh_authenticated; then
         verify_attestation "$ARCHIVE_PATH"
-    elif version_gt "$VERSION_TAG" "1.1.2"; then
+    elif version_gt "$VERSION_TAG" "$LAST_UNSIGNED_VERSION"; then
         if command -v gpg >/dev/null 2>&1; then
             info "Verifying GPG signature..."
             download_file "$VERSION_TAG" "${ARCHIVE_NAME}.asc" "$TMP_DIR"
@@ -549,7 +552,7 @@ main() {
             error "gh is unavailable or unauthenticated, and gpg was not found. Run 'gh auth login', install gpg, or re-run with --unsafe-skip-verify to bypass integrity verification."
         fi
     else
-        info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
+        warn "Skipping GPG signature verification: releases up to and including v${LAST_UNSIGNED_VERSION} were published without a .asc signature. Only the SHA256 checksum was verified."
     fi
 
     # Extract archive
