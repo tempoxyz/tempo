@@ -11,6 +11,7 @@ use crate::{
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
+use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -34,7 +35,7 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
+use reth_storage_api::{AccountInfoReader, DBProvider, DatabaseProviderFactory, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
@@ -62,6 +63,63 @@ use tempo_transaction_pool::{
 
 /// 500M gas limit
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
+
+fn load_flat_checkpoint<Tx: DbTx>(
+    tx: &Tx,
+    flat: &mut tempo_flatmpt::FlatMpt,
+) -> anyhow::Result<(u64, u64)> {
+    const BATCH_ACCOUNTS: usize = 4096;
+    let mut accounts_cursor = tx.cursor_read::<tables::HashedAccounts>()?;
+    let mut storage_cursor = tx.cursor_read::<tables::HashedStorages>()?;
+    let mut accounts = accounts_cursor.walk(None)?;
+    let mut storages = storage_cursor.walk(None)?;
+    let mut next_storage = storages.next().transpose()?;
+    let mut batch = Vec::with_capacity(BATCH_ACCOUNTS);
+    let mut account_count = 0u64;
+    let mut slot_count = 0u64;
+
+    while let Some((account_key, account)) = accounts.next().transpose()? {
+        let mut slots = Vec::new();
+        while let Some((storage_account, entry)) = next_storage {
+            if storage_account < account_key {
+                anyhow::bail!("orphan hashed storage for account {storage_account}");
+            }
+            if storage_account != account_key {
+                next_storage = Some((storage_account, entry));
+                break;
+            }
+            if !entry.value.is_zero() {
+                slots.push((entry.key.0, tempo_flatmpt::storage_value_rlp(entry.value)));
+                slot_count += 1;
+            }
+            next_storage = storages.next().transpose()?;
+        }
+        batch.push((
+            account_key.0,
+            tempo_flatmpt::AccountSeed {
+                nonce: account.nonce,
+                balance: account.balance,
+                code_hash: account.get_bytecode_hash().0,
+                slots,
+            },
+        ));
+        account_count += 1;
+        if batch.len() == BATCH_ACCOUNTS {
+            flat.insert_batch_accounts(std::mem::take(&mut batch))
+                .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
+            batch = Vec::with_capacity(BATCH_ACCOUNTS);
+        }
+    }
+    anyhow::ensure!(
+        next_storage.is_none(),
+        "hashed storage exists without an account"
+    );
+    if !batch.is_empty() {
+        flat.insert_batch_accounts(batch)
+            .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
+    }
+    Ok((account_count, slot_count))
+}
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
@@ -376,6 +434,7 @@ where
                     TempoEngineValidator,
                 >,
             >,
+    Node::Provider: DatabaseProviderFactory,
 {
     type EngineValidator = reth_engine_tree::tree::BasicEngineValidator<
         Node::Provider,
@@ -401,13 +460,25 @@ where
         // Initialize the shadow now, at node startup — a large bloat-mode load
         // (minutes at 100M+ slots) must not run inside the first payload build.
         {
-            let chain_spec = chain_spec.clone();
-            tempo_flatmpt::shadow(move || {
-                (
-                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
-                    chain_spec.inner.genesis_header().state_root(),
-                )
-            });
+            use reth_provider::BlockReaderIdExt as _;
+            let canonical_tip = ctx.node.provider().latest_header()?;
+            if let Some(tip) = canonical_tip.filter(|header| header.number() > 0) {
+                let db_provider = ctx.node.provider().database_provider_ro()?;
+                let checkpoint_number = tip.number();
+                tempo_flatmpt::shadow_from_checkpoint(
+                    checkpoint_number,
+                    tip.state_root(),
+                    move |flat| load_flat_checkpoint(db_provider.tx_ref(), flat),
+                );
+            } else {
+                let chain_spec = chain_spec.clone();
+                tempo_flatmpt::shadow(move || {
+                    (
+                        tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                        chain_spec.inner.genesis_header().state_root(),
+                    )
+                });
+            }
         }
         // TEMPO_NO_STATE_KV: the duplicate state KV is not persisted, so
         // latest-state point reads (engine validation misses, txpool, RPC)
