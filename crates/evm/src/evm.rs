@@ -940,7 +940,7 @@ mod tests {
 
             // Mirror production cfg wiring (`evm_env_for_block`): Tempo gas tables per
             // spec, with TIP-1016 (EIP-8037) left at its default (disabled).
-            let mut cfg = CfgEnv::<TempoHardfork>::default().with_spec_and_gas_params(
+            let cfg = CfgEnv::<TempoHardfork>::default().with_spec_and_gas_params(
                 *hardfork,
                 tempo_gas_params_with_amsterdam(*hardfork, false),
             );
