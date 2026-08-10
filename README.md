@@ -61,7 +61,18 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
 While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://docs.tempo.xyz/quickstart/evm-compatibility).
 
+## Prerequisites
+
+Before getting started, make sure you have the following installed:
+
+- Git
+- Rust (latest stable)
+- Cargo
+- just (command runner)
+
 ## Getting Started
+
+Get a local Tempo node running in minutes.
 
 ### As a user
 
