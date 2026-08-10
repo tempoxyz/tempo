@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -19,6 +19,20 @@ use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+std::thread_local! {
+    /// Per-thread EVM for builder prewarming, in its own slot rather than the
+    /// prewarming pool's shared [`Worker`](reth_tasks::pool::Worker) state:
+    /// that slot belongs to the engine-tree prewarm, which stores a different
+    /// type there on the same pool threads and can overlap with a payload
+    /// build (its `get_or_init` panics on a type mismatch, and either side's
+    /// `pool.clear()` drops the other's state mid-flight).
+    ///
+    /// Outer `None` = not yet initialized for this build; inner `None` = EVM
+    /// construction failed and won't be retried on this thread.
+    static PREWARM_EVM: std::cell::RefCell<Option<PrewarmEvmState>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -27,6 +41,26 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    /// One `Advance` per consumed transaction, sent by the consumer itself,
+    /// so the pool lookahead stays constant no matter how long warm tasks
+    /// take. With completion-driven dispatch (the old scheme, and still the
+    /// parallel mode), a correlated stall of all warm workers stops dispatch
+    /// entirely: the consumer drains the ~60-tx buffer in under a millisecond
+    /// and then parks for the remainder of the stall.
+    exec_driven: bool,
+    /// Consumer-side view of [`is_invalidated_buffered_transaction`] for
+    /// exec-driven mode: senders (and AA nonce-key sequences) invalidated
+    /// this block, so conflicting buffered transactions are dropped on
+    /// consumption instead of via a coordinator channel swap.
+    invalid_senders: std::collections::HashSet<alloy_primitives::Address>,
+    invalid_seq_ids: std::collections::HashSet<tempo_transaction_pool::tt_2d_pool::AASequenceId>,
+}
+
+/// `TEMPO_PREWARM_EXEC_DRIVEN=0` reverts non-parallel dispatch to
+/// completion-driven (A/B knob).
+fn exec_driven_dispatch() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("TEMPO_PREWARM_EXEC_DRIVEN").as_deref() != Ok("0"))
 }
 
 impl BestTransactionsPrewarming {
@@ -45,6 +79,9 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            exec_driven: !prewarm.parallel && exec_driven_dispatch(),
+            invalid_senders: Default::default(),
+            invalid_seq_ids: Default::default(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -78,11 +115,16 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let exec_driven = !ctx.prewarm.parallel && exec_driven_dispatch();
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                // Eagerly build this block's per-thread EVMs off the critical
+                // path, replacing anything a previous build left behind.
+                pool.broadcast(pool.current_num_threads(), |_| {
+                    PREWARM_EVM.with_borrow_mut(|slot| *slot = Some(prewarm.evm_for_ctx()));
+                });
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -103,18 +145,27 @@ impl BestTransactionsPrewarming {
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
 
+                let warmed = (!parallel && prewarm_gate_us() > 0)
+                    .then(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
                 if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    let mut pt = PrewarmedTransaction::without_replay(tx.clone());
+                    pt.warmed = warmed.clone();
+                    let _ = ctx.transactions_tx.send(Some(pt));
                 }
 
                 scope.spawn(move |_| {
+                    let t0 = std::time::Instant::now();
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
+                    prewarm_task_stats(t0.elapsed().as_micros() as u64);
+                    if let Some(w) = warmed {
+                        w.store(true, std::sync::atomic::Ordering::Release);
+                    }
                     if parallel {
                         let _ = transactions_tx.send(Some(tx));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    if !exec_driven {
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    }
                 });
             };
 
@@ -130,19 +181,17 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Advance => {
                         advance(&mut ctx);
                     }
-                    BestTransactionsCommand::Invalid {
-                        invalid,
-                        old_rx,
-                        new_tx,
-                    } => {
+                    BestTransactionsCommand::Invalid { invalid, swap } => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                        ctx.transactions_tx = new_tx;
 
-                        for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
+                        if let Some((old_rx, new_tx)) = swap {
+                            ctx.transactions_tx = new_tx;
+                            for tx in old_rx {
+                                if let Some(tx) = tx
+                                    && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
+                                {
+                                    let _ = ctx.transactions_tx.send(Some(tx));
+                                }
                             }
                         }
                     }
@@ -161,7 +210,12 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        // Drop the per-thread EVMs (each holds a state provider). The calling
+        // thread participates in `in_place_scope`, so clear its slot too.
+        pool.broadcast(pool.current_num_threads(), |_| {
+            PREWARM_EVM.with_borrow_mut(|slot| *slot = None);
+        });
+        PREWARM_EVM.with_borrow_mut(|slot| *slot = None);
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -177,12 +231,12 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
+        let replay = PREWARM_EVM.with_borrow_mut(|slot| {
             if prewarm.parallel && !is_parallel_candidate(&tx) {
                 return None;
             }
 
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
+            let evm = slot.get_or_insert_with(|| prewarm.evm_for_ctx()).as_mut()?;
 
             if prewarm.is_stopped() {
                 return None;
@@ -240,7 +294,11 @@ impl BestTransactionsPrewarming {
             }))
         });
 
-        PrewarmedTransaction { tx, replay }
+        PrewarmedTransaction {
+            tx,
+            replay,
+            warmed: None,
+        }
     }
 }
 
@@ -260,27 +318,82 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
+        fn gate(tx: PrewarmedTransaction) -> PrewarmedTransaction {
+            if let Some(w) = &tx.warmed {
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_micros(prewarm_gate_us());
+                while !w.load(std::sync::atomic::Ordering::Acquire) {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+            }
+            tx
+        }
+        if self.exec_driven {
+            // One dispatch per consumed transaction: the lookahead window is
+            // pinned to exec's own progress, never to warm-task completions.
+            // Buffered transactions conflicting with an earlier mark_invalid
+            // are dropped here (each drop re-advances, keeping the window
+            // full).
+            loop {
+                let _ = self.commands_tx.send(BestTransactionsCommand::Advance);
+                let tx = self.transactions_rx.recv().ok().flatten()?;
+                if self.is_invalidated(&tx.tx) {
+                    continue;
+                }
+                return Some(gate(tx));
+            }
+        }
+        if let Ok(Some(tx)) = self.transactions_rx.try_recv().map(|o| o.map(gate)) {
             return Some(tx);
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+        self.transactions_rx.recv().ok().flatten().map(gate)
+    }
+}
+
+impl BestTransactionsPrewarming {
+    /// Whether `candidate` conflicts with any transaction invalidated this
+    /// block — the accumulated form of [`is_invalidated_buffered_transaction`].
+    fn is_invalidated(&self, candidate: &BestTransaction) -> bool {
+        if let Some(id) = candidate.transaction.aa_transaction_id() {
+            self.invalid_seq_ids.contains(id.seq_id())
+        } else {
+            self.invalid_senders
+                .contains(&candidate.transaction.sender())
+        }
     }
 }
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        let (new_tx, new_rx) = mpsc::channel();
-        let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+        let swap = if self.exec_driven {
+            // The consumer filters conflicting buffered transactions itself;
+            // the coordinator only needs to tell the pool.
+            if !transaction.tx.transaction.is_expiring_nonce() {
+                if let Some(id) = transaction.tx.transaction.aa_transaction_id() {
+                    self.invalid_seq_ids.insert(*id.seq_id());
+                } else {
+                    self.invalid_senders
+                        .insert(transaction.tx.transaction.sender());
+                }
+            }
+            None
+        } else {
+            let (new_tx, new_rx) = mpsc::channel();
+            let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+            Some((old_rx, new_tx))
+        };
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
                 tx: transaction.tx.clone(),
                 kind,
             },
-            old_rx,
-            new_tx,
+            swap,
         });
     }
 
@@ -310,12 +423,59 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    /// Set by the prewarm worker when this transaction's speculative
+    /// execution (cache warming) completed. The exec side may briefly wait on
+    /// it so first-touch state reads hit the warmed cache instead of paying
+    /// cold-store latency serially (`TEMPO_PREWARM_GATE_US`).
+    pub(crate) warmed: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            warmed: None,
+        }
     }
+}
+
+/// Prewarm worker task-duration telemetry: count/sum/max per ~5s window,
+/// logged from whichever worker rolls the window (ceiling diagnostic).
+fn prewarm_task_stats(us: u64) {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static SUM: AtomicU64 = AtomicU64::new(0);
+    static MAX: AtomicU64 = AtomicU64::new(0);
+    static WINDOW: AtomicU64 = AtomicU64::new(0);
+    let c = COUNT.fetch_add(1, Relaxed) + 1;
+    SUM.fetch_add(us, Relaxed);
+    MAX.fetch_max(us, Relaxed);
+    if c.is_multiple_of(50_000) {
+        let w = WINDOW.fetch_add(1, Relaxed);
+        let sum = SUM.swap(0, Relaxed);
+        let max = MAX.swap(0, Relaxed);
+        tracing::info!(
+            target: "flatmpt",
+            window = w,
+            tasks = 50_000u64,
+            avg_us = sum / 50_000,
+            max_us = max,
+            "prewarm task stats"
+        );
+    }
+}
+
+/// Microseconds the exec side waits for a transaction's prewarm before
+/// executing anyway (0 = disabled, stock behavior).
+pub(crate) fn prewarm_gate_us() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("TEMPO_PREWARM_GATE_US")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
 }
 
 impl StateAwarePoolTransaction for PrewarmedTransaction {
@@ -334,6 +494,10 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// Shared per-block flat-read context: prewarm executors read the same
+    /// flat snapshot as the builder and feed the same reveal sink, so their
+    /// speculative reads double as the commitment trie's reveals.
+    flat: Option<Arc<crate::flat_reads::FlatReadShared>>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -347,6 +511,7 @@ where
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
+        flat: Option<Arc<crate::flat_reads::FlatReadShared>>,
     ) -> Self {
         Self {
             provider,
@@ -356,6 +521,7 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            flat,
         }
     }
 
@@ -372,6 +538,21 @@ where
                 return None;
             }
         };
+
+        // Route prewarm reads through the flat snapshot: same values, but the
+        // read walk feeds the commitment worker's reveals (a prewarm thread's
+        // first touch replaces a finish-drain fetch on the critical path).
+        if let Some(flat) = &self.flat {
+            state_provider = Box::new(crate::flat_reads::FlatReadProvider {
+                inner: state_provider,
+                shared: flat.clone(),
+            });
+        }
+
+        // Time every real fetch (below the cache: hits never reach this).
+        state_provider = Box::new(crate::flat_reads::FetchTimedProvider {
+            inner: state_provider,
+        });
 
         if let Some(cache) = &self.cache {
             state_provider = Box::new(CachedStateProvider::new_prewarm(
@@ -420,8 +601,16 @@ enum BestTransactionsCommand {
     Advance,
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: Receiver<Option<PrewarmedTransaction>>,
-        new_tx: Sender<Option<PrewarmedTransaction>>,
+        /// `Some` swaps the consumer channel and refilters buffered
+        /// transactions on the coordinator (completion-driven mode). `None`
+        /// (exec-driven mode) only informs the pool: the consumer filters
+        /// conflicting buffered transactions itself, so a gas-capped block's
+        /// ~17k tail invalidations cost a set insert instead of a channel
+        /// swap + full buffer re-send each.
+        swap: Option<(
+            Receiver<Option<PrewarmedTransaction>>,
+            Sender<Option<PrewarmedTransaction>>,
+        )>,
     },
     NoUpdates,
     SkipBlobs(bool),
@@ -665,6 +854,7 @@ mod tests {
                 evm_env,
                 stop: Arc::default(),
                 parallel: false,
+                flat: None,
             },
             TestBestTransactions::new(txs, log),
         );
@@ -704,19 +894,24 @@ mod tests {
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let lookahead = executor.prewarming_pool().current_num_threads() * 2;
+        let txs = (0..lookahead + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
 
         let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
-        wait_until(|| log.lock().unwrap().yielded == expected.len());
+        // Exec-driven dispatch: the source is drained up to the lookahead
+        // window without consumer progress, and past it only as the consumer
+        // advances.
+        wait_until(|| log.lock().unwrap().yielded == lookahead);
 
         let actual = (0..expected.len())
             .map(|_| *prewarming.next().expect("transaction").tx.hash())
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+        wait_until(|| log.lock().unwrap().yielded == expected.len());
     }
 
     #[test]
