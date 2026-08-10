@@ -22,7 +22,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, ResultAndState},
+    context::result::{ExecutionResult, ResultAndState, ResultGas},
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
@@ -38,6 +38,26 @@ use tempo_primitives::{
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
+
+/// Tempo's TIP-1016 block-level regular gas for one transaction:
+/// `max(total_spent - state_gas - refunded, floor)`.
+///
+/// Upstream Amsterdam (EIP-8037 + EIP-7778, see revm's
+/// `ResultGas::block_regular_gas_used`) keeps refunds out of the block header
+/// because mainnet refunds come from storage clearing whose execution work was
+/// still performed. Tempo has no clearing refunds (TIP-1060 mints storage
+/// credits instead): a Tempo refund (restore-to-original, storage-credit
+/// settlement) reflects work that was rolled back within the transaction, so
+/// the full, uncapped refund also reduces block gas. This keeps the header
+/// equal to the receipts total minus the state-gas exemption.
+pub(crate) fn tempo_block_regular_gas_used(gas: &ResultGas) -> u64 {
+    core::cmp::max(
+        gas.total_gas_spent()
+            .saturating_sub(gas.state_gas_spent_final())
+            .saturating_sub(gas.inner_refunded()),
+        gas.floor_gas(),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -668,10 +688,11 @@ where
 
         let inner = result?;
 
-        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
-        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        // TIP-1016 enabled: use Tempo's refund-aware regular gas (excludes state
+        // gas, subtracts the full refund) for section validation, matching block
+        // gas limit semantics. TIP-1016 disabled: use tx_gas_used.
         let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner.result.result.gas().block_regular_gas_used()
+            tempo_block_regular_gas_used(inner.result.result.gas())
         } else {
             inner.result.result.tx_gas_used()
         };
@@ -705,7 +726,23 @@ where
             validator_fee: _,
         } = output;
 
+        // The inner executor accumulates upstream's pre-refund
+        // `block_regular_gas_used` (EIP-7778 semantics); correct the
+        // accumulator down to Tempo's refund-aware value so the block header
+        // and the available-gas checks reflect the full refund.
+        let refund_adjustment = if self.evm().cfg.enable_amsterdam_eip8037 {
+            let gas = inner.result.result.gas();
+            gas.block_regular_gas_used()
+                .saturating_sub(tempo_block_regular_gas_used(gas))
+        } else {
+            0
+        };
+
         let gas_output = self.inner.commit_transaction(inner);
+        self.inner.block_regular_gas_used = self
+            .inner
+            .block_regular_gas_used
+            .saturating_sub(refund_adjustment);
 
         self.section = next_section;
 
@@ -772,8 +809,10 @@ where
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
-        // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
+        // capacity. The accumulator is corrected per-tx in `commit_transaction`
+        // to Tempo's refund-aware value max(total_spent - state_spent - refunded,
+        // floor), so the header equals the receipts total minus the state-gas
+        // exemption (unlike upstream EIP-7778, which ignores refunds).
         //
         // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original

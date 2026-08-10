@@ -81,7 +81,19 @@ pub fn apply_refund<DB: Database, I>(
     }
 
     // Refund storage credit value per settled credit.
-    gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    let amount = refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64);
+    if evm.cfg.enable_amsterdam_eip8037 {
+        // TIP-1016: each settled credit cancels a 0->x state-gas creation
+        // charged earlier in this transaction. Settle in the state dimension --
+        // the same refill used for 0->x->0 restoration -- so `state_gas_spent`
+        // reflects only the state actually created and the block header stays
+        // consistent with the receipts. Routing it through the execution
+        // refund counter instead would leave the 245k in `state_gas_spent`
+        // while also refunding it, double-counting the settlement.
+        gas.refill_reservoir(amount as u64);
+    } else {
+        gas.record_refund(amount);
+    }
 
     Ok(())
 }

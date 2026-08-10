@@ -1273,10 +1273,7 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(
-                spec,
-                tempo_gas_params_with_amsterdam(spec),
-            ),
+            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params_with_amsterdam(spec)),
             TempoBlockEnv::default(),
         )
     }
