@@ -24,6 +24,7 @@ members = [
   "crates/eyre",
   "crates/ext",
   "crates/evm",
+  "crates/flatmpt",
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
@@ -136,6 +137,7 @@ tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-f
 tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
+tempo-flatmpt = { path = "crates/flatmpt" }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }
 tempo-ext = { path = "crates/ext" }
@@ -211,6 +213,7 @@ reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f" }
 reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f" }
+reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f" }
 
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "5723a3f", features = [
