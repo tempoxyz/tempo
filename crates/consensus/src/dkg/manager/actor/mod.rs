@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc, task::Poll};
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable};
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
@@ -50,7 +50,7 @@ use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
 use tokio::select;
-use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
+use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -427,7 +427,7 @@ where
                         }
 
                         Command::GetDealerLog(get_dealer_log) => {
-                            warn_span!("get_dealer_log").in_scope(|| {
+                            info_span!("get_dealer_log").in_scope(|| {
                                 let log = if get_dealer_log.epoch != round.epoch() {
                                     warn!(
                                         request.epoch = %get_dealer_log.epoch,
@@ -710,6 +710,7 @@ where
         skip_all,
         fields(
             dkg.epoch = %round.epoch(),
+            block.digest = %Digest::new(header.hash_slow()),
             block.height = %Height::new(header.number()),
             block.extra_data.bytes = header.extra_data().len(),
         ),
@@ -1049,6 +1050,7 @@ where
         fields(
             as_player = player_state.is_some(),
             our.epoch = %round.epoch(),
+            for_block = %request.digest,
         ),
         err(level = Level::WARN),
     )]
@@ -1125,6 +1127,10 @@ where
                         };
                         digest = block.parent;
                     } else {
+                        debug!(
+                            missing = %digest,
+                            "cannot yet finalize the DKG because a block is missing"
+                        );
                         return Ok(Some((digest, request)));
                     }
                 }
@@ -1134,7 +1140,9 @@ where
             }
 
             let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+            debug!(how_many = finalized_logs.len(), "recording longs");
             for (k, v) in finalized_logs {
+                debug!(?k, ?v, "recording log");
                 logs.record(k, v);
             }
 

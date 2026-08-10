@@ -190,6 +190,11 @@ impl NotarizedTree {
         self.local_head.1 == digest
     }
 
+    /// Whether `digest` is the latest finalized tip reported by consensus.
+    pub(super) fn is_network_finalized_tip(&self, digest: Digest) -> bool {
+        self.network_finalized_tip.2 == digest
+    }
+
     /// Records a forkchoice state newly accepted by the execution layer.
     pub(super) fn set_local_state(&mut self, local_state: LocalState) {
         self.local_head = local_state.head;

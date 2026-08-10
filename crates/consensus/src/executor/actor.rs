@@ -144,7 +144,7 @@ pub(crate) struct Actor<TContext> {
     pending_consensus_request: Option<(Round, ConsensusRequest)>,
 
     /// The single execution-layer request currently being driven in the background.
-    execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
+    execution_task: OptionFuture<ExecutionTask>,
 
     /// The fetch of a notarized block body that is missing from the
     /// tree, driven concurrently with the execution task. At most one
@@ -298,44 +298,14 @@ where
             select! {
                 biased;
 
-                task_result = &mut self.execution_task => {
-                    match task_result {
-                        ExecutionTaskResult::Completed { canonicalized, payload_job } => {
-                            if let Some(canonicalized) = canonicalized {
-                                // There is only one execution task running
-                                // at a time, and the tracked state is only
-                                // mutated here to keep a consistent view.
-                                self.notarized_tree.set_local_state(canonicalized);
-                            }
-                            if let Some(job) = payload_job {
-                                self.payload_jobs.push(
-                                    run_payload_job(
-                                        self.context.child("payload_job"),
-                                        self.execution_node.clone(),
-                                        job,
-                                    )
-                                    .boxed(),
-                                );
-                            }
-                        }
-                        ExecutionTaskResult::NotarizedBlockRejected { digest } => {
-                            // The cause is logged by the task itself. The
-                            // timestamp keeps the block from being retried
-                            // in a tight loop: it is withheld until the
-                            // retry delay elapses; the finalization
-                            // pipeline remains the fatal-on-failure
-                            // backstop.
-                            let now = self.context.current();
-                            self.notarized_tree.mark_rejected(&digest, now);
-                        }
-                        ExecutionTaskResult::Fatal { error } => {
-                            error_span!("shutdown").in_scope(|| error!(
-                                %error,
-                                "executor encountered fatal execution-layer update error; \
-                                shutting down to prevent consensus-execution divergence"
-                            ));
-                            break;
-                        }
+                finished = &mut self.execution_task => {
+                    if let Err(error) = self.handle_execution_task_finished(finished) {
+                        error_span!("shutdown").in_scope(|| error!(
+                            %error,
+                            "executor encountered fatal execution-layer update error; \
+                            shutting down to prevent consensus-execution divergence"
+                        ));
+                        break;
                     }
                 }
 
@@ -372,6 +342,76 @@ where
         }
     }
 
+    #[instrument(
+        skip_all,
+        fields(
+            task_type = task.task_type.name(),
+            on_top_of.head = %task.on_top_of.head.1,
+            on_top_of.finalized = %task.on_top_of.finalized.1,
+        ),
+    )]
+    fn set_execution_task(&mut self, mut task: ExecutionTask) {
+        task.span = Span::current();
+        assert!(
+            self.execution_task.replace(task).is_none(),
+            "invariant violation: must not replace an in-flight execution task"
+        );
+    }
+
+    #[instrument(
+        parent = &finished.span,
+        skip_all,
+        fields(
+            task_type = finished.task_type.name(),
+            on_top_of.head = %finished.on_top_of.head.1,
+            on_top_of.finalized = %finished.on_top_of.finalized.1,
+            target = ?finished.target(),
+            outcome = finished.outcome.name(),
+        ),
+        err,
+    )]
+    fn handle_execution_task_finished(
+        &mut self,
+        finished: ExecutionTaskFinished,
+    ) -> eyre::Result<()> {
+        let ExecutionTaskFinished { outcome, .. } = finished;
+        match outcome {
+            ExecutionTaskOutcome::Completed {
+                canonicalized,
+                payload_job,
+            } => {
+                if let Some(canonicalized) = canonicalized {
+                    // There is only one execution task running at a time,
+                    // and the tracked state is only mutated here to keep a
+                    // consistent view.
+                    self.notarized_tree.set_local_state(canonicalized);
+                }
+                if let Some(job) = payload_job {
+                    self.payload_jobs.push(
+                        run_payload_job(
+                            self.context.child("payload_job"),
+                            self.execution_node.clone(),
+                            job,
+                        )
+                        .boxed(),
+                    );
+                }
+            }
+            ExecutionTaskOutcome::NotarizedBlockRejected { digest, .. } => {
+                // The cause is logged by the task itself. The timestamp keeps
+                // the block from being retried in a tight loop: it is withheld
+                // until the retry delay elapses; the finalization pipeline
+                // remains the fatal-on-failure backstop.
+                let now = self.context.current();
+                self.notarized_tree.mark_rejected(&digest, now);
+            }
+            ExecutionTaskOutcome::Fatal { error } => {
+                return Err(error.wrap_err("execution task failed"));
+            }
+        }
+        Ok(())
+    }
+
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
         let start = self.notarized_tree.local_state().finalized.0.get() + 1;
         let end = self.finalized_floor.get();
@@ -399,13 +439,17 @@ where
                 block: Arc::new(block),
                 acknowledgment: ack,
             };
+            let canonicalized = self.notarized_tree.local_state();
+            let target =
+                finalization_target(&self.execution_node, canonicalized, request.block.as_ref())?;
 
             let canonicalized = forward_finalized(
                 self.context.as_present(),
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
-                self.notarized_tree.local_state(),
+                canonicalized,
+                target,
                 request,
             )
             .await
@@ -457,13 +501,18 @@ where
             return;
         }
 
-        let task = execute_heartbeat(
+        let on_top_of = self.notarized_tree.local_state();
+        let fut = execute_heartbeat(
             self.context.child("heartbeat"),
             self.execution_node.clone(),
-            self.notarized_tree.local_state(),
+            on_top_of,
             Span::current(),
         );
-        self.execution_task.replace(task.boxed());
+        self.set_execution_task(ExecutionTask::new(
+            ExecutionTaskType::Heartbeat,
+            on_top_of,
+            fut,
+        ));
     }
 
     fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
@@ -530,6 +579,10 @@ where
     /// for `<epoch>`, the node must have finalized the boundary block of
     /// `<epoch>`, which is exactly that parent block. In fact, a node will not
     /// start a simplex engine for `<epoch>` if it does not have this block.
+    #[instrument(
+        skip_all,
+        fields(digest = %context.parent.1),
+    )]
     fn record_pending_head(&mut self, context: Context<Digest, PublicKey>) {
         self.notarized_tree.set_pending_head(
             context.round,
@@ -603,6 +656,22 @@ where
         }
     }
 
+    fn is_next_notarized_or_finalized_tip(&self, digest: Digest) -> bool {
+        self.notarized_tree
+            .next_to_forward(self.context.current())
+            .is_some_and(|entry| entry.block.digest() == digest)
+            || self.notarized_tree.is_network_finalized_tip(digest)
+    }
+
+    #[instrument(
+        skip_all,
+        fields(
+            current.head_height = %self.notarized_tree.local_state().head.0,
+            current.head_digest = %self.notarized_tree.local_state().head.1,
+            current.finalized_height = %self.notarized_tree.local_state().finalized.0,
+            current.finalized_digest = %self.notarized_tree.local_state().finalized.1,
+        ),
+    )]
     fn start_next_execution_task(&mut self) {
         if !self.execution_task.is_none() {
             return;
@@ -610,23 +679,25 @@ where
 
         // Latency critical requests come first: consensus is waiting on
         // them to vote on or propose a block. One exception: if the next
-        // notarized block to forward is the request's parent, the request
-        // is put back and falls through to the forwarding below, after
-        // which it can pass. Any deeper gap fails the request fast and
-        // heals in the background instead.
+        // notarized block to forward or the latest finalized tip is the
+        // request's parent, the request is put back and falls through to the
+        // forwarding below, after which it can pass. The finalized block may
+        // arrive from marshal after this check. Any deeper gap fails the
+        // request fast and heals in the background instead.
         match self.pending_consensus_request.take() {
             Some((round, ConsensusRequest::Validate(request))) => {
-                let parent_is_next_notarized = self
-                    .notarized_tree
-                    .next_to_forward(self.context.current())
-                    .is_some_and(|entry| entry.block.digest() == request.block.parent_digest());
-                if !parent_is_next_notarized {
-                    let task = execute_validation(
+                if !self.is_next_notarized_or_finalized_tip(request.block.parent_digest()) {
+                    let on_top_of = self.notarized_tree.local_state();
+                    let fut = execute_validation(
                         self.context.child("validate"),
                         self.execution_node.clone(),
                         request,
                     );
-                    self.execution_task.replace(task.boxed());
+                    self.set_execution_task(ExecutionTask::new(
+                        ExecutionTaskType::Verify,
+                        on_top_of,
+                        fut,
+                    ));
                     return;
                 }
                 self.pending_consensus_request = Some((round, ConsensusRequest::Validate(request)));
@@ -641,21 +712,22 @@ where
                 // fast: dropping the request drops its response channel,
                 // which signals the failure to the subscriber.
                 if self.notarized_tree.is_execution_head(build.digest) {
-                    let task = execute_build(
+                    let on_top_of = self.notarized_tree.local_state();
+                    let fut = execute_build(
                         self.context.child("build"),
                         self.execution_node.clone(),
-                        self.notarized_tree.local_state(),
+                        on_top_of,
                         cause,
                         build,
                     );
-                    self.execution_task.replace(task.boxed());
+                    self.set_execution_task(ExecutionTask::new(
+                        ExecutionTaskType::Build,
+                        on_top_of,
+                        fut,
+                    ));
                     return;
                 }
-                let parent_is_next_notarized = self
-                    .notarized_tree
-                    .next_to_forward(self.context.current())
-                    .is_some_and(|entry| entry.block.digest() == build.digest);
-                if parent_is_next_notarized {
+                if self.is_next_notarized_or_finalized_tip(build.digest) {
                     self.pending_consensus_request =
                         Some((round, ConsensusRequest::Build { cause, build }));
                 } else {
@@ -672,29 +744,38 @@ where
         // Drive the execution layer's head towards the tip of the
         // canonical notarized chain.
         if let Some(entry) = self.notarized_tree.next_to_forward(self.context.current()) {
-            let task = execute_notarization(
+            let on_top_of = self.notarized_tree.local_state();
+            let fut = execute_notarization(
                 self.context.child("notarize"),
                 self.execution_node.clone(),
-                self.notarized_tree.local_state(),
+                on_top_of,
                 entry.block.clone(),
                 None,
             );
-            self.execution_task.replace(task.boxed());
+            self.set_execution_task(ExecutionTask::new(
+                ExecutionTaskType::Notarize,
+                on_top_of,
+                fut,
+            ));
             return;
         }
 
         // Finalizations are forwarded in order and acknowledged so that the
         // marshal actor can make progress.
         if let Some(request) = self.pending_finalizations.pop_front() {
-            let task = execute_finalization(
-                self.context.child("finalize"),
-                self.execution_node.clone(),
-                self.public_key.clone(),
-                self.metrics.clone(),
-                self.notarized_tree.local_state(),
-                request,
-            );
-            self.execution_task.replace(task.boxed());
+            let on_top_of = self.notarized_tree.local_state();
+            self.set_execution_task(ExecutionTask::new(
+                ExecutionTaskType::Finalize,
+                on_top_of,
+                execute_finalization(
+                    self.context.child("finalize"),
+                    self.execution_node.clone(),
+                    self.public_key.clone(),
+                    self.metrics.clone(),
+                    on_top_of,
+                    request,
+                ),
+            ));
         }
     }
 }
@@ -838,7 +919,87 @@ enum ForkchoiceUpdateKind {
     Canonicalize { head_or_finalized: HeadOrFinalized },
 }
 
-enum ExecutionTaskResult {
+#[derive(Debug, Clone, Copy)]
+enum ExecutionTaskType {
+    Heartbeat,
+    Verify,
+    Build,
+    Notarize,
+    Finalize,
+}
+
+impl ExecutionTaskType {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Heartbeat => "heartbeat",
+            Self::Verify => "verify",
+            Self::Build => "build",
+            Self::Notarize => "notarize",
+            Self::Finalize => "finalize",
+        }
+    }
+}
+
+struct ExecutionTask {
+    task_type: ExecutionTaskType,
+    on_top_of: LocalState,
+    span: Span,
+    fut: BoxFuture<'static, ExecutionTaskOutcome>,
+}
+
+impl ExecutionTask {
+    fn new<F>(task_type: ExecutionTaskType, on_top_of: LocalState, fut: F) -> Self
+    where
+        F: Future<Output = ExecutionTaskOutcome> + Send + 'static,
+    {
+        Self {
+            task_type,
+            on_top_of,
+            span: Span::none(),
+            fut: fut.boxed(),
+        }
+    }
+}
+
+struct ExecutionTaskFinished {
+    task_type: ExecutionTaskType,
+    on_top_of: LocalState,
+    span: Span,
+    outcome: ExecutionTaskOutcome,
+}
+
+impl ExecutionTaskFinished {
+    fn target(&self) -> Option<LocalState> {
+        match &self.outcome {
+            ExecutionTaskOutcome::Completed { canonicalized, .. } => *canonicalized,
+            ExecutionTaskOutcome::NotarizedBlockRejected { target, .. } => Some(*target),
+            ExecutionTaskOutcome::Fatal { .. } => None,
+        }
+    }
+}
+
+impl Future for ExecutionTask {
+    type Output = ExecutionTaskFinished;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let span = self.span.clone();
+        let outcome = {
+            let _entered = span.enter();
+            std::task::ready!(self.fut.as_mut().poll(cx))
+        };
+        std::task::Poll::Ready(ExecutionTaskFinished {
+            task_type: self.task_type,
+            on_top_of: self.on_top_of,
+            span,
+            outcome,
+        })
+    }
+}
+
+enum ExecutionTaskOutcome {
     Completed {
         canonicalized: Option<LocalState>,
         /// A payload build that the forkchoice update kicked off on the
@@ -850,14 +1011,25 @@ enum ExecutionTaskResult {
     /// execution layer was unreachable or reported that it was still syncing.
     ///
     /// An outright *invalid* verdict by the execution layer is
-    /// [`ExecutionTaskResult::Fatal`] right away: a quorum of validators
+    /// [`ExecutionTaskOutcome::Fatal`] right away: a quorum of validators
     /// accepted the block, so rejecting it means we diverged.
     NotarizedBlockRejected {
         digest: Digest,
+        target: LocalState,
     },
     Fatal {
         error: Report,
     },
+}
+
+impl ExecutionTaskOutcome {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Completed { .. } => "completed",
+            Self::NotarizedBlockRejected { .. } => "rejected",
+            Self::Fatal { .. } => "fatal",
+        }
+    }
 }
 
 /// A payload build registered on the execution layer whose result still needs
@@ -873,7 +1045,7 @@ async fn execute_heartbeat<TContext>(
     execution_node: Arc<TempoFullNode>,
     canonicalized: LocalState,
     cause: Span,
-) -> ExecutionTaskResult
+) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
@@ -889,7 +1061,7 @@ where
     {
         warn!(%error, "forkchoice update heartbeat failed");
     }
-    ExecutionTaskResult::Completed {
+    ExecutionTaskOutcome::Completed {
         canonicalized: None,
         payload_job: None,
     }
@@ -901,14 +1073,14 @@ async fn execute_build<TContext>(
     canonicalized: LocalState,
     cause: Span,
     build: Build,
-) -> ExecutionTaskResult
+) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
-    let (canonicalized, payload_job) =
+    let (new_canonicalized, payload_job) =
         run_build_task(&context, execution_node, canonicalized, cause, build).await;
-    ExecutionTaskResult::Completed {
-        canonicalized,
+    ExecutionTaskOutcome::Completed {
+        canonicalized: new_canonicalized,
         payload_job,
     }
 }
@@ -920,49 +1092,63 @@ async fn execute_finalization<TContext>(
     metrics: Metrics,
     canonicalized: LocalState,
     request: FinalizedBlockRequest,
-) -> ExecutionTaskResult
+) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
+    let target = match finalization_target(&execution_node, canonicalized, request.block.as_ref()) {
+        Ok(target) => target,
+        Err(error) => return ExecutionTaskOutcome::Fatal { error },
+    };
     match forward_finalized(
         &context,
         execution_node,
         public_key,
         metrics,
         canonicalized,
+        target,
         request,
     )
     .await
     {
-        Ok(canonicalized) => ExecutionTaskResult::Completed {
-            canonicalized: Some(canonicalized),
+        Ok(target) => ExecutionTaskOutcome::Completed {
+            canonicalized: Some(target),
             payload_job: None,
         },
-        Err(error) => ExecutionTaskResult::Fatal { error },
+        Err(error) => ExecutionTaskOutcome::Fatal { error },
     }
 }
 
+#[instrument(
+    skip_all,
+    fields(
+        block.digest = %block.digest(),
+        block.height = %block.height(),
+    ),
+)]
 async fn execute_notarization<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LocalState,
+    on_top_of: LocalState,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
-) -> ExecutionTaskResult
+) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
     let digest = block.digest();
+    let target = on_top_of.update_head(block.height(), digest);
     match forward_notarized(
         &context,
         execution_node,
-        canonicalized,
+        on_top_of,
+        target,
         block,
         validator_set,
     )
     .await
     {
-        Ok(canonicalized) => ExecutionTaskResult::Completed {
+        Ok(canonicalized) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(canonicalized),
             payload_job: None,
         },
@@ -971,13 +1157,13 @@ where
         // layers before voting. Our execution layer rejecting it as invalid
         // means it has diverged from the network, whether or not the block
         // ever finalizes.
-        Err(error) if error.is::<NotarizedBlockInvalid>() => ExecutionTaskResult::Fatal {
+        Err(error) if error.is::<NotarizedBlockInvalid>() => ExecutionTaskOutcome::Fatal {
             error: error.wrap_err("execution layer rejected a notarized block"),
         },
         // Everything else (the execution layer being unreachable or still
         // syncing) carries no evidence of divergence. The cause is logged by
         // `forward_notarized`.
-        Err(_logged) => ExecutionTaskResult::NotarizedBlockRejected { digest },
+        Err(_logged) => ExecutionTaskOutcome::NotarizedBlockRejected { digest, target },
     }
 }
 
@@ -1008,7 +1194,7 @@ async fn execute_validation<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
     request: ValidateBlockRequest,
-) -> ExecutionTaskResult
+) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
@@ -1036,7 +1222,7 @@ where
                 "verification subscriber went away before the block was \
                 validated; abandoning the request"
             );
-            return ExecutionTaskResult::Completed {
+            return ExecutionTaskOutcome::Completed {
                 canonicalized: None,
                 payload_job: None,
             };
@@ -1058,7 +1244,7 @@ where
             warn!(%error, "failed validating block");
         }
     }
-    ExecutionTaskResult::Completed {
+    ExecutionTaskOutcome::Completed {
         canonicalized: None,
         payload_job: None,
     }
@@ -1337,30 +1523,11 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     Ok(fcu_response.payload_id)
 }
 
-#[instrument(
-    skip_all,
-    parent = &request.cause,
-    fields(
-        block.digest = %request.block.digest(),
-        block.height = %request.block.height(),
-    ),
-    err(level = Level::WARN),
-    ret,
-)]
-async fn forward_finalized<TContext: Pacer>(
-    context: &TContext,
-    execution_node: Arc<TempoFullNode>,
-    public_key: Option<PublicKey>,
-    metrics: Metrics,
+fn finalization_target(
+    execution_node: &TempoFullNode,
     canonicalized: LocalState,
-    request: FinalizedBlockRequest,
+    block: &Block,
 ) -> eyre::Result<LocalState> {
-    let FinalizedBlockRequest {
-        cause,
-        block,
-        acknowledgment,
-    } = request;
-
     // Startup aligns consensus and execution layers. Also, all blocks
     // (finalized and notarized) arrive in the EL via the executor actor. There
     // is no pipeline sync and no other way to drive the EL forward at this
@@ -1369,7 +1536,7 @@ async fn forward_finalized<TContext: Pacer>(
     // This means that new finalized blocks must never unwind the execution
     // layer's finalized tip and repoint to a point below it.
     //
-    // Under normal operation, all block arrive in sequence. Only at startup
+    // Under normal operation, all blocks arrive in sequence. Only at startup
     // does the marshal actor forward a block at the height of the finalized
     // floor (this can include genesis).
     ensure!(
@@ -1393,37 +1560,64 @@ async fn forward_finalized<TContext: Pacer>(
             block.height(),
             canonicalized.finalized.1,
         );
-        debug!(
-            "finalized block matches the tracked finalized block; \
-            acknowledging re-delivery without re-execution"
-        );
-        acknowledgment.acknowledge();
         return Ok(canonicalized);
     }
 
-    let consensus_context = block.header().consensus_context;
-    let head_descends_from_finalized = {
-        let canonical_hash = execution_node
-            .provider
-            .block_hash(block.height().get())
-            .wrap_err_with(|| {
-                format!(
-                    "failed reading canonical execution block hash at \
-                    finalized block height `{}`",
-                    block.height(),
-                )
-            })?;
-        canonical_hash == Some(block.digest().0)
-    };
+    let canonical_hash = execution_node
+        .provider
+        .block_hash(block.height().get())
+        .wrap_err_with(|| {
+            format!(
+                "failed reading canonical execution block hash at finalized block height `{}`",
+                block.height(),
+            )
+        })?;
+    let head_descends_from_finalized = canonical_hash == Some(block.digest().0);
 
-    // Ensure that the head hash is not orphaned.
-    let new_canonicalized = if head_descends_from_finalized {
+    Ok(if head_descends_from_finalized {
         canonicalized.update_finalized(block.height(), block.digest())
     } else {
         canonicalized
             .update_finalized(block.height(), block.digest())
             .update_head(block.height(), block.digest())
-    };
+    })
+}
+
+#[instrument(
+    skip_all,
+    parent = &request.cause,
+    fields(
+        block.digest = %request.block.digest(),
+        block.height = %request.block.height(),
+    ),
+    err(level = Level::WARN),
+    ret,
+)]
+async fn forward_finalized<TContext: Pacer>(
+    context: &TContext,
+    execution_node: Arc<TempoFullNode>,
+    public_key: Option<PublicKey>,
+    metrics: Metrics,
+    canonicalized: LocalState,
+    target: LocalState,
+    request: FinalizedBlockRequest,
+) -> eyre::Result<LocalState> {
+    let FinalizedBlockRequest {
+        cause,
+        block,
+        acknowledgment,
+    } = request;
+
+    if block.height() == canonicalized.finalized.0 {
+        debug!(
+            "finalized block matches the tracked finalized block; \
+            acknowledging re-delivery without re-execution"
+        );
+        acknowledgment.acknowledge();
+        return Ok(target);
+    }
+
+    let consensus_context = block.header().consensus_context;
 
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
     let payload_status = execution_node
@@ -1451,7 +1645,7 @@ async fn forward_finalized<TContext: Pacer>(
         &execution_node,
         context,
         cause.clone(),
-        new_canonicalized,
+        target,
         None,
         ForkchoiceUpdateKind::Canonicalize {
             head_or_finalized: HeadOrFinalized::Finalized,
@@ -1467,7 +1661,7 @@ async fn forward_finalized<TContext: Pacer>(
 
     acknowledgment.acknowledge();
 
-    Ok(new_canonicalized)
+    Ok(target)
 }
 
 /// Sentinel error signalling that the execution layer executed a notarized
@@ -1511,7 +1705,8 @@ impl std::error::Error for NotarizedBlockInvalid {}
 async fn forward_notarized<TContext: Pacer>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
-    canonicalized: LocalState,
+    on_top_of: LocalState,
+    target: LocalState,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<LocalState> {
@@ -1546,25 +1741,24 @@ async fn forward_notarized<TContext: Pacer>(
         (likely syncing): `{payload_status}`",
     );
 
-    let new_canonicalized = canonicalized.update_head(height, digest);
     // The forkchoice update is skipped when it would not change anything,
     // but the state is reported either way so that the tree's tracked
     // state stays consistent.
-    if new_canonicalized == canonicalized {
-        return Ok(new_canonicalized);
+    if target == on_top_of {
+        return Ok(target);
     }
     submit_forkchoice_update(
         &execution_node,
         context,
         Span::current(),
-        new_canonicalized,
+        target,
         None,
         ForkchoiceUpdateKind::Canonicalize {
             head_or_finalized: HeadOrFinalized::Head,
         },
     )
     .await?;
-    Ok(new_canonicalized)
+    Ok(target)
 }
 
 /// Marker to indicate whether the head hash or finalized hash should be updated.

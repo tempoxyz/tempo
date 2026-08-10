@@ -12,6 +12,10 @@ use commonware_utils::{Array, Span};
 pub struct Digest(pub B256);
 
 impl Digest {
+    pub fn new(inner: B256) -> Self {
+        Self(inner)
+    }
+
     pub fn get(self) -> B256 {
         self.0
     }

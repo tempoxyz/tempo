@@ -282,6 +282,7 @@ impl Inner<Init> {
         //
         // If the EL is not (yet) in the correct state to build a block the
         // build will fail fast.
+        debug!("reporting notarized tip");
         if let Err(error) = self.executor.report_pending_head(Context {
             round,
             leader: leader.clone(),

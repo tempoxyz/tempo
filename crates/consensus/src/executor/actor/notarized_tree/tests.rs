@@ -300,6 +300,18 @@ fn finalized_tip_bounds_recording() {
 }
 
 #[test]
+fn recognizes_finalized_tip_without_block_body() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+    let next = block(1, 11, finalized);
+
+    tree.set_network_finalized_tip(round(1), next.height(), next.digest());
+
+    assert!(tree.is_network_finalized_tip(next.digest()));
+    assert!(!tree.blocks.contains_key(&next.digest()));
+}
+
+#[test]
 fn advance_finalized_drops_stale_entries() {
     let finalized = Digest(B256::repeat_byte(0xff));
     let mut tree = empty_tree(finalized);

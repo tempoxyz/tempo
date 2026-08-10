@@ -1,11 +1,15 @@
 use alloy_primitives::B256;
-use commonware_consensus::types::{Epoch, Round, View};
+use commonware_consensus::types::{Epoch, Height, Round, View};
+use futures::executor::block_on;
 use reth_node_core::primitives::SealedBlock;
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
 use commonware_consensus::Heightable as _;
 
-use super::{ConsensusRequest, ValidateBlockRequest, queue_consensus_request};
+use super::{
+    ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, ValidateBlockRequest,
+    notarized_tree::LocalState, queue_consensus_request,
+};
 use crate::consensus::{Digest, block::Block};
 
 fn round(view: u64) -> Round {
@@ -34,6 +38,32 @@ fn block(view: u64, height: u64, parent: Digest) -> Block {
         }),
         None,
     )
+}
+
+#[test]
+fn execution_task_finishes_with_an_outcome() {
+    let state = LocalState {
+        head: (Height::new(1), Digest(B256::repeat_byte(1))),
+        finalized: (Height::new(0), Digest(B256::ZERO)),
+    };
+    let mut task = ExecutionTask::new(
+        ExecutionTaskType::Verify,
+        state,
+        futures::future::ready(ExecutionTaskOutcome::Completed {
+            canonicalized: None,
+            payload_job: None,
+        }),
+    );
+
+    assert!(matches!(task.task_type, ExecutionTaskType::Verify));
+    assert_eq!(task.on_top_of, state);
+    let finished = block_on(&mut task);
+    assert!(matches!(finished.task_type, ExecutionTaskType::Verify));
+    assert_eq!(finished.on_top_of, state);
+    assert!(matches!(
+        finished.outcome,
+        ExecutionTaskOutcome::Completed { .. }
+    ));
 }
 
 #[test]
