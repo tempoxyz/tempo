@@ -48,11 +48,11 @@ to get wrong under TIP-1016:
   `handle_reservoir_remaining_gas` (`handler.rs:737`, revm `frame.rs:592`): unused regular gas
   flows back, the reservoir is adopted, state gas / spill / refunds accumulate.
 - On **any** call failure the outer checkpoint reverts every call and `batch_gas` is discarded:
-  the failed call's already-settled tracker is returned with only its limit widened
-  (`handler.rs:716-729`). Earlier successful calls' reservoir consumption is inherited by that
-  tracker (user pays for it) but their `state_gas_spent` is not — reverted-batch state gas can
-  land in block *regular* gas, asymmetric with the single-call revert exemption that
-  `tip1016_storage.rs:401` asserts.
+  the failed call's already-settled tracker is returned with its limit widened. Before the
+  discard, the state gas prior successful calls settled into `batch_gas` is rolled back onto
+  the returned tracker (mirroring `GasTracker::rollback_state_gas`: reservoir portion restored,
+  spill returned to `remaining` on revert, consumed on halt), keeping reverted-batch billing
+  and header accounting symmetric with the single-call revert exemption.
 - Batch intrinsic gas (`calculate_aa_batch_intrinsic_gas`, `handler.rs:2283`) pre-shrinks the
   reservoir: per-auth `new_account_state_gas` (+ again for `auth.nonce == 0`), `create_state_gas`
   per CREATE call, key-authorization `sstore_set_state_gas × intended_writes`, 2D-nonce
@@ -62,47 +62,115 @@ to get wrong under TIP-1016:
 - On full success the last call's `Gas` is replaced wholesale with `batch_gas`
   (`handler.rs:750-758`) — the receipt and block accounting see only this tracker.
 
-Existing coverage in `tip1016_storage.rs`: `test_tip1016_batch_reverting_create_refunds_create_state_gas`
-(`:879`), `test_tip1016_high_gas_limit_batch_tip20_transfers` (`:1014`).
+Existing coverage in `tip1016.rs` (formerly `tip1016_storage.rs`):
+`test_tip1016_batch_reverting_create_refunds_create_state_gas`,
+`test_tip1016_high_gas_limit_batch_tip20_transfers`.
+
+### Results (all proposed tests implemented in `tip1016.rs`, 2026-08-10)
+
+All 21 tests below are implemented as `test_tip1016_batch_*` and pass. Both confirmed
+divergences below have since been fixed in production code; the tests now assert the fixed
+behavior. (`..._failed_create_first_call_nonce_semantics` was split into
+`..._failed_create_bumps_protocol_nonce` and `..._failed_create_2d_nonce_no_protocol_bump`.)
+
+**Confirmed divergences (both fixed 2026-08-10):**
+
+1. **[FIXED 2026-08-10] A reverted batch billed the rolled-back state gas**
+   (`..._late_revert_billing_and_block_exemption`). Call 1 creates a slot, call 2 reverts the
+   batch. Versus an identical batch writing an existing slot, the receipt was **264,200** gas
+   higher: 17,100 regular SSTORE delta + 2,100 credit-bookkeeping SLOAD + **245,000 state gas of
+   the rolled-back creation**, with the 245k also landing in the block header as regular gas —
+   asymmetric with the single-call equivalent, which refunds it
+   (`test_tip1016_reverted_sstore_still_exempts_state_gas`). Cause: prior successful calls'
+   state gas was recorded only on `batch_gas`, which the failure path discards. Fix
+   (`execute_multi_call_with` failure branch): before the discard, mirror
+   `GasTracker::rollback_state_gas` on the returned tracker using the batch-accumulated
+   counters — the reservoir-drawn portion restores the reservoir, the spilled portion returns
+   to `remaining` on revert (a halt consumes it, matching the single-frame `spend_all`-after-
+   rollback model). The receipt delta is now the regular-gas-only **19,200**, and the header no
+   longer carries the phantom 245k.
+2. **[FIXED 2026-08-10] Block header gas ignored execution refunds**
+   (`..._set_in_call1_clear_in_call2_nets_zero`, `..._refunds_accumulate_across_successful_calls`).
+   SSTORE refunds (19,900 restore-to-original-zero; 4,800 per clear) were subtracted from receipt
+   `gas_used` but not from `block_regular_gas_used` (upstream glamsterdam-devnet-8 semantics per
+   EIP-7778: mainnet refunds come from storage clearing whose execution work was still performed,
+   so they stay in block gas). Tempo has no clearing refunds — its refunds reflect work rolled
+   back within the tx — so Tempo now subtracts the **full, uncapped** refund from block gas too:
+   - `tempo_block_regular_gas_used` (`crates/evm/src/block.rs`) =
+     `max(total_spent − state_gas − refunded, floor)`, used for section validation and to correct
+     the inner executor's pre-refund accumulator in `commit_transaction`.
+   - `gas_credits::apply_refund` (`crates/revm/src/gas_credits.rs`) now settles storage credits
+     in the **state dimension** on T11 (`refill_reservoir`, the same primitive as 0→x→0
+     restoration) instead of recording an execution refund — otherwise the settled 245k would sit
+     in `state_gas_spent` *and* the refund counter and be double-subtracted. Receipts are
+     unchanged; `state_gas_spent` now reflects only state actually created.
+   Result: the header again equals the receipts total minus the state-gas exemption; both tests
+   assert exemption 0 with header == receipts.
+
+**Expectations corrected (behavior reasonable, proposal was wrong):**
+
+3. Clearing a slot NOT created in the same tx refunds the legacy **4,800**, not a 245k
+   storage-credit refund — the minted credit belongs to the contract, it is not a sender refund.
+   The "uncapped 245k execution refund" path from the code-scan report needs a Refund-mode
+   contract and did not trigger for plain contract storage.
+4. A keychain scope violation charges only the gas actually used (**28,200** = intrinsic +
+   metered scope walk), not the full gas limit
+   (`..._scope_violation_halts_with_full_budget_limit`).
+5. Re-authorizing an existing key is rejected at validation with `KeyAlreadyExists`, so the
+   key-authorization intrinsic over-charge (245k state gas for already-nonzero slots) is
+   unreachable via duplicate authorization (`..._key_authorization_state_gas_estimate`).
+
+**Confirmed as designed:** additive state gas across calls; reservoir exact-fit boundary and
+mid-batch spill to gas_left; OOG on spill reverts the batch atomically consuming the full limit;
+halt consumes the full limit with full rollback; refunds are dropped when a later call fails;
+failed first-call CREATE bumps the protocol nonce (and does NOT with a 2D nonce, whose 225k
+new-key state gas persists on failure); CREATE intrinsic state gas 468k + 73.6k code deposit;
+gas_limit one below intrinsic is rejected while the exact fit (521,000 for an empty initcode) is
+accepted and fully consumed — an empty-code deploy does **not** refund `create_state_gas`; a
+fresh nonce-0 authority costs exactly 450k state gas with the delegation installed
+(bytecode state gas is 0); a fresh 2D nonce key costs 225k state gas; expiring nonces cost zero
+state gas; the calldata floor binds over the summed tokens of all calls (exactly 621,000, no
+state exemption); scope prevalidation charges regular gas only; above-cap gas limits spend state
+gas from the reservoir without billing the unused remainder.
 
 ### Reservoir hand-off between calls (`handler.rs:665-671`, `:737-741`)
 
-- [ ] `test_tip1016_batch_state_gas_additive_across_calls` — Call 1 and call 2 each SSTORE 0→nonzero; block-gas exemption equals the sum of both calls' state gas; receipt bills regular gas only.
-- [ ] `test_tip1016_batch_reservoir_exhausted_mid_batch_spills_to_gas_left` — Call 1 drains the reservoir; call 2's creation spills into `gas_left`; spill accounting must match the equivalent single-call spill.
-- [ ] `test_tip1016_batch_creation_at_exact_reservoir_boundary` — Second call's creation cost lands exactly on the remaining reservoir; no spill, off-by-one check on the hand-off.
-- [ ] `test_tip1016_batch_oog_when_spill_exceeds_gas_left` — Reservoir empty and `gas_left < sstore_set_state_gas`; the call OOGs and the whole batch reverts atomically.
+- [x] `test_tip1016_batch_state_gas_additive_across_calls` — Call 1 and call 2 each SSTORE 0→nonzero; block-gas exemption equals the sum of both calls' state gas; receipt bills regular gas only.
+- [x] `test_tip1016_batch_reservoir_exhausted_mid_batch_spills_to_gas_left` — Call 1 drains the reservoir; call 2's creation spills into `gas_left`; spill accounting must match the equivalent single-call spill.
+- [x] `test_tip1016_batch_creation_at_exact_reservoir_boundary` — Second call's creation cost lands exactly on the remaining reservoir; no spill, off-by-one check on the hand-off.
+- [x] `test_tip1016_batch_oog_when_spill_exceeds_gas_left` — Reservoir empty and `gas_left < sstore_set_state_gas`; the call OOGs and the whole batch reverts atomically.
 
 ### Failure path — `batch_gas` discarded (`handler.rs:686-729`)
 
-- [ ] `test_tip1016_batch_late_revert_billing_and_block_exemption` — Call 1 creates storage from the reservoir, call 2 reverts; assert all state rolled back, the user is billed for the consumed reservoir, and block-header treatment of the reverted state gas is consistent with the single-call reverted-SSTORE exemption (documents the `state_gas_spent = 0` asymmetry on the returned tracker).
-- [ ] `test_tip1016_batch_late_halt_consumes_gas_restores_reservoir` — Call 2 halts (invalid opcode): all regular gas consumed (`spend_all`), reservoir restored to its post-call-1 value, call 1's state gas rolled back.
-- [ ] `test_tip1016_batch_refund_dropped_when_later_call_fails` — Call 1 clears a slot (earns a refund), call 2 reverts; the refund must not survive (`set_refunded(0)` + discarded `batch_gas`).
-- [ ] `test_tip1016_batch_failed_create_first_call_nonce_semantics` — First-call CREATE reverts: protocol nonce (`nonce_key == 0`) is still bumped, 2D nonce is not (`handler.rs:699-714`); intrinsic `create_state_gas` refund lands in the unused reservoir, not billed.
+- [x] `test_tip1016_batch_late_revert_billing_and_block_exemption` — Call 1 creates storage, call 2 reverts; assert all state rolled back and the rolled-back state gas refunded (receipt delta vs an existing-slot control is regular gas only), consistent with the single-call reverted-SSTORE exemption (asymmetry fixed — see divergence 1 above).
+- [x] `test_tip1016_batch_late_halt_consumes_gas_restores_reservoir` — Call 2 halts (invalid opcode): all regular gas consumed (`spend_all`), reservoir restored to its post-call-1 value, call 1's state gas rolled back.
+- [x] `test_tip1016_batch_refund_dropped_when_later_call_fails` — Call 1 clears a slot (earns a refund), call 2 reverts; the refund must not survive (`set_refunded(0)` + discarded `batch_gas`).
+- [x] `test_tip1016_batch_failed_create_first_call_nonce_semantics` — First-call CREATE reverts: protocol nonce (`nonce_key == 0`) is still bumped, 2D nonce is not (`handler.rs:699-714`); intrinsic `create_state_gas` refund lands in the unused reservoir, not billed.
 
 ### Cross-call restoration and refunds (revm `frame.rs:614-627`)
 
-- [ ] `test_tip1016_batch_set_in_call1_clear_in_call2_nets_zero` — 0→x in call 1, x→0 in call 2: the second call's negative `state_gas_spent` contribution flows back through the batch settle (`saturating_add` of a negative child value); on T7+ this routes through a TIP-1060 credit settled once at tx end.
-- [ ] `test_tip1016_batch_refunds_accumulate_across_successful_calls` — Slot clears spread over several calls; refund counter accumulates per successful call and settles uncapped (T7+) at end of tx.
+- [x] `test_tip1016_batch_set_in_call1_clear_in_call2_nets_zero` — 0→x in call 1, x→0 in call 2: the second call's negative `state_gas_spent` contribution flows back through the batch settle (`saturating_add` of a negative child value); on T7+ this routes through a TIP-1060 credit settled once at tx end.
+- [x] `test_tip1016_batch_refunds_accumulate_across_successful_calls` — Slot clears spread over several calls; refund counter accumulates per successful call and settles uncapped (T7+) at end of tx.
 
 ### Batch intrinsic gas and reservoir sizing (`handler.rs:2283-2383`, `:2436`)
 
-- [ ] `test_tip1016_batch_create_intrinsic_state_gas_reserved` — CREATE as first call: `create_state_gas` (468k) charged at intrinsic time shrinks the reservoir before execution; exact-fit boundary at `gas_limit == initial_total_gas()`.
-- [ ] `test_tip1016_batch_gas_limit_one_below_intrinsic_rejected` — One gas below `initial_total_gas()` → `CallGasCostMoreThanGasLimit` (`handler.rs:2463`).
-- [ ] `test_tip1016_batch_auth_list_per_auth_state_gas` — AA tx carrying `tempo_authorization_list`: 225k state gas per auth, doubled for `auth.nonce == 0` (`handler.rs:2321-2324`), `tx_eip7702_state_gas_bytecode` contributes 0; billed amount vs header exemption.
-- [ ] `test_tip1016_batch_2d_nonce_new_key_state_gas` — `nonce_key != 0, nonce == 0` adds `new_account_state_gas` at intrinsic while the actual nonce write runs unmetered (`handler.rs:1190`); assert the estimate is what the user pays.
-- [ ] `test_tip1016_batch_expiring_nonce_no_state_gas` — Expiring-nonce tx pays the flat 13k as regular gas; zero state gas despite real ring-buffer SSTOREs.
-- [ ] `test_tip1016_batch_key_authorization_state_gas_estimate` — Inline `KeyAuthorization` on T11: intrinsic state gas = `sstore_set_state_gas × intended_writes` (`handler.rs:368-374`) while the writes run unmetered and persist even if the batch reverts (`handler.rs:1554-1564`); include the re-authorize-existing-key case (slots already nonzero → intrinsic over-charge, state-gas block exemption for state never created).
-- [ ] `test_tip1016_batch_calldata_floor_over_summed_tokens` — Floor gas computed over the summed tokens of all calls (`handler.rs:2368`, `:2380`); floor-wins case zeroes the reservoir and TIP20 billing must agree.
+- [x] `test_tip1016_batch_create_intrinsic_state_gas_reserved` — CREATE as first call: `create_state_gas` (468k) charged at intrinsic time shrinks the reservoir before execution; exact-fit boundary at `gas_limit == initial_total_gas()`.
+- [x] `test_tip1016_batch_gas_limit_one_below_intrinsic_rejected` — One gas below `initial_total_gas()` → `CallGasCostMoreThanGasLimit` (`handler.rs:2463`).
+- [x] `test_tip1016_batch_auth_list_per_auth_state_gas` — AA tx carrying `tempo_authorization_list`: 225k state gas per auth, doubled for `auth.nonce == 0` (`handler.rs:2321-2324`), `tx_eip7702_state_gas_bytecode` contributes 0; billed amount vs header exemption.
+- [x] `test_tip1016_batch_2d_nonce_new_key_state_gas` — `nonce_key != 0, nonce == 0` adds `new_account_state_gas` at intrinsic while the actual nonce write runs unmetered (`handler.rs:1190`); assert the estimate is what the user pays.
+- [x] `test_tip1016_batch_expiring_nonce_no_state_gas` — Expiring-nonce tx pays the flat 13k as regular gas; zero state gas despite real ring-buffer SSTOREs.
+- [x] `test_tip1016_batch_key_authorization_state_gas_estimate` — Inline `KeyAuthorization` on T11: intrinsic state gas = `sstore_set_state_gas × intended_writes` (`handler.rs:368-374`) while the writes run unmetered and persist even if the batch reverts (`handler.rs:1554-1564`); include the re-authorize-existing-key case (slots already nonzero → intrinsic over-charge, state-gas block exemption for state never created).
+- [x] `test_tip1016_batch_calldata_floor_over_summed_tokens` — Floor gas computed over the summed tokens of all calls (`handler.rs:2368`, `:2380`); floor-wins case zeroes the reservoir and TIP20 billing must agree.
 
 ### Keychain scope prevalidation (`handler.rs:440-528`)
 
-- [ ] `test_tip1016_batch_scope_prevalidation_charges_regular_gas_only` — Metered prevalidation deducts from `remaining` only (`handler.rs:508`); reservoir and state-gas counters untouched.
-- [ ] `test_tip1016_batch_scope_violation_halts_with_full_budget_limit` — Scope check fails → synthetic halt frame with limit widened to the tx budget (`handler.rs:643-647`); billing and header accounting consistent.
+- [x] `test_tip1016_batch_scope_prevalidation_charges_regular_gas_only` — Metered prevalidation deducts from `remaining` only (`handler.rs:508`); reservoir and state-gas counters untouched.
+- [x] `test_tip1016_batch_scope_violation_halts_with_full_budget_limit` — Scope check fails → synthetic halt frame with limit widened to the tx budget (`handler.rs:643-647`); billing and header accounting consistent.
 
 ### Receipt and block accounting (`handler.rs:750-758`, `crates/evm/src/block.rs:673`)
 
-- [ ] `test_tip1016_batch_receipt_gas_equals_batch_tracker` — Multi-call success: receipt `gas_used` comes from the wholesale-replaced batch tracker and equals the sum of per-call spends; header `gas_used` excludes the batch's total state gas.
-- [ ] `test_tip1016_batch_gas_limit_above_cap_reservoir_spend` — `gas_limit > 16,777,216` (legal at T11 — the excess is reservoir): batch spends state gas across calls; TIP20 pre-funds the full limit and unused reservoir is not billed.
+- [x] `test_tip1016_batch_receipt_gas_equals_batch_tracker` — Multi-call success: receipt `gas_used` comes from the wholesale-replaced batch tracker and equals the sum of per-call spends; header `gas_used` excludes the batch's total state gas.
+- [x] `test_tip1016_batch_gas_limit_above_cap_reservoir_spend` — `gas_limit > 16,777,216` (legal at T11 — the excess is reservoir): batch spends state gas across calls; TIP20 pre-funds the full limit and unused reservoir is not billed.
 
 ## eip_mainnet (2 of 3)
 
