@@ -938,17 +938,9 @@ mod tests {
             let amm_liquidity_reserve = 500_000u128;
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
-            // Mirror production cfg wiring (`evm_env_for_block`): Tempo gas tables per
-            // spec, with TIP-1016 (EIP-8037) left at its default (disabled).
-            let cfg = CfgEnv::<TempoHardfork>::default().with_spec_and_gas_params(
-                *hardfork,
-                tempo_gas_params_with_amsterdam(*hardfork, false),
-            );
-
             let mut evm = TempoEvm::new(
                 CacheDB::new(EmptyDB::default()),
                 EvmEnv {
-                    cfg_env: cfg,
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
                             beneficiary,
@@ -958,6 +950,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
+                    ..evm_env_with_spec(*hardfork)
                 },
             );
 
