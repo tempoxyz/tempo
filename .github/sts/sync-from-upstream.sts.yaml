@@ -1,7 +1,6 @@
 subject:
   - repo:tempoxyz/tempo-firedrill:ref:refs/heads/main
   - repo:tempoxyz/tempo-private-fork:ref:refs/heads/main
-  - repo:tempoxyz/tempo-wishfulcynic:ref:refs/heads/main
 permissions:
   contents: write
   workflows: write
