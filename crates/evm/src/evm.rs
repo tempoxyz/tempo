@@ -938,16 +938,9 @@ mod tests {
             let amm_liquidity_reserve = 500_000u128;
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
-            // Mirror production cfg wiring (`evm_env_for_block`): Tempo gas tables per
-            // spec, with TIP-1016 (EIP-8037) activating on T11.
-            let mut cfg = CfgEnv::<TempoHardfork>::default()
-                .with_spec_and_gas_params(*hardfork, tempo_gas_params(*hardfork));
-            cfg.enable_amsterdam_eip8037 = hardfork.is_t11();
-
             let mut evm = TempoEvm::new(
                 CacheDB::new(EmptyDB::default()),
                 EvmEnv {
-                    cfg_env: cfg,
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
                             beneficiary,
@@ -957,6 +950,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
+                    ..evm_env_with_spec(*hardfork)
                 },
             );
 
@@ -1269,11 +1263,16 @@ mod tests {
     // ==================== TIP-1000 EVM Configuration Tests ====================
 
     /// Helper to create EvmEnv with a specific hardfork spec.
+    ///
+    /// Mirrors production cfg wiring (`evm_env_for_block`): Tempo gas tables per
+    /// spec, with TIP-1016 (EIP-8037) activating on T11.
     fn evm_env_with_spec(
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
+        let mut cfg = CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        cfg.enable_amsterdam_eip8037 = spec.is_t11();
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
+            cfg,
             TempoBlockEnv::default(),
         )
     }

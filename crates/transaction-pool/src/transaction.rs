@@ -33,7 +33,10 @@ use tempo_precompiles::{
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
@@ -511,27 +514,15 @@ pub enum TempoPoolTransactionError {
     ///
     /// Thrown during pool admission when `valid_before` is less than or equal to
     /// the latest tip timestamp plus the pool's propagation buffer.
-    #[error(
-        "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
-    )]
-    InvalidValidBefore {
-        /// The transaction's `valid_before` timestamp.
-        valid_before: u64,
-        /// The minimum timestamp accepted by the pool.
-        min_allowed: u64,
-    },
+    #[error(transparent)]
+    InvalidValidBefore(#[from] InvalidValidBefore),
 
     /// An AA transaction's `valid_after` is too far in the future.
     ///
     /// Thrown during pool admission when `valid_after` exceeds the wall-clock time
     /// plus the pool's configured future-validity window.
-    #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
-    InvalidValidAfter {
-        /// The transaction's `valid_after` timestamp.
-        valid_after: u64,
-        /// The maximum timestamp accepted by the pool.
-        max_allowed: u64,
-    },
+    #[error(transparent)]
+    InvalidValidAfter(#[from] InvalidValidAfter),
 
     /// A pool-only keychain authorization limit failed.
     ///
@@ -688,8 +679,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::Evm(err) => err.is_bad_transaction(),
             Self::ExceedsNonPaymentLimit
-            | Self::InvalidValidBefore { .. }
-            | Self::InvalidValidAfter { .. }
+            | Self::InvalidValidBefore(_)
+            | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::Keychain(_) => false,
@@ -1143,17 +1134,17 @@ mod tests {
         let cases: &[(TempoPoolTransactionError, bool)] = &[
             (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
             (
-                TempoPoolTransactionError::InvalidValidBefore {
+                TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore {
                     valid_before: 100,
                     min_allowed: 200,
-                },
+                }),
                 false,
             ),
             (
-                TempoPoolTransactionError::InvalidValidAfter {
+                TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter {
                     valid_after: 200,
                     max_allowed: 100,
-                },
+                }),
                 false,
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),

@@ -17,7 +17,7 @@ use reth_revm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
-    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
+    nonce::NonceManager,
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
@@ -226,9 +226,11 @@ where
         expiring_nonce: ExpiringNonceReplay,
         block_timestamp: u64,
     ) -> Result<(), BlockExecutionError> {
+        let spec = self.inner.evm.ctx().cfg.spec;
+        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+        let capacity = spec.expiring_nonce_set_capacity();
         if expiring_nonce.valid_before <= block_timestamp
-            || expiring_nonce.valid_before
-                > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+            || expiring_nonce.valid_before > block_timestamp.saturating_add(max_expiry_secs)
         {
             return Err(StorageActionReplayError::ActionConflict.into());
         }
@@ -285,7 +287,7 @@ where
 
         let next = ptr
             .checked_add(U256::ONE)
-            .filter(|next| *next < EXPIRING_NONCE_SET_CAPACITY)
+            .filter(|next| *next < capacity)
             .unwrap_or(U256::ZERO);
         self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,

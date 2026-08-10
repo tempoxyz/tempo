@@ -217,12 +217,7 @@ impl BestTransactionsPrewarming {
                 .transaction
                 .is_expiring_nonce()
                 .then(|| {
-                    let valid_before = tx
-                        .transaction
-                        .tx_env()
-                        .tempo_tx_env
-                        .as_ref()?
-                        .valid_before?;
+                    let valid_before = tx.transaction.inner().valid_before()?;
                     Some(ExpiringNonceReplay {
                         hash: tx.transaction.expiring_nonce_hash()?,
                         valid_before,
