@@ -74,6 +74,14 @@ Before getting started, make sure you have the following installed:
 
 Get a local Tempo node running in minutes.
 
+### What these commands do
+
+- `just` — installs project dependencies and prepares the environment
+- `just build-all` — compiles all Tempo components
+- `cargo nextest run` — runs the full test suite
+- `just localnet` — starts a local Tempo network for development
+```
+
 ### As a user
 
 You can connect to Tempo's public testnet using the following details:
