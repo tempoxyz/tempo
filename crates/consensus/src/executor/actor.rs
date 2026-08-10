@@ -743,9 +743,13 @@ where
                 // A build is registered via a forkchoice update that makes
                 // its parent the head, so running it with the head anywhere
                 // else would fight the notarized-chain convergence. Only
-                // run it when the head already is the parent (the parent's
+                // run it when the parent is the head (the parent's
                 // pending-head report is sent ahead of the build request, so
-                // convergence usually got there first) - otherwise fail
+                // convergence usually got there first) or the forwarded
+                // finalized tip: consensus reports the parent as the pending
+                // head, so repointing the head backwards onto the tip is
+                // convergence - and the build's forkchoice update is the
+                // only mechanism that can perform that move. Otherwise fail
                 // fast: dropping the request drops its response channel,
                 // which signals the failure to the subscriber.
                 if self
