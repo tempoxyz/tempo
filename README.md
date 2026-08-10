@@ -63,7 +63,7 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
 
 ## Getting Started
 
-### As a user
+### As an operator
 
 You can connect to Tempo's public testnet using the following details:
 
