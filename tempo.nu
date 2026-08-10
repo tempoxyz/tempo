@@ -1363,6 +1363,7 @@ def generate-summary [
 
         $run_data = ($run_data | append [{
             label: $label
+            total_fees_paid: ($report | get -o total_fees_paid | default null)
             summary_warmup_blocks: $warmup_blocks
             blocks: $num_blocks
             total_tx: $total_tx
