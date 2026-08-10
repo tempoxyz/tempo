@@ -26,13 +26,17 @@ pub use follower::{
     Follower, PendingBlock, follower, overlay_account, overlay_storage, pending_chain,
     publish_snapshot, published_snapshot,
 };
-pub use mpt_flat_poc::FlatSnapshot;
+pub use mpt_flat_poc::{AccountSeed, FlatMpt, FlatSnapshot};
 pub use sparse::{RevealSink, SparseStats, SparseWorker, ops_to_post_state, sparse_enabled};
 pub use stream::{FlatStream, stream_enabled};
 
+pub fn storage_value_rlp(value: U256) -> Vec<u8> {
+    mpt_flat_poc::eth::storage_value_rlp(value)
+}
+
 use alloy_primitives::{B256, U256, keccak256};
 use alloy_rlp::Decodable as _;
-use mpt_flat_poc::{FlatMpt, Key, StateOp, hex};
+use mpt_flat_poc::{Key, StateOp, hex};
 use parking_lot::RwLock;
 use std::{io::Write as _, sync::OnceLock, time::Instant};
 
@@ -164,6 +168,48 @@ fn window() -> usize {
 const PERSIST_EVERY: u64 = 128;
 
 impl FlatShadow {
+    /// Create a fresh shadow from a complete checkpoint state. `load` must feed
+    /// every account (including its full storage) in hashed-key order.
+    fn init_from_checkpoint(
+        path: &str,
+        checkpoint_root: B256,
+        load: impl FnOnce(&mut FlatMpt) -> anyhow::Result<(u64, u64)>,
+    ) -> anyhow::Result<Self> {
+        for suffix in ["", ".meta", ".meta.prev", ".timings"] {
+            let _ = std::fs::remove_file(format!("{path}{suffix}"));
+        }
+        let started = Instant::now();
+        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
+            .map_err(|e| anyhow::anyhow!("checkpoint create: {e:#}"))?;
+        let (accounts, slots) = load(&mut db)?;
+        anyhow::ensure!(
+            db.root() == checkpoint_root.0,
+            "flat checkpoint root {} != canonical checkpoint root {checkpoint_root}",
+            hex(db.root()),
+        );
+        db.persist()
+            .map_err(|e| anyhow::anyhow!("checkpoint persist: {e:#}"))?;
+        let timings = std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!("{path}.timings"))?,
+        );
+        tracing::info!(
+            target: "flatmpt",
+            root = %hex(db.root()), accounts, slots,
+            elapsed_s = started.elapsed().as_secs(), path,
+            "flat MPT initialized from canonical checkpoint"
+        );
+        Ok(Self {
+            db,
+            entries: Vec::new(),
+            timings,
+            blocks_since_persist: 0,
+            prof_acc: [0; 8],
+        })
+    }
+
     /// Create a fresh shadow at `path` (existing files wiped) holding exactly
     /// the genesis state, verified against `genesis_root`.
     fn init(
@@ -655,10 +701,11 @@ impl FlatShadow {
 /// In bloat mode the genesis-root assertion is skipped here (the header root is
 /// only known post-dump); the first `root_for`/`begin_stream` parent check is
 /// the gate instead.
+static SHADOW: OnceLock<Option<RwLock<FlatShadow>>> = OnceLock::new();
+
 pub fn shadow(
     genesis: impl FnOnce() -> (Vec<(Key, StateOp)>, B256),
 ) -> Option<&'static RwLock<FlatShadow>> {
-    static SHADOW: OnceLock<Option<RwLock<FlatShadow>>> = OnceLock::new();
     SHADOW
         .get_or_init(|| {
             if mode() == FlatMode::Off {
@@ -674,6 +721,74 @@ pub fn shadow(
                 (None, None) => FlatShadow::init(&path, ops, root),
             };
             Some(RwLock::new(shadow.expect("flat MPT genesis init failed")))
+        })
+        .as_ref()
+}
+
+/// Initialize the process-wide shadow from a complete canonical checkpoint.
+/// Subsequent calls to [`shadow`] reuse this instance.
+pub fn shadow_from_checkpoint(
+    checkpoint_number: u64,
+    checkpoint_root: B256,
+    load: impl FnOnce(&mut FlatMpt) -> anyhow::Result<(u64, u64)>,
+) -> Option<&'static RwLock<FlatShadow>> {
+    SHADOW
+        .get_or_init(|| {
+            if mode() == FlatMode::Off {
+                return None;
+            }
+            let path = std::env::var("TEMPO_FLATMPT").expect("TEMPO_FLATMPT checked by mode()");
+            let anchor_path = format!("{path}.anchor");
+            let reopened = (|| -> anyhow::Result<Option<FlatShadow>> {
+                let anchor = match std::fs::read_to_string(&anchor_path) {
+                    Ok(anchor) => anchor,
+                    Err(_) => return Ok(None),
+                };
+                let mut fields = anchor.split_whitespace();
+                let anchor_number: u64 = fields
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing flat anchor number"))?
+                    .parse()?;
+                let anchor_root = fields
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing flat anchor root"))?;
+                if anchor_number != checkpoint_number {
+                    return Ok(None);
+                }
+                let db = FlatMpt::open(&path).map_err(|e| anyhow::anyhow!("checkpoint open: {e:#}"))?;
+                if hex(db.root()) != anchor_root {
+                    return Ok(None);
+                }
+                let timings = std::io::BufWriter::new(
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(format!("{path}.timings"))?,
+                );
+                let shadow = FlatShadow {
+                    db,
+                    entries: Vec::new(),
+                    timings,
+                    blocks_since_persist: 0,
+                    prof_acc: [0; 8],
+                };
+                if shadow.current_root() != checkpoint_root {
+                    return Ok(None);
+                }
+                tracing::info!(target: "flatmpt", block = checkpoint_number, root = %checkpoint_root, "flat MPT reopened at canonical checkpoint");
+                Ok(Some(shadow))
+            })()
+            .expect("flat MPT checkpoint reopen failed");
+            let shadow = reopened.unwrap_or_else(|| {
+                FlatShadow::init_from_checkpoint(&path, checkpoint_root, load)
+                    .expect("flat MPT checkpoint init failed")
+            });
+            std::fs::write(
+                &anchor_path,
+                format!("{checkpoint_number} {}\n", hex(shadow.db.root())),
+            )
+            .expect("write flat MPT anchor");
+            Some(RwLock::new(shadow))
         })
         .as_ref()
 }
