@@ -938,13 +938,9 @@ mod tests {
             let amm_liquidity_reserve = 500_000u128;
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(*hardfork);
-
             let mut evm = TempoEvm::new(
                 CacheDB::new(EmptyDB::default()),
                 EvmEnv {
-                    cfg_env: cfg,
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
                             beneficiary,
@@ -954,6 +950,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
+                    ..evm_env_with_spec(*hardfork)
                 },
             );
 
