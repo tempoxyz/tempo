@@ -1,53 +1,24 @@
 //! Drives the actual execution forwarding blocks and setting forkchoice state.
 //!
-//! This agent forwards finalized blocks from the consensus layer to the
-//! execution layer and tracks the digest of the latest finalized block.
-//! It also advances the canonical chain by sending forkchoice-updates.
+//! This agent ingests (monotonically) increasing finalized blocks from the
+//! marshal actor and forwards them to the execution layer as `newPayload` +
+//! `forkchoiceUpdated` pairs.
 //!
-//! Beyond finalizations, the agent tracks the *pending head*: the parent of
-//! the most recent consensus context handed to the application on
-//! propose/verify. Such a parent is doubly informative - it must be
-//! notarized for the proposal to be valid, and it is the block consensus
-//! reports building on. The agent reconstructs the pending head's ancestry
-//! on top of the finalized tip and converges the execution layer's head
-//! onto it, fetching missing block bodies from the marshal actor in the
-//! background. This decouples updating the execution layer from the
-//! lifetime of individual consensus requests: even if simplex aborts a view
-//! (and with it the application's verify/propose future), the executor
-//! retains what it learned and keeps the execution layer in sync.
+//! In addition, the agent:
 //!
-//! Reported parents are not monotonic: after nullifications, a later view
-//! may build on an *older* notarized block than its predecessor did (a
-//! notarized-but-uncertified block is abandoned). Convergence therefore
-//! follows the report order, and may legitimately move the execution
-//! layer's head *backwards* onto the pending head.
+//! 1. tracks the canonical (notarized) head of the simplex engine,
+//! 2. drives the execution layer toward that notarized head,
+//! 3. and validates and builds blocks.
 //!
-//! Execution-layer work is prioritized by consensus latency: validating a
-//! proposal, then building one, then forwarding notarized blocks, then
-//! forwarding finalized blocks.
+//! The notarization and finalization pipelines are strictly separate:
+//! the marshal actor informs the executor of the finalized network tip.
+//! Notarizations then are strictly above that finalized network tip. If the
+//! executor is at the finalized network tip, then the executor will forward
+//! the (notarized) child to the execution layer.
 //!
-//! Only notarized-block forwarding and the finalization pipeline ever move
-//! the execution layer's head. A build request is dispatched if and only if
-//! the head already is the build's parent - its forkchoice update
-//! re-affirms the head to register the build rather than moving it - and is
-//! failed fast otherwise, so a build can never fight the notarized-chain
-//! convergence (see [`Actor::start_next_execution_task`]).
-//!
-//! The finalized tip of the *network* (reported by the marshal, possibly
-//! ahead of the finalized blocks delivered so far) marks an ownership
-//! boundary: blocks at or below it belong exclusively to the ordered,
-//! acknowledged, fatal-on-failure finalization pipeline, and the
-//! notarized-chain machinery prunes itself to strictly above it. Forwarding
-//! of notarized blocks is explicitly gated on the *locally* forwarded
-//! finalized tip having caught up with the network's: until then it stays
-//! dormant instead of racing the finalization pipeline into syncing
-//! failures.
-//!
-//! Validation requests are deliberately kept off that convergence machinery:
-//! a block is validated with a single new-payload request, which requires the
-//! execution layer to already know the block's parent. If it does not, the
-//! validation fails (costing the node its vote for that view) and the gap is
-//! repaired in the background instead of on the latency-critical path.
+//! Requests to verify or build blocks work in a similar manner: a request to
+//! verify or build a block on top of some `$PARENT` will only pass if the the
+//! local tracked tip is at `$PARENT`.
 
 use std::{
     collections::VecDeque,
@@ -90,7 +61,7 @@ use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument
 
 use super::{
     Config,
-    ingress::{Build, Command, Message, ValidateBlock},
+    ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -572,8 +543,8 @@ where
             Command::PendingHeadReport(report) => {
                 self.record_pending_head(report.context);
             }
-            Command::ValidateBlock(request) => {
-                let ValidateBlock {
+            Command::VerifyBlock(request) => {
+                let VerifyBlock {
                     round,
                     block,
                     validator_set,
@@ -586,7 +557,7 @@ where
                 queue_consensus_request(
                     &mut self.pending_consensus_request,
                     round,
-                    ConsensusRequest::Validate(ValidateBlockRequest {
+                    ConsensusRequest::Verify(VerifyBlockRequest {
                         cause,
                         block,
                         validator_set,
@@ -706,19 +677,15 @@ where
         }
 
         // Latency critical requests come first: consensus is waiting on
-        // them to vote on or propose a block. One exception: if the next
-        // notarized block to forward or the latest finalized tip is the
-        // request's parent, the request is put back and falls through to the
-        // forwarding below, after which it can pass. The finalized block may
-        // arrive from marshal after this check. Any deeper gap fails the
-        // request fast and heals in the background instead.
+        // them to vote on or propose a block.
+        //
+        // Fail fast if validation or building cannot start immediately.
+        //
+        // One exception: if verification or build parent is the next notarized
+        // block to forward (or if the finalized target is the parent), this
+        // check falls through and is picked back up on the next iteration.
         match self.pending_consensus_request.take() {
-            Some((round, ConsensusRequest::Validate(request))) => {
-                // A validation only needs its parent to be known to the
-                // execution layer; the local head and the local finalized
-                // tip provably are. Deferring on those would deadlock: both
-                // were already forwarded, so no forwarding below will ever
-                // deliver them again.
+            Some((round, ConsensusRequest::Verify(request))) => {
                 if self
                     .notarized_tree
                     .is_local_notarized_or_finalized_tip(request.block.parent_digest())
@@ -737,25 +704,13 @@ where
                     ));
                     return;
                 }
-                self.pending_consensus_request = Some((round, ConsensusRequest::Validate(request)));
+                self.pending_consensus_request = Some((round, ConsensusRequest::Verify(request)));
             }
             Some((round, ConsensusRequest::Build { cause, build })) => {
-                // A build is registered via a forkchoice update that makes
-                // its parent the head, so running it with the head anywhere
-                // else would fight the notarized-chain convergence. Only
-                // run it when the parent is the head (the parent's
-                // pending-head report is sent ahead of the build request, so
-                // convergence usually got there first) or the forwarded
-                // finalized tip: consensus reports the parent as the pending
-                // head, so repointing the head backwards onto the tip is
-                // convergence - and the build's forkchoice update is the
-                // only mechanism that can perform that move. Otherwise fail
-                // fast: dropping the request drops its response channel,
-                // which signals the failure to the subscriber.
-                if self
-                    .notarized_tree
-                    .is_local_notarized_or_finalized_tip(build.digest)
-                {
+                // Builds are registered via FCU setting the head hash to the
+                // parent. So running it with the head anywhere else would fight
+                // notarized-chain convergence.
+                if self.notarized_tree.is_local_head(build.digest) {
                     let on_top_of = self.notarized_tree.local_state();
                     let fut = execute_build(
                         self.context.child("build"),
@@ -910,7 +865,7 @@ impl Future for PendingNotarizedBlock {
 /// A latency-critical request from a consensus round: the node is either
 /// asked to validate the round's proposal or to build it.
 enum ConsensusRequest {
-    Validate(ValidateBlockRequest),
+    Verify(VerifyBlockRequest),
     Build { cause: Span, build: Build },
 }
 
@@ -946,7 +901,7 @@ fn queue_consensus_request(
 
 /// A request to validate a block against the execution layer via a
 /// new-payload request.
-struct ValidateBlockRequest {
+struct VerifyBlockRequest {
     cause: Span,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
@@ -1220,12 +1175,12 @@ where
 async fn execute_validation<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
-    request: ValidateBlockRequest,
+    request: VerifyBlockRequest,
 ) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
-    let ValidateBlockRequest {
+    let VerifyBlockRequest {
         cause: _,
         block,
         validator_set,

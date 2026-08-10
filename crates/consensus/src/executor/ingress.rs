@@ -41,8 +41,8 @@ impl Mailbox {
             .wrap_err("failed sending pending-head report to agent, this means it exited")
     }
 
-    /// Requests the agent to validate the block proposed in `round` against
-    /// the execution layer.
+    /// Requests the agent to verify the block proposed in `round` against the
+    /// execution layer.
     ///
     /// The block is validated via a single new-payload request, which requires
     /// the execution layer to already know the block's parent. If it does not,
@@ -51,7 +51,7 @@ impl Mailbox {
     ///
     /// The round arbitrates the slot shared with build requests: only a
     /// request from a newer round replaces a queued one.
-    pub(crate) async fn validate_block(
+    pub(crate) async fn verify_block(
         &self,
         round: Round,
         block: Block,
@@ -59,7 +59,7 @@ impl Mailbox {
     ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(ValidateBlock {
+            .unbounded_send(Message::in_current_span(VerifyBlock {
                 round,
                 block: Arc::new(block),
                 validator_set,
@@ -130,8 +130,8 @@ impl Message {
 pub(super) enum Command {
     /// Requests the agent to canonicalize the head and build a new payload.
     Build(Build),
-    /// Requests the agent to validate a block against the execution layer.
-    ValidateBlock(Box<ValidateBlock>),
+    /// Requests the agent to verify a block against the execution layer.
+    VerifyBlock(Box<VerifyBlock>),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
     /// Reports the contained context's parent as the pending head that
@@ -160,7 +160,7 @@ pub(super) struct Build {
 }
 
 #[derive(Debug)]
-pub(super) struct ValidateBlock {
+pub(super) struct VerifyBlock {
     pub(super) round: Round,
     pub(super) block: Arc<Block>,
     pub(super) validator_set: Option<Vec<B256>>,
@@ -173,9 +173,9 @@ impl From<Build> for Command {
     }
 }
 
-impl From<ValidateBlock> for Command {
-    fn from(value: ValidateBlock) -> Self {
-        Self::ValidateBlock(Box::new(value))
+impl From<VerifyBlock> for Command {
+    fn from(value: VerifyBlock) -> Self {
+        Self::VerifyBlock(Box::new(value))
     }
 }
 

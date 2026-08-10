@@ -185,11 +185,14 @@ impl NotarizedTree {
         }
     }
 
-    /// Whether `digest` is provably known to the execution layer: the
-    /// local head or the local finalized tip - the two anchors of the
-    /// latest forkchoice state the execution layer accepted.
+    /// Returns if `digest` is at the head or finalized tip of the tracked EL state.
     pub(super) fn is_local_notarized_or_finalized_tip(&self, digest: Digest) -> bool {
         self.local_head.1 == digest || self.local_finalized_tip.1 == digest
+    }
+
+    /// Returns if `digest` is at the head of the tracked EL state.
+    pub(super) fn is_local_head(&self, digest: Digest) -> bool {
+        self.local_head.1 == digest
     }
 
     /// Whether `digest` is the latest finalized tip reported by consensus.

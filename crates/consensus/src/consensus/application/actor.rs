@@ -888,7 +888,7 @@ async fn verify_block(
     );
 
     executor
-        .validate_block(round, block.clone(), validator_set)
+        .verify_block(round, block.clone(), validator_set)
         .await
 }
 

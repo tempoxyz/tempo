@@ -7,7 +7,7 @@ use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 use commonware_consensus::Heightable as _;
 
 use super::{
-    ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, ValidateBlockRequest,
+    ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
     notarized_tree::LocalState, queue_consensus_request,
 };
 use crate::consensus::{Digest, block::Block};
@@ -72,7 +72,7 @@ fn consensus_requests_from_stale_rounds_are_dropped() {
     // stand in for both.
     fn validate_request(view: u64, height: u64) -> ConsensusRequest {
         let (response, _rx) = futures::channel::oneshot::channel();
-        ConsensusRequest::Validate(ValidateBlockRequest {
+        ConsensusRequest::Verify(VerifyBlockRequest {
             cause: tracing::Span::none(),
             block: block(view, height, Digest(B256::ZERO)).into(),
             validator_set: None,
@@ -82,7 +82,7 @@ fn consensus_requests_from_stale_rounds_are_dropped() {
 
     fn queued_height(slot: &Option<(Round, ConsensusRequest)>) -> Option<u64> {
         slot.as_ref().map(|(_, request)| match request {
-            ConsensusRequest::Validate(validate) => validate.block.height().get(),
+            ConsensusRequest::Verify(validate) => validate.block.height().get(),
             ConsensusRequest::Build { .. } => unreachable!("test only queues validations"),
         })
     }
