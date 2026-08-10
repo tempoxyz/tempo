@@ -217,8 +217,7 @@ struct Shared {
 /// The `tempo/1` protocol before it is installed into Reth's network.
 ///
 /// Reth clones node definitions while it assembles their components, so this
-/// value contains only shared transport state. [`Self::install`] binds it to
-/// the network before Reth can create a `tempo/1` connection.
+/// value contains only shared transport state.
 #[derive(Debug, Clone)]
 pub struct GossipProtocol {
     shared: Arc<Shared>,
