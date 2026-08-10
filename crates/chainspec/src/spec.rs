@@ -83,9 +83,6 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T11 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t11_time: Option<u64>,
-    /// Activation timestamp for T12 hardfork.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    t12_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
