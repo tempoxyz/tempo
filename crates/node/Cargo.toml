@@ -49,6 +49,7 @@ reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-storage-api.workspace = true
+reth-db-api.workspace = true
 reth-trie-common.workspace = true
 alloy-consensus.workspace = true
 tempo-flatmpt.workspace = true
@@ -62,6 +63,7 @@ alloy.workspace = true
 alloy-primitives.workspace = true
 
 async-trait.workspace = true
+anyhow = "1"
 clap.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
