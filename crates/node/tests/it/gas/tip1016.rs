@@ -44,8 +44,10 @@ use tempo_primitives::{
 };
 
 use super::helpers::{build_call_tx, build_create_tx, test_signer};
-use crate::tempo_transaction::helpers::sign_aa_tx_with_secp256k1_access_key;
-use crate::utils::{SingleNodeSetup, TestNodeBuilder};
+use crate::{
+    tempo_transaction::helpers::sign_aa_tx_with_secp256k1_access_key,
+    utils::{SingleNodeSetup, TestNodeBuilder},
+};
 
 /// Gas limit used for every non-batch test transaction.
 const TX_GAS_LIMIT: u64 = 5_000_000;
@@ -228,20 +230,6 @@ impl BlockGas {
         assert_eq!(
             self.state_gas(),
             expected as i64,
-            "state gas exemption mismatch (block_gas_used={}, receipts_total_gas={})",
-            self.block_gas_used,
-            self.receipts_total_gas,
-        );
-        self
-    }
-
-    /// Signed variant of `assert_state_gas` for cases where the block header is
-    /// charged MORE than the receipts (negative exemption).
-    #[track_caller]
-    fn assert_state_gas_signed(&self, expected: i64) -> &Self {
-        assert_eq!(
-            self.state_gas(),
-            expected,
             "state gas exemption mismatch (block_gas_used={}, receipts_total_gas={})",
             self.block_gas_used,
             self.receipts_total_gas,

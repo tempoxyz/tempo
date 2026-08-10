@@ -131,7 +131,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         }
     };
 
-    // Before TIP-1016 storage_state_gas was used to charge executiong gas.
+    // Before TIP-1016 storage_state_gas was used to charge execution gas.
 
     let sstore_flags = SstoreTransitionFlags::from(caller_state_load);
 

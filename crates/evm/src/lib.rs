@@ -182,8 +182,7 @@ impl ConfigureEvm for TempoEvmConfig {
         // TIP-1016 (EIP-8037 state gas split) activates with the T11 hardfork: the T11
         // gas table carries the regular/state split and `enable_amsterdam_eip8037` turns
         // on the split everywhere it is checked downstream.
-        let mut cfg_env =
-            cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
@@ -229,8 +228,7 @@ impl ConfigureEvm for TempoEvmConfig {
 
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 activates with the
         // T11 hardfork (see `evm_env_for_block` for details).
-        let mut cfg_env =
-            cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
         cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
