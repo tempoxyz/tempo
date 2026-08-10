@@ -728,12 +728,16 @@ where
 
         // The inner executor accumulates upstream's pre-refund
         // `block_regular_gas_used` (EIP-7778 semantics); correct the
-        // accumulator down to Tempo's refund-aware value so the block header
-        // and the available-gas checks reflect the full refund.
+        // accumulator down to Tempo's refund-aware value (`block_gas_used`,
+        // computed via `tempo_block_regular_gas_used` at execute time) so the
+        // block header and the available-gas checks reflect the full refund.
         let refund_adjustment = if self.evm().cfg.enable_amsterdam_eip8037 {
-            let gas = inner.result.result.gas();
-            gas.block_regular_gas_used()
-                .saturating_sub(tempo_block_regular_gas_used(gas))
+            inner
+                .result
+                .result
+                .gas()
+                .block_regular_gas_used()
+                .saturating_sub(block_gas_used)
         } else {
             0
         };
