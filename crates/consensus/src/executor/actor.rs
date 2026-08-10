@@ -69,7 +69,7 @@ use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics as RuntimeMetrics, Pacer, Spawner, spawn_cell,
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, bail, ensure};
+use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
 use futures::{
     FutureExt as _, StreamExt as _,
     channel::{
@@ -218,22 +218,51 @@ where
 
         let canonical_state = execution_node.provider.canonical_in_memory_state();
 
-        let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
         let execution_finalized_num_hash = canonical_state
             .get_finalized_num_hash()
             .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
 
-        // The forkchoice state the executor starts from: the execution
-        // layer's own view of its chain.
-        let local_state = LocalState {
-            head: (
-                Height::new(head_num_hash.number),
-                Digest(head_num_hash.hash),
-            ),
-            finalized: (
+        // The finalized point the executor starts from. Normally this is the
+        // execution layer's own finalized tip, from which the startup
+        // backfill climbs to the finalized floor. The floor can also sit
+        // *below* the execution layer's finality: a restored consensus
+        // snapshot may anchor below the finality of the execution database
+        // it is restored next to. The marshal then re-delivers finalized
+        // blocks from the floor, so the tracked state must start there for
+        // the re-delivery to line up; the already-finalized blocks are
+        // acknowledged without involving the execution layer (see
+        // [`forward_finalized`]).
+        let finalized = if finalized_floor.get() < execution_finalized_num_hash.number {
+            let digest = execution_node
+                .provider
+                .block_hash(finalized_floor.get())
+                .wrap_err_with(|| {
+                    format!(
+                        "failed reading canonical execution block hash at the \
+                        finalized floor height `{finalized_floor}`"
+                    )
+                })?
+                .ok_or_eyre(format!(
+                    "no canonical execution block hash at the finalized floor \
+                    height `{finalized_floor}`, even though the floor is below \
+                    the execution layer's finalized height `{}`",
+                    execution_finalized_num_hash.number,
+                ))?;
+            (finalized_floor, Digest(digest))
+        } else {
+            (
                 Height::new(execution_finalized_num_hash.number),
                 Digest(execution_finalized_num_hash.hash),
-            ),
+            )
+        };
+
+        // The forkchoice state the executor starts from: the startup
+        // finalized point for both head and finalized - the two are not
+        // differentiated at startup. The head converges onto the notarized
+        // tip through normal operation.
+        let local_state = LocalState {
+            head: finalized,
+            finalized,
         };
 
         Ok(Self {
@@ -448,7 +477,6 @@ where
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
-                canonicalized,
                 target,
                 request,
             )
@@ -1099,7 +1127,6 @@ where
         execution_node,
         public_key,
         metrics,
-        canonicalized,
         target,
         request,
     )
@@ -1472,6 +1499,65 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     attrs: Option<TempoPayloadAttributes>,
     kind: ForkchoiceUpdateKind,
 ) -> eyre::Result<Option<PayloadId>> {
+    // The execution layer's finalized tip only ever advances. The tracked
+    // state can trail the execution layer's finality: it starts at the
+    // consensus finalized floor, which can sit below the execution layer's
+    // finalized tip after a snapshot restore, and only catches up as the
+    // marshal re-delivers the already-finalized blocks.
+    //
+    // Whenever the execution layer's finality is at or ahead of the tracked
+    // finalized block, that block must lie on the execution layer's
+    // canonical chain - anything else means two conflicting blocks were
+    // finalized. A forkchoice state whose finalized block is strictly below
+    // the execution layer's own is stale in its entirety and is not
+    // submitted. Callers treat the skip as a no-op; a payload-build request
+    // affected by it fails through the missing payload ID.
+    if let Some(execution_finalized) = execution_node
+        .provider
+        .canonical_in_memory_state()
+        .get_finalized_num_hash()
+        && execution_finalized.number >= canonicalized.finalized.0.get()
+    {
+        let canonical_digest = execution_node
+            .provider
+            .block_hash(canonicalized.finalized.0.get())
+            .wrap_err_with(|| {
+                format!(
+                    "failed reading canonical execution block hash at the tracked \
+                    finalized height `{}`",
+                    canonicalized.finalized.0,
+                )
+            })?
+            .ok_or_else(|| {
+                eyre!(
+                    "no canonical execution block hash at the tracked \
+                    finalized height `{}`, even though it is at or below the \
+                    execution layer's finalized height `{}`",
+                    canonicalized.finalized.0,
+                    execution_finalized.number,
+                )
+            })?;
+        ensure!(
+            canonical_digest == canonicalized.finalized.1.0,
+            "tracked finalized block `{}` at height `{}` conflicts with the \
+            execution layer's canonical block `{canonical_digest}` at the same \
+            height, which the execution layer already considers final; two \
+            different blocks must never be finalized at the same height",
+            canonicalized.finalized.1,
+            canonicalized.finalized.0,
+        );
+
+        if execution_finalized.number > canonicalized.finalized.0.get() {
+            debug!(
+                execution_finalized_height = execution_finalized.number,
+                execution_finalized_hash = %execution_finalized.hash,
+                "tracked finalized state is below the execution layer's \
+                finalized tip; skipping the forkchoice update",
+            );
+            return Ok(None);
+        }
+    }
+
     let fcu_response = execution_node
         .add_ons_handle
         .beacon_engine_handle
@@ -1480,28 +1566,21 @@ async fn submit_forkchoice_update<TContext: Pacer>(
         .await
         .wrap_err("failed requesting execution layer to update forkchoice state")?;
 
-    if kind == ForkchoiceUpdateKind::Heartbeat {
-        if fcu_response.is_invalid() {
-            warn!(
-                payload_status = %fcu_response.payload_status,
-                "execution layer reported FCU status",
-            );
-        } else {
-            info!(
-                payload_status = %fcu_response.payload_status,
-                "execution layer reported FCU status",
-            );
-        }
+    if fcu_response.is_invalid() {
+        warn!(
+            payload_status = %fcu_response.payload_status,
+            "execution layer reported FCU status",
+        );
     } else {
-        debug!(
+        info!(
             payload_status = %fcu_response.payload_status,
             "execution layer reported FCU status",
         );
     }
 
-    if fcu_response.is_invalid() {
-        return Err(Report::msg(fcu_response.payload_status)
-            .wrap_err("execution layer responded with error for forkchoice-update"));
+    if !fcu_response.is_valid() {
+        return Err(Report::msg(fcu_response.payload_status))
+            .wrap_err("forkchoice-update was not valid");
     }
 
     Ok(fcu_response.payload_id)
@@ -1512,13 +1591,14 @@ fn finalization_target(
     canonicalized: LocalState,
     block: &Block,
 ) -> eyre::Result<LocalState> {
-    // Startup aligns consensus and execution layers. Also, all blocks
-    // (finalized and notarized) arrive in the EL via the executor actor. There
-    // is no pipeline sync and no other way to drive the EL forward at this
-    // point.
+    // All blocks (finalized and notarized) arrive in the EL via the executor
+    // actor. There is no pipeline sync and no other way to drive the EL
+    // forward at this point.
     //
-    // This means that new finalized blocks must never unwind the execution
-    // layer's finalized tip and repoint to a point below it.
+    // The tracked finalized state starts at the lower of the execution
+    // layer's finalized tip and the consensus finalized floor - the lowest
+    // point the marshal delivers finalized blocks from. A delivery below the
+    // tracked state is therefore a protocol violation.
     //
     // Under normal operation, all blocks arrive in sequence. Only at startup
     // does the marshal actor forward a block at the height of the finalized
@@ -1582,7 +1662,6 @@ async fn forward_finalized<TContext: Pacer>(
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
-    canonicalized: LocalState,
     target: LocalState,
     request: FinalizedBlockRequest,
 ) -> eyre::Result<LocalState> {
@@ -1591,15 +1670,6 @@ async fn forward_finalized<TContext: Pacer>(
         block,
         acknowledgment,
     } = request;
-
-    if block.height() == canonicalized.finalized.0 {
-        debug!(
-            "finalized block matches the tracked finalized block; \
-            acknowledging re-delivery without re-execution"
-        );
-        acknowledgment.acknowledge();
-        return Ok(target);
-    }
 
     let consensus_context = block.header().consensus_context;
 
