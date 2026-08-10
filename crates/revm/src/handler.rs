@@ -47,10 +47,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
-    },
+    nonce::{INonce::getNonceCall, NonceManager},
     storage::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
@@ -1121,6 +1118,8 @@ where
         }
 
         if is_expiring_nonce {
+            let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+            let capacity = spec.expiring_nonce_set_capacity();
             // Expiring nonce transaction replay protection:
             // - Pre-T1B: use tx_hash for backwards-compatible behavior.
             // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
@@ -1162,7 +1161,7 @@ where
                             .read()
                             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                        let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+                        let next = (ptr + expiring_nonce_idx as u32) % capacity;
 
                         nonce_manager
                             .expiring_nonce_ring_ptr
@@ -1181,8 +1180,7 @@ where
                         TempoPrecompileError::NonceError(
                             tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
                         ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                            let max_allowed = block_timestamp.saturating_add(max_expiry_secs);
                             if valid_before <= block_timestamp {
                                 TempoInvalidTransaction::NonceManagerError(format!(
                                     "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
@@ -1190,7 +1188,7 @@ where
                                 .into()
                             } else {
                                 TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
                                 ))
                                 .into()
                             }
