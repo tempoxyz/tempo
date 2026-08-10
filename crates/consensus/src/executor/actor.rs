@@ -1006,13 +1006,7 @@ enum ExecutionTaskOutcome {
         /// execution layer and that still needs to be driven to completion.
         payload_job: Option<StartPayloadJob>,
     },
-    /// A notarized block could not be forwarded for a reason that carries no
-    /// evidence of consensus-execution divergence, for example because the
-    /// execution layer was unreachable or reported that it was still syncing.
-    ///
-    /// An outright *invalid* verdict by the execution layer is
-    /// [`ExecutionTaskOutcome::Fatal`] right away: a quorum of validators
-    /// accepted the block, so rejecting it means we diverged.
+    /// A notarized block could not be forwarded and should be retried later.
     NotarizedBlockRejected {
         digest: Digest,
         target: LocalState,
@@ -1152,17 +1146,7 @@ where
             canonicalized: Some(canonicalized),
             payload_job: None,
         },
-        // A notarized block carries the votes of a quorum of validators, of
-        // which at least f+1 honest ones validated it against their execution
-        // layers before voting. Our execution layer rejecting it as invalid
-        // means it has diverged from the network, whether or not the block
-        // ever finalizes.
-        Err(error) if error.is::<NotarizedBlockInvalid>() => ExecutionTaskOutcome::Fatal {
-            error: error.wrap_err("execution layer rejected a notarized block"),
-        },
-        // Everything else (the execution layer being unreachable or still
-        // syncing) carries no evidence of divergence. The cause is logged by
-        // `forward_notarized`.
+        // The cause is logged by `forward_notarized`.
         Err(_logged) => ExecutionTaskOutcome::NotarizedBlockRejected { digest, target },
     }
 }
@@ -1664,36 +1648,12 @@ async fn forward_finalized<TContext: Pacer>(
     Ok(target)
 }
 
-/// Sentinel error signalling that the execution layer executed a notarized
-/// block and rejected it as invalid, as opposed to being unable to process
-/// it at all.
-#[derive(Debug)]
-struct NotarizedBlockInvalid {
-    digest: Digest,
-    height: Height,
-    status: alloy_rpc_types_engine::PayloadStatus,
-}
-
-impl std::fmt::Display for NotarizedBlockInvalid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "payload status of notarized block `{}` at height `{}` was invalid: `{}`",
-            self.digest, self.height, self.status,
-        )
-    }
-}
-
-impl std::error::Error for NotarizedBlockInvalid {}
-
 /// Forwards a notarized block to the execution layer and makes it the head of
 /// the canonical chain.
 ///
 /// The caller is responsible for only forwarding blocks that link to the
 /// canonicalized state, so the new-payload request must come back valid;
-/// anything else is an error. An outright rejection is reported as
-/// [`NotarizedBlockInvalid`] so that the caller can distinguish divergence
-/// from the execution layer being unable to process the block.
+/// anything else is an error.
 #[instrument(
     skip_all,
     fields(
@@ -1710,9 +1670,6 @@ async fn forward_notarized<TContext: Pacer>(
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<LocalState> {
-    let height = block.height();
-    let digest = block.digest();
-
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
     let payload_status = execution_node
         .add_ons_handle
@@ -1728,13 +1685,6 @@ async fn forward_notarized<TContext: Pacer>(
             "failed sending new-payload request to execution engine to \
             forward notarized block",
         )?;
-    if payload_status.is_invalid() {
-        return Err(Report::new(NotarizedBlockInvalid {
-            digest,
-            height,
-            status: payload_status,
-        }));
-    }
     ensure!(
         payload_status.is_valid(),
         "payload status of notarized block was neither valid nor invalid \
