@@ -1,9 +1,11 @@
 //! Transaction fillers for Tempo network.
 
+mod fee_token;
 pub(crate) mod gas;
 mod nonce;
 mod sponsor;
 
+pub use fee_token::FeeTokenFiller;
 #[doc(hidden)]
 pub use gas::TempoGasFillable;
 pub use gas::TempoGasFiller;
