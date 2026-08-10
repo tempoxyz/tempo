@@ -714,7 +714,16 @@ where
         // request fast and heals in the background instead.
         match self.pending_consensus_request.take() {
             Some((round, ConsensusRequest::Validate(request))) => {
-                if !self.is_next_notarized_or_finalized_tip(request.block.parent_digest()) {
+                // A validation only needs its parent to be known to the
+                // execution layer; the local head and the local finalized
+                // tip provably are. Deferring on those would deadlock: both
+                // were already forwarded, so no forwarding below will ever
+                // deliver them again.
+                if self
+                    .notarized_tree
+                    .is_local_notarized_or_finalized_tip(request.block.parent_digest())
+                    || !self.is_next_notarized_or_finalized_tip(request.block.parent_digest())
+                {
                     let on_top_of = self.notarized_tree.local_state();
                     let fut = execute_validation(
                         self.context.child("validate"),
@@ -739,7 +748,10 @@ where
                 // convergence usually got there first) - otherwise fail
                 // fast: dropping the request drops its response channel,
                 // which signals the failure to the subscriber.
-                if self.notarized_tree.is_execution_head(build.digest) {
+                if self
+                    .notarized_tree
+                    .is_local_notarized_or_finalized_tip(build.digest)
+                {
                     let on_top_of = self.notarized_tree.local_state();
                     let fut = execute_build(
                         self.context.child("build"),
