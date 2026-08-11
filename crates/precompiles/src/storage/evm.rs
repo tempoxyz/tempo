@@ -1342,8 +1342,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_t11_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let code = Bytecode::new_raw(vec![0xef].into());
@@ -1562,8 +1562,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t4_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_t11_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
         let reservoir = 245_000;
         let mut provider = evm.provider_with_reservoir(reservoir);
 
@@ -1571,8 +1571,10 @@ mod tests {
         provider.sstore(address, slot, U256::ONE)?;
         provider.sstore(address, slot, U256::ZERO)?;
 
-        // 0→x→0 restoration: the 245k state portion refills the reservoir directly;
-        // only the 5,000 regular write portion goes through the capped refund counter.
+        // 0→x→0 restoration under the storage-credit hook: only the 5,000
+        // write portion goes through the capped refund counter. The 245k
+        // creditable portion is NOT returned — the x→0 clear mints a storage
+        // credit for the contract instead of refilling the reservoir.
         assert_eq!(
             provider.gas_refunded(),
             5_000,
@@ -1580,22 +1582,22 @@ mod tests {
         );
         assert_eq!(
             provider.state_gas_used(),
-            0,
-            "restoring the slot to its original zero should return all state gas"
+            245_000,
+            "the creditable portion stays consumed; the clear mints a credit instead"
         );
         assert_eq!(
             provider.reservoir(),
-            reservoir,
-            "the state-gas refill should land back in the reservoir"
+            0,
+            "no reservoir refill under the storage-credit hook"
         );
-
-        // Net regular gas: 7,200 (cold 0→x) + 100 (warm x→0) - 5,000 refund = 2,300.
-        // The spec's ideal net of GAS_WARM_ACCESS (100) is not reached because the cold
-        // access (2,100) and the two warm static accesses (200) are not returned; the
-        // 5,000 write premium is refunded in full.
-        let net_gas_after_refund =
-            provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
-        assert_eq!(net_gas_after_refund, 2_300);
+        assert_eq!(
+            provider.sload(
+                crate::STORAGE_CREDITS_ADDRESS,
+                crate::storage_credits::StorageCredits::slot(address)
+            )?,
+            U256::ONE,
+            "the x→0 clear must mint exactly one storage credit for the contract"
+        );
 
         Ok(())
     }
