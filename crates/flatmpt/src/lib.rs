@@ -146,6 +146,9 @@ fn fingerprint_chunk(ops: &[(Key, StateOp)]) -> [u8; 32] {
 pub struct FlatShadow {
     db: FlatMpt,
     entries: Vec<Entry>,
+    /// Canonical header root accepted as the parent of this checkpoint.
+    /// This differs from `db.root()` for block-0 databases initialized with state bloat.
+    checkpoint_parent: Option<B256>,
     timings: std::io::BufWriter<std::fs::File>,
     blocks_since_persist: u64,
     /// Engine phase nanos accumulated since the last commit_entry (profiling builds).
@@ -204,6 +207,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -242,6 +246,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -285,6 +290,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -424,6 +430,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -450,12 +457,12 @@ impl FlatShadow {
         self.db.snapshot()
     }
 
-    /// True when the live flat state is the given parent. The bloat/golden
-    /// exception mirrors `unwind_to`'s anchor escape: at block 1 the genesis
-    /// header still carries the pre-dump root, and the post-dump live state
-    /// IS the real parent state.
+    /// True when the live flat state is the given parent. A block-0 checkpoint
+    /// may accept the genesis header root as an alias because state bloat changes
+    /// the database root without rewriting the canonical genesis header.
     pub fn at_parent(&self, parent_root: B256) -> bool {
         self.db.root() == parent_root.0
+            || (self.entries.is_empty() && self.checkpoint_parent == Some(parent_root))
             || (self.entries.is_empty()
                 && (std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
                     || std::env::var_os("TEMPO_FLATMPT_GOLDEN").is_some()))
@@ -593,7 +600,8 @@ impl FlatShadow {
         // engine (CustomStateRoot) remains the hard correctness gate.
         if self.entries.is_empty()
             && self.db.root() != parent_root.0
-            && (std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
+            && (self.checkpoint_parent == Some(parent_root)
+                || std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
                 || std::env::var_os("TEMPO_FLATMPT_GOLDEN").is_some())
         {
             tracing::warn!(
@@ -730,6 +738,7 @@ pub fn shadow(
 pub fn shadow_from_checkpoint(
     checkpoint_number: u64,
     checkpoint_root: B256,
+    checkpoint_parent: B256,
     load: impl FnOnce(&mut FlatMpt) -> anyhow::Result<(u64, u64)>,
 ) -> Option<&'static RwLock<FlatShadow>> {
     SHADOW
@@ -768,6 +777,8 @@ pub fn shadow_from_checkpoint(
                 let shadow = FlatShadow {
                     db,
                     entries: Vec::new(),
+                    checkpoint_parent: (checkpoint_parent != checkpoint_root)
+                        .then_some(checkpoint_parent),
                     timings,
                     blocks_since_persist: 0,
                     prof_acc: [0; 8],
@@ -780,8 +791,11 @@ pub fn shadow_from_checkpoint(
             })()
             .expect("flat MPT checkpoint reopen failed");
             let shadow = reopened.unwrap_or_else(|| {
-                FlatShadow::init_from_checkpoint(&path, checkpoint_root, load)
-                    .expect("flat MPT checkpoint init failed")
+                let mut shadow = FlatShadow::init_from_checkpoint(&path, checkpoint_root, load)
+                    .expect("flat MPT checkpoint init failed");
+                shadow.checkpoint_parent =
+                    (checkpoint_parent != checkpoint_root).then_some(checkpoint_parent);
+                shadow
             });
             std::fs::write(
                 &anchor_path,
@@ -966,6 +980,25 @@ mod tests {
             s.root_for(5, B256::from([9u8; 32]), vec![acct(5, 1)])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_parent_alias_accepts_block_zero_header_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("checkpoint.flat");
+        let path = path.to_str().unwrap();
+        let genesis = vec![acct(1, 1)];
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (checkpoint_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let header_root = B256::from([9u8; 32]);
+
+        let mut shadow = FlatShadow::init(path, genesis, B256::from(checkpoint_root)).unwrap();
+        shadow.checkpoint_parent = Some(header_root);
+
+        assert!(shadow.at_parent(header_root));
+        shadow.unwind_to(header_root).unwrap();
+        assert_eq!(shadow.current_root(), B256::from(checkpoint_root));
     }
 
     #[test]
