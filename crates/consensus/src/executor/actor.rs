@@ -50,7 +50,7 @@ use futures::{
     future::BoxFuture,
     stream::FuturesUnordered,
 };
-use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
@@ -154,6 +154,16 @@ pub(crate) struct Actor<TContext> {
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
     finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
+    /// Number of block bodies held by the notarized tree.
+    notarized_tree_blocks: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    /// Height distance from the locally canonicalized finalized tip up to
+    /// the network's finalized tip: the undelivered finalized backlog.
+    finalization_lag: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    /// Height distance from the execution layer's head to the pending head:
+    /// the convergence backlog. Negative when consensus re-anchored below
+    /// the head; holds its last value while the pending head's height is
+    /// unknown (its body has not arrived yet).
+    convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
 }
 
 impl Metrics {
@@ -166,8 +176,38 @@ impl Metrics {
             "number of finalized blocks whose proposer matches this node's public key",
             Counter::default(),
         );
+        let notarized_tree_blocks = context.register(
+            "notarized_tree_blocks",
+            "number of block bodies held by the notarized tree",
+            Gauge::default(),
+        );
+        let finalization_lag = context.register(
+            "finalization_lag",
+            "height distance from the locally canonicalized finalized tip up to the \
+            network's finalized tip",
+            Gauge::default(),
+        );
+        let convergence_depth = context.register(
+            "convergence_depth",
+            "height distance from the execution layer's head to the pending head \
+            (negative after a re-anchor below the head)",
+            Gauge::default(),
+        );
         Self {
             finalized_blocks_proposed_by_self,
+            notarized_tree_blocks,
+            finalization_lag,
+            convergence_depth,
+        }
+    }
+
+    /// Publishes the tree's convergence measures.
+    fn observe(&self, tree: &NotarizedTree) {
+        let depths = tree.depths();
+        self.notarized_tree_blocks.set(depths.blocks as i64);
+        self.finalization_lag.set(depths.finalization_lag as i64);
+        if let Some(depth) = depths.convergence_depth {
+            self.convergence_depth.set(depth);
         }
     }
 }
@@ -292,8 +332,10 @@ where
         loop {
             // The tree is pruned to the advancing finalized tip here,
             // before the scheduling decisions below read it. The select
-            // branches only record primary state.
+            // branches only record primary state. Metrics observe the same
+            // healed state the scheduling reads.
             self.notarized_tree.heal();
+            self.metrics.observe(&self.notarized_tree);
 
             self.start_next_execution_task();
             self.update_notarized_block_fetch();

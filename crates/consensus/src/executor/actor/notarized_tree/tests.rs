@@ -541,6 +541,45 @@ fn convergence_is_imminent_only_one_step_from_an_anchor() {
     assert!(tree.converges_imminently(a2.digest()));
 }
 
+/// The tree's convergence measures: block-body count, the undelivered
+/// finalized backlog, and the (signed) distance from the local head to
+/// the pending head.
+#[test]
+fn depths_measure_backlogs() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    // Converged and empty: everything is zero.
+    let depths = tree.depths();
+    assert_eq!(depths.blocks, 0);
+    assert_eq!(depths.finalization_lag, 0);
+    assert_eq!(depths.convergence_depth, Some(0));
+
+    // Two recorded blocks, the pending head two above the local head.
+    let a = block(1, 11, finalized);
+    let b = block(2, 12, a.digest());
+    record(&mut tree, &a);
+    record(&mut tree, &b);
+    let depths = tree.depths();
+    assert_eq!(depths.blocks, 2);
+    assert_eq!(depths.convergence_depth, Some(2));
+
+    // A pending head without a body has no known height.
+    let c = block(3, 13, b.digest());
+    report_parent(&mut tree, &c);
+    assert_eq!(tree.depths().convergence_depth, None);
+
+    // A re-anchor below the head measures negative.
+    forwarded(&mut tree, &b);
+    tree.set_pending_head(round(4), a.digest());
+    assert_eq!(tree.depths().convergence_depth, Some(-1));
+
+    // An undelivered network tip is the finalization lag.
+    let tip = block(5, 13, b.digest());
+    tree.set_network_finalized_tip(round(5), Height::new(13), tip.digest());
+    assert_eq!(tree.depths().finalization_lag, 3);
+}
+
 /// The finalized tip is imminent while it is at most one delivery away.
 #[test]
 fn next_finalized_delivery_is_imminent() {

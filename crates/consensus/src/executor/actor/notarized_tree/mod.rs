@@ -149,6 +149,22 @@ pub(super) struct NotarizedTree {
     blocks: HashMap<Digest, BlockEntry>,
 }
 
+/// A snapshot of the tree's convergence measures, returned by
+/// [`NotarizedTree::depths`] and reported as metrics by the actor.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Depths {
+    /// Number of block bodies held by the tree.
+    pub(super) blocks: usize,
+    /// Height distance from the locally canonicalized finalized tip up to
+    /// the network's finalized tip: the undelivered finalized backlog.
+    pub(super) finalization_lag: u64,
+    /// Height distance from the execution layer's head to the pending
+    /// head: the convergence backlog. Negative when consensus re-anchored
+    /// below the head; `None` while the pending head's body - and with it
+    /// its height - is unknown.
+    pub(super) convergence_depth: Option<i64>,
+}
+
 /// The next convergence step toward the pending head, returned by
 /// [`NotarizedTree::next_to_forward`].
 #[derive(Debug)]
@@ -222,6 +238,28 @@ impl NotarizedTree {
         LocalState {
             head: self.local_head,
             finalized: self.local_finalized_tip,
+        }
+    }
+
+    /// A snapshot of the tree's convergence measures, for metrics.
+    pub(super) fn depths(&self) -> Depths {
+        let (_, network_finalized_height, network_finalized_digest) = self.network_finalized_tip;
+        let pending_height = if self.pending_head.digest == network_finalized_digest {
+            Some(network_finalized_height)
+        } else if self.pending_head.digest == self.local_head.1 {
+            Some(self.local_head.0)
+        } else {
+            self.blocks
+                .get(&self.pending_head.digest)
+                .map(|entry| entry.block.height())
+        };
+        Depths {
+            blocks: self.blocks.len(),
+            finalization_lag: network_finalized_height
+                .get()
+                .saturating_sub(self.local_finalized_tip.0.get()),
+            convergence_depth: pending_height
+                .map(|height| height.get() as i64 - self.local_head.0.get() as i64),
         }
     }
 
