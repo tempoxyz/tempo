@@ -28,7 +28,7 @@ use std::{
 
 use alloy_primitives::B256;
 
-use alloy_rpc_types_engine::PayloadId;
+use alloy_rpc_types_engine::{PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -73,6 +73,10 @@ mod tests;
 
 mod notarized_tree;
 use notarized_tree::{LocalState, NextToForward, NotarizedTree};
+
+/// How long a finalized block the execution layer has not accepted yet is
+/// withheld before it is retried.
+const FINALIZED_BLOCK_POSTPONE_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Actor<TContext> {
     context: ContextCell<TContext>,
@@ -405,6 +409,12 @@ where
                 let now = self.context.current();
                 self.notarized_tree.mark_rejected(&digest, now);
             }
+            ExecutionTaskOutcome::FinalizedBlockPostponed { request } => {
+                // Finalized blocks are strictly ordered: the postponed block
+                // goes back to the front of the queue. The cause is logged
+                // (and the retry paced) by the task itself.
+                self.pending_finalizations.push_front(request);
+            }
             ExecutionTaskOutcome::Fatal { error } => {
                 return Err(error.wrap_err("execution task failed"));
             }
@@ -443,21 +453,29 @@ where
             let target =
                 finalization_target(&self.execution_node, canonicalized, request.block.as_ref())?;
 
-            let canonicalized = forward_finalized(
-                self.context.as_present(),
-                self.execution_node.clone(),
-                self.public_key.clone(),
-                self.metrics.clone(),
-                target,
-                request,
-            )
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed forwarding backfilled finalized block at height `{height}` \
-                    to execution layer"
+            // A postponed block is retried until the execution layer accepts
+            // it; the retry pacing happens inside `forward_finalized`.
+            let mut request = request;
+            let canonicalized = loop {
+                match forward_finalized(
+                    self.context.as_present(),
+                    self.execution_node.clone(),
+                    self.public_key.clone(),
+                    self.metrics.clone(),
+                    target,
+                    request,
                 )
-            })?;
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed forwarding backfilled finalized block at height `{height}` \
+                        to execution layer"
+                    )
+                })? {
+                    ForwardFinalized::Forwarded(canonicalized) => break canonicalized,
+                    ForwardFinalized::Retry(postponed) => request = postponed,
+                }
+            };
             self.notarized_tree.set_local_state(canonicalized);
         }
 
@@ -977,6 +995,7 @@ impl ExecutionTaskFinished {
         match &self.outcome {
             ExecutionTaskOutcome::Completed { canonicalized, .. } => *canonicalized,
             ExecutionTaskOutcome::NotarizedBlockRejected { target, .. } => Some(*target),
+            ExecutionTaskOutcome::FinalizedBlockPostponed { .. } => None,
             ExecutionTaskOutcome::Fatal { .. } => None,
         }
     }
@@ -1015,6 +1034,11 @@ enum ExecutionTaskOutcome {
         digest: Digest,
         target: LocalState,
     },
+    /// A finalized block the execution layer has not accepted yet; it is
+    /// put back at the front of the finalization queue for a retry.
+    FinalizedBlockPostponed {
+        request: FinalizedBlockRequest,
+    },
     Fatal {
         error: Report,
     },
@@ -1025,6 +1049,7 @@ impl ExecutionTaskOutcome {
         match self {
             Self::Completed { .. } => "completed",
             Self::NotarizedBlockRejected { .. } => "rejected",
+            Self::FinalizedBlockPostponed { .. } => "postponed",
             Self::Fatal { .. } => "fatal",
         }
     }
@@ -1092,7 +1117,7 @@ async fn execute_finalization<TContext>(
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome
 where
-    TContext: Pacer,
+    TContext: Pacer + Clock,
 {
     let target = match finalization_target(&execution_node, canonicalized, request.block.as_ref()) {
         Ok(target) => target,
@@ -1108,10 +1133,13 @@ where
     )
     .await
     {
-        Ok(target) => ExecutionTaskOutcome::Completed {
+        Ok(ForwardFinalized::Forwarded(target)) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(target),
             payload_job: None,
         },
+        Ok(ForwardFinalized::Retry(request)) => {
+            ExecutionTaskOutcome::FinalizedBlockPostponed { request }
+        }
         Err(error) => ExecutionTaskOutcome::Fatal { error },
     }
 }
@@ -1641,14 +1669,14 @@ fn finalization_target(
     err(level = Level::WARN),
     ret,
 )]
-async fn forward_finalized<TContext: Pacer>(
+async fn forward_finalized<TContext: Pacer + Clock>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
     target: LocalState,
     request: FinalizedBlockRequest,
-) -> eyre::Result<LocalState> {
+) -> eyre::Result<ForwardFinalized> {
     let FinalizedBlockRequest {
         cause,
         block,
@@ -1657,12 +1685,12 @@ async fn forward_finalized<TContext: Pacer>(
 
     let consensus_context = block.header().consensus_context;
 
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let (execution_block, block_access_list) = (*block).clone().into_parts();
     let payload_status = execution_node
         .add_ons_handle
         .beacon_engine_handle
         .new_payload(TempoExecutionData {
-            block,
+            block: execution_block,
             block_access_list,
             // can be omitted for finalized blocks
             validator_set: None,
@@ -1674,10 +1702,38 @@ async fn forward_finalized<TContext: Pacer>(
                 query payload status of finalized block",
         )?;
 
-    ensure!(
-        payload_status.is_valid(),
-        "finalized block was not valid; this is a problem: `{payload_status}`",
-    );
+    match &payload_status.status {
+        PayloadStatusEnum::Syncing => {
+            // CL enforces in-order delivery. The problem: reth can rebuild
+            // indices and be temporarily unable to process blocks. This
+            // requires retrying the block.
+            //
+            // This again causes an issue however: we can't detect genuine
+            // delays from there missing a block because we violated an
+            // invariant.
+            warn!(
+                %payload_status,
+                "execution layer is not ready to accept block; postponing it",
+            );
+            // Intentionally stalls the execution pipeline, keeping it occupied
+            // before a retry can be done.
+            //
+            // TODO: Would it be cleaner to do it outside the async task? That
+            // would require a complex setup in the select-loop.
+            context.sleep(FINALIZED_BLOCK_POSTPONE_DELAY).await;
+            return Ok(ForwardFinalized::Retry(FinalizedBlockRequest {
+                cause,
+                block,
+                acknowledgment,
+            }));
+        }
+        PayloadStatusEnum::Valid => {}
+        _ => {
+            return Err(eyre!(
+                "payload was not valid and not syncing: {payload_status}"
+            ));
+        }
+    }
 
     submit_forkchoice_update(
         &execution_node,
@@ -1699,7 +1755,29 @@ async fn forward_finalized<TContext: Pacer>(
 
     acknowledgment.acknowledge();
 
-    Ok(target)
+    Ok(ForwardFinalized::Forwarded(target))
+}
+
+/// The outcome of [`forward_finalized`].
+enum ForwardFinalized {
+    /// The block was forwaraded to the execution layer, which now has a new state.
+    Forwarded(LocalState),
+    /// The block needs to be retried because the execution layer reported
+    /// SYNCING.
+    Retry(FinalizedBlockRequest),
+}
+
+impl std::fmt::Debug for ForwardFinalized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Forwarded(target) => f.debug_tuple("Forwarded").field(target).finish(),
+            Self::Retry(request) => f
+                .debug_struct("Postponed")
+                .field("digest", &request.block.digest())
+                .field("height", &request.block.height())
+                .finish(),
+        }
+    }
 }
 
 /// Drives convergence of the EL to the pending notarized tip.
