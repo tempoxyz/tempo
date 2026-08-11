@@ -189,7 +189,7 @@ where
     ) -> eyre::Result<Self::Network> {
         let mut network = ctx.network_builder().await?;
         if let Some(gossip) = self.gossip {
-            let gossip = gossip.install(network.handle());
+            let gossip = gossip.install();
             network.network_mut().add_rlpx_sub_protocol(gossip);
         }
 
