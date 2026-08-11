@@ -714,8 +714,7 @@ fn rejected_blocks_are_withheld_until_the_retry_delay_elapses() {
     assert!(next_block(&tree, T0).is_none());
     let just_before_retry = T0 + NOTARIZED_REJECTION_RETRY_DELAY - Duration::from_millis(1);
     assert!(next_block(&tree, just_before_retry).is_none());
-    let next =
-        next_block(&tree, T0 + NOTARIZED_REJECTION_RETRY_DELAY).expect("rejection expired");
+    let next = next_block(&tree, T0 + NOTARIZED_REJECTION_RETRY_DELAY).expect("rejection expired");
     assert_eq!(next.digest(), a.digest());
 
     // Re-recording the body clears the timestamp.
