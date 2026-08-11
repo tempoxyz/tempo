@@ -199,25 +199,26 @@ where
 
     async fn run(mut self) {
         loop {
-            self.try_dispatch();
-
             // Biased order keeps incoming peer frames last. A flood cannot delay
-            // driver results, control changes, publications, or scheme updates.
+            // driver results, budget wakeups, control changes, publications, or
+            // scheme updates.
             select! {
                 biased;
 
                 (pending, result) = &mut self.pending => {
                     self.pending = OptionFuture::none();
                     self.on_judged(pending, result);
+                    self.try_dispatch();
+                }
+
+                _ = (&mut self.budget_wakeup).fuse() => {
+                    self.budget_wakeup = OptionFuture::none();
+                    self.try_dispatch();
                 }
 
                 Some(event) = self.config.transport.control.recv() => self.on_peer(event),
 
                 Some(message) = self.config.mailbox.recv() => self.on_message(message).await,
-
-                _ = (&mut self.budget_wakeup).fuse() => {
-                    self.budget_wakeup = OptionFuture::none();
-                }
 
                 Some(frame) = self.config.transport.frames.recv() => self.on_frame(frame),
             }
@@ -317,6 +318,7 @@ where
             current.certificate = certificate;
             current.id = id;
             self.update_slot_metrics();
+            self.try_dispatch();
             return;
         }
 
@@ -332,6 +334,7 @@ where
             },
         );
         self.update_slot_metrics();
+        self.try_dispatch();
     }
 
     async fn on_message(&mut self, message: Message) {
@@ -388,6 +391,7 @@ where
             })
             .collect();
         releasable.sort_unstable_by_key(|(ticket, peer, _)| (*ticket, *peer));
+        let released = !releasable.is_empty();
 
         for (_, peer, epoch) in releasable {
             let ready_ticket = self.issue_ready_ticket();
@@ -409,6 +413,9 @@ where
         }
         self.metrics.boundary_scheme_events.inc();
         self.update_slot_metrics();
+        if released {
+            self.try_dispatch();
+        }
     }
 
     /// Advances verified progress and removes slots that it makes stale.
@@ -431,10 +438,13 @@ where
 
     /// Starts the next fair judgement if the budget allows it.
     ///
+    /// This runs only when ready work changes or dispatch capacity becomes
+    /// available, keeping the linear candidate scan off unrelated frame paths.
+    ///
     /// A rate-limit miss leaves ready order unchanged. Since a waiting slot emits
     /// no event, a wakeup retries it when the budget replenishes.
     fn try_dispatch(&mut self) {
-        if !self.pending.is_none() {
+        if !self.pending.is_none() || !self.budget_wakeup.is_none() {
             return;
         }
 

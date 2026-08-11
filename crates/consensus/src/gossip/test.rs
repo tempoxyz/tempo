@@ -392,6 +392,11 @@ fn rate_limited_churn_preserves_admission_order() {
         }
 
         assert_eq!(rig.sink.requests(), vec![round(1)]);
+        assert_eq!(
+            metric(&context, "gossip_shed_total"),
+            1,
+            "frames do not retry dispatch before the budget wakeup",
+        );
 
         context.sleep(Duration::from_secs(2)).await;
         wait_until(&context, || rig.sink.requests().len() >= 2).await;
