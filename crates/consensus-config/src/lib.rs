@@ -16,7 +16,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use secrecy::{ExposeSecret as _, ExposeSecretMut as _, SecretBox, SecretString};
 
 #[cfg(test)]
@@ -84,7 +84,7 @@ impl SigningKey {
     }
 
     /// Generates a fresh, cryptographically random signing key using `rng`.
-    pub fn random<R: CryptoRngCore>(rng: R) -> Self {
+    pub fn random<R: CryptoRng>(rng: R) -> Self {
         Self {
             inner: PrivateKey::random(rng),
         }

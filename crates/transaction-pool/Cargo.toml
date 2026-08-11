@@ -34,6 +34,7 @@ reth-eth-wire-types.workspace = true
 reth-tracing.workspace = true
 reth-metrics.workspace = true
 
+
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
@@ -59,7 +60,8 @@ test-utils = [
 	"reth-primitives-traits/test-utils",
 	"reth-provider/test-utils",
 	"reth-transaction-pool/test-utils",
-	"tempo-precompiles/test-utils"
+	"tempo-precompiles/test-utils",
+	"tempo-primitives/test-utils"
 ]
 
 [dev-dependencies]

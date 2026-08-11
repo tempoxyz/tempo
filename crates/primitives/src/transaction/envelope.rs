@@ -1,4 +1,8 @@
-use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
+use super::{
+    tempo_transaction::{InvalidValidAfter, InvalidValidBefore},
+    tt_signed::AASigned,
+    unique_tx_identifier_from_signable,
+};
 use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -9,7 +13,7 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
-use core::fmt;
+use core::{fmt, num::NonZeroU64};
 use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
@@ -98,6 +102,47 @@ impl alloy_consensus::InMemorySize for TempoTxType {
 }
 
 impl TempoTxEnvelope {
+    /// Returns an AA transaction's `valid_before` timestamp, if set.
+    ///
+    /// Other transaction types do not carry this bound.
+    pub fn valid_before(&self) -> Option<u64> {
+        match self {
+            Self::AA(tx) => tx.tx().valid_before.map(NonZeroU64::get),
+            _ => None,
+        }
+    }
+
+    /// Returns an AA transaction's `valid_after` timestamp, if set.
+    ///
+    /// Other transaction types do not carry this bound.
+    pub fn valid_after(&self) -> Option<u64> {
+        match self {
+            Self::AA(tx) => tx.tx().valid_after.map(NonZeroU64::get),
+            _ => None,
+        }
+    }
+
+    /// Ensures an AA transaction's `valid_before`, when present, is strictly greater than
+    /// `min_allowed`.
+    ///
+    /// Other transaction types do not carry this bound and always pass.
+    pub fn ensure_valid_before(&self, min_allowed: u64) -> Result<(), InvalidValidBefore> {
+        match self {
+            Self::AA(tx) => tx.tx().ensure_valid_before(min_allowed),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ensures an AA transaction's `valid_after`, when present, does not exceed `max_allowed`.
+    ///
+    /// Other transaction types do not carry this bound and always pass.
+    pub fn ensure_valid_after(&self, max_allowed: u64) -> Result<(), InvalidValidAfter> {
+        match self {
+            Self::AA(tx) => tx.tx().ensure_valid_after(max_allowed),
+            _ => Ok(()),
+        }
+    }
+
     /// Returns the fee token preference if this is a fee token transaction
     pub fn fee_token(&self) -> Option<Address> {
         match self {
@@ -555,6 +600,7 @@ mod tests {
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address, aliases::U96};
     use alloy_sol_types::SolCall;
+    use core::num::NonZeroU64;
     use tempo_contracts::precompiles::ITIP20ChannelReserve;
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
@@ -669,6 +715,44 @@ mod tests {
         assert_eq!(envelope.fee_token(), None);
         assert!(!envelope.is_aa());
         assert!(envelope.as_aa().is_none());
+    }
+
+    #[test]
+    fn test_time_bounds_delegate_for_aa_transactions() {
+        let envelope = TempoTxEnvelope::AA(
+            TempoTransaction {
+                valid_before: NonZeroU64::new(100),
+                valid_after: NonZeroU64::new(50),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature().into()),
+        );
+
+        assert_eq!(
+            envelope.ensure_valid_before(100),
+            Err(InvalidValidBefore {
+                valid_before: 100,
+                min_allowed: 100,
+            })
+        );
+        assert_eq!(
+            envelope.ensure_valid_after(49),
+            Err(InvalidValidAfter {
+                valid_after: 50,
+                max_allowed: 49,
+            })
+        );
+    }
+
+    #[test]
+    fn test_time_bounds_ignore_non_aa_transactions() {
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy::default(),
+            Signature::test_signature(),
+        ));
+
+        assert_eq!(envelope.ensure_valid_before(100), Ok(()));
+        assert_eq!(envelope.ensure_valid_after(100), Ok(()));
     }
 
     #[test]

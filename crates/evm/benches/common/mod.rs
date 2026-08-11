@@ -108,9 +108,10 @@ pub(crate) fn bench_evm(
 }
 
 pub(crate) fn seeded_db(evm: &TempoEvm<'_>) -> InMemoryDB {
-    let mut db = InMemoryDB::default();
-    db.cache = evm.overlay_db().cache.clone();
-    db
+    InMemoryDB {
+        cache: evm.overlay_db().cache.clone(),
+        ..Default::default()
+    }
 }
 
 pub(crate) fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {

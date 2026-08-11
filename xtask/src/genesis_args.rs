@@ -10,7 +10,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, Output},
+        dkg::{self, feldman_desmedt::Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
@@ -25,6 +25,7 @@ use evm2::{
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
+use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
 use std::{
@@ -40,10 +41,8 @@ use tempo_contracts::{
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{
-        INITIAL_FACTORY_OWNER, IValidatorConfigV2, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS, createTokenCall,
+        INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
     },
-    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm};
@@ -683,32 +682,20 @@ impl GenesisArgs {
     }
 }
 
-fn zone_factory_genesis_account() -> GenesisAccount {
-    let factory_config =
-        U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-    GenesisAccount {
-        code: Some(Bytes::from_static(&[0xef])),
-        storage: Some(BTreeMap::from([(B256::ZERO, factory_config.into())])),
-        ..Default::default()
-    }
-}
-
 fn insert_zone_state_at_genesis(
     t10_time: u64,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
     if t10_time == 0 {
         println!("Initializing ZoneFactory and shared runtimes (T10 active at genesis)");
-        genesis_alloc.insert(ZONE_FACTORY_ADDRESS, zone_factory_genesis_account());
-        for (destination, runtime) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
-        ] {
+        for account in initial_zone_factory_state(INITIAL_FACTORY_OWNER) {
             genesis_alloc.insert(
-                destination,
+                account.address,
                 GenesisAccount {
-                    code: Some(runtime),
+                    code: Some(account.code),
+                    storage: account.storage.map(|(slot, value)| {
+                        BTreeMap::from([(B256::from(slot.to_be_bytes()), value.into())])
+                    }),
                     ..Default::default()
                 },
             );
@@ -1102,14 +1089,14 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
 
-    let (output, shares) = dkg::deal::<_, _, N3f1>(
+    let (output, shares) = dkg::feldman_desmedt::deal::<_, _, N3f1>(
         &mut rng,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
@@ -1155,6 +1142,13 @@ fn mint_pairwise_liquidity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempo_contracts::{
+        precompiles::{
+            ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+    };
 
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {

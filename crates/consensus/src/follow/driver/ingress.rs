@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
@@ -34,8 +35,12 @@ impl Mailbox {
         MarshalReporter(self.clone())
     }
 
-    fn send(&self, msg: impl Into<Message>) {
-        let _ = self.0.send(msg.into());
+    fn send(&self, msg: impl Into<Message>) -> Feedback {
+        if self.0.send(msg.into()).is_err() {
+            Feedback::Closed
+        } else {
+            Feedback::Ok
+        }
     }
 }
 
@@ -45,8 +50,8 @@ pub(crate) struct EventReporter(Mailbox);
 impl Reporter for EventReporter {
     type Activity = Event;
 
-    async fn report(&mut self, activity: Self::Activity) {
-        self.0.send(activity);
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        self.0.send(activity)
     }
 }
 
@@ -56,7 +61,49 @@ pub(crate) struct MarshalReporter(Mailbox);
 impl Reporter for MarshalReporter {
     type Activity = marshal::Update<Block>;
 
-    async fn report(&mut self, activity: Self::Activity) {
-        self.0.send(activity);
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        self.0.send(activity)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+    use commonware_actor::Feedback;
+    use commonware_consensus::{
+        Reporter as _,
+        marshal::Update,
+        types::{Epoch, Height, Round, View},
+    };
+    use tempo_node::rpc::consensus::Event;
+
+    use super::Mailbox;
+    use crate::consensus::Digest;
+
+    #[test]
+    fn reporters_return_closed_after_driver_exits() {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mailbox = Mailbox(sender);
+        drop(receiver);
+
+        let mut event_reporter = mailbox.to_event_reporter();
+        assert_eq!(
+            event_reporter.report(Event::Nullified {
+                epoch: 0,
+                view: 0,
+                seen: 0,
+            }),
+            Feedback::Closed
+        );
+
+        let mut marshal_reporter = mailbox.to_marshal_reporter();
+        assert_eq!(
+            marshal_reporter.report(Update::Tip(
+                Round::new(Epoch::zero(), View::zero()),
+                Height::zero(),
+                Digest(B256::ZERO),
+            )),
+            Feedback::Closed
+        );
     }
 }

@@ -419,10 +419,7 @@ struct TempoPoolState {
 impl TempoPoolState {
     /// Tracks an AA transaction with a `valid_before` timestamp.
     fn track(&mut self, tx: &TempoPooledTransaction) {
-        let valid_before = tx
-            .inner()
-            .as_aa()
-            .and_then(|tx| tx.tx().valid_before.map(|value| value.get()));
+        let valid_before = tx.inner().valid_before();
         let key_expiry = tx.key_expiry();
 
         let expiry = [valid_before, key_expiry].into_iter().flatten().min();
@@ -750,11 +747,7 @@ where
                             let entries: Vec<_> = removed_txs
                                 .into_iter()
                                 .map(|tx| {
-                                    let valid_before = tx
-                                        .transaction
-                                        .inner()
-                                        .as_aa()
-                                        .and_then(|aa| aa.tx().valid_before.map(|value| value.get()));
+                                    let valid_before = tx.transaction.inner().valid_before();
                                     PausedEntry { tx, valid_before }
                                 })
                                 .collect();

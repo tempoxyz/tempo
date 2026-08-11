@@ -22,15 +22,16 @@ use commonware_runtime::{
 use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
-use rand_08::{CryptoRng, Rng};
+use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    alias,
+    alias, config,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
+    network::limit_channel,
     peer_manager, storage, subblocks,
 };
 
@@ -59,8 +60,9 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub signer: PrivateKey,
     pub share: Option<Share>,
 
-    pub mailbox_size: usize,
+    pub mailbox_size: NonZeroUsize,
     pub deque_size: usize,
+    pub max_message_size: u32,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
     ///
@@ -86,14 +88,6 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
-
-    /// Require startup to use the consensus finalization archive as the
-    /// finalized floor. If the archive is empty this will reject pre-populated
-    /// execution layers.
-    ///
-    /// This setting is in preparation for consensus-enriched snapshots and will
-    /// eventually become the default once tempo has fully migrated.
-    pub strict_startup: bool,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -154,19 +148,18 @@ where
             finalized_floor,
             finalized_tip,
         } = alias::marshal::init(
-            context.clone(),
+            context.child("marshal"),
             page_cache_ref.clone(),
             execution_node.clone(),
             alias::marshal::Config {
-                partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
+                partition_prefix: self.partition_prefix.clone(),
                 view_retention_timeout: ViewDelta::new(
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
                 max_pending_acks: MAX_PENDING_ACKS,
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
@@ -175,7 +168,7 @@ where
         .wrap_err("failed to initialize marshal")?;
 
         let (executor, executor_mailbox) = crate::executor::init(
-            context.with_label("executor"),
+            context.child("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 finalized_floor,
@@ -188,7 +181,7 @@ where
         .wrap_err("failed initialization executor actor")?;
 
         let (peer_manager, peer_manager_mailbox) = peer_manager::init(
-            context.with_label("peer_manager"),
+            context.child("peer_manager"),
             peer_manager::Config {
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
@@ -199,7 +192,7 @@ where
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.with_label("broadcast"),
+            context.child("broadcast"),
             buffered::Config {
                 public_key: self.signer.public_key(),
                 mailbox_size: self.mailbox_size,
@@ -227,7 +220,7 @@ where
 
         let subblocks = self.with_subblocks.then(|| {
             subblocks::Actor::new(subblocks::Config {
-                context: context.clone(),
+                context: context.child("subblocks"),
                 signer: self.signer.clone(),
                 scheme_provider: scheme_provider.clone(),
                 node: execution_node.clone(),
@@ -242,13 +235,13 @@ where
         });
 
         let (feed, feed_mailbox) = crate::feed::init(
-            context.with_label("feed"),
+            context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {
-            context: context.with_label("application"),
+            context: context.child("application"),
             public_key: self.signer.public_key(),
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
@@ -263,9 +256,10 @@ where
         .wrap_err("failed initializing application actor")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            context.with_label("epoch_manager"),
+            context.child("epoch_manager"),
             epoch::manager::Config {
                 application: application_mailbox.clone(),
+                execution_node: execution_node.clone(),
                 blocker: self.blocker.clone(),
                 page_cache: page_cache_ref,
                 epoch_strategy: epoch_strategy.clone(),
@@ -284,7 +278,7 @@ where
         );
 
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
-            context.with_label("dkg_manager"),
+            context.child("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
@@ -303,6 +297,7 @@ where
 
         Ok(Engine {
             context: ContextCell::new(context),
+            max_message_size: self.max_message_size,
 
             broadcast,
             broadcast_mailbox,
@@ -348,6 +343,7 @@ where
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
+    max_message_size: u32,
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
@@ -485,11 +481,58 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
+        let context = &*self.context;
+        let votes_channel = limit_channel(
+            context,
+            votes_channel,
+            config::VOTES_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let certificates_channel = limit_channel(
+            context,
+            certificates_channel,
+            config::CERTIFICATES_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let resolver_channel = limit_channel(
+            context,
+            resolver_channel,
+            config::RESOLVER_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let broadcast_channel = limit_channel(
+            context,
+            broadcast_channel,
+            config::BROADCASTER_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let marshal_channel = limit_channel(
+            context,
+            marshal_channel,
+            config::MARSHAL_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let dkg_channel = limit_channel(
+            context,
+            dkg_channel,
+            config::DKG_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+        let subblocks_channel = limit_channel(
+            context,
+            subblocks_channel,
+            config::SUBBLOCKS_CHANNEL_IDENT,
+            self.max_message_size,
+        );
+
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
-        let resolver =
-            marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
+        let resolver = marshal::resolver::p2p::init(
+            self.context.child("p2p"),
+            self.resolver_config,
+            marshal_channel,
+        );
 
         let application = self.application.start(self.dkg_manager_mailbox.clone());
         let executor = self.executor.start();
@@ -529,7 +572,11 @@ where
         ];
 
         if let Some(subblocks) = self.subblocks {
-            tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
+            tasks.push(
+                self.context
+                    .child("subblocks_channel")
+                    .spawn(|_| subblocks.run(subblocks_channel)),
+            );
         } else {
             drop(subblocks_channel);
         }

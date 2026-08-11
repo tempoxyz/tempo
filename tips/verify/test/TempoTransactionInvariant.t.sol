@@ -4027,8 +4027,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @dev Expiring nonce key constant (TIP-1009)
     uint256 private constant EXPIRING_NONCE_KEY = type(uint256).max;
-    /// @dev Maximum expiry window in seconds (TIP-1009)
-    uint64 private constant MAX_EXPIRY_SECS = 30;
+    /// @dev Maximum expiry windows in seconds before and after T10 (TIP-1009, TIP-1093)
+    uint64 private constant PRE_T10_MAX_EXPIRY_SECS = 30;
+    uint64 private constant T10_MAX_EXPIRY_SECS = 300;
+
+    function _maxExpirySecs() internal view returns (uint64) {
+        string memory hardfork = vm.getEvmVersion();
+        return keccak256(bytes(hardfork)) == keccak256(bytes("t10"))
+            ? T10_MAX_EXPIRY_SECS
+            : PRE_T10_MAX_EXPIRY_SECS;
+    }
 
     /// @notice Build an expiring nonce transaction
     /// @dev Sets nonceKey = uint256.max, nonce = 0, and validBefore within window
@@ -4180,7 +4188,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             return;
         }
 
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
 
         (bytes memory signedTx, bytes32 txHash) =
             _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
@@ -4221,7 +4229,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             return;
         }
 
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
 
         (bytes memory signedTx, bytes32 txHash) =
             _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
@@ -4290,7 +4298,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /// @notice Handler E3: Attempt tx with validBefore too far in future
-    /// @dev Tx with validBefore > now + 30s should be rejected
+    /// @dev Tx with validBefore beyond the active hardfork's maximum should be rejected
     function handler_expiringNonceWindowTooFar(
         uint256 actorSeed,
         uint256 recipientSeed,
@@ -4316,7 +4324,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Set validBefore beyond the max window
         extraOffset = bound(extraOffset, 1, 1 hours);
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS + extraOffset);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs() + extraOffset);
 
         (bytes memory signedTx,) = _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
 
@@ -4356,7 +4364,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             return;
         }
 
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
         uint64 wrongNonce = uint64(bound(nonceSeed, 1, 100));
 
         bytes memory signedTx =
@@ -4438,7 +4446,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 protocolNonceBefore = vm.getNonce(sender);
         uint64 nonce2dBefore = nonce.getNonce(sender, 1); // Check a 2D nonce key
 
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
 
         (bytes memory signedTx, bytes32 txHash) =
             _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
@@ -4497,7 +4505,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             return;
         }
 
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
 
         // Build two different transactions (different amounts = different hashes)
         (bytes memory signedTx1, bytes32 txHash1) =
@@ -4974,7 +4982,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             return;
         }
 
-        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 validBefore = uint64(block.timestamp + _maxExpirySecs());
 
         // Build expiring nonce TempoTransaction
         TempoCall[] memory calls = new TempoCall[](1);

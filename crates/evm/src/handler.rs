@@ -36,10 +36,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
-    },
+    nonce::{INonce::getNonceCall, NonceManager},
     storage::{Handler as _, StorageCtx},
 };
 use tempo_primitives::transaction::{
@@ -1174,6 +1171,8 @@ fn apply_nonce(
     drop(account);
 
     if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
+        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+        let capacity = spec.expiring_nonce_set_capacity();
         // Expiring nonce transaction replay protection:
         // - Pre-T1B: use tx_hash for backwards-compatible behavior.
         // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
@@ -1202,7 +1201,7 @@ fn apply_nonce(
                 })?;
                 nonces
                     .expiring_nonce_ring_ptr
-                    .write((pointer + index as u32) % EXPIRING_NONCE_SET_CAPACITY)
+                    .write((pointer + index as u32) % capacity)
                     .map_err(|error| {
                         invalid(TempoInvalidTransaction::NonceManagerError(
                             error.to_string(),
@@ -1219,13 +1218,10 @@ fn apply_nonce(
                         invalid(TempoInvalidTransaction::NonceManagerError(format!(
                             "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
                 )))
-                    } else if valid_before
-                        > timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
-                    {
-                            let max_allowed =
-                            timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                    } else if valid_before > timestamp.saturating_add(max_expiry_secs) {
+                        let max_allowed = timestamp.saturating_add(max_expiry_secs);
                         invalid(TempoInvalidTransaction::NonceManagerError(format!(
-                            "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
+                            "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
                 )))
                     } else {
                         invalid(TempoInvalidTransaction::NonceManagerError(error.to_string()))

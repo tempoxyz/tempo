@@ -12,7 +12,9 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
+        dkg::feldman_desmedt::{
+            self as dkg, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog,
+        },
         primitives::{
             group::Share,
             sharing::{Mode, ModeVersion},
@@ -51,7 +53,7 @@ pub(super) fn builder() -> Builder {
 
 pub(super) struct Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     states: metadata::Metadata<TContext, u64, State>,
     events: segmented::variable::Journal<TContext, Event>,
@@ -62,7 +64,7 @@ where
 
 impl<TContext> Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
@@ -510,7 +512,7 @@ impl Builder {
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
 
         let mut states = metadata::Metadata::init(
-            context.with_label("states"),
+            context.child("states"),
             metadata::Config {
                 partition: states_metadata_partition,
                 codec_config: MAXIMUM_VALIDATORS,
@@ -547,8 +549,8 @@ impl Builder {
             })
             .expect("states storage must contain a state after initialization");
 
-        let events = segmented::variable::Journal::init(
-            context.with_label("events"),
+        let mut events = segmented::variable::Journal::init(
+            context.child("events"),
             segmented::variable::Config {
                 partition: format!("{partition_prefix}_events"),
                 compression: None,
@@ -951,7 +953,7 @@ impl Dealer {
         ack: PlayerAck<PublicKey>,
     ) -> eyre::Result<()>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         if !self.unsent.contains_key(&player) {
             bail!("already received an ack from `{player}`");
@@ -1098,7 +1100,7 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: commonware_runtime::Storage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         // If we've already generated an ack, return the cached version
         if let Some(ack) = self.acks.get(&dealer) {
@@ -1106,13 +1108,12 @@ impl Player {
         }
 
         // Otherwise generate a new ack
-        let ack = self
-            .player
-            .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
-            // FIXME(janis): it would be great to know why exactly that is not the case.
-            .ok_or_eyre(
-                "applying dealer message to player instance did not result in a usable ack",
-            )?;
+        let dkg::Verdict::Valid(ack) =
+            self.player
+                .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
+        else {
+            bail!("applying dealer message to player instance did not result in a usable ack");
+        };
         storage
             .append_dealing(epoch, dealer.clone(), pub_msg, priv_msg)
             .await
@@ -1131,9 +1132,9 @@ impl Player {
         if self.acks.contains_key(&dealer) {
             return;
         }
-        if let Some(ack) = self
-            .player
-            .dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg)
+        if let dkg::Verdict::Valid(ack) =
+            self.player
+                .dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg)
         {
             self.acks.insert(dealer, ack);
         }
@@ -1142,7 +1143,7 @@ impl Player {
     /// Finalize the player's participation in the DKG round.
     pub(super) fn finalize(
         self,
-        rng: &mut impl rand_core::CryptoRngCore,
+        rng: &mut impl rand_core::CryptoRng,
         logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
@@ -1214,7 +1215,7 @@ mod tests {
     use super::*;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{
-        bls12381::{dkg, primitives::sharing::Mode},
+        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
         ed25519::PrivateKey,
         transcript::Summary,
     };
@@ -1222,7 +1223,7 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic};
     use commonware_utils::TryFromIterator as _;
 
-    fn make_test_state(rng: &mut impl rand_core::CryptoRngCore, epoch: u64) -> State {
+    fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
         let mut keys: Vec<_> = (0..3)
             .map(|i| PrivateKey::from_seed(i + epoch * 100))
             .collect();
@@ -1296,8 +1297,8 @@ mod tests {
 
     #[test]
     fn share_state_roundtrip_plaintext_some() {
-        use rand_08::SeedableRng as _;
-        let mut rng = rand_08::rngs::StdRng::seed_from_u64(42);
+        use rand::SeedableRng as _;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         let keys = std::iter::repeat_with(|| PrivateKey::random(&mut rng))
             .take(3)

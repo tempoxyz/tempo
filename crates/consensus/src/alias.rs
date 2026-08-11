@@ -4,10 +4,13 @@
 pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
+    use alloy_consensus::BlockHeader as _;
+    use commonware_codec::ReadExt as _;
     use commonware_consensus::{
+        Epochable as _,
         marshal::{self, core, standard::Standard},
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-        types::{FixedEpocher, Height, ViewDelta},
+        types::{Epoch, Epocher as _, FixedEpocher, Height, ViewDelta},
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
     use commonware_parallel::Sequential;
@@ -16,11 +19,14 @@ pub(crate) mod marshal {
     };
     use commonware_storage::archive::{Archive as _, Identifier, immutable};
     use commonware_utils::acknowledgement::Exact;
-    use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
-    use rand_08::{CryptoRng, Rng};
+    use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
+    use rand_core::{CryptoRng, Rng};
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
-    use reth_provider::providers::BlockchainProvider;
+    use reth_provider::{
+        BlockHashReader as _, BlockReader as _, HeaderProvider as _, providers::BlockchainProvider,
+    };
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tracing::{info, instrument};
 
@@ -50,7 +56,7 @@ pub(crate) mod marshal {
         pub partition_prefix: String,
 
         /// Marshal mailbox capacity.
-        pub mailbox_size: usize,
+        pub mailbox_size: NonZeroUsize,
 
         /// Minimum number of views to retain temporary marshal data after a
         /// block is processed. The two engines pick very different values for
@@ -65,10 +71,6 @@ pub(crate) mod marshal {
         /// Number of recently finalized blocks retained in the prunable
         /// archive. Older blocks are served from reth via [`Hybrid`].
         pub finalized_blocks_retention: u64,
-
-        /// Require startup to use the consensus finalization archive as its
-        /// finalized floor instead of falling back to the execution layer.
-        pub strict_startup: bool,
 
         /// Epoch length / boundary configuration.
         pub epoch_strategy: FixedEpocher,
@@ -95,9 +97,7 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Finalized tip selected at startup. In strict mode this comes from
-        /// the archive or genesis; otherwise it is the highest available value
-        /// from the archive and execution layer.
+        /// Finalized tip selected at startup from the archive or genesis.
         pub finalized_tip: (Height, Digest),
     }
 
@@ -116,22 +116,14 @@ pub(crate) mod marshal {
         err(Display)
     )]
     pub(crate) async fn init<TContext>(
-        context: TContext,
+        mut context: TContext,
         page_cache: CacheRef,
         execution_node: Arc<TempoFullNode>,
         config: Config,
     ) -> eyre::Result<Initialized<TContext>>
     where
-        TContext: Clock
-            + Metrics
-            + Spawner
-            + Storage
-            + BufferPooler
-            + Rng
-            + CryptoRng
-            + Clone
-            + Send
-            + 'static,
+        TContext:
+            Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
@@ -144,20 +136,28 @@ pub(crate) mod marshal {
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
-        } = establish_finalization_range(
-            &finalizations_by_height,
-            &execution_node,
-            config.strict_startup,
-        )
-        .await?;
+        } = establish_finalization_range(&finalizations_by_height, &execution_node).await?;
         info!(
             floor_height = %finalized_floor.0,
             floor_digest = %finalized_floor.1,
             tip_height = %finalized_tip.0,
             tip_digest = %finalized_tip.1,
-            strict_startup = config.strict_startup,
             "selected finalized startup range"
         );
+
+        let start =
+            start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
+                .await?;
+
+        if let marshal::Start::Floor(finalization) = &start {
+            register_scheme(
+                &mut context,
+                &config.epoch_strategy,
+                &config.scheme_provider,
+                &execution_node,
+                (finalized_floor.0, finalization),
+            )?;
+        }
 
         let finalized_blocks = storage::init_finalized_blocks(
             &context,
@@ -170,12 +170,13 @@ pub(crate) mod marshal {
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
         let (actor, mailbox, marshal_stored_height) = core::Actor::init(
-            context.with_label("marshal"),
+            context,
             finalizations_by_height,
             finalized_blocks,
             marshal::Config {
                 provider: config.scheme_provider,
                 epocher: config.epoch_strategy,
+                start,
                 partition_prefix: config.partition_prefix,
                 mailbox_size: config.mailbox_size,
                 view_retention_timeout: config.view_retention_timeout,
@@ -193,18 +194,15 @@ pub(crate) mod marshal {
         .await;
 
         let startup_floor_height = finalized_floor.0;
-        let last_finalized_height = if marshal_stored_height.is_zero() {
-            startup_floor_height
-        } else {
-            marshal_stored_height
-        };
+        let last_finalized_height = marshal_stored_height.map_or(startup_floor_height, |height| {
+            height.max(startup_floor_height)
+        });
+
         info!(
-            marshal_stored = %marshal_stored_height,
+            marshal_stored = ?marshal_stored_height,
             selected_floor = %startup_floor_height,
-            strict_startup = config.strict_startup,
             "setting marshal sync floor"
         );
-        mailbox.set_floor(last_finalized_height).await;
 
         Ok(Initialized {
             actor,
@@ -226,7 +224,6 @@ pub(crate) mod marshal {
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         execution_node: &TempoFullNode,
-        strict_startup: bool,
     ) -> eyre::Result<FinalizationRange>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -236,35 +233,19 @@ pub(crate) mod marshal {
             .wrap_err("failed to establish finalized archive bounds")?;
         let execution_finalized = execution_finalized_point(execution_node);
 
-        match (strict_startup, archive_range) {
-            (true, Some((floor, tip))) => Ok(FinalizationRange { floor, tip }),
-            (true, None) if execution_finalized.0.is_zero() => Ok(FinalizationRange {
+        match archive_range {
+            Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
+            None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
                 tip: execution_finalized,
             }),
-            (true, None) => Err(eyre!(
-                "strict consensus startup requires a finalized certificate archive unless the \
+            None => Err(eyre!(
+                "consensus startup requires a finalized certificate archive unless the \
                     execution layer is empty, but no finalized certificate was found and execution \
                     finalized block is `{}` at height `{}`",
                 execution_finalized.1,
                 execution_finalized.0,
             )),
-            (false, Some((archive_floor, archive_tip))) => Ok(FinalizationRange {
-                floor: if archive_floor.0 >= execution_finalized.0 {
-                    archive_floor
-                } else {
-                    execution_finalized
-                },
-                tip: if archive_tip.0 >= execution_finalized.0 {
-                    archive_tip
-                } else {
-                    execution_finalized
-                },
-            }),
-            (false, None) => Ok(FinalizationRange {
-                floor: execution_finalized,
-                tip: execution_finalized,
-            }),
         }
     }
 
@@ -305,6 +286,95 @@ pub(crate) mod marshal {
         };
 
         Ok(Some((floor, tip)))
+    }
+
+    async fn start_from_finalized_floor<TContext>(
+        archive: &immutable::Archive<
+            TContext,
+            Digest,
+            Finalization<Scheme<PublicKey, MinSig>, Digest>,
+        >,
+        execution_node: &TempoFullNode,
+        finalized_floor: (Height, Digest),
+    ) -> eyre::Result<marshal::Start<Scheme<PublicKey, MinSig>, Digest, Block>>
+    where
+        TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    {
+        if !finalized_floor.0.is_zero() {
+            match archive
+                .get(Identifier::Index(finalized_floor.0.get()))
+                .await
+                .wrap_err("failed reading finalization")?
+            {
+                Some(finalization) => return Ok(marshal::Start::Floor(finalization)),
+                None => {
+                    bail!("finalized range floor missing from archive");
+                }
+            }
+        }
+
+        let genesis_hash = execution_node.chain_spec().genesis_hash();
+        let genesis = execution_node
+            .provider
+            .find_sealed_or_recovered_block(genesis_hash, reth_provider::BlockSource::Any)
+            .wrap_err("failed querying execution layer for genesis block")?
+            .ok_or_eyre("execution layer did not contain the genesis block")?;
+        Ok(marshal::Start::Genesis(
+            Block::from_execution_block_unchecked(genesis, None),
+        ))
+    }
+
+    fn register_scheme<R: CryptoRng>(
+        rng: &mut R,
+        epoch_strategy: &FixedEpocher,
+        scheme_provider: &SchemeProvider,
+        execution_node: &TempoFullNode,
+        (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
+    ) -> eyre::Result<()> {
+        let digest = execution_node
+            .provider
+            .block_hash(height.get())
+            .map_err(eyre::Report::new)
+            .wrap_err("failed reading finalized floor block hash")?
+            .ok_or_eyre("missing finalized floor block hash")?;
+
+        ensure!(
+            digest == finalization.proposal.payload.0,
+            "finalization digest does not match execution state"
+        );
+
+        let epoch = finalization.epoch();
+        let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
+        let header = execution_node
+            .provider
+            .header_by_number(boundary.get())
+            .map_err(eyre::Report::new)
+            .wrap_err("failed reading block header")?
+            .ok_or_eyre("missing boundary header")?;
+        let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+            .wrap_err("failed to read DKG outcome from boundary header")?;
+        let scheme = Scheme::verifier(
+            crate::config::NAMESPACE,
+            onchain_outcome.players().clone(),
+            onchain_outcome.sharing().clone(),
+        );
+
+        ensure!(
+            finalization.verify(rng, &scheme, &Sequential),
+            "finalized floor failed verification"
+        );
+
+        scheme_provider.register(epoch, scheme);
+        Ok(())
+    }
+
+    fn boundary_for_epoch(epoch_strategy: &FixedEpocher, epoch: Epoch) -> eyre::Result<Height> {
+        let Some(previous) = epoch.previous() else {
+            return Ok(Height::zero());
+        };
+        epoch_strategy.last(previous).ok_or_else(|| {
+            eyre!("epoch strategy did not provide a boundary for epoch `{previous}`")
+        })
     }
 
     async fn finalized_archive_point<TContext>(

@@ -58,7 +58,7 @@ alloy-rpc-types-eth.workspace = true
 alloy-signer-aws.workspace = true
 alloy-signer-gcp.workspace = true
 alloy-signer-ledger.workspace = true
-alloy-signer-local.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer-trezor.workspace = true
 alloy-sol-types.workspace = true
 commonware-codec.workspace = true
@@ -68,7 +68,7 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
-rand_08.workspace = true
+rand.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
 serde.workspace = true
