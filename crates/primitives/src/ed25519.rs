@@ -10,6 +10,8 @@ impl core::fmt::Display for InvalidPublicKey {
     }
 }
 
+impl core::error::Error for InvalidPublicKey {}
+
 /// Validated Ed25519 public key bytes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
