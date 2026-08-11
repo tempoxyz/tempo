@@ -68,13 +68,10 @@ function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(pr
 function fmtS(v) { return v != null ? v.toFixed(2) + 's' : '-'; }
 function fmtFees(v) {
   if (typeof v !== 'string' || !/^\d+$/.test(v)) return '-';
-  const microdollars = BigInt(v);
-  const dollars = microdollars / 1_000_000n;
-  const fraction = (microdollars % 1_000_000n)
-    .toString()
-    .padStart(6, '0')
-    .replace(/0+$/, '')
-    .padEnd(2, '0');
+  const attodollars = BigInt(v);
+  const cents = (attodollars + 5_000_000_000_000_000n) / 10_000_000_000_000_000n;
+  const dollars = cents / 100n;
+  const fraction = (cents % 100n).toString().padStart(2, '0');
   return `$${dollars.toLocaleString('en-US')}.${fraction}`;
 }
 
