@@ -147,17 +147,12 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         ChannelState memory channel = _loadChannelState(channelId);
 
         if (msg.sender != descriptor.payer) revert NotPayer();
-
         if (additionalDeposit > type(uint96).max - channel.deposit) revert DepositOverflow();
 
+        // [SECURITY PATCH]: Enforcing Checks-Effects-Interactions (CEI)
+        // ---- EFFECTS (all state settled before any external interaction) ----
         if (additionalDeposit > 0) {
             channel.deposit += additionalDeposit;
-
-            // The reference contract keeps ERC-20-style allowance flow for local verification.
-            // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
-            bool success =
-                ITIP20(descriptor.token).transferFrom(msg.sender, address(this), additionalDeposit);
-            if (!success) revert TransferFailed();
         }
 
         if (channel.closeRequestedAt != 0) {
@@ -165,7 +160,17 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             emit CloseRequestCancelled(channelId, descriptor.payer, descriptor.payee);
         }
 
+        // Commit the updated channel state to persistent storage BEFORE making the external call.
         channelStates[channelId] = _encodeChannelState(channel);
+
+        // ---- INTERACTION (last; a false/failed transfer reverts and unwinds the write) ----
+        if (additionalDeposit > 0) {
+            // The reference contract keeps ERC-20-style allowance flow for local verification.
+            // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
+            bool success =
+                ITIP20(descriptor.token).transferFrom(msg.sender, address(this), additionalDeposit);
+            if (!success) revert TransferFailed();
+        }
 
         emit TopUp(
             channelId, descriptor.payer, descriptor.payee, additionalDeposit, channel.deposit
