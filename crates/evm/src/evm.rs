@@ -347,8 +347,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
-    use alloy_primitives::{B256, U256};
-    use alloy_sol_types::SolCall;
+    use alloy_primitives::{B256, U256, keccak256};
+    use alloy_sol_types::{SolCall, SolValue};
     use indexmap::IndexMap;
     use revm::{
         DatabaseCommit, DatabaseRef,
@@ -384,6 +384,13 @@ mod tests {
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
+
+    alloy_sol_types::sol! {
+        interface TestZonePortal {
+            function enableToken(address token) external;
+            function tokenEnablementHash() external view returns (bytes32);
+        }
+    }
 
     fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
         let code = Bytecode::new_legacy([0xef].into());
@@ -630,6 +637,112 @@ mod tests {
             result => panic!("portal call failed: {result:?}"),
         };
         assert_eq!(U256::from_be_slice(&output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_portal_runtime_commits_subsequent_token_enablements() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let portal_runtime = Bytecode::new_legacy(tempo_contracts::zones::ZONE_PORTAL_RUNTIME);
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo {
+                code_hash: portal_runtime.hash_slow(),
+                code: Some(portal_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        let second_token = StorageCtx::enter_ctx(
+            evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> Result<_, TempoPrecompileError> {
+                TIP20Setup::path_usd(admin).apply()?;
+                Ok(TIP20Setup::create("Second Token", "SECOND", admin)
+                    .apply()?
+                    .address())
+            },
+        )
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let create = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: true,
+                        gatewayMode: true,
+                        allowedAccounts: vec![],
+                        zoneGateways: vec![],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match &create.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("createZone failed: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
+        evm.db_mut().commit(create.state);
+
+        let enable = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::enableTokenCall {
+                    token: second_token,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            enable.result.is_success(),
+            "enableToken failed: {:?}",
+            enable.result
+        );
+        evm.db_mut().commit(enable.state);
+
+        let commitment = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::tokenEnablementHashCall {}
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match commitment.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("tokenEnablementHash failed: {result:?}"),
+        };
+        let actual = TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
+        let initial = keccak256(
+            (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
+        );
+        let expected =
+            keccak256((initial, second_token, "Second Token", "SECOND", "USD").abi_encode_params());
+        assert_eq!(actual, expected);
     }
 
     #[test]

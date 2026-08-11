@@ -11,7 +11,10 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
 };
-use alloy::primitives::{Address, IntoLogData};
+use alloy::{
+    primitives::{Address, B256, IntoLogData, keccak256},
+    sol_types::SolValue,
+};
 use std::collections::HashMap;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
@@ -129,6 +132,16 @@ impl ZoneFactory {
         let token_name = token.name()?;
         let token_symbol = token.symbol()?;
         let token_currency = token.currency()?;
+        let token_enablement_hash = keccak256(
+            (
+                B256::ZERO,
+                call.params.initialToken,
+                token_name.clone(),
+                token_symbol.clone(),
+                token_currency.clone(),
+            )
+                .abi_encode_params(),
+        );
 
         self.next_zone_id.write(
             zone_id
@@ -137,7 +150,7 @@ impl ZoneFactory {
         )?;
         // TIP-1091 deliberately etches the canonical runtime unconditionally. The 96-bit portal
         // prefix makes pre-existing state computationally infeasible to target with CREATE2.
-        ZonePortalStorage::new(portal).initialize(zone_id, &call.params)?;
+        ZonePortalStorage::new(portal).initialize(zone_id, &call.params, token_enablement_hash)?;
 
         self.zones[zone_id].write(ZoneInfoStorage {
             zone_id,
@@ -428,6 +441,13 @@ mod tests {
             assert_eq!(portal.leader.read()?, SEQUENCER_A);
             assert_eq!(portal.leader_epoch.read()?, 1);
             assert_eq!(portal.leader_activation_tempo_block.read()?, CREATION_BLOCK);
+            let expected_token_enablement_hash = keccak256(
+                (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
+            );
+            assert_eq!(
+                portal.token_enablement_hash.read()?,
+                expected_token_enablement_hash
+            );
 
             // Pin the native storage handlers to the canonical Solidity layout.
             assert_eq!(
@@ -466,10 +486,15 @@ mod tests {
                 StorageCtx.sload(created.portal, U256::from(24))?,
                 U256::from(CREATION_BLOCK)
             );
+            assert_eq!(portal.token_enablement_hash.slot(), U256::from(26));
+            assert_eq!(
+                StorageCtx.sload(created.portal, U256::from(26))?,
+                U256::from_be_bytes(expected_token_enablement_hash.0)
+            );
 
             // Ensure portal can't be re-initialized
             assert_eq!(
-                portal.initialize(1, &params),
+                portal.initialize(1, &params, B256::ZERO),
                 Err(ZoneFactoryError::already_initialized().into())
             );
             Ok(())
