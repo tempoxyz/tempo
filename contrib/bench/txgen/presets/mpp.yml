@@ -2,7 +2,7 @@ chain_id: 1337
 
 gas:
   max_fee_per_gas: 100000000000
-  max_priority_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 0
 
 accounts:
   users:
@@ -34,7 +34,7 @@ templates:
     type: tempo
     gas_limit: 2000000
     max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 0
     fee_token: "0x20c0000000000000000000000000000000000000"
     call:
       to: "0x20c0000000000000000000000000000000000001"
@@ -46,7 +46,7 @@ templates:
     type: tempo
     gas_limit: 2000000
     max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 0
     fee_token: "0x20c0000000000000000000000000000000000000"
     call:
       abi: MPPChannel
@@ -57,7 +57,7 @@ templates:
     type: tempo
     gas_limit: 2000000
     max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 0
     fee_token: "0x20c0000000000000000000000000000000000000"
     call:
       abi: MPPChannel
