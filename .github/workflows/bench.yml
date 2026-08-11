@@ -69,6 +69,7 @@ jobs:
       bench-env: ${{ steps.args.outputs.bench-env }}
       baseline-env: ${{ steps.args.outputs.baseline-env }}
       feature-env: ${{ steps.args.outputs.feature-env }}
+      feature-flatmpt: ${{ steps.args.outputs.feature-flatmpt }}
       blocks: ${{ steps.args.outputs.blocks }}
       warmup: ${{ steps.args.outputs.warmup }}
       chain: ${{ steps.args.outputs.chain }}
@@ -173,7 +174,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tokenCount, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, baselineFeatures, featureFeatures, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, valscope, skipStateRoot, baselineArgs, featureArgs, gasLimit, generalGasLimit, runType, forceBloat, noCache, noSlack, metrics, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs, runSide;
+            let pr, actor, mode, preset, duration, bloat, tokenCount, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, baselineFeatures, featureFeatures, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, valscope, skipStateRoot, baselineArgs, featureArgs, gasLimit, generalGasLimit, runType, forceBloat, noCache, noSlack, metrics, benchArgs, benchEnv, baselineEnv, featureEnv, featureFlatmpt, blocks, warmup, runPairs, runSide;
             let explicitWarmup = false;
             let explicitDuration = false;
             let explicitRunPairs = false;
@@ -186,9 +187,9 @@ jobs:
             const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'general-gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
             const stringArgs = new Set(['mode', 'preset', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork', 'run-side']);
-            const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root']);
+            const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root', 'feature-flatmpt']);
             const bloatValues = new Set(['1', '10', '100']);
-            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '5000', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
+            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '5000', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'feature-flatmpt': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -271,7 +272,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [feature-flatmpt] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -316,6 +317,7 @@ jobs:
             benchEnv = defaults['bench-env'];
             baselineEnv = defaults['baseline-env'];
             featureEnv = defaults['feature-env'];
+            featureFlatmpt = defaults['feature-flatmpt'];
             blocks = defaults.blocks;
             warmup = defaults.warmup;
             runPairs = defaults['run-pairs'];
@@ -332,7 +334,7 @@ jobs:
               tracyOffset = String(Math.floor(Number(duration) / 2));
             }
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [feature-flatmpt] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -506,6 +508,7 @@ jobs:
             core.setOutput('bench-env', benchEnv || '');
             core.setOutput('baseline-env', baselineEnv || '');
             core.setOutput('feature-env', featureEnv || '');
+            core.setOutput('feature-flatmpt', featureFlatmpt);
             core.setOutput('blocks', blocks);
             core.setOutput('warmup', warmup);
             core.setOutput('chain', chain);
@@ -658,6 +661,7 @@ jobs:
       bench-env: ${{ needs.tempo-bench-ack.outputs.bench-env }}
       baseline-env: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
       feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
+      feature-flatmpt: ${{ needs.tempo-bench-ack.outputs.feature-flatmpt }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
