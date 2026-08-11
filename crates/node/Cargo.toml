@@ -51,6 +51,8 @@ reth-node-ethereum.workspace = true
 reth-storage-api.workspace = true
 reth-db-api.workspace = true
 reth-trie-common.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
 alloy-consensus.workspace = true
 tempo-flatmpt.workspace = true
 
