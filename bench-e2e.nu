@@ -275,6 +275,14 @@ def e2e-bloat-gib-to-mib [bloat: int] {
     exit 1
 }
 
+def e2e-bloat-dump-path [bloat_mib: int] {
+    $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb.state_bloat.bin"
+}
+
+def e2e-flatmpt-golden-path [bloat_mib: int] {
+    $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb.flatmpt"
+}
+
 def e2e-validate-token-count [token_count: int] {
     let available_token_count = ($TIP20_TOKEN_IDS | length)
     if $token_count <= 0 {
@@ -1077,18 +1085,29 @@ def run-local-e2e-phase [run: record, ctx: record] {
         print $"  Tracy mode: ($ctx.tracy), sampling hz: ($TRACY_SAMPLING_HZ)"
     }
     let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
-    let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
+    let flatmpt_common_env = if $run_type == "feature" and $ctx.feature_flatmpt {
+        let state_env = if $ctx.bloat > 0 { $" TEMPO_FLATMPT_GOLDEN=($ctx.flatmpt_golden)" } else { "" }
+        $"TEMPO_FLATMPT_MODE=root($state_env)"
+    } else {
+        ""
+    }
+    let a_flatmpt_env = if $flatmpt_common_env != "" { $"TEMPO_FLATMPT=($ctx.a.mount)/tempo_flatmpt_($ctx.bloat)mb ($flatmpt_common_env)" } else { "" }
+    let b_flatmpt_env = if $flatmpt_common_env != "" { $"TEMPO_FLATMPT=($ctx.b.mount)/tempo_flatmpt_($ctx.bloat)mb ($flatmpt_common_env)" } else { "" }
+    let a_env = [$side_env $a_flatmpt_env] | where { |item| $item != "" } | str join " "
+    let b_env = [$side_env $b_flatmpt_env] | where { |item| $item != "" } | str join " "
+    let a_env_prefix = if $a_env != "" { $"($a_env) " } else { "" }
+    let b_env_prefix = if $b_env != "" { $"($b_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $a_env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $b_env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
     sleep 2sec
-    let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
+    let rpc_timeout = if $run_type == "feature" and $ctx.feature_flatmpt and $ctx.bloat > 0 { 3600 } else if $ctx.bloat > 0 { 600 } else { 300 }
     mut phase_exit = 0
     if ((find-tempo-pids) | length) < 2 {
         print $"Error: local e2e validators exited before readiness checks completed for ($phase)"
@@ -1389,6 +1408,7 @@ def "main e2e" [
     --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
+    --feature-flatmpt                                   # Use FlatMPT root mode for feature node phases
     --bench-env: string = ""                            # Environment vars for the sender process
     --baseline-name: string = ""                         # Baseline display name for summary
     --feature-name: string = ""                          # Feature display name for summary
@@ -1439,6 +1459,8 @@ def "main e2e" [
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
+    let bloat_dump = (e2e-bloat-dump-path $bloat_mib)
+    let flatmpt_golden = (e2e-flatmpt-golden-path $bloat_mib)
     e2e-validate-token-count $token_count
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
@@ -1512,7 +1534,11 @@ def "main e2e" [
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    let flatmpt_state_missing = $feature_flatmpt and $bloat_mib > 0 and (not ($bloat_dump | path exists) or not ($flatmpt_golden | path exists) or not ($"($flatmpt_golden).meta" | path exists))
+    let should_init_snapshots = $force_bloat or (not $snapshots_ready) or $flatmpt_state_missing
+    if $flatmpt_state_missing {
+        print $"FlatMPT benchmark state is missing; rebuilding the e2e snapshots and retained ($bloat) GiB checkpoint."
+    }
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
@@ -1528,7 +1554,7 @@ def "main e2e" [
     if $should_init_snapshots {
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
-        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
+        let bloat_file = if $feature_flatmpt { $bloat_dump } else { $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin" }
         mark-schelk-dirty-at $E2E_A_STATE_PATH
         mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
@@ -1556,6 +1582,12 @@ def "main e2e" [
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            if $feature_flatmpt {
+                print $"Building reusable FlatMPT checkpoint at ($flatmpt_golden)..."
+                with-env { MPT_RAM_BUILD_GIB: "24" } {
+                    cargo run -p tempo-flatmpt --profile $profile --example build_golden -- $bloat_file $flatmpt_golden
+                }
+            }
         }
 
         let marker = {
@@ -1572,7 +1604,7 @@ def "main e2e" [
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($E2E_BLOAT_TMP_DIR | path exists) {
+        if not $feature_flatmpt and ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }
         bench-promote-at $E2E_A_STATE_PATH $a_db
@@ -1724,6 +1756,9 @@ def "main e2e" [
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
+        feature_flatmpt: $feature_flatmpt
+        bloat_dump: $bloat_dump
+        flatmpt_golden: $flatmpt_golden
         bench_env: $bench_env
         victoriametrics_url: $victoriametrics_url
         clickhouse_url: $clickhouse_url
