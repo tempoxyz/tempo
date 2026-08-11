@@ -277,6 +277,41 @@ fn translate_allowed_calls_for_precompile(
         .collect()
 }
 
+/// Rewrites a failed batch step's gas to the whole-transaction result it is
+/// surfaced as.
+///
+/// The failed step's tracker is already settled per-call transaction-level
+/// gas: `last_frame_result` wrote the settled tracker (state gas rolled back,
+/// refunds dropped, halts fully spent, refundable CREATE state gas refilled)
+/// back into the frame result. Deliberately do NOT settle it into `batch_gas`
+/// via `handle_reservoir_remaining_gas` — that would re-settle an
+/// already-settled tracker and keep prior successful steps' refunds the batch
+/// revert just invalidated. Two corrections remain:
+///
+/// - Roll back the state gas prior successful steps settled into `batch_gas`
+///   (the batch-wide checkpoint revert rolled back the state it paid for).
+///   This mirrors [`GasTracker::rollback_state_gas`] with the
+///   batch-accumulated counters: the reservoir-drawn portion restores the
+///   reservoir, and the spilled portion returns to `remaining` on revert
+///   only — an exceptional halt consumes it, matching the single-frame model
+///   where `spend_all` runs after the rollback.
+/// - Widen the tracker's limit — covering just the failed step — to the whole
+///   transaction budget.
+fn normalize_failed_batch_result_gas(frame_result: &mut FrameResult, batch_gas: &GasTracker) {
+    let is_revert = frame_result.instruction_result().is_revert();
+    let tracker = frame_result.gas_mut().tracker_mut();
+    tracker.set_reservoir(
+        tracker
+            .reservoir()
+            .saturating_add_signed(batch_gas.state_gas_spent())
+            .saturating_sub(batch_gas.state_gas_spilled()),
+    );
+    if is_revert {
+        tracker.erase_cost(batch_gas.state_gas_spilled());
+    }
+    tracker.set_limit(batch_gas.limit());
+}
+
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
 ///
 /// This is charged before execution as part of transaction validation.
@@ -635,12 +670,10 @@ where
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
             //
             // The result's gas is already settled (`precompile_output_to_interpreter_result`
-            // consumes all gas on halt); only its limit must widen from the prevalidation
-            // budget to the whole transaction budget it is surfaced as.
-            frame_result
-                .gas_mut()
-                .tracker_mut()
-                .set_limit(batch_gas.limit());
+            // consumes all gas on halt); with no accumulated state gas yet, the
+            // normalization only widens its limit from the prevalidation budget to the
+            // whole transaction budget it is surfaced as.
+            normalize_failed_batch_result_gas(&mut frame_result, &batch_gas);
             return Ok(frame_result);
         }
 
@@ -710,34 +743,7 @@ where
                     }
                 }
 
-                // The failed step's gas is already settled per-call transaction-level
-                // gas: `last_frame_result` wrote the settled tracker (state gas rolled
-                // back, refunds dropped, halts fully spent, refundable CREATE state gas
-                // refilled) back into the frame result. Deliberately do NOT settle it
-                // into `batch_gas` — that would re-settle an already-settled tracker
-                // and keep prior successful steps' refunds the batch revert just
-                // invalidated. Two corrections remain: roll back the state gas prior
-                // successful steps settled into `batch_gas` (the checkpoint revert
-                // above rolled back the state it paid for), and widen the tracker's
-                // limit — covering just the failed step — to the whole tx budget.
-                //
-                // The rollback mirrors `GasTracker::rollback_state_gas` with the
-                // batch-accumulated counters: the reservoir-drawn portion restores the
-                // reservoir, and the spilled portion returns to `remaining` on revert
-                // only — an exceptional halt consumes it, matching the single-frame
-                // model where `spend_all` runs after the rollback.
-                let is_revert = frame_result.instruction_result().is_revert();
-                let tracker = frame_result.gas_mut().tracker_mut();
-                tracker.set_reservoir(
-                    tracker
-                        .reservoir()
-                        .saturating_add_signed(batch_gas.state_gas_spent())
-                        .saturating_sub(batch_gas.state_gas_spilled()),
-                );
-                if is_revert {
-                    tracker.erase_cost(batch_gas.state_gas_spilled());
-                }
-                tracker.set_limit(batch_gas.limit());
+                normalize_failed_batch_result_gas(&mut frame_result, &batch_gas);
 
                 return Ok(frame_result);
             }
