@@ -72,7 +72,7 @@ use crate::{
 mod tests;
 
 mod notarized_tree;
-use notarized_tree::{LocalState, NotarizedTree};
+use notarized_tree::{LocalState, NextToForward, NotarizedTree};
 
 pub(crate) struct Actor<TContext> {
     context: ContextCell<TContext>,
@@ -584,7 +584,6 @@ where
     )]
     fn record_pending_head(&mut self, context: Context<Digest, PublicKey>) {
         self.notarized_tree.set_pending_head(
-            context.round,
             Round::new(context.round.epoch(), context.parent.0),
             context.parent.1,
         );
@@ -656,10 +655,10 @@ where
     }
 
     fn is_next_notarized_or_finalized_tip(&self, digest: Digest) -> bool {
-        self.notarized_tree
-            .next_to_forward(self.context.current())
-            .is_some_and(|entry| entry.block.digest() == digest)
-            || self.notarized_tree.is_network_finalized_tip(digest)
+        matches!(
+            self.notarized_tree.next_to_forward(self.context.current()),
+            Some(NextToForward::Block(block)) if block.digest() == digest
+        ) || self.notarized_tree.is_network_finalized_tip(digest)
     }
 
     #[instrument(
@@ -740,15 +739,13 @@ where
             None => {}
         }
 
-        // Drive the execution layer's head towards the tip of the
-        // canonical notarized chain.
-        if let Some(entry) = self.notarized_tree.next_to_forward(self.context.current()) {
+        if let Some(step) = self.notarized_tree.next_to_forward(self.context.current()) {
             let on_top_of = self.notarized_tree.local_state();
             let fut = execute_notarization(
                 self.context.child("notarize"),
                 self.execution_node.clone(),
                 on_top_of,
-                entry.block.clone(),
+                step,
                 None,
             );
             self.set_execution_task(ExecutionTask::new(
@@ -1114,28 +1111,29 @@ where
 #[instrument(
     skip_all,
     fields(
-        block.digest = %block.digest(),
-        block.height = %block.height(),
+        block.digest = %step.digest(),
+        block.height = %step.height(),
     ),
 )]
 async fn execute_notarization<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
     on_top_of: LocalState,
-    block: Arc<Block>,
+    step: NextToForward,
     validator_set: Option<Vec<B256>>,
 ) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
-    let digest = block.digest();
-    let target = on_top_of.update_head(block.height(), digest);
+    let digest = step.digest();
+    let is_repoint = matches!(step, NextToForward::Repoint(..));
+    let target = on_top_of.update_head(step.height(), digest);
     match forward_notarized(
         &context,
         execution_node,
         on_top_of,
         target,
-        block,
+        step,
         validator_set,
     )
     .await
@@ -1143,6 +1141,13 @@ where
         Ok(canonicalized) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(canonicalized),
             payload_job: None,
+        },
+        // A failed repoint is fatal: the target is expected to be an ancestor
+        // of the current canonical chain. Anything but success means that CL
+        // and EL disagree.
+        Err(error) if is_repoint => ExecutionTaskOutcome::Fatal {
+            error: error
+                .wrap_err("failed repointing the execution layer's head onto the finalized tip"),
         },
         // The cause is logged by `forward_notarized`.
         Err(_logged) => ExecutionTaskOutcome::NotarizedBlockRejected { digest, target },
@@ -1689,8 +1694,7 @@ async fn forward_finalized<TContext: Pacer>(
     Ok(target)
 }
 
-/// Forwards a notarized block to the execution layer and makes it the head of
-/// the canonical chain.
+/// Drives convergence of the EL to the pending notarized tip.
 ///
 /// The caller is responsible for only forwarding blocks that link to the
 /// canonicalized state, so the new-payload request must come back valid;
@@ -1698,8 +1702,8 @@ async fn forward_finalized<TContext: Pacer>(
 #[instrument(
     skip_all,
     fields(
-        block.digest = %block.digest(),
-        block.height = %block.height(),
+        block.digest = %step.digest(),
+        block.height = %step.height(),
     ),
     err(level = Level::WARN),
 )]
@@ -1708,29 +1712,31 @@ async fn forward_notarized<TContext: Pacer>(
     execution_node: Arc<TempoFullNode>,
     on_top_of: LocalState,
     target: LocalState,
-    block: Arc<Block>,
+    step: NextToForward,
     validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<LocalState> {
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
-    let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-            validator_set,
-        })
-        .pace(context, Duration::from_millis(20))
-        .await
-        .wrap_err(
-            "failed sending new-payload request to execution engine to \
-            forward notarized block",
-        )?;
-    ensure!(
-        payload_status.is_valid(),
-        "payload status of notarized block was neither valid nor invalid \
-        (likely syncing): `{payload_status}`",
-    );
+    if let NextToForward::Block(block) = step {
+        let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+        let payload_status = execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(TempoExecutionData {
+                block,
+                block_access_list,
+                validator_set,
+            })
+            .pace(context, Duration::from_millis(20))
+            .await
+            .wrap_err(
+                "failed sending new-payload request to execution engine to \
+                forward notarized block",
+            )?;
+        ensure!(
+            payload_status.is_valid(),
+            "payload status of notarized block was neither valid nor invalid \
+            (likely syncing): `{payload_status}`",
+        );
+    }
 
     // The forkchoice update is skipped when it would not change anything,
     // but the state is reported either way so that the tree's tracked

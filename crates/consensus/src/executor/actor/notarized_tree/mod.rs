@@ -101,9 +101,9 @@ impl LocalState {
 ///
 /// Contexts double as notarization proofs for their parents, but parents are
 /// not monotonic: after nullifications, a later view may build on an *older*
-/// notarized block than its predecessor, and so supersession is arbitrated by
-/// the round of the *reporting* context, and the canonical path is the pending
-/// head's ancestry rather than the highest known notarization's.
+/// notarized block than its predecessor. Reports arrive in consensus order,
+/// so the last report wins, and the canonical path is the pending head's
+/// ancestry rather than the highest known notarization's.
 ///
 /// Block bodies are captured from validation requests and the node's own
 /// builds (the proposer never verifies its own block) or fetched from the
@@ -118,7 +118,9 @@ impl LocalState {
 /// layer provably has - its own head, or the network's finalized tip -
 /// and hands out the block directly above it, derived fresh on every
 /// query. There is no cached convergence state that could go stale
-/// against a fork.
+/// against a fork. When the pending head is the finalized tip itself,
+/// there is no block above the anchor: the step is a bare forkchoice
+/// update repointing the head onto the tip.
 ///
 /// Recording methods only insert primary state (the pending head, the
 /// local state, and bodies, guarded against the finalized tip);
@@ -147,14 +149,41 @@ pub(super) struct NotarizedTree {
     blocks: HashMap<Digest, BlockEntry>,
 }
 
+/// The next convergence step toward the pending head, returned by
+/// [`NotarizedTree::next_to_forward`].
+#[derive(Debug)]
+pub(super) enum NextToForward {
+    /// Forward this block: a new-payload request followed by a forkchoice
+    /// update making it the head.
+    Block(Arc<Block>),
+    /// Repoint the head onto the already-known finalized tip with a bare
+    /// forkchoice update; there is no block to deliver.
+    Repoint(Height, Digest),
+}
+
+impl NextToForward {
+    /// The digest of the block the step converges the head onto.
+    pub(super) fn digest(&self) -> Digest {
+        match self {
+            Self::Block(block) => block.digest(),
+            Self::Repoint(_, digest) => *digest,
+        }
+    }
+
+    /// The height of the block the step converges the head onto.
+    pub(super) fn height(&self) -> Height {
+        match self {
+            Self::Block(block) => block.height(),
+            Self::Repoint(height, _) => *height,
+        }
+    }
+}
+
 /// The parent of the most recent consensus context: the notarized block
 /// consensus reports building on, and hence the block the execution
 /// layer's head must converge to.
 #[derive(Clone, Copy, Debug)]
 struct PendingHead {
-    /// The round of the context that reported this parent. Arbitrates
-    /// supersession: parents are not monotonic, reports are.
-    reported_in: Round,
     /// The round the parent was notarized in (its view within the reporting
     /// context's epoch); the fetch hint for a missing body.
     notarized_in: Round,
@@ -207,34 +236,12 @@ impl NotarizedTree {
     }
 
     /// Records a consensus context's parent as the pending head of the
-    /// chain, superseding the report of any older context.
-    ///
-    /// Supersession is arbitrated by `reported_in` - the round of the
-    /// reporting context - because parents themselves are not monotonic:
-    /// after nullifications, a later view may build on an older notarized
-    /// block than its predecessor did. Parents covered by the finalized
-    /// tip are not recorded; the finalization pipeline owns them.
-    pub(super) fn set_pending_head(
-        &mut self,
-        reported_in: Round,
-        notarized_in: Round,
-        digest: Digest,
-    ) {
-        let (finalized_round, _, finalized_digest) = self.network_finalized_tip;
-        if notarized_in <= finalized_round || digest == finalized_digest {
-            return;
-        }
-        if self
-            .pending_head
-            .as_ref()
-            .is_none_or(|pending| reported_in > pending.reported_in)
-        {
-            self.pending_head = Some(PendingHead {
-                reported_in,
-                notarized_in,
-                digest,
-            });
-        }
+    /// chain, superseding any previous report.
+    pub(super) fn set_pending_head(&mut self, notarized_in: Round, digest: Digest) {
+        self.pending_head = Some(PendingHead {
+            notarized_in,
+            digest,
+        });
     }
 
     /// Records the body of a block unless the finalized tip covers its
@@ -284,14 +291,16 @@ impl NotarizedTree {
             the observed finalized tip of the network",
         );
 
-        let (finalized_round, finalized_height, _) = self.network_finalized_tip;
+        let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
         self.blocks
             .retain(|_, entry| entry.block.height() > finalized_height);
-        if self
-            .pending_head
-            .as_ref()
-            .is_some_and(|pending| pending.notarized_in <= finalized_round)
-        {
+        // A pending head the finalized tip covers is stale - except a
+        // report naming the tip itself, which stays until the head is
+        // repointed onto it (see [`Self::repoint_to_finalized_tip`]) or a
+        // newer report supersedes it.
+        if self.pending_head.as_ref().is_some_and(|pending| {
+            pending.notarized_in <= finalized_round && pending.digest != finalized_digest
+        }) {
             self.pending_head = None;
         }
     }
@@ -344,18 +353,18 @@ impl NotarizedTree {
         }
     }
 
-    /// Returns the next notarized block to forward to the execution layer:
-    /// the block directly above the first *anchor* - the local head or the
-    /// network's finalized tip, both provably known to the execution layer
-    /// - that the walk down the pending head's ancestry reaches.
+    /// Returns the next convergence step toward the pending head.
     ///
-    /// A head off the ancestry is no anchor: the walk runs to the
-    /// finalized tip and forwarding replays the path from there (replayed
-    /// blocks are answered from the execution layer's caches, and the
-    /// forkchoice update may move the head backwards - which is also how
-    /// the head is repointed after consensus switched to building on an
-    /// older notarized block).
-    pub(super) fn next_to_forward(&self, now: SystemTime) -> Option<&BlockEntry> {
+    /// Returns a block if it is directly above the anchor (this can be
+    /// the local head or local finalized tip).
+    ///
+    /// Returns just a digest if the execution layer is to be re-pointed to the
+    /// an ancestor of the current local head.
+    ///
+    /// *NOTE:* This digest right now only works for the finalized tip.
+    ///
+    /// **FIXME:** Allow for repointing to any ancestor.
+    pub(super) fn next_to_forward(&self, now: SystemTime) -> Option<NextToForward> {
         if self.local_finalized_tip.0 < self.network_finalized_tip.1 {
             return None;
         }
@@ -372,7 +381,19 @@ impl NotarizedTree {
             child = Some(entry);
             digest = entry.block.parent_digest();
         }
-        child.filter(|entry| entry.forwardable(now))
+        match child {
+            Some(entry) => entry
+                .forwardable(now)
+                .then(|| NextToForward::Block(entry.block.clone())),
+            // If the anchor is the local finalized tip and the notarized branch
+            // is stranded, repoint to the finalized tip.
+            //
+            // NOTE: This works because we short-circuit on
+            // `local_finalized < network_finalized`. If we did not do that,
+            // this would potentially trigger a SYNCING.
+            None => (digest == finalized_digest && self.local_head.1 != finalized_digest)
+                .then_some(NextToForward::Repoint(finalized_height, finalized_digest)),
+        }
     }
 
     /// Returns the first missing ancestor on the pending head's path,
