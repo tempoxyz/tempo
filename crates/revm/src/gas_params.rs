@@ -19,11 +19,12 @@ const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
 // governed by the storage-credit hook (see `sstore_storage_credits`), so it is
 // no longer charged through the SSTORE gas function.
 
-// TIP-1016 regular gas (computational overhead) — matches pre-TIP-1000 EVM costs.
-// These values are "at least the pre-TIP-1000 (standard EVM) cost" per spec invariant 15.
+// TIP-1016 regular gas (computational overhead).
 //
-// For SSTORE: revm decomposes the cost as sstore_static(WARM_STORAGE_READ=100) +
-// sstore_set_without_load_cost(20,000), with the cold-slot surcharge applied separately.
+// For SSTORE: the regular component is the TIP-1060 residual, `SSTORE_SET_COST`
+// = 5,000 total = 4,900 dynamic (`sstore_set_without_load_cost`) + the 100-gas
+// static warm charge, with the cold-slot surcharge applied separately.
+const TIP1016_SSTORE_SET_REGULAR: u64 = SSTORE_SET_COST - 100; // 4,900
 const TIP1016_NEW_ACCOUNT_REGULAR: u64 = 25_000;
 const TIP1016_CREATE_REGULAR: u64 = 32_000;
 const TIP1016_CODE_DEPOSIT_REGULAR: u64 = 200;
@@ -40,9 +41,10 @@ const TIP1016_CODE_DEPOSIT_STATE: u64 = 2_300;
 #[inline]
 pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     // TIP-1016 (T11): storage creation costs split into regular + state gas.
-    // SSTORE keeps the upstream regular cost (100 static + 19,900 = 20,000,
-    // exactly the pre-TIP-1000 EVM cost); the 245k creditable portion is
-    // charged as state gas by the storage-credit hook.
+    // SSTORE keeps the TIP-1060 residual (5,000 total incl. the 100-gas static
+    // warm charge) as regular cost; the 245k creditable portion is charged as
+    // state gas by the storage-credit hook, so creations are priced with the
+    // TIP-1060 numbers.
     if spec.is_t11() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
         return TABLE.get_or_init(t11_gas_params).clone();
@@ -99,9 +101,10 @@ fn t7_gas_params() -> GasParams {
 /// Storage creation costs are split into a regular component (computational
 /// overhead, at least the pre-TIP-1000 EVM cost) counted toward protocol
 /// limits, and a state component (permanent storage burden) that is charged
-/// to the user but exempt from block capacity: SSTORE set 20k + 245k,
-/// CREATE 32k + 468k, new account 25k + 225k, code deposit 200 + 2,300 per
-/// byte, EIP-7702 auth 25k + 225k (bytecode state gas deliberately zeroed).
+/// to the user but exempt from block capacity: SSTORE set 5k + 245k (the
+/// TIP-1060 numbers), CREATE 32k + 468k, new account 25k + 225k, code deposit
+/// 200 + 2,300 per byte, EIP-7702 auth 25k + 225k (bytecode state gas
+/// deliberately zeroed).
 /// Starts from the upstream Osaka table, so the TIP-1000/TIP-1060 regular
 /// creation surcharges are dropped in favor of the state dimension.
 fn t11_gas_params() -> GasParams {
@@ -110,6 +113,19 @@ fn t11_gas_params() -> GasParams {
     // Regular gas (computational overhead) = at least pre-TIP-1000 EVM cost.
     // State gas (permanent storage burden) = total - regular.
     gas_params.override_gas([
+        // SSTORE (zero -> non-zero): the TIP-1060 5k residual as regular gas
+        // (4,900 dynamic + 100 static warm charge); the 245k creditable portion
+        // is charged as state gas below.
+        (
+            GasId::sstore_set_without_load_cost(),
+            TIP1016_SSTORE_SET_REGULAR,
+        ),
+        // Restore (non-zero -> zero) refund must not exceed the residual set charge,
+        // otherwise 0→x→0 could be refund-positive.
+        (GasId::sstore_set_refund(), TIP1016_SSTORE_SET_REGULAR),
+        // The nonzero-to-zero clear mints a storage credit, so the legacy clearing
+        // refund stays removed (as since TIP-1060).
+        (GasId::sstore_clearing_slot_refund(), 0),
         // Used in sstore to charge first creation of storage. After first creation, credit is minted.
         (GasId::sstore_set_state_gas(), STORAGE_CREDIT_VALUE),
         // Contract metadata (CREATE base): 32k regular + 468k state
@@ -265,30 +281,34 @@ mod tests {
     ///
     /// | Operation                      | Execution Gas | Storage Gas | Total   |
     /// |--------------------------------|---------------|-------------|---------|
-    /// | Cold SSTORE (zero → non-zero)  | 22,100        | 245,000     | 267,100 |
+    /// | Cold SSTORE (zero → non-zero)  | 7,100         | 245,000     | 252,100 |
     /// | Account creation (nonce 0 → 1) | 25,000        | 225,000     | 250,000 |
     /// | Contract metadata (CREATE)     | 32,000        | 468,000     | 500,000 |
     /// | Contract code storage (/byte)  | 200           | 2,300       | 2,500   |
     /// | EIP-7702 delegation (per auth) | 25,000        | 225,000     | 250,000 |
     ///
     /// SSTORE storage gas is the TIP-1060 creditable portion (`STORAGE_CREDIT_VALUE`
-    /// = 245,000), charged as state gas by the storage-credit hook so the credit
-    /// system prices creations identically on T7 and T11. Execution gas is exactly
-    /// the pre-TIP-1000 EVM cost (spec invariant 15): warm read (100) +
-    /// `sstore_set_without_load_cost` (19,900) = 20,000, plus the Berlin cold slot
+    /// = 245,000), charged as state gas by the storage-credit hook, and execution
+    /// gas is the TIP-1060 5k residual (`SSTORE_SET_COST`): warm read (100) +
+    /// `sstore_set_without_load_cost` (4,900), plus the Berlin cold slot
     /// surcharge (2,100) when cold.
     #[test]
     fn test_t11_gas_params_splits_storage_costs() {
         let gas_params = tempo_gas_params(TempoHardfork::T11);
 
         // T11 execution gas (regular/computational overhead)
-        // SSTORE keeps revm's upstream decomposed accounting: static(100) +
-        // sstore_set_without_load(19,900) = 20,000, with cold slot access (2,100)
-        // retained separately through `cold_storage_cost`.
+        // SSTORE keeps the TIP-1060 residual: static(100) + sstore_set_without_load
+        // (4,900) = 5,000, with cold slot access (2,100) retained separately
+        // through `cold_storage_cost`.
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
-            19_900,
-            "SSTORE set_without_load keeps the upstream regular component (20,000 - 100 static)"
+            SSTORE_SET_COST - 100,
+            "SSTORE set_without_load is the TIP-1060 residual minus the 100-gas static warm charge"
+        );
+        assert_eq!(
+            gas_params.get(GasId::sstore_clearing_slot_refund()),
+            0,
+            "the storage-credit mint replaces the legacy SSTORE clearing refund"
         );
         assert_eq!(
             gas_params.get(GasId::new_account_cost()),
@@ -361,13 +381,13 @@ mod tests {
             "TIP-1000: no refund for existing accounts on T1+"
         );
 
-        // SSTORE set refund for 0→X→0 restoration: regular gas only, at the
-        // upstream value. The 245k creditable portion is not routed through the
-        // refund counter — the x→0 transition mints a storage credit instead.
+        // SSTORE set refund for 0→X→0 restoration: capped at the residual set
+        // charge. The 245k creditable portion is not routed through the refund
+        // counter — the x→0 transition mints a storage credit instead.
         assert_eq!(
             gas_params.get(GasId::sstore_set_refund()),
-            19_900,
-            "SSTORE set refund = upstream regular only; creditable portion mints a credit"
+            SSTORE_SET_COST - 100,
+            "SSTORE set refund = the 4,900 dynamic residual only; creditable portion mints a credit"
         );
     }
 
@@ -375,26 +395,26 @@ mod tests {
     /// Note: SSTORE total comparison needs to account for revm decomposition and the cold-slot charge.
     ///
     /// T1 sstore_set_without_load_cost = 250,000 (full TIP-1000 cost as override).
-    /// T11 warm SSTORE = sstore_set_without_load_cost(19,900) + warm_read(100) + state(245,000) = 265,000.
-    /// T11 cold SSTORE = warm path + cold_slot_access(2,100) = 267,100.
+    /// T11 warm SSTORE = sstore_set_without_load_cost(4,900) + warm_read(100) + state(245,000) = 250,000.
+    /// T11 cold SSTORE = warm path + cold_slot_access(2,100) = 252,100.
     #[test]
     fn test_t11_totals_match_spec() {
         let t11 = tempo_gas_params(TempoHardfork::T11);
 
-        // Warm SSTORE total: write component(19,900) + warm read(100) + state(245,000)
+        // Warm SSTORE total: write component(4,900) + warm read(100) + state(245,000)
         let warm_sstore_regular =
             t11.get(GasId::sstore_set_without_load_cost()) + t11.warm_storage_read_cost();
         assert_eq!(
             warm_sstore_regular + t11.get(GasId::sstore_set_state_gas()),
-            265_000,
-            "warm SSTORE total must be 265,000 (20,000 execution + 245,000 creditable state)"
+            SSTORE_CREATE_COST,
+            "warm SSTORE total must be 250,000 (5,000 execution + 245,000 creditable state)"
         );
 
         // Cold SSTORE total: warm path + Berlin cold slot access(2,100)
         let cold_sstore_regular = warm_sstore_regular + t11.cold_storage_cost();
         assert_eq!(
             cold_sstore_regular + t11.get(GasId::sstore_set_state_gas()),
-            267_100,
+            252_100,
             "cold SSTORE total must include Berlin cold slot access charging"
         );
 

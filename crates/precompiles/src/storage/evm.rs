@@ -1326,8 +1326,8 @@ mod tests {
         provider.sstore(address, cold_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used(),
-            22_100,
-            "TIP-1016 cold SSTORE should consume 22,100 regular gas (100 static + 19,900 write + 2,100 Berlin cold-slot access)"
+            7_100,
+            "TIP-1016 cold SSTORE should consume 7,100 regular gas (100 static + 4,900 write + 2,100 Berlin cold-slot access)"
         );
         assert_eq!(
             provider.state_gas_used(),
@@ -1342,8 +1342,8 @@ mod tests {
         provider.sstore(address, warm_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used() - gas_before_warm_sstore,
-            20_000,
-            "TIP-1016 warm zero-to-non-zero SSTORE should consume 20,000 regular gas after the slot is warmed by SLOAD"
+            5_000,
+            "TIP-1016 warm zero-to-non-zero SSTORE should consume 5,000 regular gas after the slot is warmed by SLOAD"
         );
         assert_eq!(
             provider.state_gas_used() - state_gas_before_warm_sstore,
@@ -1585,10 +1585,10 @@ mod tests {
         provider.sstore(address, slot, U256::ZERO)?;
 
         // 0→x→0 restoration: the 245k state portion refills the reservoir directly;
-        // only the 19.9k regular write portion goes through the capped refund counter.
+        // only the 4,900 regular write portion goes through the capped refund counter.
         assert_eq!(
             provider.gas_refunded(),
-            19_900,
+            4_900,
             "refund counter must carry only the regular portion of the restoration"
         );
         assert_eq!(
@@ -1602,10 +1602,10 @@ mod tests {
             "the state-gas refill should land back in the reservoir"
         );
 
-        // Net regular gas: 22,100 (cold 0→x) + 100 (warm x→0) - 19,900 refund = 2,300.
+        // Net regular gas: 7,100 (cold 0→x) + 100 (warm x→0) - 4,900 refund = 2,300.
         // The spec's ideal net of GAS_WARM_ACCESS (100) is not reached because the cold
         // access (2,100) and the two warm static accesses (200) are not returned; the
-        // 19,900 write premium is refunded in full.
+        // 4,900 write premium is refunded in full.
         let net_gas_after_refund =
             provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
         assert_eq!(net_gas_after_refund, 2_300);

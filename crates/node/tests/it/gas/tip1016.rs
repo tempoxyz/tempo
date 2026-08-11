@@ -66,9 +66,9 @@ const CREATE_STATE_GAS: u64 = 468_000;
 /// again for `auth.nonce == 0`, and for a new 2D nonce key.
 const NEW_ACCOUNT_STATE_GAS: u64 = 225_000;
 
-/// SSTORE regular gas for a cold slot, zero -> non-zero: 2,100 cold + 20,000 set
-/// (the 245k creditable portion is state gas).
-const SSTORE_SET_REGULAR_COLD: u64 = 22_100;
+/// SSTORE regular gas for a cold slot, zero -> non-zero: 2,100 cold + 5,000 set
+/// (the TIP-1060 residual; the 245k creditable portion is state gas).
+const SSTORE_SET_REGULAR_COLD: u64 = 7_100;
 
 /// SSTORE regular gas for a cold slot, non-zero -> non-zero: 2,100 cold + 2,900 reset.
 const SSTORE_RESET_REGULAR_COLD: u64 = 5_000;
@@ -995,9 +995,9 @@ async fn test_tip1016_batch_oog_when_spill_exceeds_gas_left() -> eyre::Result<()
 /// the receipt-gas difference isolates what the reverted creation cost the user.
 ///
 /// EIP-8037 frame model (state gas rolled back on revert): the difference is
-/// the regular-gas delta between a creating SSTORE (22,100 cold) and a
+/// the regular-gas delta between a creating SSTORE (7,100 cold) and a
 /// resetting SSTORE (5,000 cold) plus the creation path's credit-bookkeeping
-/// SLOAD (2,100) = 19,200. The 245k state gas of the rolled-back creation is
+/// SLOAD (2,100) = 4,200. The 245k state gas of the rolled-back creation is
 /// refunded on the batch failure path (`handler.rs`, `execute_multi_call_with`),
 /// matching the single-call revert exemption
 /// (`test_tip1016_reverted_sstore_still_exempts_state_gas`).
@@ -1033,8 +1033,8 @@ async fn test_tip1016_batch_late_revert_billing_and_block_exemption() -> eyre::R
         "rolled back"
     );
 
-    //   19,200 = 17,100 regular SSTORE delta (22,100 set - 5,000 reset)
-    //          +  2,100 storage-credit bookkeeping SLOAD (creation path only)
+    //   4,200 = 2,100 regular SSTORE delta (7,100 set - 5,000 reset)
+    //         + 2,100 storage-credit bookkeeping SLOAD (creation path only)
     //
     // The 245k state gas of the rolled-back creation was settled into
     // `batch_gas`; the batch failure path rolls it back onto the returned
@@ -1195,17 +1195,16 @@ async fn test_tip1016_batch_refunds_accumulate_across_successful_calls() -> eyre
             call(slotval, words(&[12, 0])),
         ],
     )?;
-    // 39,160 regular gas spent, minus 2 x 4,800 clearing refunds accumulated
-    // across both calls (uncapped -- 9,600 exceeds the EIP-3529 1/5 cap Tempo
-    // removed) = 29,560. Clearing a slot that was NOT created in this tx
-    // yields the legacy 4,800 refund -- not a 245k storage-credit refund (the
-    // credit is minted for the contract, not refunded to the sender).
+    // 39,160 regular gas spent, with no clearing refund: T11 keeps TIP-1060's
+    // removal of the legacy EIP-3529 clearing refund (SSTORE_CLEARS_SCHEDULE
+    // = 0). Clearing a slot that was NOT created in this tx mints a 245k
+    // storage credit for the contract instead of refunding the sender.
     //
-    // Tempo's block accounting subtracts the full refund exactly like the
-    // receipt does (`tempo_block_regular_gas_used`), so header == receipts.
+    // Tempo's block accounting subtracts refunds exactly like the receipt
+    // does (`tempo_block_regular_gas_used`), so header == receipts.
     let gas = node.run_block(vec![tx]).await?;
     gas.assert_success()
-        .assert_receipt_gas(29_560)
+        .assert_receipt_gas(39_160)
         .assert_state_gas(0);
 
     assert_eq!(node.storage(slotval, 11).await?, U256::ZERO);

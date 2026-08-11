@@ -1,16 +1,15 @@
 ---
 source: crates/node/tests/it/gas/receive_policy_guard.rs
-assertion_line: 352
 expression: gas
 ---
-claim_originator_recovery_to_destination: 315229
-claim_receiver_recovery_to_receiver: 313281
-claim_third_party_recovery_to_destination: 301281
-set_receive_policy_allowed_third_party_recovery: 810029
-set_receive_policy_originator_recovery: 544777
-set_receive_policy_receiver_recovery: 545017
-set_receive_policy_third_party_recovery: 810017
-transfer_allowed_third_party_receive_policy: 304058
-transfer_blocked_originator_recovery: 1095995
-transfer_blocked_receiver_recovery: 319607
-transfer_blocked_third_party_recovery: 321707
+claim_originator_recovery_to_destination: 305029
+claim_receiver_recovery_to_receiver: 303081
+claim_third_party_recovery_to_destination: 310881
+set_receive_policy_allowed_third_party_recovery: 780029
+set_receive_policy_originator_recovery: 529777
+set_receive_policy_receiver_recovery: 530017
+set_receive_policy_third_party_recovery: 780017
+transfer_allowed_third_party_receive_policy: 289058
+transfer_blocked_originator_recovery: 1050995
+transfer_blocked_receiver_recovery: 304607
+transfer_blocked_third_party_recovery: 306707
