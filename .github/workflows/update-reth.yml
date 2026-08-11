@@ -16,6 +16,7 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write
   issues: write
   pull-requests: write
 
@@ -34,16 +35,22 @@ jobs:
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 120
     steps:
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
+        with:
+          policy: update-reth
+
       # ── checkout ───────────────────────────────────────────────
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
-          token: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          token: ${{ steps.github-sts.outputs.token }}
 
-      # ── git identity (use Derek's account) ─────────────────────
+      # ── GitHub App git identity ────────────────────────────────
       - name: Configure git
         env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
         run: |
           USER_JSON=$(gh api /user)
           GIT_NAME=$(echo "$USER_JSON" | jq -r '.name // .login')
@@ -56,7 +63,7 @@ jobs:
       - name: Setup working branch
         id: detect
         env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
         run: |
           EXISTING_PR=$(gh pr list --head reth-auto-bump --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
@@ -154,7 +161,7 @@ jobs:
       - name: Update reth rev in Cargo.toml
         id: update
         env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
         run: |
           # Base rev from main branch (what we're upgrading FROM)
           BASE_REV=$(git show origin/main:Cargo.toml | grep -m1 'paradigmxyz/reth' | sed 's/.*rev = "\([^"]*\)".*/\1/')
@@ -366,7 +373,7 @@ jobs:
       # ── create / update PR ─────────────────────────────────────
       - name: Create or update PR
         env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
           DETECT_EXISTING_PR: ${{ steps.detect.outputs.existing_pr }}
         run: |
@@ -503,7 +510,7 @@ jobs:
       # ── wait for CI and fix failures ─────────────────────────
       - name: Wait for CI and fix failures
         env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
           AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
         run: |
           PR_BRANCH="reth-auto-bump"
@@ -660,7 +667,7 @@ jobs:
       - name: Notify Slack
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ENG_TEMPO_WORKFLOWS_WEBHOOK_URL }}
           OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
           NEW_REV_IN: ${{ steps.update.outputs.new_rev }}

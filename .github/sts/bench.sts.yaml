@@ -1,0 +1,8 @@
+# Allow the benchmark comment controller on Tempo's default branch to mint a
+# short-lived token for membership checks and PR comment updates.
+subject: repo:tempoxyz@211589300/tempo@994992847:ref:refs/heads/main
+permissions:
+  contents: read
+  issues: write
+  members: read
+  pull_requests: read

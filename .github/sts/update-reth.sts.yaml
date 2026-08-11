@@ -1,0 +1,10 @@
+# Allow the scheduled and manually dispatched reth updater on Tempo's default
+# branch to maintain its branch and pull request without a personal token.
+subject: repo:tempoxyz@211589300/tempo@994992847:ref:refs/heads/main
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull_requests: write
+  statuses: read
