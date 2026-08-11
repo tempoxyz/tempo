@@ -66,6 +66,14 @@ function cell(text) {
 function fmtMs(v) { return v != null ? v.toFixed(2) + 'ms' : '-'; }
 function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(precision) + suffix : '-'; }
 function fmtS(v) { return v != null ? v.toFixed(2) + 's' : '-'; }
+function fmtFees(v) {
+  if (typeof v !== 'string' || !/^\d+$/.test(v)) return '-';
+  const attodollars = BigInt(v);
+  const cents = (attodollars + 5_000_000_000_000_000n) / 10_000_000_000_000_000n;
+  const dollars = cents / 100n;
+  const fraction = (cents % 100n).toString().padStart(2, '0');
+  return `$${dollars.toLocaleString('en-US')}.${fraction}`;
+}
 
 function classifyPctChange(pct, lowerIsBetter) {
   if (pct == null || Math.abs(pct) < THRESHOLD_PCT) return 'neutral';
@@ -142,6 +150,7 @@ function buildMetricRows(summary) {
   return [
     { label: 'TPS Mean',        baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtChange(c.tps) },
     { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtChange(c.mgas_s) },
+    { label: 'Total Fees',      baseline: fmtFees(b.total_fees_paid), feature: fmtFees(f.total_fees_paid), change: '' },
     { label: 'Block Time Mean', baseline: fmtMs(b.block_time_mean), feature: fmtMs(f.block_time_mean), change: fmtChange(c.block_time_mean) },
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
     { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtChange(c.block_time_p90) },
@@ -365,6 +374,81 @@ async function failure({ core, context, failedStep }) {
   } else {
     core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
   }
+}
+
+function multiRegionFeeTotals(resultsDir) {
+  const totals = { baseline: null, feature: null };
+  const sums = { baseline: 0n, feature: 0n };
+  const counts = { baseline: 0, feature: 0 };
+
+  for (const name of fs.readdirSync(resultsDir)) {
+    const match = /^report-(baseline|feature)[^.]*\.json$/.exec(name);
+    if (!match) continue;
+    const side = match[1];
+    const wrapper = JSON.parse(fs.readFileSync(path.join(resultsDir, name), 'utf8'));
+    const label = name.slice('report-'.length, -'.json'.length);
+    const txgenPath = path.join(resultsDir, label, wrapper.txgen_report || 'txgen-report.json');
+    if (!fs.existsSync(txgenPath)) continue;
+    const value = JSON.parse(fs.readFileSync(txgenPath, 'utf8')).total_fees_paid;
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) continue;
+    sums[side] += BigInt(value);
+    counts[side] += 1;
+  }
+  for (const side of ['baseline', 'feature']) {
+    if (counts[side] > 0) totals[side] = sums[side].toString();
+  }
+  return totals;
+}
+
+function addMultiRegionFees(resultsDir) {
+  const summaryPath = path.join(resultsDir, 'summary.json');
+  const markdownPath = path.join(resultsDir, 'summary.md');
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  summary.fees = multiRegionFeeTotals(resultsDir);
+  fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
+
+  let markdown = fs.readFileSync(markdownPath, 'utf8').replace(/\n## Fees\n[\s\S]*?(?=\n## |$)/, '');
+  markdown = `${markdown.trimEnd()}\n\n## Fees\n\n| Metric | Baseline | Feature |\n|--------|----------|---------|\n| Total Fees Paid [USD] | ${fmtFees(summary.fees.baseline)} | ${fmtFees(summary.fees.feature)} |\n`;
+  fs.writeFileSync(markdownPath, markdown);
+  return summary;
+}
+
+async function multiRegionSuccess({ core, context }) {
+  const token = process.env.SLACK_BENCH_BOT_TOKEN;
+  const channel = process.env.SLACK_BENCH_CHANNEL;
+  if (!token || !channel) {
+    core.info('Slack credentials not set, skipping multi-region notification');
+    return;
+  }
+  const summary = addMultiRegionFees(process.env.BENCH_WORK_DIR);
+  const repo = `${context.repo.owner}/${context.repo.repo}`;
+  const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
+  const baseline = summary.aggregate?.baseline || {};
+  const feature = summary.aggregate?.feature || {};
+  const number = (value, precision = 1, suffix = '') =>
+    Number.isFinite(value) ? `${value.toFixed(precision)}${suffix}` : '-';
+  const rows = [
+    ['TPS Mean', number(baseline.chain_tps_mean), number(feature.chain_tps_mean)],
+    ['Success Rate', number(baseline.success_rate, 2, '%'), number(feature.success_rate, 2, '%')],
+    ['Block Time P50', number(baseline.block_time_p50_ms, 1, 'ms'), number(feature.block_time_p50_ms, 1, 'ms')],
+    ['Block Time P90', number(baseline.block_time_p90_ms, 1, 'ms'), number(feature.block_time_p90_ms, 1, 'ms')],
+    ['Block Time P99', number(baseline.block_time_p99_ms, 1, 'ms'), number(feature.block_time_p99_ms, 1, 'ms')],
+    ['Total Fees', fmtFees(summary.fees.baseline), fmtFees(summary.fees.feature)],
+  ];
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: ':white_check_mark: Tempo Multi-Region Bench', emoji: true } },
+    { type: 'section', text: { type: 'mrkdwn', text: `*Repo:* ${repoLink(repo)}\n*Triggered by:* @${process.env.BENCH_ACTOR || context.actor}` } },
+    {
+      type: 'table',
+      column_settings: [{ align: 'left' }, { align: 'right' }, { align: 'right' }],
+      rows: [
+        [cell('Metric'), cell('Baseline'), cell('Feature')],
+        ...rows.map(row => row.map(cell)),
+      ],
+    },
+    { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'CI :github:', emoji: true }, url: jobUrl, action_id: 'ci_button' }] },
+  ];
+  await postToSlack(token, channel, blocks, 'Tempo multi-region benchmark fees', core);
 }
 
 function shortRef(ref) {
@@ -629,6 +713,10 @@ module.exports = {
   e2e: {
     success,
     failure,
+  },
+  multiRegion: {
+    addFees: addMultiRegionFees,
+    success: multiRegionSuccess,
   },
   replay: {
     success: replaySuccess,

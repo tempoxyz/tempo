@@ -84,6 +84,10 @@ on:
         required: false
       VICTORIAMETRICS_URL:
         required: false
+      SLACK_BENCH_BOT_TOKEN:
+        required: false
+      SLACK_BENCH_CHANNEL:
+        required: false
   workflow_dispatch:
     inputs:
       cloud:
@@ -293,6 +297,8 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
 
     steps:
       - name: Fetch GitHub token via STS
@@ -320,26 +326,31 @@ jobs:
 
             core.setFailed(`@${username} is not a member of ${org}`);
 
-      - name: Fetch ClickHouse metric allowlist
+      - name: Fetch benchmark support files
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
-            const path = 'contrib/bench/clickhouse-metrics.txt';
-            const { data } = await github.rest.repos.getContent({
-              owner: 'tempoxyz',
-              repo: 'tempo',
-              path,
-              ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
-            });
+            const paths = [
+              'contrib/bench/clickhouse-metrics.txt',
+              '.github/scripts/bench-slack-notify.js',
+            ];
+            for (const path of paths) {
+              const { data } = await github.rest.repos.getContent({
+                owner: 'tempoxyz',
+                repo: 'tempo',
+                path,
+                ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
+              });
 
-            if (Array.isArray(data) || data.type !== 'file' || !data.content) {
-              core.setFailed(`Expected ${path} to be a file at ${context.sha}`);
-              return;
+              if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+                core.setFailed(`Expected ${path} to be a file at ${context.sha}`);
+                return;
+              }
+
+              fs.mkdirSync(require('path').dirname(path), { recursive: true });
+              fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
             }
-
-            fs.mkdirSync('contrib/bench', { recursive: true });
-            fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
 
       - name: Checkout benchmark repo
         id: checkout_benchmark_repo
@@ -710,6 +721,16 @@ jobs:
           echo "path=$results_dir" >> "$GITHUB_OUTPUT"
           echo "Results directory: $results_dir"
 
+      - name: Add fees to summary
+        if: steps.results-dir.outputs.path != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            notify.multiRegion.addFees(process.env.BENCH_RESULTS_DIR);
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -774,6 +795,22 @@ jobs:
 
             const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
             await core.summary.addRaw(body).write();
+
+      - name: Send Slack notification
+        if: >-
+          steps.results-dir.outputs.path != '' &&
+          steps.fetch_tempo_binaries.outcome == 'success' &&
+          steps.generate_initial_validator_state.outcome == 'success' &&
+          steps.initialize_validator_state.outcome == 'success' &&
+          steps.benchmark.outcome == 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_ACTOR: ${{ github.actor }}
+          BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.multiRegion.success({ core, context });
 
       - name: Wait for infrastructure teardown
         if: always() && steps.checkout_benchmark_repo.outcome == 'success'

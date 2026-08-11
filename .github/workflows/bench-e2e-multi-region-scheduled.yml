@@ -180,6 +180,8 @@ jobs:
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
 
   save-state:
     needs: [resolve-refs, bench-e2e-multi-region]
