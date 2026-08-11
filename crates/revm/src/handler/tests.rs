@@ -1264,9 +1264,9 @@ fn test_t11_key_authorization_matches_tip1016_sstore_costs() {
             alloy_primitives::Signature::test_signature(),
         ));
 
-    // TIP-1016 activates with T11: the table keeps the TIP-1060 5k residual as
-    // the SSTORE regular component and moves the 245k creditable portion into
-    // state gas.
+    // TIP-1016 activates with T11: the table inherits the T7 (TIP-1060) 5k
+    // residual as the SSTORE regular component and moves the 245k creditable
+    // portion into state gas.
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
 
     let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
@@ -1277,8 +1277,8 @@ fn test_t11_key_authorization_matches_tip1016_sstore_costs() {
     let helper_sstore_regular = regular_gas - sig_gas - sload - 2_000 - scope_extra_gas;
 
     assert_eq!(
-        helper_sstore_regular, 4_900,
-        "T11 charges only the TIP-1060 residual (4,900 dynamic) in regular gas"
+        helper_sstore_regular, 5_000,
+        "T11 charges only the TIP-1060 residual in regular gas, as on T7"
     );
     assert_eq!(
         state_gas, STORAGE_CREDIT_VALUE,

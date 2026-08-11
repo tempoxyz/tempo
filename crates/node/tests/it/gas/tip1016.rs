@@ -66,9 +66,10 @@ const CREATE_STATE_GAS: u64 = 468_000;
 /// again for `auth.nonce == 0`, and for a new 2D nonce key.
 const NEW_ACCOUNT_STATE_GAS: u64 = 225_000;
 
-/// SSTORE regular gas for a cold slot, zero -> non-zero: 2,100 cold + 5,000 set
-/// (the TIP-1060 residual; the 245k creditable portion is state gas).
-const SSTORE_SET_REGULAR_COLD: u64 = 7_100;
+/// SSTORE regular gas for a cold slot, zero -> non-zero: 2,100 cold + 5,100 set
+/// (100 static + the 5,000 TIP-1060 residual; the 245k creditable portion is
+/// state gas).
+const SSTORE_SET_REGULAR_COLD: u64 = 7_200;
 
 /// SSTORE regular gas for a cold slot, non-zero -> non-zero: 2,100 cold + 2,900 reset.
 const SSTORE_RESET_REGULAR_COLD: u64 = 5_000;
@@ -995,9 +996,9 @@ async fn test_tip1016_batch_oog_when_spill_exceeds_gas_left() -> eyre::Result<()
 /// the receipt-gas difference isolates what the reverted creation cost the user.
 ///
 /// EIP-8037 frame model (state gas rolled back on revert): the difference is
-/// the regular-gas delta between a creating SSTORE (7,100 cold) and a
+/// the regular-gas delta between a creating SSTORE (7,200 cold) and a
 /// resetting SSTORE (5,000 cold) plus the creation path's credit-bookkeeping
-/// SLOAD (2,100) = 4,200. The 245k state gas of the rolled-back creation is
+/// SLOAD (2,100) = 4,300. The 245k state gas of the rolled-back creation is
 /// refunded on the batch failure path (`handler.rs`, `execute_multi_call_with`),
 /// matching the single-call revert exemption
 /// (`test_tip1016_reverted_sstore_still_exempts_state_gas`).
@@ -1033,7 +1034,7 @@ async fn test_tip1016_batch_late_revert_billing_and_block_exemption() -> eyre::R
         "rolled back"
     );
 
-    //   4,200 = 2,100 regular SSTORE delta (7,100 set - 5,000 reset)
+    //   4,300 = 2,200 regular SSTORE delta (7,200 set - 5,000 reset)
     //         + 2,100 storage-credit bookkeeping SLOAD (creation path only)
     //
     // The 245k state gas of the rolled-back creation was settled into
