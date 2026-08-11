@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.14"
+TEMPOUP_INSTALLER_VERSION="0.0.15"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -309,6 +309,9 @@ while [[ $# -gt 0 ]]; do
             version
             ;;
         -i|--install)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                error "$1 requires a version argument"
+            fi
             VERSION="$2"
             shift 2
             ;;

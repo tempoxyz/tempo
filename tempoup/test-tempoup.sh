@@ -190,6 +190,15 @@ run_install '
 '
 ok "bootstrap verification gating"
 
+for install_arg in -i --install; do
+    if output="$(bash "$ROOT_DIR/tempoup/tempoup" "$install_arg" 2>&1)"; then
+        printf '%s\n' "$output" >&2
+        fail "$install_arg without version succeeded"
+    fi
+    contains "$output" "$install_arg requires a version argument"
+done
+ok "tempoup install option requires version"
+
 ROLLBACK_DIR="$TMP_ROOT/rollback-upgrade"
 mkdir -p "$ROLLBACK_DIR"
 printf 'old tempo\n' > "$ROLLBACK_DIR/tempo"
