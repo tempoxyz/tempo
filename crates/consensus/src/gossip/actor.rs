@@ -35,6 +35,15 @@ use crate::utils::OptionFuture;
 /// would let a forged certificate suppress a valid certificate for that block.
 type FrameId = B256;
 
+/// A slot's position in the ready queue.
+///
+/// Stable admission order prevents peer churn from repeatedly overtaking and
+/// starving a candidate when verification capacity is exhausted. The actor
+/// dispatches the smallest ticket first. New slots and released quarantines join
+/// the back of the queue, while replacements and rate-limit waits preserve their
+/// position.
+type ReadyTicket = u128;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlotState {
     Ready,
@@ -48,6 +57,7 @@ struct Slot {
     certificate: Certificate,
     id: FrameId,
     state: SlotState,
+    ready_ticket: ReadyTicket,
 }
 
 struct Peer {
@@ -96,6 +106,7 @@ struct Pending {
 }
 
 type PeerKey = alloy_primitives::B512;
+
 /// Inputs and limits for the `tempo/1` actor.
 pub(crate) struct Config<K, M = crate::alias::marshal::Mailbox> {
     /// Maximum driver judgements per second across all peers.
@@ -139,7 +150,7 @@ where
         pending: OptionFuture::none(),
         budget_wakeup: OptionFuture::none(),
         latest_verified_round: Round::zero(),
-        cursor: 0,
+        next_ready_ticket: 0,
         metrics,
     }
 }
@@ -148,7 +159,15 @@ pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> 
     context: ContextCell<TContext>,
     config: Config<K, M>,
 
+    /// Active logical `tempo/1` peers.
+    ///
+    /// Publication scans every entry, so the actor relies on the RLPx network's
+    /// peer limit to keep this map small.
     peers: HashMap<PeerKey, Peer>,
+    /// At most one certificate slot per active peer.
+    ///
+    /// Scheduling and cleanup scan every entry. This map is no larger than
+    /// `peers` and relies on the same peer limit.
     slots: HashMap<PeerKey, Slot>,
     settled_frames: SettledFrames,
     latest: Option<Published>,
@@ -161,8 +180,8 @@ pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> 
     /// Highest verified round learned from driver judgment or a durable marshal tip.
     latest_verified_round: Round,
 
-    /// Round-robin position used to share the verify budget between peers.
-    cursor: usize,
+    /// Next available ticket to assign to a slot.
+    next_ready_ticket: ReadyTicket,
 
     verify_limiter: RateLimiter<TContext>,
     metrics: Metrics,
@@ -279,22 +298,29 @@ where
             return;
         }
 
-        // A peer may improve a candidate that has not consumed verification
-        // work. However, once judgment starts replacing is not allowed to
-        // make the peer on the hook in case the certificate turns out to be
-        // forged. Should that happen the peer gets penalized.
-        let replace = match self.slots.get(&peer) {
-            None => true,
-            Some(current) if current.state == SlotState::Ready => round > current.round,
-            Some(_) => {
+        // A higher-round replacement keeps the slot's ticket because the ticket
+        // tracks how long the peer has waited, not the age of the certificate.
+        //
+        // Once verification starts, the certificate is locked until it is
+        // settled or removed. This prevents a peer from replacing a quarantined
+        // certificate before the missing scheme arrives and verification can retry.
+        if let Some(current) = self.slots.get_mut(&peer) {
+            if current.state != SlotState::Ready {
                 self.metrics.dropped_locked_replacement.inc();
-                false
+                return;
             }
-        };
-        if !replace {
+            if round <= current.round {
+                return;
+            }
+
+            current.round = round;
+            current.certificate = certificate;
+            current.id = id;
+            self.update_slot_metrics();
             return;
         }
 
+        let ready_ticket = self.issue_ready_ticket();
         self.slots.insert(
             peer,
             Slot {
@@ -302,6 +328,7 @@ where
                 certificate,
                 id,
                 state: SlotState::Ready,
+                ready_ticket,
             },
         );
         self.update_slot_metrics();
@@ -350,21 +377,35 @@ where
 
     /// Releases live quarantines covered by an authenticated boundary scheme.
     fn release_quarantines(&mut self, installed: Epoch) {
-        for (peer, slot) in &mut self.slots {
-            let SlotState::NeedsScheme(required) = slot.state else {
-                continue;
-            };
-            if required <= installed {
-                debug!(
-                    %peer,
-                    %required,
-                    %installed,
-                    round = %slot.round,
-                    digest = %slot.certificate.proposal.payload,
-                    "releasing quarantined certificate after boundary scheme installation",
-                );
-                slot.state = SlotState::Ready;
-            }
+        let mut releasable: Vec<(ReadyTicket, PeerKey, Epoch)> = self
+            .slots
+            .iter()
+            .filter_map(|(peer, slot)| match slot.state {
+                SlotState::NeedsScheme(epoch) if epoch <= installed => {
+                    Some((slot.ready_ticket, *peer, epoch))
+                }
+                _ => None,
+            })
+            .collect();
+        releasable.sort_unstable_by_key(|(ticket, peer, _)| (*ticket, *peer));
+
+        for (_, peer, epoch) in releasable {
+            let ready_ticket = self.issue_ready_ticket();
+            let slot = self
+                .slots
+                .get_mut(&peer)
+                .expect("selected quarantine has a slot");
+
+            debug!(
+                %peer,
+                %epoch,
+                %installed,
+                round = %slot.round,
+                digest = %slot.certificate.proposal.payload,
+                "releasing quarantined certificate after boundary scheme installation",
+            );
+            slot.state = SlotState::Ready;
+            slot.ready_ticket = ready_ticket;
         }
         self.metrics.boundary_scheme_events.inc();
         self.update_slot_metrics();
@@ -390,9 +431,8 @@ where
 
     /// Starts the next fair judgement if the budget allows it.
     ///
-    /// The actor selects a candidate before it spends a rate-limit token. Other
-    /// events must not consume the verify budget. If no token is available, the
-    /// actor schedules a wakeup because the waiting slot produces no new event.
+    /// A rate-limit miss leaves ready order unchanged. Since a waiting slot emits
+    /// no event, a wakeup retries it when the budget replenishes.
     fn try_dispatch(&mut self) {
         if !self.pending.is_none() {
             return;
@@ -431,30 +471,27 @@ where
         self.metrics.dispatched.inc();
     }
 
-    /// Picks the next peer in round-robin order.
+    /// Picks the ready peer that has waited longest.
     ///
     /// The actor does not select the highest round because the value is not yet
     /// verified. A peer could claim a large round and starve all other peers.
-    fn next_candidate(&mut self) -> Option<PeerKey> {
-        if self.slots.is_empty() {
-            return None;
-        }
+    fn next_candidate(&self) -> Option<PeerKey> {
+        self.slots
+            .iter()
+            .filter_map(|(peer, slot)| {
+                (slot.state == SlotState::Ready).then_some((slot.ready_ticket, *peer))
+            })
+            .min()
+            .map(|(_, peer)| peer)
+    }
 
-        let peers: Vec<PeerKey> = self.slots.keys().copied().collect();
-        let start = self.cursor % peers.len();
-
-        for offset in 0..peers.len() {
-            let index = (start + offset) % peers.len();
-            let peer = peers[index];
-            let slot = &self.slots[&peer];
-
-            if slot.state == SlotState::Ready {
-                self.cursor = index + 1;
-                return Some(peer);
-            }
-        }
-
-        None
+    fn issue_ready_ticket(&mut self) -> ReadyTicket {
+        let ticket = self.next_ready_ticket;
+        self.next_ready_ticket = self
+            .next_ready_ticket
+            .checked_add(1)
+            .expect("ready ticket space exhausted");
+        ticket
     }
 
     fn on_judged(&mut self, pending: Pending, result: Option<eyre::Result<(), CertificateError>>) {

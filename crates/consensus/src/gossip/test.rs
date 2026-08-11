@@ -359,6 +359,46 @@ fn scheduling_is_fair_across_peers() {
     });
 }
 
+/// Rate-limit misses and attacker-controlled slot churn must not move later
+/// arrivals ahead of a peer that is already waiting for verification.
+#[test_traced]
+fn rate_limited_churn_preserves_admission_order() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start_with_verify_rate(&mut context, 1);
+        rig.sink.always(Err(CertificateError::Invalid));
+        rig.connect(peer(1));
+        rig.connect(peer(2));
+        rig.connect(peer(3));
+
+        // Spend the initial burst so the remaining slots accumulate behind the
+        // same rate-limit deadline.
+        rig.send(peer(3), rig.frame(1)).await;
+        wait_until(&context, || rig.sink.requests().len() == 1).await;
+
+        rig.send(peer(1), rig.frame(10)).await;
+        wait_until(&context, || metric(&context, "gossip_slots") == 1).await;
+        rig.send(peer(2), rig.frame(20)).await;
+        wait_until(&context, || metric(&context, "gossip_slots") == 2).await;
+
+        rig.send(peer(1), rig.frame(11)).await;
+        context.sleep(Duration::from_millis(10)).await;
+
+        for view in 21..=23 {
+            rig.disconnect(peer(2));
+            wait_until(&context, || metric(&context, "gossip_slots") == 1).await;
+            rig.connect(peer(2));
+            rig.send(peer(2), rig.frame(view)).await;
+            wait_until(&context, || metric(&context, "gossip_slots") == 2).await;
+        }
+
+        assert_eq!(rig.sink.requests(), vec![round(1)]);
+
+        context.sleep(Duration::from_secs(2)).await;
+        wait_until(&context, || rig.sink.requests().len() >= 2).await;
+        assert_eq!(rig.sink.requests()[1], round(11));
+    });
+}
+
 /// A terminal outcome applies to the exact frame bytes and settles every copy.
 /// A key based on the block would let a forged certificate suppress a valid
 /// certificate for the same block.
@@ -765,6 +805,35 @@ fn released_quarantines_share_the_global_verify_limit() {
 
         context.sleep(Duration::from_secs(2)).await;
         assert_eq!(rig.sink.requests().len(), 4);
+    });
+}
+
+/// A quarantine has already consumed a turn. When it becomes ready again, it
+/// must wait behind a slot that remained ready while the scheme was unavailable.
+#[test_traced]
+fn released_quarantine_rejoins_behind_ready_slot() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start_with_verify_rate(&mut context, 1);
+        rig.connect(peer(1));
+        rig.connect(peer(2));
+        rig.sink.answer(Err(CertificateError::NeedsScheme {
+            epoch: Epoch::new(4),
+        }));
+        rig.sink.always(Err(CertificateError::Invalid));
+
+        rig.send(peer(1), rig.frame(10)).await;
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 1).await;
+
+        rig.send(peer(2), rig.frame(20)).await;
+        wait_until(&context, || metric(&context, "gossip_slots") == 2).await;
+        rig.mailbox.boundary_scheme_installed(Epoch::new(4));
+        wait_until(&context, || metric(&context, "gossip_quarantined") == 0).await;
+
+        assert_eq!(rig.sink.requests(), vec![round(10)]);
+
+        context.sleep(Duration::from_secs(2)).await;
+        wait_until(&context, || rig.sink.requests().len() >= 2).await;
+        assert_eq!(rig.sink.requests()[1], round(20));
     });
 }
 
