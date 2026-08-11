@@ -771,6 +771,12 @@ where
                     ));
                     return;
                 }
+
+                // Reschedules the request; the actor will not spin on
+                // `start_next_execution_request` as long as it remains
+                // scheduled before the select! in the select-loop (some other
+                // event needs to take place first; ideally the result of the
+                // convergence target we are falling through to).
                 self.pending_consensus_request = Some((round, ConsensusRequest::Verify(request)));
             }
             Some((round, ConsensusRequest::Build { cause, build })) => {
@@ -793,6 +799,11 @@ where
                     ));
                     return;
                 }
+                // Reschedules the request; the actor will not spin on
+                // `start_next_execution_request` as long as it remains
+                // scheduled before the select! in the select-loop (some other
+                // event needs to take place first; ideally the result of the
+                // convergence target we are falling through to).
                 if self.is_convergence_target(build.digest) {
                     self.pending_consensus_request =
                         Some((round, ConsensusRequest::Build { cause, build }));
