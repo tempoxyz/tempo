@@ -463,7 +463,11 @@ where
             use reth_provider::BlockReaderIdExt as _;
             let canonical_tip = ctx.node.provider().latest_header()?;
             if let Some(tip) = canonical_tip {
-                let db_provider = ctx.node.provider().database_provider_ro()?;
+                let db_provider = ctx
+                    .node
+                    .provider()
+                    .database_provider_ro()?
+                    .disable_long_read_transaction_safety();
                 let checkpoint_number = tip.number();
                 let checkpoint_root = if checkpoint_number == 0 {
                     use reth_trie_db::{
