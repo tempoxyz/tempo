@@ -3,10 +3,22 @@ use alloy::{
     primitives::{Address, B256, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
+    transports::http::reqwest::Url,
 };
 use clap::Args;
 use tempo_alloy::{TempoNetwork, fillers::FeeTokenFiller, provider::ext::TempoProviderBuilderExt};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
+
+/// Validates that a faucet node address is an absolute URL.
+///
+/// [`FaucetArgs::provider`] parses this value again and panics if it is not a
+/// URL, so rejecting it here turns a node crash into a CLI error.
+fn parse_node_address(value: &str) -> Result<String, String> {
+    value
+        .parse::<Url>()
+        .map(|_| value.to_owned())
+        .map_err(|err| format!("invalid faucet node address: {err}"))
+}
 
 /// Faucet-specific CLI arguments
 #[derive(Debug, Clone, Default, Args, PartialEq, Eq)]
@@ -48,7 +60,8 @@ pub struct FaucetArgs {
     #[arg(
         long = "faucet.node-address",
         default_value = "http://localhost:8545",
-        requires = "faucet.enabled"
+        requires = "faucet.enabled",
+        value_parser = parse_node_address
     )]
     pub node_address: String,
 }
@@ -101,5 +114,60 @@ mod tests {
     #[test]
     fn faucet_args_default_sanity_test() {
         assert!(CommandParser::try_parse_from(["tempo"]).is_ok());
+    }
+
+    /// Arguments for an enabled faucet, with `node-address` supplied by the caller.
+    fn enabled_faucet_args(node_address: &str) -> [&str; 10] {
+        [
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+            "0x0000000000000000000000000000000000000001",
+            "--faucet.node-address",
+            node_address,
+        ]
+    }
+
+    #[test]
+    fn rejects_node_address_that_is_not_a_url() {
+        // `provider()` parses this value again and panics on failure, so an
+        // unparseable address must be refused while it is still a CLI error.
+        // Note that a scheme-less authority such as "localhost:8545" does
+        // parse — "localhost" is read as the scheme — so it is not covered
+        // here.
+        for address in ["not a url", "", "http://[::1"] {
+            let parsed = CommandParser::try_parse_from(enabled_faucet_args(address));
+            assert!(
+                parsed.is_err(),
+                "expected {address:?} to be rejected as a node address"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_node_address() {
+        let parsed = CommandParser::try_parse_from(enabled_faucet_args("http://127.0.0.1:9545"))
+            .expect("valid node address should parse");
+        assert_eq!(parsed.args.node_address, "http://127.0.0.1:9545");
+    }
+
+    #[test]
+    fn default_node_address_is_a_valid_url() {
+        let parsed = CommandParser::try_parse_from([
+            "tempo",
+            "--faucet.enabled",
+            "--faucet.private-key",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "--faucet.amount",
+            "1",
+            "--faucet.address",
+            "0x0000000000000000000000000000000000000001",
+        ])
+        .expect("default node address should parse");
+        assert_eq!(parsed.args.node_address, "http://localhost:8545");
     }
 }
