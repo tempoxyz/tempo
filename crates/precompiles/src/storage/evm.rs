@@ -225,23 +225,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
                 .sstore_dynamic_gas(true, &result.data, result.is_cold),
         )?;
 
-        // Track state gas (cold SSTORE zero->non-zero only). When the TIP-1060
-        // storage-credit hook is active it owns the creation charge (and mints credits
-        // on clears), so the plain TIP-1016 state charge and its 0→x→0 reservoir
-        // refill apply only when the hook is disabled — otherwise every creation
-        // would be charged twice.
-        if !self.tip1060_storage_credits_enabled {
-            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
-
-            // EIP-8037: a 0→x→0 restoration returns the state-gas portion directly to
-            // the reservoir, mirroring revm's `sstore_default_gas_accounting`. The
-            // regular-gas portion flows through the capped `sstore_refund` counter below.
-            let refill = self.gas_params.sstore_state_gas_refill(&result.data);
-            if refill > 0 {
-                self.gas_tracker.refill_reservoir(refill);
-            }
-        }
-
         // refund gas.
         self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
 
@@ -1192,7 +1175,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -1249,7 +1232,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 245k = 490k)
         // but the 3rd SSTORE (245k) must spill 235k into regular gas.
@@ -1262,7 +1245,6 @@ mod tests {
         // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
         provider.sstore(address, U256::from(1), U256::from(42))?;
 
-        let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
         assert_eq!(
             provider.state_gas_used(),
             state_gas_per_sstore,
@@ -1273,10 +1255,15 @@ mod tests {
             reservoir - state_gas_per_sstore,
             "reservoir should decrease by state gas cost"
         );
+        let regular_gas_after_first = provider.gas_used();
 
         // --- Second SSTORE: still fits in remaining reservoir (255k left, need 245k) ---
         provider.sstore(address, U256::from(2), U256::from(43))?;
 
+        // Regular cost of a 0→x SSTORE once the owner's credits slot is warm; the
+        // first SSTORE additionally paid the cold credits-slot load, so measure
+        // the steady-state cost from the second SSTORE.
+        let regular_gas_per_sstore = provider.gas_used() - regular_gas_after_first;
         assert_eq!(
             provider.state_gas_used(),
             2 * state_gas_per_sstore,
@@ -1317,8 +1304,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_t11_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
         let mut provider = evm.provider_with_reservoir(490_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
@@ -1326,8 +1313,8 @@ mod tests {
         provider.sstore(address, cold_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used(),
-            7_200,
-            "TIP-1016 cold SSTORE should consume 7,200 regular gas (100 static + 5,000 write + 2,100 Berlin cold-slot access)"
+            9_300,
+            "TIP-1016 cold SSTORE should consume 9,300 regular gas (100 static + 5,000 write + 2,100 Berlin cold-slot access + 2,100 cold credits-slot load)"
         );
         assert_eq!(
             provider.state_gas_used(),
@@ -1342,8 +1329,8 @@ mod tests {
         provider.sstore(address, warm_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used() - gas_before_warm_sstore,
-            5_100,
-            "TIP-1016 warm zero-to-non-zero SSTORE should consume 5,100 regular gas after the slot is warmed by SLOAD"
+            5_200,
+            "TIP-1016 warm zero-to-non-zero SSTORE should consume 5,200 regular gas (100 static + 5,000 write + 100 warm credits-slot load) after the slot is warmed by SLOAD"
         );
         assert_eq!(
             provider.state_gas_used() - state_gas_before_warm_sstore,
