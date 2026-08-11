@@ -1116,6 +1116,16 @@ struct StartPayloadJob {
     response: oneshot::Sender<TempoBuiltPayload>,
 }
 
+#[instrument(
+    skip_all,
+    parent = &cause,
+    fields(
+        head_block_hash = %canonicalized.head.1,
+        head_block_height = %canonicalized.head.0,
+        finalized_block_hash = %canonicalized.finalized.1,
+        finalized_block_height = %canonicalized.finalized.0,
+    ),
+)]
 async fn execute_heartbeat<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
@@ -1143,24 +1153,117 @@ where
     }
 }
 
+/// Registers the payload build on top of its parent (`digest`) via a
+/// forkchoice update.
+///
+/// The caller dispatches a build only when the execution layer's head
+/// already is the parent (see [`Actor::start_next_execution_task`]), so
+/// the forkchoice update re-affirms the head instead of moving it; the
+/// Engine API requires the update regardless, because builds can only be
+/// registered through forkchoice updates. The update is still submitted
+/// when the build is dropped as canceled or stale below - a no-op
+/// re-affirmation, doubling as a head refresh.
+#[instrument(
+    skip_all,
+    parent = &cause,
+    fields(
+        %height,
+        %digest,
+    ),
+)]
 async fn execute_build<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
     canonicalized: LocalState,
     cause: Span,
-    build: Build,
+    Build {
+        round: _,
+        height,
+        digest,
+        attributes,
+        response,
+    }: Build,
 ) -> ExecutionTaskOutcome
 where
     TContext: Pacer,
 {
-    let (new_canonicalized, payload_job) =
-        run_build_task(&context, execution_node, canonicalized, cause, build).await;
-    ExecutionTaskOutcome::Completed {
-        canonicalized: new_canonicalized,
-        payload_job,
+    let new_canonicalized = canonicalized.update_head(height, digest);
+
+    let mut build_attributes = Some((*attributes, response));
+    if build_attributes
+        .as_ref()
+        .is_some_and(|(_, response)| response.is_canceled())
+    {
+        info!("dropping payload build request: the subscriber went away while it was queued");
+        build_attributes.take();
+    }
+
+    // Only build on top of the most recent head. If the requested parent
+    // could not be made the head (because a block above it was already
+    // finalized), the build is stale, and submitting its attributes anyway
+    // would register a build on top of the wrong block. Taking the
+    // attributes drops the response channel, which signals the failure to
+    // the subscriber.
+    if build_attributes.is_some() && new_canonicalized.head.1 != digest {
+        info!("dropping payload build request: its parent cannot be made the head");
+        build_attributes.take();
+    }
+
+    let (attributes, payload_response) = build_attributes.unzip();
+
+    // The forkchoice update is submitted even if it would not change the
+    // forkchoice state: the execution layer treats it as a no-op (the FCU
+    // heartbeat relies on this).
+    match submit_forkchoice_update(
+        &execution_node,
+        &context,
+        cause.clone(),
+        new_canonicalized,
+        attributes,
+        ForkchoiceUpdateKind::Canonicalize {
+            head_or_finalized: HeadOrFinalized::Head,
+        },
+    )
+    .await
+    {
+        Ok(payload_id) => {
+            let payload_job = match (payload_response, payload_id) {
+                (Some(response), Some(payload_id)) => Some(StartPayloadJob {
+                    cause,
+                    payload_id,
+                    response,
+                }),
+                (Some(_dropped_to_signal_failure), None) => {
+                    warn!("execution layer did not return a payload id for the build request");
+                    None
+                }
+                (None, _) => None,
+            };
+            ExecutionTaskOutcome::Completed {
+                canonicalized: Some(new_canonicalized),
+                payload_job,
+            }
+        }
+        Err(error) => {
+            // Dropping the response channels signals the failure to the
+            // subscribers; the cause is only logged here.
+            warn!(%error, "forkchoice update failed");
+            ExecutionTaskOutcome::Completed {
+                canonicalized: None,
+                payload_job: None,
+            }
+        }
     }
 }
 
+#[instrument(
+    skip_all,
+    parent = &request.cause,
+    fields(
+        block.digest = %request.block.digest(),
+        block.height = %request.block.height(),
+    ),
+)]
 async fn execute_finalization<TContext>(
     context: TContext,
     execution_node: Arc<TempoFullNode>,
@@ -1377,100 +1480,6 @@ where
                 syncing: it does not know the block's parent; the notarized \
                 chain convergence will repair the gap in the background"
             );
-        }
-    }
-}
-
-/// Registers the payload build on top of its parent (`digest`) via a
-/// forkchoice update.
-///
-/// The caller dispatches a build only when the execution layer's head
-/// already is the parent (see [`Actor::start_next_execution_task`]), so
-/// the forkchoice update re-affirms the head instead of moving it; the
-/// Engine API requires the update regardless, because builds can only be
-/// registered through forkchoice updates. The update is still submitted
-/// when the build is dropped as canceled or stale below - a no-op
-/// re-affirmation, doubling as a head refresh.
-#[instrument(
-    skip_all,
-    parent = &cause,
-    fields(
-        %height,
-        %digest,
-    ),
-)]
-async fn run_build_task<TContext: Pacer>(
-    context: &TContext,
-    execution_node: Arc<TempoFullNode>,
-    canonicalized: LocalState,
-    cause: Span,
-    Build {
-        round: _,
-        height,
-        digest,
-        attributes,
-        response,
-    }: Build,
-) -> (Option<LocalState>, Option<StartPayloadJob>) {
-    let new_canonicalized = canonicalized.update_head(height, digest);
-
-    let mut build_attributes = Some((*attributes, response));
-    if build_attributes
-        .as_ref()
-        .is_some_and(|(_, response)| response.is_canceled())
-    {
-        info!("dropping payload build request: the subscriber went away while it was queued");
-        build_attributes.take();
-    }
-
-    // Only build on top of the most recent head. If the requested parent
-    // could not be made the head (because a block above it was already
-    // finalized), the build is stale, and submitting its attributes anyway
-    // would register a build on top of the wrong block. Taking the
-    // attributes drops the response channel, which signals the failure to
-    // the subscriber.
-    if build_attributes.is_some() && new_canonicalized.head.1 != digest {
-        info!("dropping payload build request: its parent cannot be made the head");
-        build_attributes.take();
-    }
-
-    let (attributes, payload_response) = build_attributes.unzip();
-
-    // The forkchoice update is submitted even if it would not change the
-    // forkchoice state: the execution layer treats it as a no-op (the FCU
-    // heartbeat relies on this).
-    match submit_forkchoice_update(
-        &execution_node,
-        context,
-        cause.clone(),
-        new_canonicalized,
-        attributes,
-        ForkchoiceUpdateKind::Canonicalize {
-            head_or_finalized: HeadOrFinalized::Head,
-        },
-    )
-    .await
-    {
-        Ok(payload_id) => {
-            let payload_job = match (payload_response, payload_id) {
-                (Some(response), Some(payload_id)) => Some(StartPayloadJob {
-                    cause,
-                    payload_id,
-                    response,
-                }),
-                (Some(_dropped_to_signal_failure), None) => {
-                    warn!("execution layer did not return a payload id for the build request");
-                    None
-                }
-                (None, _) => None,
-            };
-            (Some(new_canonicalized), payload_job)
-        }
-        Err(error) => {
-            // Dropping the response channels signals the failure to the
-            // subscribers; the cause is only logged here.
-            warn!(%error, "forkchoice update failed");
-            (None, None)
         }
     }
 }
@@ -1714,7 +1723,6 @@ fn finalization_target(
 
 #[instrument(
     skip_all,
-    parent = &request.cause,
     fields(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
