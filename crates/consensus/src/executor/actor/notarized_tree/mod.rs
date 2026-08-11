@@ -235,9 +235,28 @@ impl NotarizedTree {
         self.local_head.1 == digest
     }
 
-    /// Whether `digest` is the latest finalized tip reported by consensus.
-    pub(super) fn is_network_finalized_tip(&self, digest: Digest) -> bool {
-        self.network_finalized_tip.2 == digest
+    /// Whether convergence is expected to make `digest` known to the
+    /// execution layer imminently (or if the execution layer is already
+    /// converged).
+    ///
+    /// These are the conditions:
+    ///
+    /// 1. `digest` is the local finalized tip or head, or
+    /// 2. `digest` is the network finalized tip, and the network finalized
+    ///    tip is the next block to be delivered (known fact: marshal only
+    ///    delivers finalized tips if a certificate and block are available).
+    /// 3. `digest` is the pending head, its body is in hand, and it sits
+    ///    directly on a converged anchor - the local head, or the local
+    ///    finalized tip for a fork switch replayed from the tip. One
+    ///    forward step remains either way.
+    pub(super) fn converges_imminently(&self, digest: Digest) -> bool {
+        self.is_local_notarized_or_finalized_tip(digest)
+            || (self.network_finalized_tip.2 == digest
+                && self.local_finalized_tip.0.next() == self.network_finalized_tip.1)
+            || (self.pending_head.digest == digest
+                && self.blocks.get(&digest).is_some_and(|entry| {
+                    self.is_local_notarized_or_finalized_tip(entry.block.parent_digest())
+                }))
     }
 
     /// Records a forkchoice state newly accepted by the execution layer.

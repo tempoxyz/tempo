@@ -323,7 +323,7 @@ fn recognizes_finalized_tip_without_block_body() {
 
     tree.set_network_finalized_tip(round(1), next.height(), next.digest());
 
-    assert!(tree.is_network_finalized_tip(next.digest()));
+    assert_eq!(tree.network_finalized_tip.2, next.digest());
     assert!(!tree.blocks.contains_key(&next.digest()));
 }
 
@@ -496,6 +496,77 @@ fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
     tree.heal();
     let next = next_block(&tree, T0).expect("fork branch");
     assert_eq!(next.digest(), b2.digest());
+}
+
+/// The deferral predicate for consensus requests: a parent converges
+/// imminently when the execution layer already has it (head or finalized
+/// tip), or when it is the pending head, its body in hand, one forward
+/// step above a converged anchor - and does not when it is further out,
+/// its body needs a fetch, or it belongs to a superseded report.
+#[test]
+fn convergence_is_imminent_only_one_step_from_an_anchor() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    // The delivered finalized tip is converged already.
+    assert!(tree.converges_imminently(finalized));
+
+    // A pending head whose recorded body sits directly on the head (here
+    // still the finalized tip) is one forward step away ...
+    let a = block(1, 11, finalized);
+    record(&mut tree, &a);
+    assert!(tree.converges_imminently(a.digest()));
+
+    // ... but two steps away is not imminent: b needs a forwarded first.
+    let b = block(2, 12, a.digest());
+    record(&mut tree, &b);
+    assert!(!tree.converges_imminently(b.digest()));
+    forwarded(&mut tree, &a);
+    assert!(tree.converges_imminently(b.digest()));
+    // The superseded a stays imminent only because the head sits on it.
+    assert!(tree.converges_imminently(a.digest()));
+
+    // A pending head whose body is not in hand needs a fetch first: the
+    // report alone does not make it imminent.
+    let c = block(3, 13, b.digest());
+    report_parent(&mut tree, &c);
+    tree.heal();
+    assert!(!tree.converges_imminently(c.digest()));
+
+    // A sibling fork one step above the finalized tip is imminent even
+    // though it is not the head's child: the replay from the tip anchor
+    // hands it out directly.
+    let a2 = block(4, 11, finalized);
+    record(&mut tree, &a2);
+    assert!(tree.converges_imminently(a2.digest()));
+}
+
+/// The finalized tip is imminent while it is at most one delivery away.
+#[test]
+fn next_finalized_delivery_is_imminent() {
+    let finalized = Digest(B256::repeat_byte(0xff));
+    let mut tree = empty_tree(finalized);
+
+    // One above the local finalized tip: the marshal's next dispatch is
+    // the tip itself.
+    let next = block(1, 11, finalized);
+    tree.set_network_finalized_tip(round(1), Height::new(11), next.digest());
+    tree.heal();
+    assert!(tree.converges_imminently(next.digest()));
+
+    // Two above: an undelivered block sits below the tip.
+    let above = block(2, 12, next.digest());
+    tree.set_network_finalized_tip(round(2), Height::new(12), above.digest());
+    tree.heal();
+    assert!(!tree.converges_imminently(above.digest()));
+
+    // The gap closes as deliveries land.
+    let local_state = tree
+        .local_state()
+        .update_finalized(Height::new(11), next.digest())
+        .update_head(Height::new(11), next.digest());
+    tree.set_local_state(local_state);
+    assert!(tree.converges_imminently(above.digest()));
 }
 
 /// A head stranded on an abandoned notarized branch while consensus

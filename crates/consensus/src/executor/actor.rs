@@ -654,11 +654,21 @@ where
         }
     }
 
-    fn is_next_notarized_or_finalized_tip(&self, digest: Digest) -> bool {
-        matches!(
-            self.notarized_tree.next_to_forward(self.context.current()),
-            Some(NextToForward::Block(block)) if block.digest() == digest
-        ) || self.notarized_tree.is_network_finalized_tip(digest)
+    /// Returns if the convergence machinery is expected to imminently make
+    /// `digest` available to the execution layer.
+    ///
+    /// There are 2 options:
+    ///
+    /// 1. either the block is already queued, or
+    /// 2. we expect the block to be scheduled next.
+    ///
+    /// Point 2 allows for marshal to deliver the next finalized block
+    /// just-in-time.
+    fn is_convergence_target(&self, digest: Digest) -> bool {
+        self.pending_finalizations
+            .iter()
+            .any(|request| request.block.digest() == digest)
+            || self.notarized_tree.converges_imminently(digest)
     }
 
     #[instrument(
@@ -678,17 +688,15 @@ where
         // Latency critical requests come first: consensus is waiting on
         // them to vote on or propose a block.
         //
-        // Fail fast if validation or building cannot start immediately.
-        //
-        // One exception: if verification or build parent is the next notarized
-        // block to forward (or if the finalized target is the parent), this
-        // check falls through and is picked back up on the next iteration.
+        // Fail fast if validation or building cannot start immediately, unless
+        // the parent is expected to be made available to the execution layer
+        // imminently.
         match self.pending_consensus_request.take() {
             Some((round, ConsensusRequest::Verify(request))) => {
                 if self
                     .notarized_tree
                     .is_local_notarized_or_finalized_tip(request.block.parent_digest())
-                    || !self.is_next_notarized_or_finalized_tip(request.block.parent_digest())
+                    || !self.is_convergence_target(request.block.parent_digest())
                 {
                     let on_top_of = self.notarized_tree.local_state();
                     let fut = execute_validation(
@@ -725,7 +733,7 @@ where
                     ));
                     return;
                 }
-                if self.is_next_notarized_or_finalized_tip(build.digest) {
+                if self.is_convergence_target(build.digest) {
                     self.pending_consensus_request =
                         Some((round, ConsensusRequest::Build { cause, build }));
                 } else {
