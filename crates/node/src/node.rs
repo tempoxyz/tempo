@@ -462,11 +462,25 @@ where
         {
             use reth_provider::BlockReaderIdExt as _;
             let canonical_tip = ctx.node.provider().latest_header()?;
-            if let Some(tip) = canonical_tip.filter(|header| header.number() > 0) {
+            if let Some(tip) = canonical_tip {
                 let db_provider = ctx.node.provider().database_provider_ro()?;
                 let checkpoint_number = tip.number();
+                let checkpoint_root = if checkpoint_number == 0 {
+                    use reth_trie_db::{
+                        DatabaseHashedCursorFactory, DatabaseStateRoot as _,
+                        DatabaseTrieCursorFactory, PackedKeyAdapter,
+                    };
+                    type DbStateRoot<'a, Tx> = reth_trie::StateRoot<
+                        DatabaseTrieCursorFactory<&'a Tx, PackedKeyAdapter>,
+                        DatabaseHashedCursorFactory<&'a Tx>,
+                    >;
+                    DbStateRoot::<_>::from_tx(db_provider.tx_ref()).root()?
+                } else {
+                    tip.state_root()
+                };
                 tempo_flatmpt::shadow_from_checkpoint(
                     checkpoint_number,
+                    checkpoint_root,
                     tip.state_root(),
                     move |flat| load_flat_checkpoint(db_provider.tx_ref(), flat),
                 );
