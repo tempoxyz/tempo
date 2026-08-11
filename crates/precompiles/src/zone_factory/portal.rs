@@ -142,8 +142,10 @@ impl ZonePortalStorage {
             .ok_or_else(ZoneFactoryError::invalid_sequencer_set)?;
         self.leader.write(leader)?;
         self.leader_epoch.write(1)?;
-        self.leader_activation_tempo_block
-            .write(self.storage.block_number())?;
+        let creation_block = self.storage.block_number();
+        self.leader_activation_tempo_block.write(creation_block)?;
+        self.token_enable_count_block.write(creation_block)?;
+        self.tokens_enabled_in_current_block.write(1)?;
         self.token_enablement_hash.write(token_enablement_hash)?;
         for gateway in &params.zoneGateways {
             self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;

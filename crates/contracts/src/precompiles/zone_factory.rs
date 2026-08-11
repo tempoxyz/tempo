@@ -115,6 +115,7 @@ crate::sol! {
         error InvalidAdmin();
         error InvalidSequencerSet();
         error AlreadyInitialized();
+        error TokenMetadataTooLong();
 
         function owner() external view returns (address);
         function transferOwnership(address newOwner) external;
