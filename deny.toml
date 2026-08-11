@@ -11,6 +11,10 @@ ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 is unmaintained
   # and is pulled in transitively by upstream crates with no safe upgrade available.
   "RUSTSEC-2026-0173",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0247 bitmaps is unmaintained.
+  # It is pulled in transitively by reth-transaction-pool through imbl, which has
+  # no release that removes bitmaps. This advisory does not report a vulnerability.
+  "RUSTSEC-2026-0247",
   # https://rustsec.org/advisories/RUSTSEC-2025-0055 tracing-subscriber 0.2
   # is pulled in by ark-relations 0.5.1, which is pinned by commonware-cryptography.
   # ark-relations 0.5.1 requires tracing-subscriber ^0.2, so this cannot be upgraded
