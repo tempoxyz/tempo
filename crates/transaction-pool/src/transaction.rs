@@ -110,12 +110,7 @@ impl TempoPooledTransaction {
                 .saturating_add(value);
         let fee_token_cost = cost - value;
         Self {
-            inner: EthPooledTransaction {
-                cost,
-                encoded_length,
-                blob_sidecar: EthBlobTransactionSidecar::None,
-                transaction,
-            },
+            inner: EthPooledTransaction::new(transaction, encoded_length),
             fee_token_cost,
             is_payment,
             expiring_nonce_hash,
