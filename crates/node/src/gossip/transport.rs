@@ -61,6 +61,7 @@ use tokio_stream::wrappers::WatchStream;
 use super::wire;
 
 const MAX_CONNECTIONS_PER_PEER: usize = 2;
+const REGISTERING_DRAIN_BUDGET: usize = 16;
 
 /// Events for the consensus-facing logical peer.
 ///
@@ -496,21 +497,51 @@ pub struct Connection<S = ProtocolConnection> {
 }
 
 impl<S> Connection<S> {
-    fn poll_registration(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        // The coordinator owns admission to the logical peer. Do not poll the
-        // underlying protocol stream before it accepts this physical connection;
-        // rejection must close RLPx without processing any frames from it.
-        if let ConnectionState::Registering(registration) = &mut self.state {
-            self.state = match ready!(Pin::new(registration).poll(cx)) {
-                Ok(Registration::Accepted(outbound)) => {
-                    self.outbound = Some(WatchStream::new(outbound));
-                    ConnectionState::Active
+    fn poll_registering(&mut self, cx: &mut Context<'_>) -> Poll<Option<BytesMut>>
+    where
+        S: Stream<Item = BytesMut> + Unpin,
+    {
+        let ConnectionState::Registering(registration) = &mut self.state else {
+            unreachable!()
+        };
+
+        match Pin::new(registration).poll(cx) {
+            Poll::Ready(Ok(Registration::Accepted(outbound))) => {
+                self.outbound = Some(WatchStream::new(outbound));
+                self.state = ConnectionState::Active;
+                self.poll_active(cx)
+            }
+            Poll::Ready(Ok(Registration::Rejected)) | Poll::Ready(Err(_)) => {
+                self.state = ConnectionState::Rejected;
+                Poll::Ready(None)
+            }
+            Poll::Pending => self.poll_drain_registering(cx),
+        }
+    }
+
+    fn poll_drain_registering(&mut self, cx: &mut Context<'_>) -> Poll<Option<BytesMut>>
+    where
+        S: Stream<Item = BytesMut> + Unpin,
+    {
+        // Reth can enqueue satellite frames before local registration finishes.
+        // Discard them here so coordinator latency does not retain the ingress
+        // budget. The limit keeps one peer from monopolizing this task.
+        for _ in 0..REGISTERING_DRAIN_BUDGET {
+            match self.conn.poll_next_unpin(cx) {
+                Poll::Ready(Some(_)) => {
+                    self.shared.metrics.frames_received.increment(1);
+                    self.shared.metrics.dropped_registering.increment(1);
                 }
-                Ok(Registration::Rejected) | Err(_) => ConnectionState::Rejected,
-            };
+                Poll::Ready(None) => {
+                    self.state = ConnectionState::Rejected;
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
         }
 
-        Poll::Ready(())
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 
     fn on_inbound(&mut self, frame: BytesMut) -> InboundAction {
@@ -599,14 +630,10 @@ where
         // satellite closed and tears down the entire containing RLPx connection,
         // including its other negotiated subprotocols.
         //
-        if matches!(me.state, ConnectionState::Registering(_)) {
-            ready!(me.poll_registration(cx));
-        }
-
         match me.state {
+            ConnectionState::Registering(_) => me.poll_registering(cx),
             ConnectionState::Active => me.poll_active(cx),
             ConnectionState::Rejected => Poll::Ready(None),
-            ConnectionState::Registering(_) => unreachable!(),
         }
     }
 }
@@ -663,6 +690,8 @@ impl Admission {
 struct GossipMetrics {
     /// tempo/1 frames received from peers.
     frames_received: Counter,
+    /// tempo/1 frames dropped while their physical connection is registering.
+    dropped_registering: Counter,
     /// tempo/1 frames dropped because this node does not ingest gossip.
     dropped_not_ingesting: Counter,
     /// tempo/1 frames dropped for exceeding the maximum frame size.
@@ -677,9 +706,14 @@ struct GossipMetrics {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        sync::atomic::AtomicUsize,
+        task::{Wake, Waker},
+        time::Duration,
+    };
 
     use futures::{future::poll_fn, stream};
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::*;
 
@@ -707,9 +741,20 @@ mod tests {
         handler.shared.connection(peer, conn)
     }
 
-    async fn register<S>(connection: &mut Connection<S>) -> bool {
-        poll_fn(|cx| connection.poll_registration(cx)).await;
-        matches!(connection.state, ConnectionState::Active)
+    async fn register<S>(connection: &mut Connection<S>) -> bool
+    where
+        S: Stream<Item = BytesMut> + Unpin,
+    {
+        poll_fn(|cx| {
+            let next = Pin::new(&mut *connection).poll_next(cx);
+            if matches!(connection.state, ConnectionState::Registering(_)) {
+                return Poll::Pending;
+            }
+
+            assert!(!matches!(next, Poll::Ready(Some(_))));
+            Poll::Ready(matches!(connection.state, ConnectionState::Active))
+        })
+        .await
     }
 
     async fn next_outbound<S>(connection: &mut Connection<S>) -> Bytes {
@@ -727,14 +772,44 @@ mod tests {
         }
     }
 
+    struct CountingInbound {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Stream for CountingInbound {
+        type Item = BytesMut;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            Poll::Ready(Some(BytesMut::from(&b"inbound"[..])))
+        }
+    }
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     #[tokio::test]
-    async fn connection_waits_for_registration_before_polling_frames() {
+    async fn connection_discards_frames_while_registration_is_pending() {
         let (handler, mut coordinator, mut transport) = build_protocol(test_config());
         let peer = PeerId::with_last_byte(0);
-        let inbound = BytesMut::from(&b"inbound"[..]);
-        let mut connection = connection(&handler, peer, stream::iter([inbound.clone()]));
+        let before_registration = BytesMut::from(&b"before-registration"[..]);
+        let after_registration = BytesMut::from(&b"after-registration"[..]);
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let mut connection = connection(&handler, peer, UnboundedReceiverStream::new(inbound_rx));
 
+        inbound_tx.send(before_registration).unwrap();
         assert!(futures::poll!(connection.next()).is_pending());
+        assert!(matches!(connection.state, ConnectionState::Registering(_)));
         assert!(matches!(
             transport.frames.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
@@ -746,10 +821,34 @@ mod tests {
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
         );
 
-        assert!(connection.next().await.is_none());
+        inbound_tx.send(after_registration.clone()).unwrap();
+        assert!(futures::poll!(connection.next()).is_pending());
+        assert!(matches!(connection.state, ConnectionState::Active));
         let received = transport.frames.recv().await.unwrap();
         assert_eq!(received.peer, peer);
-        assert_eq!(received.frame.as_ref(), inbound.as_ref());
+        assert_eq!(received.frame.as_ref(), after_registration.as_ref());
+        assert!(matches!(
+            transport.frames.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn registering_drain_is_bounded_and_self_wakes() {
+        let (handler, _coordinator, _transport) = build_protocol(test_config());
+        let polls = Arc::new(AtomicUsize::new(0));
+        let inbound = CountingInbound {
+            polls: Arc::clone(&polls),
+        };
+        let mut connection = connection(&handler, PeerId::with_last_byte(1), inbound);
+        let wakes = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(Pin::new(&mut connection).poll_next(&mut cx).is_pending());
+        assert_eq!(polls.load(Ordering::Relaxed), REGISTERING_DRAIN_BUDGET);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(matches!(connection.state, ConnectionState::Registering(_)));
     }
 
     #[tokio::test]
@@ -878,10 +977,13 @@ mod tests {
         let mut second = connection(&handler, peer, stream::pending::<BytesMut>());
         let command = coordinator.commands.recv().await.unwrap();
         coordinator.on_command(command);
-        assert!(register(&mut second).await);
+        let second_outbound = poll_fn(|cx| Pin::new(&mut second).poll_next(cx))
+            .await
+            .expect("registered connection has a current outbound frame");
+        assert!(matches!(second.state, ConnectionState::Active));
 
         assert_eq!(next_outbound(&mut first).await, latest);
-        assert_eq!(next_outbound(&mut second).await, latest);
+        assert_eq!(second_outbound.as_ref(), latest.as_ref());
 
         drop(first);
         drop(second);
@@ -904,7 +1006,6 @@ mod tests {
         let oversized = BytesMut::from(&vec![0; wire::MAX_FRAME_BYTES + 1][..]);
         let mut connection = connection(&handler, peer, stream::iter([oversized]));
 
-        assert!(register(&mut connection).await);
         assert!(
             matches!(transport.control.recv().await, Some(PeerEvent::Up(known)) if known == peer)
         );
