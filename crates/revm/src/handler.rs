@@ -752,9 +752,8 @@ where
             // same way a parent frame adopts a successful child frame's gas:
             // unused regular gas flows back, the reservoir is adopted, and
             // refunds / state gas accumulate.
-            let instruction_result = frame_result.instruction_result();
             handle_reservoir_remaining_gas(
-                instruction_result,
+                frame_result.instruction_result(),
                 &mut batch_gas,
                 frame_result.gas_mut().tracker_mut(),
             );
