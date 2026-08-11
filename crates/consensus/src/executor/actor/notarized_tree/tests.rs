@@ -286,28 +286,21 @@ fn finalized_tip_bounds_recording() {
     tree.heal();
 
     // Recording is unconditional - the last report wins - and the heal
-    // pass sweeps a pending head notarized at or below the finalized
-    // round, except a report naming the finalized tip itself, which
-    // stays as the repoint target.
+    // pass re-sets a pending head notarized at or below the finalized
+    // round back onto the finalized tip, the default convergence target.
     tree.set_pending_head(round(5), b.digest());
-    assert!(
-        tree.pending_head
-            .is_some_and(|pending| pending.digest == b.digest())
-    );
+    assert_eq!(tree.pending_head.digest, b.digest());
     tree.heal();
-    assert!(tree.pending_head.is_none());
+    assert_eq!(tree.pending_head.digest, a.digest());
     tree.set_pending_head(round(5), a.digest());
     tree.heal();
-    assert!(
-        tree.pending_head
-            .is_some_and(|pending| pending.digest == a.digest()),
+    assert_eq!(
+        tree.pending_head.digest,
+        a.digest(),
         "a pending head naming the finalized tip must survive healing",
     );
     tree.set_pending_head(round(6), b.digest());
-    assert!(
-        tree.pending_head
-            .is_some_and(|pending| pending.digest == b.digest())
-    );
+    assert_eq!(tree.pending_head.digest, b.digest());
 
     // A body at or below the finalized height is rejected and takes a
     // pending head naming it along, so that it is neither fetched nor
@@ -316,7 +309,7 @@ fn finalized_tip_bounds_recording() {
     tree.set_pending_head(round(7), stale.digest());
     tree.record_block(stale.clone().into());
     assert!(!tree.blocks.contains_key(&stale.digest()));
-    assert!(tree.pending_head.is_none());
+    assert_eq!(tree.pending_head.digest, a.digest());
 
     tree.record_block(b.clone().into());
     assert!(tree.blocks.contains_key(&b.digest()));
@@ -351,10 +344,7 @@ fn advance_finalized_drops_stale_entries() {
     assert!(tree.blocks.contains_key(&b.digest()));
     // The pending head - b, notarized above the new finalized round -
     // survives the sweep.
-    assert!(
-        tree.pending_head
-            .is_some_and(|pending| pending.digest == b.digest())
-    );
+    assert_eq!(tree.pending_head.digest, b.digest());
 }
 
 #[test]
@@ -482,13 +472,13 @@ fn finalized_tip_reroots_a_head_stranded_on_an_orphaned_branch() {
     forwarded(&mut tree, &a2);
 
     // ... when the network finalizes B1, A1's sibling, orphaning the
-    // branch the head sits on. The heal pass drops the fork's pending
-    // head.
+    // branch the head sits on. The heal pass re-sets the fork's pending
+    // head onto the new finalized tip.
     let b1 = block(3, 11, finalized);
     let b2 = block(4, 12, b1.digest());
     tree.set_network_finalized_tip(round(3), Height::new(11), b1.digest());
     tree.heal();
-    assert!(tree.pending_head.is_none());
+    assert_eq!(tree.pending_head.digest, b1.digest());
 
     // The finalization pipeline delivers B1; the head - sitting on the
     // orphaned branch - is rebased onto it (mirroring

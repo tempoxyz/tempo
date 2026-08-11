@@ -137,11 +137,11 @@ pub(super) struct NotarizedTree {
     /// `network_finalized_tip` until the finalization pipeline catches up,
     /// which forwarding is gated on.
     local_finalized_tip: (Height, Digest),
-    /// The pending head reported by the most recent consensus context, if
-    /// any: the tip of the canonical path the execution layer's head is
-    /// converged onto. `None` until the first report after startup, or
-    /// after the finalized tip swept the last one.
-    pending_head: Option<PendingHead>,
+    /// The pending head reported by the most recent consensus context: the
+    /// tip of the canonical path the execution layer's head is converged
+    /// onto. Points to the known network finalized tip if no pending head was
+    /// reported yet or if it goes stale.
+    pending_head: PendingHead,
     /// The execution layer's current head: the head side of the last
     /// accepted forkchoice state.
     local_head: (Height, Digest),
@@ -190,6 +190,17 @@ struct PendingHead {
     digest: Digest,
 }
 
+impl PendingHead {
+    /// The default convergence target: the network's finalized tip.
+    fn finalized_tip(network_finalized_tip: (Round, Height, Digest)) -> Self {
+        let (round, _, digest) = network_finalized_tip;
+        Self {
+            notarized_in: round,
+            digest,
+        }
+    }
+}
+
 impl NotarizedTree {
     pub(super) fn new(
         network_finalized_tip: (Round, Height, Digest),
@@ -198,7 +209,7 @@ impl NotarizedTree {
         Self {
             network_finalized_tip,
             local_finalized_tip: local_state.finalized,
-            pending_head: None,
+            pending_head: PendingHead::finalized_tip(network_finalized_tip),
             local_head: local_state.head,
             blocks: HashMap::new(),
         }
@@ -238,10 +249,10 @@ impl NotarizedTree {
     /// Records a consensus context's parent as the pending head of the
     /// chain, superseding any previous report.
     pub(super) fn set_pending_head(&mut self, notarized_in: Round, digest: Digest) {
-        self.pending_head = Some(PendingHead {
+        self.pending_head = PendingHead {
             notarized_in,
             digest,
-        });
+        };
     }
 
     /// Records the body of a block unless the finalized tip covers its
@@ -294,14 +305,13 @@ impl NotarizedTree {
         let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
         self.blocks
             .retain(|_, entry| entry.block.height() > finalized_height);
-        // A pending head the finalized tip covers is stale - except a
-        // report naming the tip itself, which stays until the head is
-        // repointed onto it (see [`Self::repoint_to_finalized_tip`]) or a
-        // newer report supersedes it.
-        if self.pending_head.as_ref().is_some_and(|pending| {
-            pending.notarized_in <= finalized_round && pending.digest != finalized_digest
-        }) {
-            self.pending_head = None;
+        // A pending head the finalized tip covers is stale: the tip itself
+        // becomes the convergence target, until a newer report supersedes
+        // it.
+        if self.pending_head.notarized_in <= finalized_round
+            && self.pending_head.digest != finalized_digest
+        {
+            self.pending_head = PendingHead::finalized_tip(self.network_finalized_tip);
         }
     }
 
@@ -315,16 +325,13 @@ impl NotarizedTree {
         }
     }
 
-    /// Removes a block from the tree, including a pending head naming
-    /// it, so that nothing keeps fetching or forwarding it.
+    /// Removes a block from the tree, re-setting a pending head naming it
+    /// to the finalized tip, so that nothing keeps fetching or forwarding
+    /// it.
     fn remove(&mut self, digest: &Digest) {
         self.blocks.remove(digest);
-        if self
-            .pending_head
-            .as_ref()
-            .is_some_and(|pending| pending.digest == *digest)
-        {
-            self.pending_head = None;
+        if self.pending_head.digest == *digest {
+            self.pending_head = PendingHead::finalized_tip(self.network_finalized_tip);
         }
     }
 
@@ -368,11 +375,10 @@ impl NotarizedTree {
         if self.local_finalized_tip.0 < self.network_finalized_tip.1 {
             return None;
         }
-        let pending = self.pending_head.as_ref()?;
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
 
         let mut child: Option<&BlockEntry> = None;
-        let mut digest = pending.digest;
+        let mut digest = self.pending_head.digest;
         while digest != self.local_head.1 && digest != finalized_digest {
             let entry = self.blocks.get(&digest)?;
             if entry.block.height() <= finalized_height {
@@ -404,12 +410,11 @@ impl NotarizedTree {
     /// no explicit notarization fact was observed for it.
     pub(super) fn first_missing_ancestor(&self) -> Option<(Round, Digest)> {
         let (finalized_round, finalized_height, finalized_digest) = self.network_finalized_tip;
-        let pending = self.pending_head.as_ref()?;
         // The round of the pending head comes from the context that
         // reported it; further down the path it is derived from the context
         // of the child walked through.
-        let mut round = pending.notarized_in;
-        let mut digest = pending.digest;
+        let mut round = self.pending_head.notarized_in;
+        let mut digest = self.pending_head.digest;
         // The stop conditions are evaluated for every candidate digest
         // before it can be reported missing; otherwise the walk would
         // report the finalized tip itself (whose body is deliberately never
