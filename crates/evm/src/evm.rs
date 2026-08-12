@@ -352,6 +352,7 @@ mod tests {
     use indexmap::IndexMap;
     use revm::{
         DatabaseCommit, DatabaseRef,
+        bytecode::opcode,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
         database::{EmptyDB, in_memory_db::CacheDB},
         state::{AccountInfo, Bytecode, EvmState},
@@ -415,6 +416,37 @@ mod tests {
                 bytes calldata data
             ) external;
         }
+
+        interface TestWithdrawalReceiver {
+            function onWithdrawalReceived(
+                uint32 zoneId,
+                address portal,
+                bytes32 senderTag,
+                address token,
+                uint128 amount,
+                bytes calldata data
+            ) external returns (bytes4);
+        }
+    }
+
+    fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
+        const SELECTOR_SHIFT_BITS: u8 = 224;
+        const ABI_WORD_BYTES: u8 = 32;
+
+        let mut code = vec![opcode::PUSH4];
+        code.extend_from_slice(&selector);
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            SELECTOR_SHIFT_BITS,
+            opcode::SHL,
+            opcode::PUSH0,
+            opcode::MSTORE,
+            opcode::PUSH1,
+            ABI_WORD_BYTES,
+            opcode::PUSH0,
+            opcode::RETURN,
+        ]);
+        Bytecode::new_legacy(code.into())
     }
 
     fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
@@ -830,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn zone_messenger_runtime_accepts_callback_gateway_role() {
+    fn zone_messenger_runtime_authorizes_registered_callback_gateway() {
         let owner = Address::repeat_byte(0x11);
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
@@ -850,10 +882,8 @@ mod tests {
                 },
             );
         }
-        // Return IWithdrawalReceiver.onWithdrawalReceived.selector for any call.
-        let callback_runtime = Bytecode::new_legacy(Bytes::from_static(&[
-            0x63, 0x0a, 0x13, 0x7f, 0xf5, 0x60, 0xe0, 0x1b, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3,
-        ]));
+        let callback_runtime =
+            runtime_returning_selector(TestWithdrawalReceiver::onWithdrawalReceivedCall::SELECTOR);
         db.insert_account_info(
             gateway,
             AccountInfo {
@@ -906,18 +936,6 @@ mod tests {
         let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
         evm.db_mut().commit(create.state);
 
-        let callback = evm
-            .transact_system_call(Address::ZERO, gateway, Bytes::new())
-            .unwrap();
-        let output = match callback.result {
-            ExecutionResult::Success {
-                output: revm::context::result::Output::Call(output),
-                ..
-            } => output,
-            result => panic!("callback probe failed: {result:?}"),
-        };
-        assert_eq!(&output[..4], &[0x0a, 0x13, 0x7f, 0xf5]);
-
         let relay = evm
             .transact_system_call(
                 created.portal,
@@ -937,7 +955,7 @@ mod tests {
             .unwrap();
         assert!(
             relay.result.is_success(),
-            "gateway callback relay failed: {:?}",
+            "registered gateway callback failed: {:?}",
             relay.result
         );
     }
