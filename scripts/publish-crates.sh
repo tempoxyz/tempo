@@ -209,7 +209,7 @@ for crate_toml in "${CRATE_TOMLS[@]}"; do
 
     # No internal path-only workspace crates should remain
     for dep in $INTERNAL_PATH_DEPS; do
-        grep -qE "^\s*${dep}[\s.=]" "$crate_toml" && \
+        grep -qE "^[[:space:]]*${dep}[[:space:].=]" "$crate_toml" && \
             err "Internal dep '$dep' still in $crate_name/Cargo.toml"
     done
 done
