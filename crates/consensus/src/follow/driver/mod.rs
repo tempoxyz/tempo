@@ -4,7 +4,7 @@
 //! through gossip, then reports verified finalizations to marshal. Marshal's
 //! finalized-tip updates independently drive the consensus feed.
 
-use std::future::Future;
+use std::{future::Future, sync::LazyLock};
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
@@ -41,6 +41,12 @@ pub(super) use actor::Driver;
 pub(super) use ingress::Mailbox;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
+
+// Follow mode uses an opaque resolver that ignores peer targets, but Commonware
+// requires a non-empty target list. Reusing one placeholder lets overflow
+// coalesce repeated hints without accumulating random public keys.
+static FOLLOW_HINT_TARGET: LazyLock<PublicKey> =
+    LazyLock::new(|| PrivateKey::random(rand::rng()).public_key());
 
 pub(super) struct Config<P, M, E = crate::follow::executor::Mailbox> {
     pub(super) execution_provider: P,
@@ -122,8 +128,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send {
         let mailbox = self.clone();
         async move {
-            // Stub out a random target
-            let target = PrivateKey::random(rand::rng()).public_key();
+            let target = (*FOLLOW_HINT_TARGET).clone();
             mailbox.hint_finalized(height, NonEmptyVec::new(target));
         }
     }
