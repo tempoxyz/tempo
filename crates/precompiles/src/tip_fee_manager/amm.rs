@@ -223,12 +223,8 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
-            if pool.reserve_validator_token < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-        }
+        // Note: no reservation guard here — rebalance_swap deposits validator_token,
+        // so the reserve can only increase. The guard belongs only in burn/withdraw paths.
 
         self.pools[pool_id].write(pool)?;
 
@@ -471,7 +467,6 @@ impl TipFeeManager {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
         }
-
         // Burn LP tokens
         self.set_liquidity_balances(
             pool_id,
