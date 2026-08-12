@@ -94,6 +94,10 @@ pub struct ZonePortalStorage {
     deposits_in_current_block: u64,
     token_enable_count_block: u64,
     tokens_enabled_in_current_block: u64,
+    /// End of the bounded portal pause, packed in slot 25 after the token enablement counter.
+    pause_expiry: u64,
+    /// Time at which pausing is permanently abdicated, packed after `pause_expiry` in slot 25.
+    pause_abdication_effective_at: u64,
     /// Append-only commitment to the enabled token sequence and metadata, stored in slot 26.
     token_enablement_hash: B256,
 }

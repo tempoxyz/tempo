@@ -456,6 +456,8 @@ mod tests {
             assert_eq!(portal.leader_activation_tempo_block.read()?, CREATION_BLOCK);
             assert_eq!(portal.token_enable_count_block.read()?, CREATION_BLOCK);
             assert_eq!(portal.tokens_enabled_in_current_block.read()?, 1);
+            assert_eq!(portal.pause_expiry.read()?, 0);
+            assert_eq!(portal.pause_abdication_effective_at.read()?, 0);
             let expected_token_enablement_hash = keccak256(
                 (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
             );
@@ -502,6 +504,8 @@ mod tests {
                 portal.tokens_enabled_in_current_block.slot(),
                 U256::from(25)
             );
+            assert_eq!(portal.pause_expiry.slot(), U256::from(25));
+            assert_eq!(portal.pause_abdication_effective_at.slot(), U256::from(25));
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(24))?,
                 U256::from(CREATION_BLOCK) | (U256::from(CREATION_BLOCK) << 192)
