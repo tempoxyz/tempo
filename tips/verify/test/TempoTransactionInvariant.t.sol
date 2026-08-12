@@ -4032,8 +4032,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     uint64 private constant T10_MAX_EXPIRY_SECS = 300;
 
     function _maxExpirySecs() internal view returns (uint64) {
-        string memory hardfork = vm.getEvmVersion();
-        return keccak256(bytes(hardfork)) == keccak256(bytes("t10"))
+        bytes32 hardfork = keccak256(bytes(vm.getEvmVersion()));
+        return hardfork == keccak256(bytes("t10")) || hardfork == keccak256(bytes("t11"))
             ? T10_MAX_EXPIRY_SECS
             : PRE_T10_MAX_EXPIRY_SECS;
     }
