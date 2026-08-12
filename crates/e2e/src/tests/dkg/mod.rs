@@ -7,4 +7,5 @@ mod fast_sync_after_full_dkg;
 mod full_ceremony;
 mod revealed_share_recovery;
 mod share_loss;
+mod stale_state_recovery;
 mod static_transitions;

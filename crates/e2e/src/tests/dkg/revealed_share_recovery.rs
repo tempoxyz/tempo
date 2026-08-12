@@ -54,7 +54,6 @@ fn validator_recovers_revealed_share_without_consensus_state() {
         )
         .await;
 
-        recovering.consensus_config.strict_startup = true;
         donor.adopt_identity_from(recovering);
         donor.start(&context).await;
         connect_execution_to_peers(&donor, &validators).await;
@@ -179,7 +178,6 @@ fn validator_skips_recovery_after_failed_ceremony() {
         // Start the revealed validator at epoch 2 with synced execution and consensus state but no
         // DKG state. Recovery must recognize that epoch 1 did not produce the current output,
         // continue as an observer, and obtain a new share from the epoch 2 ceremony.
-        recovering.consensus_config.strict_startup = true;
         offline_player.adopt_identity_from(recovering);
         offline_player.start(&context).await;
         connect_execution_to_peers(&offline_player, &nodes).await;

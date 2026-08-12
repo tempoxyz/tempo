@@ -186,19 +186,26 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        // NOTE: The instrumented fns emits on error events
+
         let Ok(opened) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
             .init(self.context.child("state"))
             .await
         else {
-            // NOTE: Builder::init emits en error event.
             return;
         };
 
         let mut storage = match opened {
-            state::Opened::Existing(storage) => storage,
+            state::Opened::Existing(storage) => {
+                let mut storage = storage;
+                if self.heal(&mut storage).await.is_err() {
+                    return;
+                }
+
+                storage
+            }
             state::Opened::Empty(storage) => {
-                // The following emit error events
                 let Ok(initial_state) = self.establish_initial_state().await else {
                     return;
                 };
@@ -210,16 +217,11 @@ where
             }
         };
 
-        if let Err(reason) = self
+        if self
             .prepopulate_to_last_finalized_height(&mut storage)
             .await
+            .is_err()
         {
-            tracing::warn_span!("dkg_actor").in_scope(|| {
-                warn!(
-                    %reason,
-                    "failed prepopulating DKG state",
-                );
-            });
             return;
         }
 
@@ -229,6 +231,7 @@ where
             receiver,
             self.config.mailbox_size.into(),
         );
+
         mux.start();
 
         let reason = loop {
@@ -517,6 +520,67 @@ where
     }
 
     #[instrument(skip_all, err)]
+    async fn heal<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+    ) -> eyre::Result<()>
+    where
+        TStorageContext: commonware_runtime::BufferPooler
+            + commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage,
+    {
+        let state = storage.current();
+        let round = state::Round::from_state(&state, &self.config.namespace);
+        let epoch_info = self
+            .config
+            .epoch_strategy
+            .containing(self.config.last_finalized_height.next())
+            .expect("epoch strategy is covering all heights");
+
+        match round.epoch().cmp(&epoch_info.epoch()) {
+            std::cmp::Ordering::Less => {
+                warn!(
+                    "latest DKG state is for `{}`, but the next block will be \
+                    for epoch `{}`. Resetting DKG initial state",
+                    round.epoch(),
+                    epoch_info.epoch(),
+                );
+
+                let mut initial_state = self
+                    .establish_initial_state()
+                    .await
+                    .wrap_err("failed constructing initial staste")?;
+
+                // If the outcomes match (failed DKG), fall back to the persisted share.
+                if initial_state.output == state.output
+                    && matches!(&initial_state.share, state::ShareState::Plaintext(None))
+                {
+                    initial_state.share = state.share;
+                }
+
+                storage
+                    .set_state(initial_state)
+                    .await
+                    .wrap_err("failed setting initial state")?;
+            }
+            std::cmp::Ordering::Greater => {
+                warn!(
+                    "ignoring block for prior epoch; older blocks are replayed \
+                    against DKG when a node was shut down right after a \
+                    boundary block completed an epoch, but before it was fully \
+                    processed by other actors"
+                );
+            }
+            std::cmp::Ordering::Equal => {
+                // Normal, expected behavior.
+            }
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all, err)]
     async fn prepopulate_to_last_finalized_height<TStorageContext>(
         &self,
         storage: &mut state::Storage<TStorageContext>,
@@ -536,28 +600,10 @@ where
             .containing(target_height.next())
             .expect("epoch strategy is covering all heights");
 
-        match round.epoch().cmp(&epoch_info.epoch()) {
-            std::cmp::Ordering::Less => {
-                bail!(
-                    "latest DKG state is for `{}`, but the next block will be \
-                    for epoch `{}`; this is a contract violation and the \
-                    state is invalid",
-                    round.epoch(),
-                    epoch_info.epoch(),
-                );
-            }
-            std::cmp::Ordering::Greater => {
-                warn!(
-                    "ignoring block for prior epoch; older blocks are replayed \
-                    against DKG when a node was shut down right after a \
-                    boundary block completed an epoch, but before it was fully \
-                    processed by other actors"
-                );
-                return Ok(());
-            }
-            std::cmp::Ordering::Equal => {
-                // Normal, expected behavior.
-            }
+        // The DKG actor may have persisted the new epoch before the finalized floor caught up
+        // during shutdown. Do not replay prior-epoch headers against the newer DKG round.
+        if round.epoch() > epoch_info.epoch() {
+            return Ok(());
         }
 
         let mut height = storage
