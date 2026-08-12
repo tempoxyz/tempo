@@ -28,7 +28,7 @@ use commonware_parallel::Strategy;
 use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
-use eyre::{OptionExt, WrapErr as _, bail, eyre};
+use eyre::{OptionExt, WrapErr as _, bail};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
@@ -473,17 +473,31 @@ where
 
 #[derive(Default)]
 pub(super) struct Builder {
-    initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the type is only spelled out here; the setter has readable bounds"
+    )]
+    reconcile_state:
+        Option<Box<dyn FnOnce(Option<State>) -> BoxFuture<'static, eyre::Result<State>> + Send>>,
     partition_prefix: Option<String>,
 }
 
 impl Builder {
-    pub(super) fn initial_state(
-        self,
-        initial_state: impl Future<Output = eyre::Result<State>> + Send + 'static,
-    ) -> Self {
+    /// Sets the callback that reconciles the stored [`State`] at startup.
+    ///
+    /// The callback is always invoked with the latest stored state (`None`
+    /// if storage is empty) and returns the state the actor will start with:
+    /// either the stored state passed through unchanged, or a replacement
+    /// (e.g. constructed from on-chain data, salvaging parts of the stored
+    /// state like its share). A returned state that differs from the stored
+    /// one is persisted before [`Builder::init`] returns.
+    pub(super) fn reconcile_state<F, Fut>(self, reconcile: F) -> Self
+    where
+        F: FnOnce(Option<State>) -> Fut + Send + 'static,
+        Fut: Future<Output = eyre::Result<State>> + Send + 'static,
+    {
         Self {
-            initial_state: Some(initial_state.boxed()),
+            reconcile_state: Some(Box::new(move |stored| reconcile(stored).boxed())),
             ..self
         }
     }
@@ -501,17 +515,19 @@ impl Builder {
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         let Self {
-            initial_state,
+            reconcile_state,
             partition_prefix,
         } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
+        let reconcile_state = reconcile_state
+            .ok_or_eyre("DKG actors state must have its reconcile-state callback set")?;
 
         let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
 
-        let mut states = metadata::Metadata::init(
+        let mut states = metadata::Metadata::<TContext, u64, State>::init(
             context.child("states"),
             metadata::Config {
                 partition: states_metadata_partition,
@@ -521,33 +537,34 @@ impl Builder {
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
 
-        if states.keys().max().is_none() {
-            let initial_state = match initial_state {
-                None => {
-                    return Err(eyre!(
-                        "states metadata was empty and initializer was not set"
-                    ));
-                }
-                Some(initial_state) => initial_state
-                    .await
-                    .wrap_err("failed constructing initial state to populate storage")?,
-            };
+        let stored = states.keys().max().map(|epoch| {
             states
-                .put_sync(initial_state.epoch.get(), initial_state)
-                .await
-                .wrap_err("unable to write initial state to metadata")?;
-        }
+                .get(epoch)
+                .expect("state at keys iterator must exist")
+                .clone()
+        });
 
-        let current = states
-            .keys()
-            .max()
-            .map(|epoch| {
-                states
-                    .get(epoch)
-                    .expect("state at keys iterator must exist")
-                    .clone()
-            })
-            .expect("states storage must contain a state after initialization");
+        let current = reconcile_state(stored.clone())
+            .await
+            .wrap_err("failed reconciling stored state at startup")?;
+
+        if stored.as_ref() != Some(&current) {
+            match &stored {
+                Some(stored) => info!(
+                    stored_epoch = %stored.epoch,
+                    new_epoch = %current.epoch,
+                    "stored DKG state was replaced during reconciliation; persisting it",
+                ),
+                None => info!(
+                    epoch = %current.epoch,
+                    "no stored DKG state found; persisting freshly initialized state",
+                ),
+            }
+            states
+                .put_sync(current.epoch.get(), current.clone())
+                .await
+                .wrap_err("unable to write reconciled state to metadata")?;
+        }
 
         let mut events = segmented::variable::Journal::init(
             context.child("events"),
