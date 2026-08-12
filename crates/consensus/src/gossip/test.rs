@@ -166,10 +166,6 @@ impl PeerControl for StubPeerControl {
     fn penalize(&self, peer: B512) {
         self.penalized.lock().push(peer);
     }
-
-    fn protocol_breach(&self, _peer: B512) -> futures::future::BoxFuture<'_, ()> {
-        Box::pin(std::future::ready(()))
-    }
 }
 
 struct Rig {
