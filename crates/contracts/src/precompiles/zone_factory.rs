@@ -133,6 +133,7 @@ crate::sol! {
     interface IZonePortal {
         enum Role {
             None,
+            Sequencer,
             Account,
             CallbackGateway
         }

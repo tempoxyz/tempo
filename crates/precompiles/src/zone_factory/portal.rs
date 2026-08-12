@@ -75,13 +75,14 @@ pub struct ZonePortalStorage {
     sequencer_threshold: u8,
     zone_height: U256,
     sequencers: Vec<Address>,
-    is_sequencer: Mapping<Address, bool>,
+    /// Reserved slot 19, available for future use.
+    _reserved_slot_19: U256,
     role: Mapping<Address, u8>,
     is_access_enforced: bool,
     is_gateway_enforced: bool,
     /// Reserved remainder of the enforcement modes slot.
     _reserved: FixedBytes<30>,
-    /// Maximum Tempo gas rate, stored in `PORTAL_MAX_TEMPO_GAS_RATE_SLOT`.
+    /// Maximum Tempo gas rate, stored in slot 22.
     max_tempo_gas_rate: u128,
     /// Active block-producing leader, stored in slot 23.
     leader: Address,
@@ -132,7 +133,7 @@ impl ZonePortalStorage {
         self.sequencer_threshold.write(params.threshold)?;
         self.sequencers.write(params.sequencers.clone())?;
         for sequencer in &params.sequencers {
-            self.is_sequencer[*sequencer].write(true)?;
+            self.role[*sequencer].write(u8::from(ZonePortalRole::Sequencer))?;
         }
         self.is_access_enforced.write(params.accessMode)?;
         self.is_gateway_enforced.write(params.gatewayMode)?;
@@ -148,10 +149,10 @@ impl ZonePortalStorage {
         self.tokens_enabled_in_current_block.write(1)?;
         self.token_enablement_hash.write(token_enablement_hash)?;
         for gateway in &params.zoneGateways {
-            self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
+            self.role[*gateway].write(u8::from(ZonePortalRole::CallbackGateway))?;
         }
         for account in &params.allowedAccounts {
-            self.role[*account].write(ZonePortalRole::Account as u8)?;
+            self.role[*account].write(u8::from(ZonePortalRole::Account))?;
         }
         Ok(())
     }
