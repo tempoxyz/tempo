@@ -365,9 +365,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // TIP-1016: charge TIP20 deployments as CREATE.
         if self.amsterdam_eip8037_enabled && was_empty {
-            self.deduct_gas(self.gas_params.create_cost())?;
+            self.deduct_gas(
+                self.gas_params.create_cost() + self.gas_params.keccak256_cost(code_len),
+            )?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
-            self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
         }
 
         Ok(())
@@ -733,7 +734,7 @@ pub fn deduct_gas(
 mod tests {
     use super::*;
     use alloy::primitives::{B256, b256, bytes, keccak256};
-    use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
+    use alloy_evm::{Evm, EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use revm::{
@@ -1351,7 +1352,7 @@ mod tests {
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
         let expected_regular_gas = gas_params.create_cost()
             + gas_params.code_deposit_cost(code.len())
-            + gas_params.keccak256_cost(code.len().div_ceil(32));
+            + gas_params.keccak256_cost(code.len());
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
         provider.set_code(Address::random(), code)?;
@@ -1364,6 +1365,85 @@ mod tests {
             provider.state_gas_used(),
             expected_state_gas,
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
+        );
+
+        Ok(())
+    }
+
+    /// TIP-1016: `HASH_COST(L) = 6 × ceil(L / 32)` with `L` in bytes. Uses code
+    /// longer than one word so a bytes/words mix-up in the keccak charge cannot
+    /// cancel out (for 1-byte code both formulas yield 6).
+    #[test]
+    fn test_t11_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let code_len = 45usize; // 2 words, e.g. the zone portal proxy runtime
+        let code = Bytecode::new_raw(vec![0x00; code_len].into());
+        let expected_hash_cost = 6 * code_len.div_ceil(32) as u64;
+        let expected_regular_gas = gas_params.create_cost()
+            + gas_params.code_deposit_cost(code_len)
+            + expected_hash_cost;
+        let expected_state_gas =
+            gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code_len);
+        let mut provider = evm.provider_with_reservoir(expected_state_gas);
+
+        provider.set_code(Address::random(), code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "set_code should charge HASH_COST over code bytes, not words"
+        );
+
+        Ok(())
+    }
+
+    /// Documents the `is_empty()` gating of the TIP-1016 CREATE surcharge: a
+    /// pre-touched destination (nonzero balance/nonce, no code) is not EIP-161
+    /// empty, so `set_code` charges only the code deposit, and re-deploying over
+    /// existing code never re-charges CREATE.
+    #[test]
+    fn test_t11_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let address = Address::random();
+        evm.db_mut().insert_account_info(
+            address,
+            AccountInfo {
+                balance: U256::ONE,
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let code = Bytecode::new_raw(vec![0xef].into());
+        let expected_state_gas = gas_params.code_deposit_state_gas(code.len());
+        let expected_regular_gas = gas_params.code_deposit_cost(code.len());
+        // Reservoir also covers the second deployment below so no state gas
+        // spills into regular gas and skews the assertions.
+        let mut provider =
+            evm.provider_with_reservoir(expected_state_gas + gas_params.code_deposit_state_gas(2));
+
+        provider.set_code(address, code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "a pre-touched destination is not empty, so only the code deposit is charged"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            expected_state_gas,
+            "a pre-touched destination should pay only code deposit state gas"
+        );
+
+        // Re-deploying over existing code is not a fresh deployment either.
+        let code = Bytecode::new_raw(vec![0xef, 0xef].into());
+        provider.set_code(address, code.clone())?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas + gas_params.code_deposit_cost(code.len()),
+            "set_code over existing code must not charge CREATE"
         );
 
         Ok(())
