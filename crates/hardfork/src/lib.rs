@@ -292,25 +292,25 @@ impl TempoHardfork {
 
     /// Returns the expiring nonce replay-protection capacity.
     pub const fn expiring_nonce_set_capacity(&self) -> u32 {
-        const PRE_T10_CAPACITY: u32 = 300_000;
-        const POST_T10_CAPACITY: u32 = 3_000_000;
+        const PRE_T11_CAPACITY: u32 = 300_000;
+        const POST_T11_CAPACITY: u32 = 3_000_000;
 
-        if self.is_t10() {
-            POST_T10_CAPACITY
+        if self.is_t11() {
+            POST_T11_CAPACITY
         } else {
-            PRE_T10_CAPACITY
+            PRE_T11_CAPACITY
         }
     }
 
     /// Returns the maximum expiring nonce validity window in seconds.
     pub const fn expiring_nonce_max_expiry_secs(&self) -> u64 {
-        const PRE_T10_MAX_EXPIRY_SECS: u64 = 30;
-        const POST_T10_MAX_EXPIRY_SECS: u64 = 300;
+        const PRE_T11_MAX_EXPIRY_SECS: u64 = 30;
+        const POST_T11_MAX_EXPIRY_SECS: u64 = 300;
 
-        if self.is_t10() {
-            POST_T10_MAX_EXPIRY_SECS
+        if self.is_t11() {
+            POST_T11_MAX_EXPIRY_SECS
         } else {
-            PRE_T10_MAX_EXPIRY_SECS
+            PRE_T11_MAX_EXPIRY_SECS
         }
     }
 
