@@ -33,7 +33,7 @@ on:
         description: State bloat size in GB.
         type: choice
         required: true
-        default: "5000"
+        default: "100"
         options:
           - "0"
           - "1"
@@ -63,7 +63,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "100"
+        default: "5000"
       run-pairs:
         description: Number of baseline/feature run pairs.
         type: string

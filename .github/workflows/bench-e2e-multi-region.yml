@@ -30,7 +30,7 @@ on:
       bloat:
         type: string
         required: false
-        default: "5000"
+        default: "100"
       validator-count:
         type: string
         required: false
@@ -175,7 +175,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "100"
+        default: "5000"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
