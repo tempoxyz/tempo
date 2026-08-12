@@ -63,7 +63,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "5000"
+        default: "100"
       run-pairs:
         description: Number of baseline/feature run pairs.
         type: string
@@ -167,7 +167,7 @@ jobs:
       regions: ${{ inputs.regions || '' }}
       tps: ${{ inputs.tps || '50000' }}
       accounts: ${{ inputs.accounts || '1000' }}
-      max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
+      max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '100' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
       clickhouse-run: feature-1
       otlp: true
