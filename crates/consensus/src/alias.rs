@@ -10,7 +10,7 @@ pub(crate) mod marshal {
         Epochable as _,
         marshal::{self, core, standard::Standard},
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-        types::{Epoch, Epocher as _, FixedEpocher, Height, ViewDelta},
+        types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
     use commonware_parallel::Sequential;
@@ -97,8 +97,10 @@ pub(crate) mod marshal {
         /// height and the startup floor height.
         pub finalized_floor: Height,
 
-        /// Finalized tip selected at startup from the archive or genesis.
-        pub finalized_tip: (Height, Digest),
+        /// Finalized tip selected at startup from the archive or genesis,
+        /// together with the round it was finalized in (the zero round for
+        /// genesis, which is not finalized in any round).
+        pub finalized_tip: (Round, Height, Digest),
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -140,8 +142,9 @@ pub(crate) mod marshal {
         info!(
             floor_height = %finalized_floor.0,
             floor_digest = %finalized_floor.1,
-            tip_height = %finalized_tip.0,
-            tip_digest = %finalized_tip.1,
+            tip_round = %finalized_tip.0,
+            tip_height = %finalized_tip.1,
+            tip_digest = %finalized_tip.2,
             "selected finalized startup range"
         );
 
@@ -214,7 +217,7 @@ pub(crate) mod marshal {
 
     struct FinalizationRange {
         floor: (Height, Digest),
-        tip: (Height, Digest),
+        tip: (Round, Height, Digest),
     }
 
     async fn establish_finalization_range<TContext>(
@@ -237,7 +240,13 @@ pub(crate) mod marshal {
             Some((floor, tip)) => Ok(FinalizationRange { floor, tip }),
             None if execution_finalized.0.is_zero() => Ok(FinalizationRange {
                 floor: execution_finalized,
-                tip: execution_finalized,
+                // Genesis is not finalized in any round; the zero round
+                // precedes all real rounds.
+                tip: (
+                    Round::default(),
+                    execution_finalized.0,
+                    execution_finalized.1,
+                ),
             }),
             None => Err(eyre!(
                 "consensus startup requires a finalized certificate archive unless the \
@@ -255,7 +264,7 @@ pub(crate) mod marshal {
             Digest,
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
-    ) -> eyre::Result<Option<((Height, Digest), (Height, Digest))>>
+    ) -> eyre::Result<Option<((Height, Digest), (Round, Height, Digest))>>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
@@ -285,7 +294,7 @@ pub(crate) mod marshal {
                 })?
         };
 
-        Ok(Some((floor, tip)))
+        Ok(Some(((floor.1, floor.2), tip)))
     }
 
     async fn start_from_finalized_floor<TContext>(
@@ -384,7 +393,7 @@ pub(crate) mod marshal {
             Finalization<Scheme<PublicKey, MinSig>, Digest>,
         >,
         height: u64,
-    ) -> eyre::Result<(Height, Digest)>
+    ) -> eyre::Result<(Round, Height, Digest)>
     where
         TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     {
@@ -393,7 +402,11 @@ pub(crate) mod marshal {
             .await
             .wrap_err("failed reading certificate from archive")?
             .ok_or_eyre("archive did not contain certificate")?;
-        Ok((Height::new(height), finalization.proposal.payload))
+        Ok((
+            finalization.proposal.round,
+            Height::new(height),
+            finalization.proposal.payload,
+        ))
     }
 
     fn execution_finalized_point(execution_node: &TempoFullNode) -> (Height, Digest) {

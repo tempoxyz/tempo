@@ -31,6 +31,8 @@ pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
 /// Maximum number of equal sequencers in a zone settlement set.
 pub const MAX_SEQUENCERS: usize = 8;
+/// Maximum UTF-8 byte length of enabled token metadata strings.
+const MAX_TOKEN_METADATA_BYTES: usize = 31;
 
 /// Native ZoneFactory storage.
 ///
@@ -132,6 +134,7 @@ impl ZoneFactory {
         let token_name = token.name()?;
         let token_symbol = token.symbol()?;
         let token_currency = token.currency()?;
+        validate_token_metadata(&token_name, &token_symbol, &token_currency)?;
         let token_enablement_hash = keccak256(
             (
                 B256::ZERO,
@@ -266,6 +269,16 @@ impl ZoneFactory {
     }
 }
 
+fn validate_token_metadata(name: &str, symbol: &str, currency: &str) -> Result<()> {
+    if [name, symbol, currency]
+        .into_iter()
+        .any(|value| value.len() > MAX_TOKEN_METADATA_BYTES)
+    {
+        return Err(ZoneFactoryError::token_metadata_too_long().into());
+    }
+    Ok(())
+}
+
 fn validate_closed_loop_config(
     allowed_accounts: &[Address],
     zone_gateways: &[Address],
@@ -311,7 +324,7 @@ mod tests {
     use crate::{
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::{
@@ -441,6 +454,8 @@ mod tests {
             assert_eq!(portal.leader.read()?, SEQUENCER_A);
             assert_eq!(portal.leader_epoch.read()?, 1);
             assert_eq!(portal.leader_activation_tempo_block.read()?, CREATION_BLOCK);
+            assert_eq!(portal.token_enable_count_block.read()?, CREATION_BLOCK);
+            assert_eq!(portal.tokens_enabled_in_current_block.read()?, 1);
             let expected_token_enablement_hash = keccak256(
                 (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
             );
@@ -482,10 +497,16 @@ mod tests {
                 U256::from_be_slice(SEQUENCER_A.as_slice()) | (U256::ONE << 160)
             );
             assert_eq!(portal.leader_activation_tempo_block.slot(), U256::from(24));
+            assert_eq!(portal.token_enable_count_block.slot(), U256::from(24));
+            assert_eq!(
+                portal.tokens_enabled_in_current_block.slot(),
+                U256::from(25)
+            );
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(24))?,
-                U256::from(CREATION_BLOCK)
+                U256::from(CREATION_BLOCK) | (U256::from(CREATION_BLOCK) << 192)
             );
+            assert_eq!(StorageCtx.sload(created.portal, U256::from(25))?, U256::ONE);
             assert_eq!(portal.token_enablement_hash.slot(), U256::from(26));
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(26))?,
@@ -497,6 +518,40 @@ mod tests {
                 portal.initialize(1, &params, B256::ZERO),
                 Err(ZoneFactoryError::already_initialized().into())
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_rejects_oversized_initial_token_metadata() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut factory = factory_with_owner(OWNER)?;
+
+            let long_name = TIP20Setup::create("nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn", "N", ADMIN)
+                .apply()?
+                .address();
+            let long_symbol =
+                TIP20Setup::create("Symbol", "ssssssssssssssssssssssssssssssss", ADMIN)
+                    .apply()?
+                    .address();
+            let long_currency = TIP20Setup::create("Currency", "C", ADMIN)
+                .currency("cccccccccccccccccccccccccccccccc")
+                .apply()?
+                .address();
+
+            for token in [long_name, long_symbol, long_currency] {
+                let err = factory
+                    .create_zone(
+                        OWNER,
+                        IZoneFactory::createZoneCall {
+                            params: create_params(token),
+                        },
+                    )
+                    .unwrap_err();
+                assert_eq!(err, ZoneFactoryError::token_metadata_too_long().into());
+                assert_eq!(factory.next_zone_id()?, 1);
+            }
             Ok(())
         })
     }
