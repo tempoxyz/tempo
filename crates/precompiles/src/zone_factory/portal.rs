@@ -11,7 +11,7 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
 use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
-    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError, ZonePortalRole,
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -19,6 +19,11 @@ use tempo_precompiles_macros::{Storable, contract};
 pub const ZONE_PORTAL_PROXY_RUNTIME: [u8; 45] = hex!(
     "363d3d373d3d3d363d735ad10000000000000000000000000000000000005af43d82803e903d91602b57fd5bf3"
 );
+
+const ROLE_ADMIN: u8 = 1 << 0;
+const ROLE_SEQUENCER: u8 = 1 << 1;
+const ROLE_ACCOUNT: u8 = 1 << 2;
+const ROLE_CALLBACK_GATEWAY: u8 = 1 << 3;
 
 /// Packed `TokenConfig` stored in the portal token registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
@@ -76,7 +81,7 @@ pub struct ZonePortalStorage {
     zone_height: U256,
     sequencers: Vec<Address>,
     is_sequencer: Mapping<Address, bool>,
-    role: Mapping<Address, u8>,
+    roles: Mapping<Address, u8>,
     is_access_enforced: bool,
     is_gateway_enforced: bool,
     /// Reserved remainder of the enforcement modes slot.
@@ -123,6 +128,7 @@ impl ZonePortalStorage {
         )?;
 
         self.admin.write(params.admin)?;
+        self.roles[params.admin].write(ROLE_ADMIN)?;
         self.token_configs[params.initialToken].write(PortalTokenConfig {
             enabled: true,
             deposits_active: true,
@@ -137,6 +143,8 @@ impl ZonePortalStorage {
         self.sequencers.write(params.sequencers.clone())?;
         for sequencer in &params.sequencers {
             self.is_sequencer[*sequencer].write(true)?;
+            let roles = self.roles[*sequencer].read()? | ROLE_SEQUENCER;
+            self.roles[*sequencer].write(roles)?;
         }
         self.is_access_enforced.write(params.accessMode)?;
         self.is_gateway_enforced.write(params.gatewayMode)?;
@@ -152,10 +160,12 @@ impl ZonePortalStorage {
         self.tokens_enabled_in_current_block.write(1)?;
         self.token_enablement_hash.write(token_enablement_hash)?;
         for gateway in &params.zoneGateways {
-            self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
+            let roles = self.roles[*gateway].read()? | ROLE_CALLBACK_GATEWAY;
+            self.roles[*gateway].write(roles)?;
         }
         for account in &params.allowedAccounts {
-            self.role[*account].write(ZonePortalRole::Account as u8)?;
+            let roles = self.roles[*account].read()? | ROLE_ACCOUNT;
+            self.roles[*account].write(roles)?;
         }
         Ok(())
     }

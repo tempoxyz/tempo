@@ -18,7 +18,7 @@ use alloy::{
 use std::collections::HashMap;
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
-    ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
+    ZoneFactoryEvent, ZoneInfo, ZonePortalEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -198,25 +198,25 @@ impl ZoneFactory {
         )?;
 
         let mut emitted_roles = HashMap::new();
+        emitted_roles.insert(call.params.admin, 1u8);
+        for sequencer in &call.params.sequencers {
+            *emitted_roles.entry(*sequencer).or_default() |= 1 << 1;
+        }
         for gateway in &call.params.zoneGateways {
-            let previous = emitted_roles
-                .insert(*gateway, ZonePortalRole::CallbackGateway)
-                .unwrap_or(ZonePortalRole::None);
+            let previous = *emitted_roles.entry(*gateway).or_default();
+            let next = previous | (1 << 3);
+            emitted_roles.insert(*gateway, next);
             self.storage.emit_event(
-                portal,
-                ZonePortalEvent::role_updated(*gateway, previous, ZonePortalRole::CallbackGateway)
-                    .into_log_data(),
+                portal, ZonePortalEvent::role_updated(*gateway, previous, next).into_log_data(),
             )?;
         }
 
         for account in &call.params.allowedAccounts {
-            let previous = emitted_roles
-                .insert(*account, ZonePortalRole::Account)
-                .unwrap_or(ZonePortalRole::None);
+            let previous = *emitted_roles.entry(*account).or_default();
+            let next = previous | (1 << 2);
+            emitted_roles.insert(*account, next);
             self.storage.emit_event(
-                portal,
-                ZonePortalEvent::role_updated(*account, previous, ZonePortalRole::Account)
-                    .into_log_data(),
+                portal, ZonePortalEvent::role_updated(*account, previous, next).into_log_data(),
             )?;
         }
 
@@ -441,12 +441,12 @@ mod tests {
             assert!(portal.is_sequencer[SEQUENCER_A].read()?);
             assert!(portal.is_sequencer[SEQUENCER_B].read()?);
             assert_eq!(
-                portal.role[ALLOWED_ACCOUNT].read()?,
-                ZonePortalRole::Account as u8
+                portal.roles[ALLOWED_ACCOUNT].read()?,
+                1 << 2
             );
             assert_eq!(
-                portal.role[ZONE_GATEWAY].read()?,
-                ZonePortalRole::CallbackGateway as u8
+                portal.roles[ZONE_GATEWAY].read()?,
+                1 << 3
             );
             assert!(portal.is_access_enforced.read()?);
             assert!(portal.is_gateway_enforced.read()?);
@@ -485,7 +485,7 @@ mod tests {
                 U256::from_be_bytes(keccak256((ALLOWED_ACCOUNT, U256::from(20)).abi_encode()).0);
             assert_eq!(
                 StorageCtx.sload(created.portal, role_slot)?,
-                U256::from(ZonePortalRole::Account as u8)
+                U256::from(1 << 2)
             );
             assert_eq!(
                 StorageCtx.sload(created.portal, U256::from(21))?,
@@ -588,26 +588,26 @@ mod tests {
                     .into_log_data(),
                 ZonePortalEvent::role_updated(
                     ZONE_GATEWAY,
-                    ZonePortalRole::None,
-                    ZonePortalRole::CallbackGateway,
+                    0,
+                    1 << 3,
                 )
                 .into_log_data(),
                 ZonePortalEvent::role_updated(
                     ZONE_GATEWAY,
-                    ZonePortalRole::CallbackGateway,
-                    ZonePortalRole::CallbackGateway,
+                    1 << 3,
+                    1 << 3,
                 )
                 .into_log_data(),
                 ZonePortalEvent::role_updated(
                     ALLOWED_ACCOUNT,
-                    ZonePortalRole::None,
-                    ZonePortalRole::Account,
+                    0,
+                    1 << 2,
                 )
                 .into_log_data(),
                 ZonePortalEvent::role_updated(
                     ALLOWED_ACCOUNT,
-                    ZonePortalRole::Account,
-                    ZonePortalRole::Account,
+                    1 << 2,
+                    1 << 2,
                 )
                 .into_log_data(),
             ]
