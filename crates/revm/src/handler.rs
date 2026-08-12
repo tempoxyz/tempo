@@ -663,6 +663,15 @@ where
 
         let mut final_result = None;
 
+        // Whether a successful first-call CREATE deployed a contract. Its
+        // intrinsic `create_state_gas` (charged upfront in validation) must be
+        // refunded if a later step fails: the batch-wide checkpoint revert
+        // rolls the deployment back, so the transaction creates no account
+        // leaf. Deploy-nothing successes (`address == None`) and failing
+        // CREATEs are excluded — `last_frame_result` already refunded those
+        // via `FrameResult::refundable_state_gas`.
+        let mut first_create_deployed = false;
+
         if let Some(mut frame_result) =
             self.prevalidate_keychain_call_scopes(evm, &calls, &mut batch_gas)?
         {
@@ -745,7 +754,26 @@ where
 
                 normalize_failed_batch_result_gas(&mut frame_result, &batch_gas);
 
+                // The checkpoint revert above rolled back the contract a
+                // successful first-call CREATE deployed; refund its intrinsic
+                // state charge exactly like `last_frame_result` refunds a
+                // reverting CREATE's (`refill_reservoir`, with a halt
+                // consuming the spilled portion the refill credits back).
+                if first_create_deployed {
+                    let charge = evm.ctx_ref().cfg().gas_params().create_state_gas();
+                    let is_halt = frame_result.instruction_result().is_halt();
+                    let tracker = frame_result.gas_mut().tracker_mut();
+                    tracker.refill_reservoir(charge);
+                    if is_halt {
+                        tracker.spend_all();
+                    }
+                }
+
                 return Ok(frame_result);
+            }
+
+            if let FrameResult::Create(outcome) = &frame_result {
+                first_create_deployed = outcome.address.is_some();
             }
 
             // Call succeeded - settle the call's gas into the batch tracker the

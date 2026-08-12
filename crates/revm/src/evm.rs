@@ -4000,10 +4000,6 @@ mod tests {
     /// Same regression for the AA batch path: a failed batch step's settled
     /// gas carries `last_frame_result`'s refund of the reverting CREATE's
     /// intrinsic state gas into the surfaced batch result.
-    ///
-    /// NOTE: a successfully deployed CREATE rolled back by a later step's
-    /// batch failure keeps its intrinsic CREATE state-gas charge — the batch
-    /// path follows revm's per-frame settle and adds no batch-wide refund.
     #[test]
     fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -4040,6 +4036,64 @@ mod tests {
             run(&create_reverts, false)?,
             run(&create_reverts, true)?,
             "a reverting AA CREATE call must refund its create_state_gas"
+        );
+        Ok(())
+    }
+
+    /// TIP-1016 / EIP-8037: a failed AA batch must refund the intrinsic
+    /// CREATE state gas of a first-call CREATE that deployed successfully but
+    /// was rolled back by the atomic batch revert — the transaction leaves no
+    /// contract behind, so it must not pay for one.
+    #[test]
+    fn test_t11_aa_failed_batch_refunds_rolled_back_create_state_gas() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Initcode deploying the 5-byte runtime `60006000fd`
+        // (PUSH1 0 PUSH1 0 REVERT): every call to the contract reverts.
+        let deploy_reverter = bytes!("600580600b6000396000f360006000fd");
+        // The CREATE runs with the caller's protocol nonce (0 for a fresh
+        // account), so the deployment address is known upfront.
+        let created = caller.create(0);
+
+        // Batch: [CREATE(succeeds), CALL(created) -> reverts]. Calling the
+        // just-deployed reverter proves the deployment existed when the second
+        // step ran; the batch failure then rolls it back atomically.
+        let batch = key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&deploy_reverter)
+                .call(created, &[])
+                .gas_limit(5_000_000)
+                .build(),
+        )?;
+
+        let run = |zero_create_state_gas: bool| -> eyre::Result<u64> {
+            let mut evm = create_funded_evm_t4_amsterdam(caller);
+            if zero_create_state_gas {
+                evm.ctx.cfg.gas_params.override_gas(vec![(
+                    revm::context_interface::cfg::GasId::create_state_gas(),
+                    0,
+                )]);
+            }
+
+            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&batch, caller))?;
+            assert!(!result.is_success(), "the batch should fail");
+            assert!(
+                evm.ctx
+                    .db()
+                    .basic_ref(created)
+                    .ok()
+                    .flatten()
+                    .is_none_or(|acc| acc.is_empty_code_hash()),
+                "the batch revert must roll back the first-call CREATE deployment"
+            );
+            Ok(result.tx_gas_used())
+        };
+
+        assert_eq!(
+            run(false)?,
+            run(true)?,
+            "a failed batch must refund the rolled-back CREATE's create_state_gas"
         );
         Ok(())
     }
