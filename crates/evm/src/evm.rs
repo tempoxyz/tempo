@@ -386,9 +386,19 @@ mod tests {
     use super::*;
 
     alloy_sol_types::sol! {
+        enum TestZonePortalRole {
+            None,
+            Sequencer,
+            Account,
+            CallbackGateway
+        }
+
         interface TestZonePortal {
             function enableToken(address token) external;
             function tokenEnablementHash() external view returns (bytes32);
+            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
+            function isSequencer(address account) external view returns (bool);
+            function setRole(address account, TestZonePortalRole role) external;
         }
     }
 
@@ -701,6 +711,65 @@ mod tests {
         };
         let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
         evm.db_mut().commit(create.state);
+
+        let sequencer_status = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::isSequencerCall { account: sequencer }
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match sequencer_status.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("isSequencer failed: {result:?}"),
+        };
+        assert!(TestZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
+
+        let account = Address::repeat_byte(0x55);
+        let set_role = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::setRoleCall {
+                    account,
+                    role: TestZonePortalRole::Account,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            set_role.result.is_success(),
+            "setRole failed: {:?}",
+            set_role.result
+        );
+        evm.db_mut().commit(set_role.state);
+
+        let account_role = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::hasRoleCall {
+                    account,
+                    role: TestZonePortalRole::Account,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match account_role.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("hasRole failed: {result:?}"),
+        };
+        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
 
         let enable = evm
             .transact_system_call(
