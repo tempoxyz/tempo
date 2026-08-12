@@ -3,7 +3,7 @@ merge:
 
   gas:
     max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 0
+    max_priority_fee_per_gas: 100000000000
 
   accounts:
     users:
@@ -22,7 +22,7 @@ merge:
         pool: users
         select: random
       max_fee_per_gas: 100000000000
-      max_priority_fee_per_gas: 0
+      max_priority_fee_per_gas: 100000000000
       call:
         to:
           choice: ${TXGEN_TIP20_TOKENS}
