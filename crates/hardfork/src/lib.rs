@@ -49,7 +49,6 @@ use alloy_hardforks::hardfork;
 ///   - `tempo_fork_activation()` (required — the only method implementors provide)
 ///   - `tempo_hardfork_at()` — walks `VARIANTS` in reverse to find the latest active fork
 ///   - `is_<fork>_active_at_timestamp()` — per-fork convenience helpers
-///   - `shared_gas_limit_at()` — shared gas limit lookup by timestamp
 /// * Generates a `#[cfg(test)] mod tests` with activation, naming, trait, and serde tests
 ///
 /// `Genesis` (first variant) is treated as the baseline and does not get `is_*()` methods.

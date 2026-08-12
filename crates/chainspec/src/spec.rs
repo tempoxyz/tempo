@@ -211,20 +211,25 @@ impl TempoChainSpec {
         self.default_follow_url
     }
 
+    /// Returns the shared gas limit for the given timestamp and block gas limit.
+    ///
+    /// Prefer [`TempoConsensusSpec::shared_gas_limit_at`] when working with a generic Tempo
+    /// chain specification.
+    pub fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+        TempoConsensusSpec::shared_gas_limit_at(self, timestamp, gas_limit)
+    }
+
     /// Returns the general (non-payment) gas limit for the given timestamp and block.
-    /// - Genesis override: fixed at the configured value
-    /// - T1+: fixed at 30M gas
-    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+    ///
+    /// Prefer [`TempoConsensusSpec::general_gas_limit_at`] when working with a generic Tempo
+    /// chain specification.
     pub fn general_gas_limit_at(
         &self,
         timestamp: u64,
         gas_limit: u64,
         shared_gas_limit: u64,
     ) -> u64 {
-        self.info
-            .general_gas_limit()
-            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
-            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+        TempoConsensusSpec::general_gas_limit_at(self, timestamp, gas_limit, shared_gas_limit)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -453,13 +458,6 @@ macro_rules! tempo_hardforks_trait {
                 )*
             }
 
-            /// Returns the shared gas limit for the given timestamp and block.
-            /// - T4+: 0 gas
-            /// - Pre-T4: block_gas_limit / 10
-            fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
-                self.tempo_hardfork_at(timestamp)
-                    .shared_gas_limit(gas_limit)
-            }
         }
     };
 }
@@ -469,6 +467,32 @@ tempo_hardfork::tempo_post_genesis_hardforks!(tempo_hardforks_trait);
 impl TempoHardforks for TempoChainSpec {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
         self.fork(fork)
+    }
+}
+
+/// Chain-spec policy for Tempo consensus header gas limits.
+///
+/// The hardfork schedule determines the default Tempo L1 policy, while chains that reuse the
+/// Tempo block format may define their own gas partitioning.
+pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks {
+    /// Returns the shared gas limit for the given timestamp and block gas limit.
+    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64;
+
+    /// Returns the general (non-payment) gas limit for the given timestamp and gas limits.
+    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64;
+}
+
+impl TempoConsensusSpec for TempoChainSpec {
+    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+        self.tempo_hardfork_at(timestamp)
+            .shared_gas_limit(gas_limit)
+    }
+
+    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+        self.info
+            .general_gas_limit()
+            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
     }
 }
 
