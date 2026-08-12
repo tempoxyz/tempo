@@ -46,10 +46,25 @@ use tracing::trace;
 /// `ResultGas::block_regular_gas_used`) keeps refunds out of the block header
 /// because mainnet refunds come from storage clearing whose execution work was
 /// still performed. Tempo has no clearing refunds (TIP-1060 mints storage
-/// credits instead): a Tempo refund (restore-to-original, storage-credit
-/// settlement) reflects work that was rolled back within the transaction, so
-/// the full, uncapped refund also reduces block gas. This keeps the header
-/// equal to the receipts total minus the state-gas exemption.
+/// credits instead), so the full, uncapped refund also reduces block gas.
+/// This keeps the header equal to the receipts total minus the state-gas
+/// exemption.
+///
+/// Subtracting the uncapped refund is safe — it cannot report less block gas
+/// than the computational work actually performed — because on the T11 table
+/// the refund counter can only hold the two restore-to-original SSTORE
+/// refunds. The clearing, selfdestruct, and EIP-7702 auth refunds are all
+/// zero, and the storage-credit settlement is settled in the state-gas
+/// dimension (`Gas::refill_reservoir`), not the refund counter. Each
+/// restore-to-original refund reverses a charge made earlier in the same
+/// transaction for a state commitment that was rolled back, and is smaller
+/// than that charge by exactly the warm-access cost, so a set/restore pair
+/// nets the two warm accesses actually executed (`0→x→0`:
+/// 5,100 + 100 − 5,000; `x→y→x`: 2,900 + 100 − 2,800; both 200, upstream's
+/// EIP-3529 calibration). Repeated restoration cycles therefore cannot erase
+/// performed work from section admission or the header; the table invariants
+/// are locked by `test_t11_restore_refunds_net_warm_access_costs` in
+/// `tempo_revm::gas_params`.
 pub(crate) fn tempo_block_regular_gas_used(gas: &ResultGas) -> u64 {
     core::cmp::max(
         gas.total_gas_spent()

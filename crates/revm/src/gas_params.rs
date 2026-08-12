@@ -377,6 +377,51 @@ mod tests {
         );
     }
 
+    /// TIP-1016 block accounting relies on the uncapped refund counter never
+    /// exceeding the rolled-back regular charges of the same transaction
+    /// (`tempo_block_regular_gas_used` subtracts the full refund from block
+    /// gas). On the T11 table the counter can only hold the two
+    /// restore-to-original SSTORE refunds, and each set/restore pair must net
+    /// exactly the two warm accesses actually executed — upstream's EIP-3529
+    /// calibration. Every other refund source must be zero.
+    #[test]
+    fn test_t11_restore_refunds_net_warm_access_costs() {
+        let t11 = tempo_gas_params(TempoHardfork::T11);
+        let warm = t11.get(GasId::sstore_static());
+
+        // 0→x→0: charge (warm + set) + warm, refund sstore_set_refund.
+        assert_eq!(
+            (warm + t11.get(GasId::sstore_set_without_load_cost()) + warm)
+                .saturating_sub(t11.get(GasId::sstore_set_refund())),
+            2 * warm,
+            "a 0→x→0 restore pair must net exactly two warm accesses"
+        );
+        // x→y→x: charge (warm + reset) + warm, refund sstore_reset_refund.
+        assert_eq!(
+            (warm + t11.get(GasId::sstore_reset_without_cold_load_cost()) + warm)
+                .saturating_sub(t11.get(GasId::sstore_reset_refund())),
+            2 * warm,
+            "an x→y→x restore pair must net exactly two warm accesses"
+        );
+
+        // No other refund may reach the uncapped counter.
+        assert_eq!(
+            t11.get(GasId::sstore_clearing_slot_refund()),
+            0,
+            "clearing refund must stay zero: it would refund committed work"
+        );
+        assert_eq!(
+            t11.get(GasId::selfdestruct_refund()),
+            0,
+            "selfdestruct refund must stay zero: it would refund committed work"
+        );
+        assert_eq!(
+            t11.tx_eip7702_auth_refund_regular(),
+            0,
+            "EIP-7702 auth refund must stay zero on T1+"
+        );
+    }
+
     /// TIP-1016: Verify totals (regular + state) match the clarified spec table.
     /// Note: SSTORE total comparison needs to account for revm decomposition and the cold-slot charge.
     ///
