@@ -1358,9 +1358,6 @@ where
 
     /// Attempts to reconstruct our current threshold share from dealer logs finalized during the
     /// previous epoch.
-    ///
-    /// This is only called while initializing an empty DKG partition, so all dealer logs are read
-    /// from finalized block headers.
     #[instrument(skip_all, fields(epoch = %state.epoch), err)]
     async fn maybe_recover_revealed_share(&mut self, state: &State) -> eyre::Result<Option<Share>> {
         let public_key = self.config.me.public_key();

@@ -1229,7 +1229,7 @@ mod tests {
         transcript::Summary,
     };
     use commonware_math::algebra::Random as _;
-    use commonware_runtime::{Runner as _, deterministic};
+    use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
     use commonware_utils::TryFromIterator as _;
 
     fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
@@ -1327,7 +1327,7 @@ mod tests {
         executor.start(|mut context| async move {
             let opened = builder()
                 .partition_prefix("empty_storage_requires_an_initial_state")
-                .init(context.with_label("initial"))
+                .init(context.child("initial"))
                 .await
                 .unwrap();
             let Opened::Empty(empty) = opened else {
@@ -1341,7 +1341,7 @@ mod tests {
 
             let reopened = builder()
                 .partition_prefix("empty_storage_requires_an_initial_state")
-                .init(context.with_label("reopened"))
+                .init(context.child("reopened"))
                 .await
                 .unwrap();
             let Opened::Existing(storage) = reopened else {
@@ -1357,7 +1357,7 @@ mod tests {
         executor.start(|context| async move {
             let opened = builder()
                 .partition_prefix("empty_states_reject_retained_events")
-                .init(context.with_label("initial"))
+                .init(context.child("initial"))
                 .await
                 .unwrap();
             let Opened::Empty(mut empty) = opened else {
@@ -1381,7 +1381,7 @@ mod tests {
 
             let result = builder()
                 .partition_prefix("empty_states_reject_retained_events")
-                .init(context.with_label("reopened"))
+                .init(context.child("reopened"))
                 .await;
             let Err(error) = result else {
                 panic!("retained events without state metadata must be rejected");
