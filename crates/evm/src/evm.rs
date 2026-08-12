@@ -393,7 +393,13 @@ mod tests {
             None,
             Sequencer,
             Account,
-            CallbackGateway
+            CallbackGateway,
+            PauseGuardian
+        }
+
+        enum TestZonePortalCapability {
+            PausePortal,
+            AccessPolicy
         }
 
         interface TestZonePortal {
@@ -402,6 +408,12 @@ mod tests {
             function hasRole(address account, TestZonePortalRole role) external view returns (bool);
             function isSequencer(address account) external view returns (bool);
             function setRole(address account, TestZonePortalRole role) external;
+            function paused() external view returns (bool);
+            function pauseExpiry() external view returns (uint64);
+            function abdicationEffectiveAt(TestZonePortalCapability capability)
+                external
+                view
+                returns (uint64);
         }
 
         interface TestZoneMessenger {
@@ -785,6 +797,27 @@ mod tests {
             result => panic!("hasRole failed: {result:?}"),
         };
         assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
+
+        for call in [
+            TestZonePortal::pausedCall {}.abi_encode(),
+            TestZonePortal::pauseExpiryCall {}.abi_encode(),
+            TestZonePortal::abdicationEffectiveAtCall {
+                capability: TestZonePortalCapability::PausePortal,
+            }
+            .abi_encode(),
+        ] {
+            let result = evm
+                .transact_system_call(Address::ZERO, created.portal, call.into())
+                .unwrap();
+            let output = match result.result {
+                ExecutionResult::Success {
+                    output: revm::context::result::Output::Call(output),
+                    ..
+                } => output,
+                result => panic!("pause ABI call failed: {result:?}"),
+            };
+            assert_eq!(U256::from_be_slice(&output), U256::ZERO);
+        }
 
         let enable = evm
             .transact_system_call(

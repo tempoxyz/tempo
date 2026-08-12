@@ -109,6 +109,11 @@ impl ZonePortalStorage {
         Self::__new(address)
     }
 
+    /// Returns the storage handler for the current pause expiry timestamp.
+    pub fn pause_expiry(&self) -> &Slot<u64> {
+        &self.pause_expiry
+    }
+
     /// Returns the storage handler for a capability's abdication timestamp.
     pub fn abdication_effective_at(&self, capability: ZonePortalCapability) -> &Slot<u64> {
         &self.abdication_effective_at[u8::from(capability)]
