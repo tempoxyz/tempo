@@ -358,8 +358,11 @@ mod tests {
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    use tempo_contracts::{
+        precompiles::{
+            IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -399,6 +402,18 @@ mod tests {
             function hasRole(address account, TestZonePortalRole role) external view returns (bool);
             function isSequencer(address account) external view returns (bool);
             function setRole(address account, TestZonePortalRole role) external;
+        }
+
+        interface TestZoneMessenger {
+            function relayMessage(
+                uint32 zoneId,
+                address token,
+                bytes32 senderTag,
+                address target,
+                uint128 amount,
+                uint64 gasLimit,
+                bytes calldata data
+            ) external;
         }
     }
 
@@ -812,6 +827,119 @@ mod tests {
         let expected =
             keccak256((initial, second_token, "Second Token", "SECOND", "USD").abi_encode_params());
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn zone_messenger_runtime_accepts_callback_gateway_role() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let gateway = Address::repeat_byte(0x44);
+        let mut db = CacheDB::new(EmptyDB::default());
+        for (address, runtime) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        ] {
+            let code = Bytecode::new_legacy(runtime);
+            db.insert_account_info(
+                address,
+                AccountInfo {
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+            );
+        }
+        // Return IWithdrawalReceiver.onWithdrawalReceived.selector for any call.
+        let callback_runtime = Bytecode::new_legacy(Bytes::from_static(&[
+            0x63, 0x0a, 0x13, 0x7f, 0xf5, 0x60, 0xe0, 0x1b, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3,
+        ]));
+        db.insert_account_info(
+            gateway,
+            AccountInfo {
+                code_hash: callback_runtime.hash_slow(),
+                code: Some(callback_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(ZONE_MESSENGER_ADDRESS, U256::from(100))
+                .apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let create = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: false,
+                        gatewayMode: true,
+                        allowedAccounts: vec![],
+                        zoneGateways: vec![gateway],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match &create.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("createZone failed: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
+        evm.db_mut().commit(create.state);
+
+        let callback = evm
+            .transact_system_call(Address::ZERO, gateway, Bytes::new())
+            .unwrap();
+        let output = match callback.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("callback probe failed: {result:?}"),
+        };
+        assert_eq!(&output[..4], &[0x0a, 0x13, 0x7f, 0xf5]);
+
+        let relay = evm
+            .transact_system_call(
+                created.portal,
+                ZONE_MESSENGER_ADDRESS,
+                TestZoneMessenger::relayMessageCall {
+                    zoneId: created.zoneId,
+                    token: PATH_USD_ADDRESS,
+                    senderTag: B256::ZERO,
+                    target: gateway,
+                    amount: 1,
+                    gasLimit: 100_000,
+                    data: Bytes::new(),
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            relay.result.is_success(),
+            "gateway callback relay failed: {:?}",
+            relay.result
+        );
     }
 
     #[test]
