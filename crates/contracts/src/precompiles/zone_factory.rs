@@ -4,7 +4,10 @@ use alloy_primitives::{Address, Bytes, U256, address};
 pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
 };
-pub use IZonePortal::{IZonePortalEvents as ZonePortalEvent, Role as ZonePortalRole};
+pub use IZonePortal::{
+    Capability as ZonePortalCapability, IZonePortalEvents as ZonePortalEvent,
+    Role as ZonePortalRole,
+};
 
 /// Native TIP-1091 ZoneFactory precompile address.
 pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF2000000000000000000000000000000000000");
@@ -135,7 +138,13 @@ crate::sol! {
             None,
             Sequencer,
             Account,
-            CallbackGateway
+            CallbackGateway,
+            PauseGuardian
+        }
+
+        enum Capability {
+            PausePortal,
+            AccessPolicy
         }
 
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
