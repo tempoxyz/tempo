@@ -6,12 +6,13 @@
 
 use crate::{
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot},
 };
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
 use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
-    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError, ZonePortalRole,
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
+    ZonePortalCapability, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -95,13 +96,22 @@ pub struct ZonePortalStorage {
     deposits_in_current_block: u64,
     token_enable_count_block: u64,
     tokens_enabled_in_current_block: u64,
+    /// End of the bounded portal pause, packed in slot 25 after the token enablement counter.
+    pause_expiry: u64,
     /// Append-only commitment to the enabled token sequence and metadata, stored in slot 26.
     token_enablement_hash: B256,
+    /// Capability-keyed abdication timestamps, stored as a Solidity mapping in slot 27.
+    abdication_effective_at: Mapping<u8, u64>,
 }
 
 impl ZonePortalStorage {
     pub fn new(address: Address) -> Self {
         Self::__new(address)
+    }
+
+    /// Returns the storage handler for a capability's abdication timestamp.
+    pub fn abdication_effective_at(&self, capability: ZonePortalCapability) -> &Slot<u64> {
+        &self.abdication_effective_at[u8::from(capability)]
     }
 
     pub(super) fn initialize(
