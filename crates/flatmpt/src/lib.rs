@@ -299,11 +299,10 @@ impl FlatShadow {
 
     /// Bloat-mode init: genesis alloc + state-bloat dump.
     ///
-    /// Streams the dump straight into per-account seed maps (no intermediate op
-    /// vector — at 100M+ slots that alone is >10 GB), merges the genesis alloc
-    /// on top (genesis wins storage collisions, mirroring
-    /// `tempo init-from-binary-dump`), and loads through the engine's seeded
-    /// RAM-build path — the same one the mainnet loader used for 535M slots.
+    /// Streams bounded slot chunks directly into the engine, then merges the
+    /// genesis alloc on top (genesis wins storage collisions, mirroring
+    /// `tempo init-from-binary-dump`). This avoids retaining the entire bloat
+    /// dump in hash maps before the engine's own spill threshold can engage.
     /// Rebuilt every init: genesis regenerates per bench leg.
     fn init_with_bloat(
         path: &str,
@@ -332,13 +331,16 @@ impl FlatShadow {
                 }
             }
         }
-        let mut accs: std::collections::HashMap<Key, Acc> = std::collections::HashMap::new();
+        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
-        // 1) Dump, streamed. 2) Genesis alloc second — its inserts overwrite
-        //    colliding dump slots, which is exactly the node's collision rule.
+        // 1) Dump, streamed in bounded chunks. Repeated seeds for one account
+        // add slots without wiping earlier chunks. 2) Genesis alloc second —
+        // its inserts overwrite colliding dump slots, matching the node rule.
         let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
         let mut header = [0u8; 40];
         let mut n_dump: usize = 0;
+        const SLOT_CHUNK: usize = 250_000;
         loop {
             match f.read_exact(&mut header) {
                 Ok(()) => {}
@@ -352,7 +354,7 @@ impl FlatShadow {
             );
             let key: Key = keccak256(&header[12..32]).0;
             let pair_count = u64::from_be_bytes(header[32..40].try_into().unwrap());
-            let acc = accs.entry(key).or_default();
+            let mut slots = Vec::with_capacity(SLOT_CHUNK.min(pair_count as usize));
             let mut pair = [0u8; 64];
             for _ in 0..pair_count {
                 f.read_exact(&mut pair)?;
@@ -360,13 +362,41 @@ impl FlatShadow {
                 if value == U256::ZERO {
                     continue;
                 }
-                acc.slots.insert(
+                slots.push((
                     keccak256(&pair[0..32]).0,
                     mpt_flat_poc::eth::storage_value_rlp(value),
-                );
+                ));
                 n_dump += 1;
+                if slots.len() == SLOT_CHUNK {
+                    slots.sort_by(|a, b| a.0.cmp(&b.0));
+                    db.insert_batch_accounts(vec![(
+                        key,
+                        mpt_flat_poc::AccountSeed {
+                            nonce: 0,
+                            balance: U256::ZERO,
+                            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                            slots: std::mem::take(&mut slots),
+                        },
+                    )])
+                    .map_err(|e| anyhow::anyhow!("bloat chunk insert: {e:#}"))?;
+                    slots = Vec::with_capacity(SLOT_CHUNK);
+                }
+            }
+            if !slots.is_empty() {
+                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                db.insert_batch_accounts(vec![(
+                    key,
+                    mpt_flat_poc::AccountSeed {
+                        nonce: 0,
+                        balance: U256::ZERO,
+                        code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                        slots,
+                    },
+                )])
+                .map_err(|e| anyhow::anyhow!("bloat tail insert: {e:#}"))?;
             }
         }
+        let mut accs: std::collections::HashMap<Key, Acc> = std::collections::HashMap::new();
         let n_alloc = genesis_ops.len();
         for (key, op) in genesis_ops {
             match op {
@@ -405,8 +435,6 @@ impl FlatShadow {
             .collect();
         batch.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
-            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
         db.insert_batch_accounts(batch)
             .map_err(|e| anyhow::anyhow!("bloat seed insert: {e:#}"))?;
         db.persist().map_err(|e| anyhow::anyhow!("{e:#}"))?;
