@@ -1,0 +1,36 @@
+# One-shot push-triggered wrapper around bench-e2e: the 100 GiB (~1.56B account)
+# flat-vs-sparse comparison with feature-flatmpt. Comment-triggered runs execute
+# main's bench.yml, which doesn't know the feature-flatmpt flag yet, so this
+# trigger branch invokes the reusable workflow directly. Delete the branch after
+# the run.
+name: bench-flatmpt-100g
+on:
+  push:
+    branches: ["centaur/bench-flatmpt-e2e-100g-trigger"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  bench:
+    uses: ./.github/workflows/bench-e2e.yml
+    with:
+      pr: "7143"
+      actor: "dankrad"
+      mode: "e2e"
+      preset: "default"
+      duration: "300"
+      bloat: "100"
+      token-count: "4"
+      tps: "50000"
+      accounts: "1000"
+      max-concurrent-requests: "5000"
+      baseline: "centaur/bench-flatmpt-e2e-1786443703"
+      feature: "centaur/bench-flatmpt-e2e-1786443703"
+      gas-limit: "1000000000000"
+      general-gas-limit: "1000000000000"
+      run-pairs: "3"
+      run-side: "comparison"
+      samply: "true"
+      otlp: "true"
+      feature-flatmpt: "true"
+    secrets: inherit
