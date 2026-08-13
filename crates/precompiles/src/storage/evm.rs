@@ -353,6 +353,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
+        // TIP-1016: hash cost for computing the deployed code hash. Every code
+        // deposit pays it (matching revm's EIP-8037 code-deposit path), not just
+        // fresh deployments.
+        if self.amsterdam_eip8037_enabled {
+            self.deduct_gas(self.gas_params.keccak256_cost(code_len))?;
+        }
+
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
@@ -365,9 +372,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // TIP-1016: charge TIP20 deployments as CREATE.
         if self.amsterdam_eip8037_enabled && was_empty {
-            self.deduct_gas(
-                self.gas_params.create_cost() + self.gas_params.keccak256_cost(code_len),
-            )?;
+            self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
         }
 
@@ -1400,8 +1405,9 @@ mod tests {
 
     /// Documents the `is_empty()` gating of the TIP-1016 CREATE surcharge: a
     /// pre-touched destination (nonzero balance/nonce, no code) is not EIP-161
-    /// empty, so `set_code` charges only the code deposit, and re-deploying over
-    /// existing code never re-charges CREATE.
+    /// empty, so `set_code` skips CREATE and its state gas, but still pays the
+    /// code deposit and the hash cost — every deposit hashes the deployed code.
+    /// Re-deploying over existing code likewise never re-charges CREATE.
     #[test]
     fn test_t11_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
         let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T11);
@@ -1419,7 +1425,8 @@ mod tests {
 
         let code = Bytecode::new_raw(vec![0xef].into());
         let expected_state_gas = gas_params.code_deposit_state_gas(code.len());
-        let expected_regular_gas = gas_params.code_deposit_cost(code.len());
+        let expected_regular_gas =
+            gas_params.code_deposit_cost(code.len()) + gas_params.keccak256_cost(code.len());
         // Reservoir also covers the second deployment below so no state gas
         // spills into regular gas and skews the assertions.
         let mut provider =
@@ -1429,7 +1436,7 @@ mod tests {
         assert_eq!(
             provider.gas_used(),
             expected_regular_gas,
-            "a pre-touched destination is not empty, so only the code deposit is charged"
+            "a pre-touched destination is not empty, so only code deposit + hash cost are charged"
         );
         assert_eq!(
             provider.state_gas_used(),
@@ -1437,12 +1444,15 @@ mod tests {
             "a pre-touched destination should pay only code deposit state gas"
         );
 
-        // Re-deploying over existing code is not a fresh deployment either.
+        // Re-deploying over existing code is not a fresh deployment either,
+        // but it still pays the deposit and hash costs.
         let code = Bytecode::new_raw(vec![0xef, 0xef].into());
         provider.set_code(address, code.clone())?;
         assert_eq!(
             provider.gas_used(),
-            expected_regular_gas + gas_params.code_deposit_cost(code.len()),
+            expected_regular_gas
+                + gas_params.code_deposit_cost(code.len())
+                + gas_params.keccak256_cost(code.len()),
             "set_code over existing code must not charge CREATE"
         );
 
