@@ -1842,9 +1842,7 @@ mod stall_tests {
 
         // Dump our cursor's branch entry at 0x5500 and neighbours.
         {
-            use reth_trie::trie_cursor::{
-                TrieCursor as _, TrieCursorFactory as _, TrieStorageCursor as _,
-            };
+            use reth_trie::trie_cursor::{TrieCursor as _, TrieCursorFactory as _};
             let mut c = tf.storage_trie_cursor(acct).unwrap();
             let mut path = reth_trie::Nibbles::default();
             for n in [5u8, 5, 0, 0] {
@@ -1874,9 +1872,7 @@ mod stall_tests {
                 eprintln!("next branch: NONE");
             }
             // leaves under 0x55009
-            use reth_trie::hashed_cursor::{
-                HashedCursor as _, HashedCursorFactory as _, HashedStorageCursor as _,
-            };
+            use reth_trie::hashed_cursor::{HashedCursor as _, HashedCursorFactory as _};
             let mut hc = hf.hashed_storage_cursor(acct).unwrap();
             let mut seek = [0u8; 32];
             seek[0] = 0x55;
@@ -2232,7 +2228,7 @@ mod stall_tests {
 
 #[cfg(test)]
 mod proofbench {
-    use super::{tests::*, *};
+    use super::*;
     use reth_trie::Nibbles;
 
     #[test]
