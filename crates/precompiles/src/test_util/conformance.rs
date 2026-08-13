@@ -60,6 +60,19 @@ pub struct RustStorageField {
     pub bytes: usize,
 }
 
+/// One Rust storage-slot constant that should match a Solidity field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustStorageSlot {
+    pub name: &'static str,
+    pub slot: U256,
+}
+
+impl RustStorageSlot {
+    pub const fn new(name: &'static str, slot: U256) -> Self {
+        Self { name, slot }
+    }
+}
+
 impl RustStorageField {
     pub fn new(name: &'static str, slot: U256, offset: usize, bytes: usize) -> Self {
         Self {
@@ -147,6 +160,38 @@ pub fn compare_storage_layout(
     for name in fields.keys() {
         if !rust.iter().any(|field| field.name == *name) {
             errors.push(format!("{name} exists in Solidity but not Rust"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Compares selected Rust slot constants with fields in a Solidity storage layout.
+pub fn compare_storage_slots(
+    solidity: &SolidityStorageLayout,
+    rust: &[RustStorageSlot],
+) -> Result<(), Vec<String>> {
+    let fields: std::collections::BTreeMap<_, _> = solidity
+        .storage
+        .iter()
+        .map(|field| (field.label.as_str(), field))
+        .collect();
+    let mut errors = Vec::new();
+    for field in rust {
+        let Some(solidity_field) = fields.get(field.name) else {
+            errors.push(format!("{} exists in Rust but not Solidity", field.name));
+            continue;
+        };
+        let slot =
+            U256::from_str_radix(&solidity_field.slot, 10).expect("solc emits decimal slots");
+        if slot != field.slot {
+            errors.push(format!(
+                "{}: Solidity slot={slot}, Rust slot={}",
+                field.name, field.slot
+            ));
         }
     }
     if errors.is_empty() {
