@@ -429,7 +429,7 @@ mod tests {
                 external
                 view
                 returns (uint64);
-            function pause() external;
+            function pause(bool shouldPause) external;
             function submitBatch(
                 uint64 tempoBlockNumber,
                 uint64 recentTempoBlockNumber,
@@ -881,7 +881,9 @@ mod tests {
             .transact_system_call(
                 sequencer,
                 created.portal,
-                TestZonePortal::pauseCall {}.abi_encode().into(),
+                TestZonePortal::pauseCall { shouldPause: true }
+                    .abi_encode()
+                    .into(),
             )
             .unwrap();
         assert!(
@@ -924,6 +926,38 @@ mod tests {
             }
             result => panic!("paused submitBatch should reach proof validation: {result:?}"),
         }
+
+        let resume = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::pauseCall { shouldPause: false }
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        assert!(
+            resume.result.is_success(),
+            "resume failed: {:?}",
+            resume.result
+        );
+        evm.db_mut().commit(resume.state);
+
+        let paused = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::pausedCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        let output = match paused.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("paused failed after resume: {result:?}"),
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::ZERO);
 
         let enable = evm
             .transact_system_call(
