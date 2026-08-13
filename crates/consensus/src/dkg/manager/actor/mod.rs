@@ -54,6 +54,7 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
+    dkg::manager::actor::state::ShareState,
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
 
@@ -190,31 +191,14 @@ where
 
         let Ok(opened) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
-            .init(self.context.child("state"))
+            .init_unverified(self.context.child("state"))
             .await
         else {
             return;
         };
 
-        let mut storage = match opened {
-            state::Opened::Existing(storage) => {
-                let mut storage = storage;
-                if self.heal(&mut storage).await.is_err() {
-                    return;
-                }
-
-                storage
-            }
-            state::Opened::Empty(storage) => {
-                let Ok(initial_state) = self.establish_initial_state().await else {
-                    return;
-                };
-                let Ok(storage) = storage.set_initial_state(initial_state).await else {
-                    return;
-                };
-
-                storage
-            }
+        let Ok(mut storage) = self.heal(opened).await else {
+            return;
         };
 
         if self
@@ -519,65 +503,59 @@ where
         }
     }
 
+    /// Turns freshly opened storage into storage that is guaranteed to hold a
+    /// state matching the finalized floor:
+    ///
+    /// 1. The persisted state is up-to-date: it is used as-is.
+    /// 2. The persisted state is stale: the state is re-initialized from the
+    ///    chain, reusing the stale share if it still matches the on-chain
+    ///    outcome, or recovering it from revealed dealings otherwise.
+    /// 3. No state is persisted: like 2., but without a stale share to fall
+    ///    back on.
     #[instrument(skip_all, err)]
     async fn heal<TStorageContext>(
         &mut self,
-        storage: &mut state::Storage<TStorageContext>,
-    ) -> eyre::Result<()>
+        storage: state::Unverified<TStorageContext>,
+    ) -> eyre::Result<state::Storage<TStorageContext>>
     where
         TStorageContext: commonware_runtime::BufferPooler
             + commonware_runtime::Metrics
             + Clock
             + commonware_runtime::Storage,
     {
-        let state = storage.current();
-        let round = state::Round::from_state(&state, &self.config.namespace);
-        let epoch_info = self
-            .config
-            .epoch_strategy
-            .containing(self.config.last_finalized_height.next())
-            .expect("epoch strategy is covering all heights");
-
-        match round.epoch().cmp(&epoch_info.epoch()) {
-            std::cmp::Ordering::Less => {
+        let mut share_candidate = ShareState::unset_plaintext();
+        if let Some(state) = storage.state() {
+            let epoch_info = self
+                .config
+                .epoch_strategy
+                .containing(self.config.last_finalized_height.next())
+                .expect("epoch strategy is covering all heights");
+            let round = state::Round::from_state(state, &self.config.namespace);
+            if round.epoch() < epoch_info.epoch() {
                 warn!(
                     "latest DKG state is for `{}`, but the next block will be \
                     for epoch `{}`. Resetting DKG initial state",
                     round.epoch(),
                     epoch_info.epoch(),
                 );
-
-                let mut initial_state = self
-                    .establish_initial_state()
+                share_candidate = state.share.clone();
+            } else {
+                let state = state.clone();
+                return storage
+                    .init_verified(state)
                     .await
-                    .wrap_err("failed constructing initial staste")?;
-
-                // If the outcomes match (failed DKG), fall back to the persisted share.
-                if initial_state.output == state.output
-                    && matches!(&initial_state.share, state::ShareState::Plaintext(None))
-                {
-                    initial_state.share = state.share;
-                }
-
-                storage
-                    .set_state(initial_state)
-                    .await
-                    .wrap_err("failed setting initial state")?;
+                    .wrap_err("failed writing initial state back to storage");
             }
-            std::cmp::Ordering::Greater => {
-                warn!(
-                    "ignoring block for prior epoch; older blocks are replayed \
-                    against DKG when a node was shut down right after a \
-                    boundary block completed an epoch, but before it was fully \
-                    processed by other actors"
-                );
-            }
-            std::cmp::Ordering::Equal => {
-                // Normal, expected behavior.
-            }
-        }
+        };
+        let initial_state = self
+            .establish_initial_state(share_candidate)
+            .await
+            .wrap_err("failed constructing initial state")?;
 
-        Ok(())
+        storage
+            .init_verified(initial_state)
+            .await
+            .wrap_err("failed setting initial state")
     }
 
     #[instrument(skip_all, err)]
@@ -1296,8 +1274,19 @@ where
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
 
+    /// Constructs a fresh state from the on-chain DKG outcome at the last
+    /// finalized boundary.
+    ///
+    /// The share is sourced, in order of preference, from the configured
+    /// initial share, from `share_candidate` (salvaged from a stale persisted
+    /// state), or by recovering it from publicly revealed dealings. The first
+    /// two are only used if they match the polynomial of the on-chain
+    /// outcome.
     #[instrument(skip_all, err)]
-    async fn establish_initial_state(&mut self) -> eyre::Result<State> {
+    async fn establish_initial_state(
+        &mut self,
+        share_candidate: ShareState,
+    ) -> eyre::Result<State> {
         let latest_boundary = latest_boundary_at_or_before(
             &self.config.epoch_strategy,
             self.config.last_finalized_height,
@@ -1316,32 +1305,40 @@ where
         )
         .await?;
 
-        let share = state::ShareState::Plaintext('verify_initial_share: {
-            let Some(share) = self.config.initial_share.clone() else {
-                break 'verify_initial_share None;
+        // The configured initial share takes precedence over the candidate
+        // salvaged from a stale state. Either is only usable if it matches
+        // the polynomial of the on-chain DKG outcome.
+        let mut share = None;
+        for candidate in [
+            self.config.initial_share.clone(),
+            share_candidate.into_inner(),
+        ] {
+            let Some(candidate) = candidate else {
+                continue;
             };
-            let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
+            let Ok(partial) = onchain_outcome.sharing().partial_public(candidate.index) else {
                 warn!(
                     "the index of the provided share exceeds the polynomial of the \
                     on-chain DKG outcome; ignoring the share"
                 );
-                break 'verify_initial_share None;
+                continue;
             };
-            if share.public::<MinSig>() != partial {
+            if candidate.public::<MinSig>() != partial {
                 warn!(
                     "the provided share does not match the polynomial of the \
                     on-chain DKG outcome; ignoring the share"
                 );
-                break 'verify_initial_share None;
+                continue;
             }
-            Some(share)
-        });
+            share = Some(candidate);
+            break;
+        }
 
         let mut state = State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
-            share,
+            share: state::ShareState::Plaintext(share),
             players: onchain_outcome.next_players,
             is_full_dkg: onchain_outcome.is_next_full_dkg,
         };
@@ -1362,7 +1359,8 @@ where
     async fn maybe_recover_revealed_share(&mut self, state: &State) -> eyre::Result<Option<Share>> {
         let public_key = self.config.me.public_key();
         if state.output.players().position(&public_key).is_none()
-            || state.output.revealed().position(&public_key).is_none()
+        // TODO: currently unreliable; use once fixed
+        // || state.output.revealed().position(&public_key).is_none()
         {
             return Ok(None);
         }

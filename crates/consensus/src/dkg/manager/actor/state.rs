@@ -28,7 +28,7 @@ use commonware_parallel::Strategy;
 use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
-use eyre::{OptionExt, WrapErr as _, bail, eyre};
+use eyre::{OptionExt, WrapErr as _, bail};
 use futures::StreamExt as _;
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
@@ -58,47 +58,39 @@ where
     states: metadata::Metadata<TContext, u64, State>,
     events: segmented::variable::Journal<TContext, Event>,
 
-    current: State,
+    current: Option<State>,
     cache: BTreeMap<Epoch, Events>,
 }
 
-#[allow(clippy::large_enum_variant)]
-pub(super) enum Opened<TContext>
+/// Storage as read from disk, holding a state that has not yet been checked
+/// against the finalized floor (or no state at all).
+///
+/// [`Unverified::init_verified`] persists the verified state and turns this
+/// into a usable [`Storage`].
+pub(super) struct Unverified<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    Existing(Storage<TContext>),
-    Empty(EmptyStorage<TContext>),
+    storage: Storage<TContext>,
 }
 
-pub(super) struct EmptyStorage<TContext>
+impl<TContext> Unverified<TContext>
 where
     TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
-    states: metadata::Metadata<TContext, u64, State>,
-    events: segmented::variable::Journal<TContext, Event>,
-}
+    pub(super) fn state(&self) -> Option<&State> {
+        self.storage.current.as_ref()
+    }
 
-impl<TContext> EmptyStorage<TContext>
-where
-    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
-{
-    #[instrument(skip_all, err)]
-    pub(super) async fn set_initial_state(
-        mut self,
-        state: State,
-    ) -> eyre::Result<Storage<TContext>> {
-        self.states
+    pub(super) async fn init_verified(self, state: State) -> eyre::Result<Storage<TContext>> {
+        let Self { mut storage } = self;
+        storage
+            .states
             .put_sync(state.epoch.get(), state.clone())
             .await
             .wrap_err("unable to write initial state to metadata")?;
-
-        Ok(Storage {
-            states: self.states,
-            events: self.events,
-            current: state,
-            cache: BTreeMap::new(),
-        })
+        storage.current = Some(state);
+        Ok(storage)
     }
 }
 
@@ -141,7 +133,7 @@ where
 
     /// Returns the DKG outcome for the current epoch.
     pub(super) fn current(&self) -> State {
-        self.current.clone()
+        self.current.clone().expect("invariant: state must be set")
     }
 
     /// Persists the outcome of a DKG ceremony to state
@@ -150,7 +142,7 @@ where
             warn!(epoch = %old.epoch, "overwriting existing state");
         }
         self.states.sync().await.wrap_err("failed writing state")?;
-        self.current = state;
+        self.current = Some(state);
         Ok(())
     }
 
@@ -524,7 +516,10 @@ impl Builder {
     }
 
     #[instrument(skip_all, err)]
-    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Opened<TContext>>
+    pub(super) async fn init_unverified<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Unverified<TContext>>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
@@ -583,18 +578,18 @@ impl Builder {
             }
         }
 
-        match current {
-            Some(current) => Ok(Opened::Existing(Storage {
+        eyre::ensure!(
+            current.is_some() || cache.is_empty(),
+            "DKG states metadata is empty, but events journal contains retained events",
+        );
+        Ok(Unverified {
+            storage: Storage {
                 states,
                 events,
                 current,
                 cache,
-            })),
-            None if cache.is_empty() => Ok(Opened::Empty(EmptyStorage { states, events })),
-            None => Err(eyre!(
-                "DKG states metadata is empty, but the events journal contains retained events"
-            )),
-        }
+            },
+        })
     }
 }
 
@@ -611,6 +606,10 @@ pub(super) enum ShareState {
 }
 
 impl ShareState {
+    pub(super) fn unset_plaintext() -> Self {
+        Self::Plaintext(None)
+    }
+
     pub(super) fn into_inner(self) -> Option<Share> {
         match self {
             Self::Plaintext(share) => share,
@@ -1325,29 +1324,31 @@ mod tests {
     fn empty_storage_requires_an_initial_state() {
         let executor = deterministic::Runner::default();
         executor.start(|mut context| async move {
-            let opened = builder()
+            let unverified = builder()
                 .partition_prefix("empty_storage_requires_an_initial_state")
-                .init(context.child("initial"))
+                .init_unverified(context.child("initial"))
                 .await
                 .unwrap();
-            let Opened::Empty(empty) = opened else {
-                panic!("new storage must be empty");
-            };
+            assert!(
+                unverified.state().is_none(),
+                "new storage must not contain a state"
+            );
 
             let state = make_test_state(&mut context, 0);
-            let storage = empty.set_initial_state(state.clone()).await.unwrap();
+            let storage = unverified.init_verified(state.clone()).await.unwrap();
             assert_eq!(storage.current(), state);
             drop(storage);
 
             let reopened = builder()
                 .partition_prefix("empty_storage_requires_an_initial_state")
-                .init(context.child("reopened"))
+                .init_unverified(context.child("reopened"))
                 .await
                 .unwrap();
-            let Opened::Existing(storage) = reopened else {
-                panic!("storage with an initial state must reopen as existing");
-            };
-            assert_eq!(storage.current(), state);
+            assert_eq!(
+                reopened.state(),
+                Some(&state),
+                "storage with an initial state must reopen with it"
+            );
         });
     }
 
@@ -1355,16 +1356,18 @@ mod tests {
     fn empty_states_reject_retained_events() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
-            let opened = builder()
+            let mut unverified = builder()
                 .partition_prefix("empty_states_reject_retained_events")
-                .init(context.child("initial"))
+                .init_unverified(context.child("initial"))
                 .await
                 .unwrap();
-            let Opened::Empty(mut empty) = opened else {
-                panic!("new storage must be empty");
-            };
+            assert!(
+                unverified.state().is_none(),
+                "new storage must not contain a state"
+            );
 
-            empty
+            unverified
+                .storage
                 .events
                 .append(
                     0,
@@ -1376,12 +1379,12 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            empty.events.sync(0).await.unwrap();
-            drop(empty);
+            unverified.storage.events.sync(0).await.unwrap();
+            drop(unverified);
 
             let result = builder()
                 .partition_prefix("empty_states_reject_retained_events")
-                .init(context.child("reopened"))
+                .init_unverified(context.child("reopened"))
                 .await;
             let Err(error) = result else {
                 panic!("retained events without state metadata must be rejected");
@@ -1389,7 +1392,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("states metadata is empty, but the events journal contains")
+                    .contains("states metadata is empty, but events journal contains")
             );
         });
     }
