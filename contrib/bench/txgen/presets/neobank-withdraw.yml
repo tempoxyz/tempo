@@ -18,7 +18,7 @@ append:
             select: { index: 0 }
           gas_limit: 8000000
           max_fee_per_gas: 100000000000
-          max_priority_fee_per_gas: 0
+          max_priority_fee_per_gas: 100000000000
           fee_token: "0x20c0000000000000000000000000000000000000"
           calls:
             - to: "0x20c0000000000000000000000000000000000000"

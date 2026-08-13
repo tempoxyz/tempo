@@ -682,7 +682,6 @@ def txgen-run-preset-pipeline [
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
         "--retries" 0
-        "--collect-receipt-metrics"
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
     ]
     let bench_base_cmd = [
