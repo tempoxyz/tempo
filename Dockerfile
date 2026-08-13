@@ -32,7 +32,7 @@ WORKDIR /data
 # tempo
 FROM base AS tempo
 ARG RUST_PROFILE=profiling
-COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
+COPY --from=builder --chown=0:0 --chmod=0555 /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
 ENTRYPOINT ["/usr/local/bin/tempo"]
 
 # tempo-sidecar
