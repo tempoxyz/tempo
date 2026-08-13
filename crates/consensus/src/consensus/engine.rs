@@ -282,7 +282,7 @@ where
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node,
+                execution_provider: execution_node,
                 initial_share: self.share.clone(),
                 last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
