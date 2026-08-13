@@ -320,7 +320,10 @@ impl StateProofProvider for FetchTimedProvider {
 }
 
 impl HashedPostStateProvider for FetchTimedProvider {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         self.inner.hashed_post_state(bundle_state)
     }
 }
@@ -524,7 +527,10 @@ impl StateProofProvider for FlatReadProvider {
 }
 
 impl HashedPostStateProvider for FlatReadProvider {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         self.inner.hashed_post_state(bundle_state)
     }
 }

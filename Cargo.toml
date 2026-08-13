@@ -148,70 +148,70 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
 reth-codecs = { version = "0.6.0", default-features = false }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc", default-features = false }
-reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc", default-features = false }
-reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd", default-features = false }
+reth-nippy-jar = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
 reth-primitives-traits = { version = "0.6.0", default-features = false }
-reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc" }
+reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd" }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "74414fde1392596230823b57fef75bb7ab9308cc", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "633939d2c4bdf3b83d466a0901e20b9b36e126cd", features = [
   "std",
   "optional-checks",
 ] }

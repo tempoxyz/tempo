@@ -630,6 +630,7 @@ where
                                 )))
                             })
                     }),
+                    owns_state_persistence: true,
                 },
             );
             info!(target: "flatmpt", "flat tip-state read hook installed (no state KV)");
