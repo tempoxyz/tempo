@@ -68,18 +68,43 @@ fn load_flat_checkpoint<Tx: DbTx>(
     tx: &Tx,
     flat: &mut tempo_flatmpt::FlatMpt,
 ) -> anyhow::Result<(u64, u64)> {
-    const BATCH_ACCOUNTS: usize = 4096;
+    // State-bloat checkpoints have only a handful of TIP20 accounts, but each
+    // can own hundreds of millions of slots. Never accumulate one account's
+    // complete storage before handing it to FlatMPT: that bypasses its
+    // between-batch RAM spill check and can consume the whole validator. The
+    // account seeder supports revisiting an existing account (fields are
+    // idempotently re-set and the supplied slots are added), so stream bounded
+    // chunks instead.
+    const BATCH_SLOTS: usize = 1 << 16;
     let mut accounts_cursor = tx.cursor_read::<tables::HashedAccounts>()?;
     let mut storage_cursor = tx.cursor_read::<tables::HashedStorages>()?;
     let mut accounts = accounts_cursor.walk(None)?;
     let mut storages = storage_cursor.walk(None)?;
     let mut next_storage = storages.next().transpose()?;
-    let mut batch = Vec::with_capacity(BATCH_ACCOUNTS);
     let mut account_count = 0u64;
     let mut slot_count = 0u64;
 
     while let Some((account_key, account)) = accounts.next().transpose()? {
-        let mut slots = Vec::new();
+        let mut slots = Vec::with_capacity(BATCH_SLOTS);
+        let mut seeded = false;
+        let mut flush = |slots: &mut Vec<([u8; 32], Vec<u8>)>| -> anyhow::Result<()> {
+            if slots.is_empty() && seeded {
+                return Ok(());
+            }
+            flat.insert_batch_accounts(vec![(
+                account_key.0,
+                tempo_flatmpt::AccountSeed {
+                    nonce: account.nonce,
+                    balance: account.balance,
+                    code_hash: account.get_bytecode_hash().0,
+                    slots: std::mem::take(slots),
+                },
+            )])
+            .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
+            *slots = Vec::with_capacity(BATCH_SLOTS);
+            seeded = true;
+            Ok(())
+        };
         while let Some((storage_account, entry)) = next_storage {
             if storage_account < account_key {
                 anyhow::bail!("orphan hashed storage for account {storage_account}");
@@ -91,33 +116,19 @@ fn load_flat_checkpoint<Tx: DbTx>(
             if !entry.value.is_zero() {
                 slots.push((entry.key.0, tempo_flatmpt::storage_value_rlp(entry.value)));
                 slot_count += 1;
+                if slots.len() == BATCH_SLOTS {
+                    flush(&mut slots)?;
+                }
             }
             next_storage = storages.next().transpose()?;
         }
-        batch.push((
-            account_key.0,
-            tempo_flatmpt::AccountSeed {
-                nonce: account.nonce,
-                balance: account.balance,
-                code_hash: account.get_bytecode_hash().0,
-                slots,
-            },
-        ));
+        flush(&mut slots)?;
         account_count += 1;
-        if batch.len() == BATCH_ACCOUNTS {
-            flat.insert_batch_accounts(std::mem::take(&mut batch))
-                .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
-            batch = Vec::with_capacity(BATCH_ACCOUNTS);
-        }
     }
     anyhow::ensure!(
         next_storage.is_none(),
         "hashed storage exists without an account"
     );
-    if !batch.is_empty() {
-        flat.insert_batch_accounts(batch)
-            .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
-    }
     Ok((account_count, slot_count))
 }
 
