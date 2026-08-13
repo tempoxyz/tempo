@@ -1,12 +1,8 @@
 //! Shared helpers for checking Solidity artifacts against Rust ABI metadata.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeSet, fs, path::Path};
 
-use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi, Param};
+use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi};
 
 /// List of `(kind, signature)` pairs.
 pub type DiffEntries = Vec<(String, String)>;
@@ -15,8 +11,6 @@ pub type DiffEntries = Vec<(String, String)>;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AbiSurface {
     functions: BTreeSet<String>,
-    function_signatures: BTreeMap<String, String>,
-    function_input_names: BTreeMap<String, Vec<(Vec<usize>, String)>>,
     errors: BTreeSet<String>,
     events: BTreeSet<String>,
 }
@@ -27,19 +21,8 @@ impl AbiSurface {
     /// Function and event parameter names are included to detect swapped same-typed parameters,
     /// which canonical ABI signatures cannot distinguish.
     pub fn from_abi(abi: &JsonAbi) -> Self {
-        let mut functions = BTreeSet::new();
-        let mut function_signatures = BTreeMap::new();
-        let mut function_input_names = BTreeMap::new();
-        for function in abi.functions() {
-            let shape = function_shape(function);
-            functions.insert(shape.clone());
-            function_signatures.insert(shape.clone(), function_signature(function));
-            function_input_names.insert(shape, input_names(function));
-        }
         Self {
-            functions,
-            function_signatures,
-            function_input_names,
+            functions: abi.functions().map(Function::full_signature).collect(),
             errors: abi.errors().map(Error::signature).collect(),
             events: abi.events().map(Event::full_signature).collect(),
         }
@@ -48,8 +31,6 @@ impl AbiSurface {
     /// Adds another interface surface, for explicit Solidity inheritance.
     pub fn extend(&mut self, other: Self) {
         self.functions.extend(other.functions);
-        self.function_signatures.extend(other.function_signatures);
-        self.function_input_names.extend(other.function_input_names);
         self.errors.extend(other.errors);
         self.events.extend(other.events);
     }
@@ -57,14 +38,7 @@ impl AbiSurface {
     /// Removes function signatures that are intentionally absent from the compared surface.
     pub fn remove_functions(&mut self, functions: &[&str]) {
         for function in functions {
-            let shape = self
-                .function_signatures
-                .iter()
-                .find_map(|(shape, signature)| (signature == function).then(|| shape.clone()))
-                .unwrap_or_else(|| (*function).to_string());
-            self.functions.remove(&shape);
-            self.function_signatures.remove(&shape);
-            self.function_input_names.remove(&shape);
+            self.functions.remove(*function);
         }
     }
 
@@ -89,79 +63,7 @@ impl AbiSurface {
                     .map(|signature| (kind.to_string(), signature)),
             );
         }
-        for shape in self.functions.intersection(&other.functions) {
-            let Some(left) = self.function_input_names.get(shape) else {
-                continue;
-            };
-            let Some(right) = other.function_input_names.get(shape) else {
-                continue;
-            };
-            if shared_name_moved(left, right) {
-                only_self.push(("function".into(), self.function_signatures[shape].clone()));
-                only_other.push(("function".into(), other.function_signatures[shape].clone()));
-            }
-        }
         (only_self, only_other)
-    }
-}
-
-fn function_signature(function: &Function) -> String {
-    let mut function = function.clone();
-    normalize_outputs(&mut function);
-    function.full_signature()
-}
-
-fn function_shape(function: &Function) -> String {
-    let mut function = function.clone();
-    for input in &mut function.inputs {
-        clear_names(input);
-    }
-    normalize_outputs(&mut function);
-    function.full_signature()
-}
-
-fn normalize_outputs(function: &mut Function) {
-    if let [output] = function.outputs.as_slice()
-        && output.ty == "tuple"
-    {
-        function.outputs = output.components.clone();
-    }
-    for output in &mut function.outputs {
-        clear_names(output);
-    }
-}
-
-fn input_names(function: &Function) -> Vec<(Vec<usize>, String)> {
-    fn collect(param: &Param, path: &mut Vec<usize>, names: &mut Vec<(Vec<usize>, String)>) {
-        if !param.name.is_empty() {
-            names.push((path.clone(), param.name.clone()));
-        }
-        for (index, component) in param.components.iter().enumerate() {
-            path.push(index);
-            collect(component, path, names);
-            path.pop();
-        }
-    }
-
-    let mut names = Vec::new();
-    for (index, input) in function.inputs.iter().enumerate() {
-        collect(input, &mut vec![index], &mut names);
-    }
-    names
-}
-
-fn shared_name_moved(left: &[(Vec<usize>, String)], right: &[(Vec<usize>, String)]) -> bool {
-    left.iter().any(|(left_path, left_name)| {
-        right
-            .iter()
-            .any(|(right_path, right_name)| left_name == right_name && left_path != right_path)
-    })
-}
-
-fn clear_names(param: &mut Param) {
-    param.name.clear();
-    for component in &mut param.components {
-        clear_names(component);
     }
 }
 
@@ -233,7 +135,7 @@ mod tests {
         assert!(
             surface
                 .functions
-                .contains("function pool() view returns (uint128, uint128)")
+                .contains("function pool() view returns (tuple(uint128, uint128) reserves)")
         );
         assert!(
             surface
@@ -264,18 +166,6 @@ mod tests {
         assert_eq!(rust_only[0].0, "function");
         assert!(rust_only[0].1.contains("address to, address token"));
         assert!(solidity_only[0].1.contains("address token, address target"));
-    }
-
-    #[test]
-    fn function_parameter_renames_are_not_reordering() {
-        let rust =
-            JsonAbi::parse(["function transfer(address recipient, uint256 amount)"]).unwrap();
-        let solidity = JsonAbi::parse(["function transfer(address to, uint256 value)"]).unwrap();
-
-        assert_eq!(
-            AbiSurface::from_abi(&rust).diff(&AbiSurface::from_abi(&solidity)),
-            (Vec::new(), Vec::new())
-        );
     }
 
     #[test]
