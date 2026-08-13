@@ -26,7 +26,7 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, TempoConsensusSpec};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -165,9 +165,8 @@ impl TxResult for TempoTxResult {
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
 /// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
-pub struct TempoBlockExecutor<'a, DB: Database, I> {
-    pub(crate) inner:
-        EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
+pub struct TempoBlockExecutor<'a, DB: Database, I, ChainSpec = TempoChainSpec> {
+    pub(crate) inner: EthBlockExecutor<'a, TempoEvm<DB, I>, &'a ChainSpec, TempoReceiptBuilder>,
 
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
@@ -183,15 +182,16 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     incentive_gas_used: u64,
 }
 
-impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
+impl<'a, DB, I, ChainSpec> TempoBlockExecutor<'a, DB, I, ChainSpec>
 where
     DB: StateDB,
     I: Inspector<TempoContext<DB>>,
+    ChainSpec: TempoConsensusSpec,
 {
     pub(crate) fn new(
         evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
-        chain_spec: &'a TempoChainSpec,
+        chain_spec: &'a ChainSpec,
     ) -> Self {
         Self {
             incentive_gas_used: 0,
@@ -584,10 +584,11 @@ where
     }
 }
 
-impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>
+impl<'a, DB, I, ChainSpec> BlockExecutor for TempoBlockExecutor<'a, DB, I, ChainSpec>
 where
     DB: StateDB,
     I: Inspector<TempoContext<DB>>,
+    ChainSpec: TempoConsensusSpec,
 {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
@@ -796,7 +797,7 @@ where
 
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
-impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
+impl<'a, DB, I, ChainSpec> TempoBlockExecutor<'a, DB, I, ChainSpec>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,

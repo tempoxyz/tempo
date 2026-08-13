@@ -7,25 +7,35 @@ use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, TempoConsensusSpec};
 use tempo_primitives::TempoHeader;
 
 /// Assembler for Tempo blocks.
-#[derive(Debug, Clone)]
-pub struct TempoBlockAssembler {
-    pub(crate) inner: EthBlockAssembler<TempoChainSpec>,
+#[derive(Debug)]
+pub struct TempoBlockAssembler<ChainSpec> {
+    pub(crate) inner: EthBlockAssembler<ChainSpec>,
 }
 
-impl TempoBlockAssembler {
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+impl<ChainSpec> TempoBlockAssembler<ChainSpec> {
+    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
         Self {
             inner: EthBlockAssembler::new(chain_spec),
         }
     }
+}
 
+impl<ChainSpec: Clone> Clone for TempoBlockAssembler<ChainSpec> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<ChainSpec: TempoConsensusSpec> TempoBlockAssembler<ChainSpec> {
     pub fn assemble_block(
         &self,
-        input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
+        input: BlockAssemblerInput<'_, '_, TempoEvmConfig<ChainSpec>, TempoHeader>,
         transactions_root: Option<B256>,
         receipts_root: Option<B256>,
         receipts_bloom: Option<Bloom>,
@@ -85,12 +95,14 @@ impl TempoBlockAssembler {
     }
 }
 
-impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
+impl<ChainSpec: TempoConsensusSpec> BlockAssembler<TempoEvmConfig<ChainSpec>>
+    for TempoBlockAssembler<ChainSpec>
+{
     type Block = tempo_primitives::Block;
 
     fn assemble_block(
         &self,
-        input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
+        input: BlockAssemblerInput<'_, '_, TempoEvmConfig<ChainSpec>, TempoHeader>,
     ) -> Result<Self::Block, BlockExecutionError> {
         self.assemble_block(input, None, None, None)
     }

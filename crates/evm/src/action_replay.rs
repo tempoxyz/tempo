@@ -15,6 +15,7 @@ use reth_revm::{
     context::{Transaction as _, result::ExecutionResult},
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
+use tempo_chainspec::TempoConsensusSpec;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
@@ -23,10 +24,11 @@ use tempo_precompiles::{
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 
-impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
+impl<'a, DB, I, ChainSpec> TempoBlockExecutor<'a, &'a mut State<DB>, I, ChainSpec>
 where
     DB: Database,
     I: Inspector<TempoContext<&'a mut State<DB>>>,
+    ChainSpec: TempoConsensusSpec,
 {
     /// Commits a precomputed transaction by replaying recorded storage actions.
     ///

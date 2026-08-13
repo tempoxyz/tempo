@@ -198,7 +198,7 @@ impl TestExecutorBuilder {
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec.as_ref());
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

@@ -47,10 +47,7 @@ use tempo_primitives::{
 
 use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::{TempoChainSpec, TempoConsensusSpec, hardfork::TempoHardfork};
 use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
 use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
@@ -63,16 +60,25 @@ pub use tempo_revm::{
 mod test_utils;
 
 /// Tempo-related EVM configuration.
-#[derive(Debug, Clone)]
-pub struct TempoEvmConfig {
+#[derive(Debug)]
+pub struct TempoEvmConfig<ChainSpec = TempoChainSpec> {
     /// Inner evm config
-    pub inner: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
+    pub inner: EthEvmConfig<ChainSpec, TempoEvmFactory>,
 
     /// Block assembler
-    pub block_assembler: TempoBlockAssembler,
+    pub block_assembler: TempoBlockAssembler<ChainSpec>,
 }
 
-impl FeeTokenResolver for TempoEvmConfig {
+impl<ChainSpec: Clone> Clone for TempoEvmConfig<ChainSpec> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            block_assembler: self.block_assembler.clone(),
+        }
+    }
+}
+
+impl<ChainSpec> FeeTokenResolver for TempoEvmConfig<ChainSpec> {
     fn resolve_fee_token<S, M>(
         &self,
         state: &mut S,
@@ -88,9 +94,9 @@ impl FeeTokenResolver for TempoEvmConfig {
     }
 }
 
-impl TempoEvmConfig {
+impl<ChainSpec> TempoEvmConfig<ChainSpec> {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
         let inner =
             EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
@@ -106,15 +112,17 @@ impl TempoEvmConfig {
     }
 
     /// Returns the chain spec
-    pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
+    pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         self.inner.chain_spec()
     }
 
     /// Returns the inner EVM config
-    pub const fn inner(&self) -> &EthEvmConfig<TempoChainSpec, TempoEvmFactory> {
+    pub const fn inner(&self) -> &EthEvmConfig<ChainSpec, TempoEvmFactory> {
         &self.inner
     }
+}
 
+impl TempoEvmConfig {
     /// Returns the moderato EVM config.
     pub fn moderato() -> Self {
         Self::new(Arc::new(TempoChainSpec::moderato()))
@@ -126,13 +134,14 @@ impl TempoEvmConfig {
     }
 }
 
-impl BlockExecutorFactory for TempoEvmConfig {
+impl<ChainSpec: TempoConsensusSpec> BlockExecutorFactory for TempoEvmConfig<ChainSpec> {
     type EvmFactory = TempoEvmFactory;
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
     type TxExecutionResult = TempoTxResult;
-    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> = TempoBlockExecutor<'a, DB, I>;
+    type Executor<'a, DB: StateDB, I: Inspector<TempoContext<DB>>> =
+        TempoBlockExecutor<'a, DB, I, ChainSpec>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         self.inner.executor_factory.evm_factory()
@@ -147,16 +156,16 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        TempoBlockExecutor::new(evm, ctx, self.chain_spec().as_ref())
     }
 }
 
-impl ConfigureEvm for TempoEvmConfig {
+impl<ChainSpec: TempoConsensusSpec> ConfigureEvm for TempoEvmConfig<ChainSpec> {
     type Primitives = TempoPrimitives;
     type Error = TempoEvmError;
     type NextBlockEnvCtx = TempoNextBlockEnvAttributes;
     type BlockExecutorFactory = Self;
-    type BlockAssembler = TempoBlockAssembler;
+    type BlockAssembler = TempoBlockAssembler<ChainSpec>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
         self
@@ -200,11 +209,7 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
-                epoch_length: self
-                    .chain_spec()
-                    .info
-                    .epoch_length()
-                    .unwrap_or(NonZeroU64::MIN),
+                epoch_length: self.chain_spec().epoch_length().unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
             },
         })
@@ -255,11 +260,7 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
-                epoch_length: self
-                    .chain_spec()
-                    .info
-                    .epoch_length()
-                    .unwrap_or(NonZeroU64::MIN),
+                epoch_length: self.chain_spec().epoch_length().unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
             },
         })
@@ -348,7 +349,7 @@ mod tests {
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{TempoHardforks, hardfork::TempoHardfork};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,

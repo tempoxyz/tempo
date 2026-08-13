@@ -433,23 +433,23 @@ impl EthExecutorSpec for TempoChainSpec {
 /// Generates the Tempo hardfork query trait for all post-Genesis hardforks.
 macro_rules! tempo_hardforks_trait {
     ($($variant:ident),* $(,)?) => {
-        /// Trait for querying Tempo-specific hardfork activations.
-        pub trait TempoHardforks: EthereumHardforks {
-            /// Retrieves activation condition for a Tempo-specific hardfork.
-            fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
+            /// Trait for querying Tempo-specific hardfork activations.
+            pub trait TempoHardforks: EthereumHardforks {
+                /// Retrieves activation condition for a Tempo-specific hardfork.
+                fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
 
-            /// Retrieves the Tempo hardfork active at a given timestamp.
-            fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
-                for &fork in TempoHardfork::VARIANTS.iter().rev() {
-                    if self
-                        .tempo_fork_activation(fork)
-                        .active_at_timestamp(timestamp)
-                    {
-                        return fork;
+                /// Retrieves the Tempo hardfork active at a given timestamp.
+                fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+                    for &fork in TempoHardfork::VARIANTS.iter().rev() {
+                        if self
+                            .tempo_fork_activation(fork)
+                            .active_at_timestamp(timestamp)
+                        {
+                            return fork;
+                        }
                     }
+                    TempoHardfork::Genesis
                 }
-                TempoHardfork::Genesis
-            }
 
             paste::paste! {
                 $(
@@ -477,12 +477,17 @@ impl TempoHardforks for TempoChainSpec {
 ///
 /// The hardfork schedule determines the default Tempo L1 policy, while chains that reuse the
 /// Tempo block format may define their own gas partitioning.
-pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks {
+pub trait TempoConsensusSpec:
+    EthChainSpec<Header = TempoHeader> + TempoHardforks + EthExecutorSpec + Clone + 'static
+{
     /// Returns the shared gas limit for the given timestamp and block gas limit.
     fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64;
 
     /// Returns the general (non-payment) gas limit for the given timestamp and gas limits.
     fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64;
+
+    /// Returns the epoch length for the chain.
+    fn epoch_length(&self) -> Option<NonZeroU64>;
 }
 
 impl TempoConsensusSpec for TempoChainSpec {
@@ -496,6 +501,10 @@ impl TempoConsensusSpec for TempoChainSpec {
             .general_gas_limit()
             .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
             .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+    }
+
+    fn epoch_length(&self) -> Option<NonZeroU64> {
+        self.info.epoch_length()
     }
 }
 
