@@ -19,7 +19,7 @@ use commonware_consensus::{
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Quota, RateLimiter, Spawner, spawn_cell,
 };
-use futures::FutureExt as _;
+use futures::{FutureExt as _, future::BoxFuture};
 use tempo_node::gossip::{Frame, PeerControl, PeerEvent, TransportHandle, TransportSender, wire};
 use tokio::{select, sync::mpsc};
 use tracing::debug;
@@ -105,6 +105,8 @@ struct Pending {
     id: FrameId,
 }
 
+type PendingJudgement = (Pending, Option<eyre::Result<(), CertificateError>>);
+
 type PeerKey = alloy_primitives::B512;
 
 /// Inputs and limits for the `tempo/1` actor.
@@ -172,9 +174,7 @@ pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> 
     settled_frames: SettledFrames,
     latest: Option<Published>,
 
-    pending: OptionFuture<
-        futures::future::BoxFuture<'static, (Pending, Option<eyre::Result<(), CertificateError>>)>,
-    >,
+    pending: OptionFuture<BoxFuture<'static, PendingJudgement>>,
     budget_wakeup: OptionFuture<futures::future::BoxFuture<'static, ()>>,
 
     /// Highest verified round learned from driver judgment or a durable marshal tip.
