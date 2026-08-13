@@ -7,7 +7,7 @@
 //! engine validator (block validation, via reth's `CustomStateRoot` seam).
 //!
 //! Activation is env-driven so stock binaries are unaffected:
-//!   TEMPO_FLATMPT=<path>          enable; flat file lives at <path> (wiped on init)
+//!   TEMPO_FLATMPT=path            enable; flat file lives at `path` (wiped on init)
 //!   TEMPO_FLATMPT_MODE=compare    compute flat root alongside the sparse trie and
 //!                                 assert parity per block (default; bring-up gate)
 //!   TEMPO_FLATMPT_MODE=root       flat MPT is the sole commitment: the builder
@@ -371,7 +371,7 @@ impl FlatShadow {
                 ));
                 n_dump += 1;
                 if slots.len() == SLOT_CHUNK {
-                    slots.sort_by(|a, b| a.0.cmp(&b.0));
+                    slots.sort_by_key(|a| a.0);
                     db.insert_batch_accounts(vec![(
                         key,
                         mpt_flat_poc::AccountSeed {
@@ -386,7 +386,7 @@ impl FlatShadow {
                 }
             }
             if !slots.is_empty() {
-                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                slots.sort_by_key(|a| a.0);
                 db.insert_batch_accounts(vec![(
                     key,
                     mpt_flat_poc::AccountSeed {
@@ -424,7 +424,7 @@ impl FlatShadow {
             .into_iter()
             .map(|(key, acc)| {
                 let mut slots: Vec<(Key, Vec<u8>)> = acc.slots.into_iter().collect();
-                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                slots.sort_by_key(|a| a.0);
                 (
                     key,
                     mpt_flat_poc::AccountSeed {
@@ -436,7 +436,7 @@ impl FlatShadow {
                 )
             })
             .collect();
-        batch.sort_by(|a, b| a.0.cmp(&b.0));
+        batch.sort_by_key(|a| a.0);
 
         db.insert_batch_accounts(batch)
             .map_err(|e| anyhow::anyhow!("bloat seed insert: {e:#}"))?;
@@ -514,7 +514,7 @@ impl FlatShadow {
         // Account interleaving differs between two executions of the same block
         // (bundle state is a hash map); per-account op sequences are what carry
         // ordering semantics. Stable-sort by account key → canonical fingerprint.
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
 
         // Memo: the validator re-deriving the block the builder just applied.
         let fingerprint = ops_fingerprint(&ops);
@@ -523,13 +523,12 @@ impl FlatShadow {
             .iter()
             .rev()
             .find(|e| e.number == parent_number + 1 && e.parent_root == parent_root.0)
+            && e.ops_hash == fingerprint
         {
-            if e.ops_hash == fingerprint {
-                return Ok(B256::from(e.root));
-            }
-            // Same parent, different payload: a rebuilt candidate. Fall through —
-            // the rollback loop below unwinds to the shared parent state.
+            return Ok(B256::from(e.root));
         }
+        // Same parent, different payload: a rebuilt candidate. Fall through —
+        // the rollback loop below unwinds to the shared parent state.
 
         self.unwind_to(parent_root)?;
 
@@ -735,7 +734,7 @@ impl FlatShadow {
 ///
 /// With `TEMPO_FLATMPT_BLOAT=<file>` the state-bloat binary dump (the same one
 /// `tempo init-from-binary-dump` loads) is applied on top of the alloc, and the
-/// resulting checkpoint is cached as `<path>.golden*` — later inits with the
+/// resulting checkpoint is cached as `path.golden*` — later inits with the
 /// same dump restore by file copy instead of re-applying millions of slots.
 /// In bloat mode the genesis-root assertion is skipped here (the header root is
 /// only known post-dump); the first `root_for`/`begin_stream` parent check is
@@ -948,7 +947,7 @@ fn bundle_chunk_to_ops(
                 ));
             }
         }
-        slots.sort_by(|a, b| a.0.cmp(&b.0));
+        slots.sort_by_key(|a| a.0);
         ops.extend(slots.into_iter().map(|(_, op)| (key, op)));
     }
     ops
@@ -1232,6 +1231,12 @@ mod tests {
             state,
             ..Default::default()
         };
+        let destroyed_live: std::collections::BTreeSet<B256> = bundle
+            .state
+            .iter()
+            .filter(|(_, account)| account.status.was_destroyed() && account.info.is_some())
+            .map(|(address, _)| keccak256(address.as_slice()))
+            .collect();
 
         let ops = bundle_to_ops(&bundle);
         let ours = ops_to_post_state(&ops);
@@ -1256,7 +1261,10 @@ mod tests {
             let o = ours.storages.get(&acct);
             let r = reths.storages.get(&acct);
             let deleted = matches!(ours.accounts.get(&acct), Some(None));
-            if !deleted {
+            // Reth's from_bundle_state helper does not carry AccountStatus,
+            // so it cannot mark destroy-then-recreate storage as wiped. The
+            // Flat MPT ops intentionally retain that required semantic.
+            if !deleted && !destroyed_live.contains(&acct) {
                 assert_eq!(
                     o.map(|s| s.wiped).unwrap_or(false),
                     r.map(|s| s.wiped).unwrap_or(false),

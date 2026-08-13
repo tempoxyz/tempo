@@ -53,7 +53,7 @@ pub fn pending_root(parent_root: B256, ops: &mut [(Key, StateOp)]) -> Option<B25
     if !pending.iter().any(|(p, _, _)| *p == parent_root) {
         return None;
     }
-    ops.sort_by(|a, b| a.0.cmp(&b.0));
+    ops.sort_by_key(|a| a.0);
     let fp = crate::ops_fingerprint(ops);
     pending
         .iter()
@@ -280,6 +280,7 @@ pub fn follower(shadow: &'static RwLock<FlatShadow>) -> &'static Follower {
 
 /// Background GC: collect victim regions off the write lock (parallel reads
 /// + head rewrites against a pinned snapshot), then briefly take the writer
+///
 /// to re-verify and install the pointer swaps. Replaces the per-apply
 /// `gc_step` (whose region IO throttled the follower to ~4s/block at flood).
 ///
@@ -426,7 +427,7 @@ impl Follower {
         mut ops: Vec<(Key, StateOp)>,
         expected_root: B256,
     ) {
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
         // TEMPO_FLATMPT_DUMP_OPS=<dir>: persist each block's canonical ops
         // (bincode) for offline divergence replay.
         if let Ok(dir) = std::env::var("TEMPO_FLATMPT_DUMP_OPS") {
