@@ -87,7 +87,7 @@ sol! {
 
         // Liquidity Balances
         function totalSupply(bytes32) external view returns (uint256);
-        function liquidityBalances(bytes32, address) external view returns (uint256);
+        function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
         // Swapping
         function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to) external returns (uint256 amountIn);

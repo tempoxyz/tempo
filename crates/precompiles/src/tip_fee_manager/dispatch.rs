@@ -50,7 +50,7 @@ impl Precompile for TipFeeManager {
                     getPool(call) => view(call, |c| Ok(self.get_pool(c)?.into())),
                     pools(call) => view(call, |c| Ok(self.pools[c.0].read()?.into())),
                     totalSupply(call) => view(call, |c| self.total_supply[c.0].read()),
-                    liquidityBalances(call) => view(call, |c| self.liquidity_balances[c._0][c._1].read()),
+                    liquidityBalances(call) => view(call, |c| self.liquidity_balances[c.poolId][c.user].read()),
 
                     // ITIPFeeAMM mutate functions
                     mint(call) => mutate(call, msg_sender, |s, c| {
