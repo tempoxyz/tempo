@@ -86,7 +86,7 @@ impl Precompile for StablecoinDEX {
 
                     #[schedule(since = T8)]
                     bookIndexForKey(call) => view(call, |c| {
-                        let index = self.book_key_index(c.key)?;
+                        let index = self.book_key_index(c.bookKey)?;
                         Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
                     }),
                     #[schedule(since = T8)]
