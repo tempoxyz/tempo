@@ -7,7 +7,7 @@
 //! engine validator (block validation, via reth's `CustomStateRoot` seam).
 //!
 //! Activation is env-driven so stock binaries are unaffected:
-//!   TEMPO_FLATMPT=<path>          enable; flat file lives at <path> (wiped on init)
+//!   `TEMPO_FLATMPT=<path>`        enable; flat file lives at `<path>` (wiped on init)
 //!   TEMPO_FLATMPT_MODE=compare    compute flat root alongside the sparse trie and
 //!                                 assert parity per block (default; bring-up gate)
 //!   TEMPO_FLATMPT_MODE=root       flat MPT is the sole commitment: the builder

@@ -81,26 +81,26 @@ fn main() -> anyhow::Result<()> {
             // REPLAY_AUDIT_FROM=N: full forensic audit after each gc pass
             // from block N on — the first unclean audit names the corrupting
             // pass and the exact record.
-            if let Ok(from) = std::env::var("REPLAY_AUDIT_FROM") {
-                if block >= from.parse::<u64>().unwrap_or(u64::MAX) {
-                    let t_a = Instant::now();
-                    let audit = db.audit_hashes().map_err(|e| anyhow::anyhow!("{e:#}"))?;
-                    // Legacy golden records carry storage-relative prefixes;
-                    // bad_prefixes is expected on pre-composite files. Hash
-                    // consistency is the corruption oracle.
-                    let hash_clean = audit.bad_disk_roots == 0
-                        && audit.bad_mem_roots == 0
-                        && audit.stale_cells == 0
-                        && audit.bad_record_nrefs == 0
-                        && audit.bad_record_storage_roots == 0;
-                    eprintln!(
-                        "block {block}: audit hash_clean={hash_clean} ({}s) {:?}",
-                        t_a.elapsed().as_secs(),
-                        if hash_clean { None } else { Some(&audit) }
-                    );
-                    if !hash_clean {
-                        anyhow::bail!("audit hash-unclean after gc of block {block}");
-                    }
+            if let Ok(from) = std::env::var("REPLAY_AUDIT_FROM")
+                && block >= from.parse::<u64>().unwrap_or(u64::MAX)
+            {
+                let t_a = Instant::now();
+                let audit = db.audit_hashes().map_err(|e| anyhow::anyhow!("{e:#}"))?;
+                // Legacy golden records carry storage-relative prefixes;
+                // bad_prefixes is expected on pre-composite files. Hash
+                // consistency is the corruption oracle.
+                let hash_clean = audit.bad_disk_roots == 0
+                    && audit.bad_mem_roots == 0
+                    && audit.stale_cells == 0
+                    && audit.bad_record_nrefs == 0
+                    && audit.bad_record_storage_roots == 0;
+                eprintln!(
+                    "block {block}: audit hash_clean={hash_clean} ({}s) {:?}",
+                    t_a.elapsed().as_secs(),
+                    if hash_clean { None } else { Some(&audit) }
+                );
+                if !hash_clean {
+                    anyhow::bail!("audit hash-unclean after gc of block {block}");
                 }
             }
         }
@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("expected sparse root: {expected}");
             // Which side is right? If every op's value reads back exactly,
             // the flat state IS parent+ops and the flat root is the true
-            // root — the recorded sparse root was mis-computed.
+            // root — the recorded sparse root was computed incorrectly.
             let (mut checked, mut bad) = (0u64, 0u64);
             for (key, op) in &ops_copy {
                 match op {
@@ -131,7 +131,7 @@ fn main() -> anyhow::Result<()> {
                                     hex::encode(&key[..8]),
                                     hex::encode(&slot[..8]),
                                     hex::encode(value),
-                                    got.map(|v| hex::encode(v))
+                                    got.map(hex::encode)
                                 );
                             }
                         }
