@@ -938,6 +938,48 @@ mod tests {
     }
 
     #[test]
+    fn repeated_account_seed_chunks_match_complete_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = keccak256([0xabu8; 20]).0;
+        let slots: Vec<(Key, Vec<u8>)> = (0..257u64)
+            .map(|i| {
+                (
+                    keccak256(i.to_be_bytes()).0,
+                    mpt_flat_poc::eth::storage_value_rlp(U256::from(i + 1)),
+                )
+            })
+            .collect();
+        let seed = |slots| AccountSeed {
+            nonce: 7,
+            balance: U256::from(11u64),
+            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+            slots,
+        };
+
+        let mut complete = FlatMpt::create_ram_build(
+            dir.path().join("complete.flat"),
+            mpt_flat_poc::Config::default(),
+        )
+        .unwrap();
+        complete
+            .insert_batch_accounts(vec![(account, seed(slots.clone()))])
+            .unwrap();
+
+        let mut chunked = FlatMpt::create_ram_build(
+            dir.path().join("chunked.flat"),
+            mpt_flat_poc::Config::default(),
+        )
+        .unwrap();
+        for chunk in slots.chunks(17) {
+            chunked
+                .insert_batch_accounts(vec![(account, seed(chunk.to_vec()))])
+                .unwrap();
+        }
+
+        assert_eq!(chunked.root(), complete.root());
+    }
+
+    #[test]
     fn advance_memo_and_rollback() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.flat");
