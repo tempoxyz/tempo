@@ -1078,7 +1078,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
     let flatmpt_common_env = if $run_type == "feature" and $ctx.feature_flatmpt {
-        "TEMPO_FLATMPT_MODE=root"
+        "TEMPO_FLATMPT_MODE=root TEMPO_NO_STATE_KV=1"
     } else {
         ""
     }
@@ -1399,7 +1399,7 @@ def "main e2e" [
     --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
-    --feature-flatmpt                                   # Use FlatMPT root mode for feature node phases
+    --feature-flatmpt                                   # Use Flat MPT for state roots and KV reads in feature phases
     --bench-env: string = ""                            # Environment vars for the sender process
     --baseline-name: string = ""                         # Baseline display name for summary
     --feature-name: string = ""                          # Feature display name for summary

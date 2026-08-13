@@ -37,7 +37,7 @@ pub(crate) fn no_state_kv_active() -> bool {
 
 pub(crate) fn flat_reads_enabled() -> bool {
     tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root
-        && std::env::var("TEMPO_FLATMPT_READS").as_deref() == Ok("1")
+        && (no_state_kv_active() || std::env::var("TEMPO_FLATMPT_READS").as_deref() == Ok("1"))
 }
 
 /// Per-block flat-read context shared by the builder's provider and every
