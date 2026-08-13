@@ -223,13 +223,6 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
-            if pool.reserve_validator_token < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-        }
-
         self.pools[pool_id].write(pool)?;
 
         let amount_in = U256::from(amount_in);
@@ -1938,6 +1931,52 @@ mod tests {
             let pool = amm.pools[pool_id].read()?;
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
             assert!(pool.reserve_validator_token >= reserved);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t1c_rebalance_swap_allows_partial_reservation_improvement() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let admin = Address::random();
+        let to = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mint_amount = uint!(100000000_U256);
+            let mut amm = TipFeeManager::new();
+            let amm_address = amm.address;
+
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .with_mint(amm_address, mint_amount)
+                .apply()?
+                .address();
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?
+                .address();
+
+            let initial_validator_reserve = uint!(50_U256);
+            let initial_user_reserve = uint!(100000_U256);
+
+            let pool_id = setup_pool_with_liquidity(
+                &mut amm,
+                user_token,
+                validator_token,
+                initial_user_reserve,
+                initial_validator_reserve,
+            )?;
+
+            amm.reserve_pool_liquidity(pool_id, 100)?;
+            amm.rebalance_swap(admin, user_token, validator_token, uint!(30_U256), to)?;
+
+            let pool = amm.pools[pool_id].read()?;
+            assert_eq!(pool.reserve_validator_token, 80);
+            assert_eq!(pool.reserve_user_token, 99970);
 
             Ok(())
         })
