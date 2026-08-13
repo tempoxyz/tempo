@@ -411,6 +411,10 @@ vergen-git2 = "10.0.1"
 
 [patch.crates-io]
 
+# FIXME: Remove after alloy-rs/core#1162 is released.
+alloy-sol-macro = { git = "https://github.com/alloy-rs/core", rev = "d55b8516928bf9806243a5a07d39b4061a8eafa0" }
+alloy-sol-macro-expander = { git = "https://github.com/alloy-rs/core", rev = "d55b8516928bf9806243a5a07d39b4061a8eafa0" }
+
 # Commonware v2026.7.0
 # commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
 # commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }

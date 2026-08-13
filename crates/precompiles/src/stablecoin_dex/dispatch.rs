@@ -39,7 +39,12 @@ impl Precompile for StablecoinDEX {
                         Ok((level.head, level.tail, level.total_liquidity).into())
                     }),
                     pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
-                    books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
+                    books(call) => view(call, |c| self.books(c.pairKey).map(|book| (
+                        book.base,
+                        book.quote,
+                        book.best_bid_tick,
+                        book.best_ask_tick,
+                    ).into())),
                     nextOrderId(call) => view(call, |_| self.next_order_id()),
                     createPair(call) => mutate(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
@@ -86,7 +91,7 @@ impl Precompile for StablecoinDEX {
 
                     #[schedule(since = T8)]
                     bookIndexForKey(call) => view(call, |c| {
-                        let index = self.book_key_index(c.bookKey)?;
+                        let index = self.book_key_index(c.key)?;
                         Ok((index.is_some(), index.unwrap_or(*BookId::UNSET)).into())
                     }),
                     #[schedule(since = T8)]

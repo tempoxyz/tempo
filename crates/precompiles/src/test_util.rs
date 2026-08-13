@@ -356,7 +356,12 @@ impl TIP20Setup {
 
         // Apply reward opt-ins
         for user in self.reward_opt_ins {
-            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
+            token.set_reward_recipient(
+                user,
+                ITIP20::setRewardRecipientCall {
+                    newRewardRecipient: user,
+                },
+            )?;
         }
 
         // Distribute rewards
