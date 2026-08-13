@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/bench-e2e.yml
     with:
       pr: "7143"
-      pr-head-sha: "dae10e7e106e65e379ba3657b327387a38df42a9"
+      pr-head-sha: "d36c07fb52eed8dd63d31250537ee0b0c29228c7"
       pr-head-ref: "centaur/bench-flatmpt-e2e-1786443703"
       actor: "dankrad"
       mode: "e2e"
