@@ -1123,6 +1123,12 @@ mod tests {
 
         let ops = bundle_to_ops(&bundle);
         let ours = ops_to_post_state(&ops);
+        let destroyed: std::collections::BTreeSet<B256> = bundle
+            .state
+            .iter()
+            .filter(|(_, account)| account.was_destroyed())
+            .map(|(address, _)| alloy_primitives::keccak256(address))
+            .collect();
         let reths = reth_trie::HashedPostState::from_bundle_state::<reth_trie::KeccakKeyHasher>(
             &bundle.state,
         );
@@ -1144,7 +1150,12 @@ mod tests {
             let o = ours.storages.get(&acct);
             let r = reths.storages.get(&acct);
             let deleted = matches!(ours.accounts.get(&acct), Some(None));
-            if !deleted {
+            if destroyed.contains(&acct) {
+                assert!(
+                    o.is_some_and(|s| s.wiped),
+                    "destroyed account must wipe storage"
+                );
+            } else if !deleted {
                 assert_eq!(
                     o.map(|s| s.wiped).unwrap_or(false),
                     r.map(|s| s.wiped).unwrap_or(false),
