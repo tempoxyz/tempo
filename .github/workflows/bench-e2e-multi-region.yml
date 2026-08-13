@@ -67,6 +67,10 @@ on:
         type: boolean
         required: false
         default: true
+      feature-flatmpt:
+        type: boolean
+        required: false
+        default: false
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -212,6 +216,11 @@ on:
         type: string
         required: false
         default: ""
+      feature-flatmpt:
+        description: Use Flat MPT for commitment and state reads in feature phases.
+        type: boolean
+        required: true
+        default: false
       gas-limit:
         description: Builder gas limit.
         type: string
@@ -232,11 +241,6 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
 
 permissions:
   actions: read
@@ -284,6 +288,7 @@ jobs:
       BENCH_INPUT_VALSCOPE: ${{ github.event_name == 'workflow_dispatch' && (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
+      BENCH_INPUT_FEATURE_ENV: ${{ (inputs['feature-flatmpt'] == true || inputs['feature-flatmpt'] == 'true') && 'TEMPO_FLATMPT=/opt/tempo/schelk/tempo_flatmpt TEMPO_FLATMPT_MODE=root TEMPO_FLATMPT_READS=1 TEMPO_NO_STATE_KV=1 MPT_DIRECT_IO=1' || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
@@ -512,6 +517,7 @@ jobs:
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-env "$BENCH_INPUT_FEATURE_ENV" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -566,6 +572,7 @@ jobs:
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-env "$BENCH_INPUT_FEATURE_ENV" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -613,6 +620,7 @@ jobs:
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-env "$BENCH_INPUT_FEATURE_ENV" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
@@ -660,6 +668,7 @@ jobs:
             --valscope "$BENCH_INPUT_VALSCOPE" \
             --baseline-args "$BENCH_INPUT_BASELINE_ARGS" \
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
+            --feature-env "$BENCH_INPUT_FEATURE_ENV" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \

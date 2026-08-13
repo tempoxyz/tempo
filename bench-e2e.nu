@@ -1078,7 +1078,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
     let flatmpt_common_env = if $run_type == "feature" and $ctx.feature_flatmpt {
-        "TEMPO_FLATMPT_MODE=root"
+        "TEMPO_FLATMPT_MODE=root TEMPO_FLATMPT_READS=1 TEMPO_NO_STATE_KV=1 MPT_DIRECT_IO=1"
     } else {
         ""
     }

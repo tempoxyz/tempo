@@ -7,7 +7,7 @@
 //! engine validator (block validation, via reth's `CustomStateRoot` seam).
 //!
 //! Activation is env-driven so stock binaries are unaffected:
-//!   TEMPO_FLATMPT=<path>          enable; flat file lives at <path> (wiped on init)
+//!   TEMPO_FLATMPT=path            enable; flat file lives at `path` (wiped on init)
 //!   TEMPO_FLATMPT_MODE=compare    compute flat root alongside the sparse trie and
 //!                                 assert parity per block (default; bring-up gate)
 //!   TEMPO_FLATMPT_MODE=root       flat MPT is the sole commitment: the builder
@@ -299,11 +299,10 @@ impl FlatShadow {
 
     /// Bloat-mode init: genesis alloc + state-bloat dump.
     ///
-    /// Streams the dump straight into per-account seed maps (no intermediate op
-    /// vector — at 100M+ slots that alone is >10 GB), merges the genesis alloc
-    /// on top (genesis wins storage collisions, mirroring
-    /// `tempo init-from-binary-dump`), and loads through the engine's seeded
-    /// RAM-build path — the same one the mainnet loader used for 535M slots.
+    /// Streams bounded slot chunks directly into the engine, then merges the
+    /// genesis alloc on top (genesis wins storage collisions, mirroring
+    /// `tempo init-from-binary-dump`). This avoids retaining the entire bloat
+    /// dump in hash maps before the engine's own spill threshold can engage.
     /// Rebuilt every init: genesis regenerates per bench leg.
     fn init_with_bloat(
         path: &str,
@@ -332,13 +331,22 @@ impl FlatShadow {
                 }
             }
         }
-        let mut accs: std::collections::HashMap<Key, Acc> = std::collections::HashMap::new();
+        // Bloat checkpoints are intentionally disk-resident. RAM-build's
+        // spill duplicates the in-memory frontier while serializing it; on
+        // 64 GiB validators that transient peaked at 56.4 GiB and was OOM-
+        // killed even with a 12 GiB trigger. Incremental direct-disk inserts
+        // avoid that whole-frontier copy.
+        let mut db = FlatMpt::create(path, mpt_flat_poc::Config::default())
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
-        // 1) Dump, streamed. 2) Genesis alloc second — its inserts overwrite
-        //    colliding dump slots, which is exactly the node's collision rule.
+        // 1) Dump, streamed in bounded chunks. Repeated seeds for one account
+        // add slots without wiping earlier chunks. 2) Genesis alloc second —
+        // its inserts overwrite colliding dump slots, matching the node rule.
         let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
         let mut header = [0u8; 40];
         let mut n_dump: usize = 0;
+        // Keep decode/sort scratch bounded while streaming to disk.
+        const SLOT_CHUNK: usize = 64_000;
         loop {
             match f.read_exact(&mut header) {
                 Ok(()) => {}
@@ -352,7 +360,7 @@ impl FlatShadow {
             );
             let key: Key = keccak256(&header[12..32]).0;
             let pair_count = u64::from_be_bytes(header[32..40].try_into().unwrap());
-            let acc = accs.entry(key).or_default();
+            let mut slots = Vec::with_capacity(SLOT_CHUNK.min(pair_count as usize));
             let mut pair = [0u8; 64];
             for _ in 0..pair_count {
                 f.read_exact(&mut pair)?;
@@ -360,13 +368,41 @@ impl FlatShadow {
                 if value == U256::ZERO {
                     continue;
                 }
-                acc.slots.insert(
+                slots.push((
                     keccak256(&pair[0..32]).0,
                     mpt_flat_poc::eth::storage_value_rlp(value),
-                );
+                ));
                 n_dump += 1;
+                if slots.len() == SLOT_CHUNK {
+                    slots.sort_by_key(|a| a.0);
+                    db.insert_batch_accounts(vec![(
+                        key,
+                        mpt_flat_poc::AccountSeed {
+                            nonce: 0,
+                            balance: U256::ZERO,
+                            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                            slots: std::mem::take(&mut slots),
+                        },
+                    )])
+                    .map_err(|e| anyhow::anyhow!("bloat chunk insert: {e:#}"))?;
+                    slots = Vec::with_capacity(SLOT_CHUNK);
+                }
+            }
+            if !slots.is_empty() {
+                slots.sort_by_key(|a| a.0);
+                db.insert_batch_accounts(vec![(
+                    key,
+                    mpt_flat_poc::AccountSeed {
+                        nonce: 0,
+                        balance: U256::ZERO,
+                        code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                        slots,
+                    },
+                )])
+                .map_err(|e| anyhow::anyhow!("bloat tail insert: {e:#}"))?;
             }
         }
+        let mut accs: std::collections::HashMap<Key, Acc> = std::collections::HashMap::new();
         let n_alloc = genesis_ops.len();
         for (key, op) in genesis_ops {
             match op {
@@ -391,7 +427,7 @@ impl FlatShadow {
             .into_iter()
             .map(|(key, acc)| {
                 let mut slots: Vec<(Key, Vec<u8>)> = acc.slots.into_iter().collect();
-                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                slots.sort_by_key(|a| a.0);
                 (
                     key,
                     mpt_flat_poc::AccountSeed {
@@ -403,10 +439,8 @@ impl FlatShadow {
                 )
             })
             .collect();
-        batch.sort_by(|a, b| a.0.cmp(&b.0));
+        batch.sort_by_key(|a| a.0);
 
-        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
-            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
         db.insert_batch_accounts(batch)
             .map_err(|e| anyhow::anyhow!("bloat seed insert: {e:#}"))?;
         db.persist().map_err(|e| anyhow::anyhow!("{e:#}"))?;
@@ -483,7 +517,7 @@ impl FlatShadow {
         // Account interleaving differs between two executions of the same block
         // (bundle state is a hash map); per-account op sequences are what carry
         // ordering semantics. Stable-sort by account key → canonical fingerprint.
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
 
         // Memo: the validator re-deriving the block the builder just applied.
         let fingerprint = ops_fingerprint(&ops);
@@ -492,13 +526,12 @@ impl FlatShadow {
             .iter()
             .rev()
             .find(|e| e.number == parent_number + 1 && e.parent_root == parent_root.0)
+            && e.ops_hash == fingerprint
         {
-            if e.ops_hash == fingerprint {
-                return Ok(B256::from(e.root));
-            }
-            // Same parent, different payload: a rebuilt candidate. Fall through —
-            // the rollback loop below unwinds to the shared parent state.
+            return Ok(B256::from(e.root));
         }
+        // Same parent, different payload: a rebuilt candidate. Fall through —
+        // the rollback loop below unwinds to the shared parent state.
 
         self.unwind_to(parent_root)?;
 
@@ -704,7 +737,7 @@ impl FlatShadow {
 ///
 /// With `TEMPO_FLATMPT_BLOAT=<file>` the state-bloat binary dump (the same one
 /// `tempo init-from-binary-dump` loads) is applied on top of the alloc, and the
-/// resulting checkpoint is cached as `<path>.golden*` — later inits with the
+/// resulting checkpoint is cached as `path.golden*` — later inits with the
 /// same dump restore by file copy instead of re-applying millions of slots.
 /// In bloat mode the genesis-root assertion is skipped here (the header root is
 /// only known post-dump); the first `root_for`/`begin_stream` parent check is
@@ -917,7 +950,7 @@ fn bundle_chunk_to_ops(
                 ));
             }
         }
-        slots.sort_by(|a, b| a.0.cmp(&b.0));
+        slots.sort_by_key(|a| a.0);
         ops.extend(slots.into_iter().map(|(_, op)| (key, op)));
     }
     ops
@@ -999,6 +1032,87 @@ mod tests {
         assert!(shadow.at_parent(header_root));
         shadow.unwind_to(header_root).unwrap();
         assert_eq!(shadow.current_root(), B256::from(checkpoint_root));
+    }
+
+    #[test]
+    fn bloat_streaming_preserves_genesis_precedence() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dump = dir.path().join("state.bin");
+        let path = dir.path().join("bloat.flat");
+        let address = [7u8; 20];
+        let account = keccak256(address).0;
+        let slot_a = [1u8; 32];
+        let slot_b = [2u8; 32];
+        let value_a = U256::from(11u64);
+        let value_b = U256::from(22u64);
+        let genesis_value = U256::from(33u64);
+
+        let mut file = std::fs::File::create(&dump).unwrap();
+        let mut header = [0u8; 40];
+        header[..8].copy_from_slice(b"TEMPOSB\0");
+        header[8..10].copy_from_slice(&1u16.to_be_bytes());
+        header[12..32].copy_from_slice(&address);
+        header[32..40].copy_from_slice(&2u64.to_be_bytes());
+        file.write_all(&header).unwrap();
+        for (slot, value) in [(slot_a, value_a), (slot_b, value_b)] {
+            file.write_all(&slot).unwrap();
+            file.write_all(&value.to_be_bytes::<32>()).unwrap();
+        }
+        drop(file);
+
+        let genesis = vec![
+            acct(7, 9),
+            acct(8, 1),
+            (
+                account,
+                StateOp::SetStorage {
+                    slot: keccak256(slot_a).0,
+                    value: mpt_flat_poc::eth::storage_value_rlp(genesis_value),
+                },
+            ),
+        ];
+        let shadow = FlatShadow::init_with_bloat(
+            path.to_str().unwrap(),
+            genesis.clone(),
+            dump.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let mut oracle = FlatMpt::create(
+            dir.path().join("oracle.flat"),
+            mpt_flat_poc::Config::default(),
+        )
+        .unwrap();
+        oracle
+            .apply_block(vec![
+                (
+                    account,
+                    StateOp::SetAccount {
+                        nonce: 0,
+                        balance: U256::ZERO,
+                        code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                    },
+                ),
+                (
+                    account,
+                    StateOp::SetStorage {
+                        slot: keccak256(slot_a).0,
+                        value: mpt_flat_poc::eth::storage_value_rlp(value_a),
+                    },
+                ),
+                (
+                    account,
+                    StateOp::SetStorage {
+                        slot: keccak256(slot_b).0,
+                        value: mpt_flat_poc::eth::storage_value_rlp(value_b),
+                    },
+                ),
+            ])
+            .unwrap();
+        let (want, _) = oracle.apply_block(genesis).unwrap();
+        assert_eq!(shadow.current_root(), B256::from(want));
     }
 
     #[test]
@@ -1120,6 +1234,12 @@ mod tests {
             state,
             ..Default::default()
         };
+        let destroyed_live: std::collections::BTreeSet<B256> = bundle
+            .state
+            .iter()
+            .filter(|(_, account)| account.status.was_destroyed() && account.info.is_some())
+            .map(|(address, _)| keccak256(address.as_slice()))
+            .collect();
 
         let ops = bundle_to_ops(&bundle);
         let ours = ops_to_post_state(&ops);
@@ -1144,7 +1264,10 @@ mod tests {
             let o = ours.storages.get(&acct);
             let r = reths.storages.get(&acct);
             let deleted = matches!(ours.accounts.get(&acct), Some(None));
-            if !deleted {
+            // Reth's from_bundle_state helper does not carry AccountStatus,
+            // so it cannot mark destroy-then-recreate storage as wiped. The
+            // Flat MPT ops intentionally retain that required semantic.
+            if !deleted && !destroyed_live.contains(&acct) {
                 assert_eq!(
                     o.map(|s| s.wiped).unwrap_or(false),
                     r.map(|s| s.wiped).unwrap_or(false),
