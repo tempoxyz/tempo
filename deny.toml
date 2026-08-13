@@ -89,6 +89,8 @@ unknown-registry = "warn"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-git = [
+  # FIXME: Remove when the temporary Alloy patch is replaced by a crates.io release.
+  "https://github.com/alloy-rs/core",
   "https://github.com/paradigmxyz/reth",
   "https://github.com/sigp/discv5",
 ]
