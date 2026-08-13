@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("expected sparse root: {expected}");
             // Which side is right? If every op's value reads back exactly,
             // the flat state IS parent+ops and the flat root is the true
-            // root — the recorded sparse root was mis-computed.
+            // root — the recorded sparse root was computed incorrectly.
             let (mut checked, mut bad) = (0u64, 0u64);
             for (key, op) in &ops_copy {
                 match op {
