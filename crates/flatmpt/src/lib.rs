@@ -340,7 +340,10 @@ impl FlatShadow {
         let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
         let mut header = [0u8; 40];
         let mut n_dump: usize = 0;
-        const SLOT_CHUNK: usize = 250_000;
+        // Keep decode/sort scratch small relative to the engine's spill-time
+        // copy. On 64 GiB validators, 250k-slot chunks plus a 24 GiB frontier
+        // peaked at 56.4 GiB RSS and tripped the service's cgroup OOM limit.
+        const SLOT_CHUNK: usize = 64_000;
         loop {
             match f.read_exact(&mut header) {
                 Ok(()) => {}
