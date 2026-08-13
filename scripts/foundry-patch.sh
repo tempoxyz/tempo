@@ -198,6 +198,11 @@ update_stale_tempo_git_packages() {
 # conflicts twice in a row (i.e. `cargo update` made no progress).
 pushd "$FOUNDRY_ROOT" >/dev/null
 update_stale_tempo_git_packages
+# Alloy 2.4 added execution and state gas fields to its trace types. Foundry's
+# locked revm-inspectors 0.42.0 initializes those types directly and no longer
+# compiles, while 0.42.2 defaults fields it does not set. Keep this update
+# targeted so resolving local Tempo crates does not upgrade unrelated packages.
+cargo update -p revm-inspectors --precise 0.42.2 >/dev/null
 prev_conflict_pkg=""
 while true; do
   err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
