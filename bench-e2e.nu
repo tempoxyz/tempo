@@ -1098,7 +1098,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
     start-e2e-local-node b $phase $run.tempo $b_args $b_env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
     sleep 2sec
-    let rpc_timeout = if $run_type == "feature" and $ctx.feature_flatmpt and $ctx.bloat > 0 { 3600 } else if $ctx.bloat > 0 { 600 } else { 300 }
+    let rpc_timeout = if $run_type == "feature" and $ctx.feature_flatmpt and $ctx.bloat >= 100000 {
+        14400
+    } else if $run_type == "feature" and $ctx.feature_flatmpt and $ctx.bloat > 0 {
+        3600
+    } else if $ctx.bloat > 0 {
+        600
+    } else {
+        300
+    }
     mut phase_exit = 0
     if ((find-tempo-pids) | length) < 2 {
         print $"Error: local e2e validators exited before readiness checks completed for ($phase)"
