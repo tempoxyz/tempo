@@ -1491,6 +1491,20 @@ fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -
     }
 }
 
+#[cfg(test)]
+#[test]
+fn latest_boundary_at_or_before_height() {
+    let epoch_strategy = FixedEpocher::new(std::num::NonZeroU64::new(10).unwrap());
+
+    for (height, expected) in [(4, 0), (9, 9), (12, 9)] {
+        assert_eq!(
+            latest_boundary_at_or_before(&epoch_strategy, Height::new(height)),
+            Height::new(expected),
+            "unexpected boundary for height {height}"
+        );
+    }
+}
+
 async fn read_outcome_from_boundary<P, M>(
     node: &P,
     marshal: &M,
