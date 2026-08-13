@@ -147,12 +147,12 @@ impl TIP20Token {
         self.check_not_paused()?;
 
         // TIP-1022: reject virtual addresses as reward recipients
-        if self.storage.spec().is_t3() && call.newRewardRecipient.is_virtual() {
+        if self.storage.spec().is_t3() && call.recipient.is_virtual() {
             return Err(TIP20Error::invalid_recipient().into());
         }
 
-        if call.newRewardRecipient != Address::ZERO {
-            self.ensure_transfer_authorized(msg_sender, call.newRewardRecipient)?;
+        if call.recipient != Address::ZERO {
+            self.ensure_transfer_authorized(msg_sender, call.recipient)?;
         }
 
         let from_delegate = self.update_rewards(msg_sender)?;
@@ -160,7 +160,7 @@ impl TIP20Token {
         let holder_balance = self.get_balance(msg_sender)?;
 
         if from_delegate != Address::ZERO {
-            if call.newRewardRecipient == Address::ZERO {
+            if call.recipient == Address::ZERO {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_sub(holder_balance)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -170,7 +170,7 @@ impl TIP20Token {
                         .map_err(|_| TempoPrecompileError::under_overflow())?,
                 )?;
             }
-        } else if call.newRewardRecipient != Address::ZERO {
+        } else if call.recipient != Address::ZERO {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(holder_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -182,14 +182,11 @@ impl TIP20Token {
         }
 
         let mut info = self.user_reward_info[msg_sender].read()?;
-        info.reward_recipient = call.newRewardRecipient;
+        info.reward_recipient = call.recipient;
         self.user_reward_info[msg_sender].write(info)?;
 
         // Emit reward recipient set event
-        self.emit_event(TIP20Event::reward_recipient_set(
-            msg_sender,
-            call.newRewardRecipient,
-        ))?;
+        self.emit_event(TIP20Event::reward_recipient_set(msg_sender, call.recipient))?;
 
         Ok(())
     }
@@ -427,12 +424,8 @@ mod tests {
                 .with_mint(alice, amount)
                 .apply()?;
 
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
             let info = token.user_reward_info[alice].read()?;
             assert_eq!(info.reward_recipient, alice);
@@ -442,7 +435,7 @@ mod tests {
             token.set_reward_recipient(
                 alice,
                 ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: Address::ZERO,
+                    recipient: Address::ZERO,
                 },
             )?;
 
@@ -473,18 +466,9 @@ mod tests {
                 .with_mint(admin, reward_amount)
                 .apply()?;
 
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
-            token.set_reward_recipient(
-                bob,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: bob,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            token.set_reward_recipient(bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
             assert_eq!(token.update_rewards(alice)?, alice);
             assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
 
@@ -492,12 +476,7 @@ mod tests {
 
             // T7 disables reward mutators, but the zero-RPT fast path still returns existing
             // opt-in state so pre-T7 lazy reward checkpointing can keep using reward hooks.
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: bob,
-                },
-            )?;
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
             assert_eq!(token.get_user_reward_info(alice)?.reward_recipient, alice);
             assert_eq!(token.update_rewards(alice)?, alice);
             assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
@@ -555,12 +534,8 @@ mod tests {
                 .with_mint(admin, reward_amount)
                 .apply()?;
 
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
             // Distribute rewards
             token.distribute_reward(
@@ -622,12 +597,8 @@ mod tests {
                 .apply()?;
 
             // Pre-T7: settle one reward distribution, then leave another lazy/pending.
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
             token.distribute_reward(
                 admin,
                 ITIP20::distributeRewardCall {
@@ -647,12 +618,7 @@ mod tests {
             token.paused.write(true)?;
 
             // T7+: setRewardRecipient is a no-op, even while paused.
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: bob,
-                },
-            )?;
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
             assert_eq!(
                 token.user_reward_info[alice].read()?.reward_recipient,
                 alice
@@ -719,12 +685,8 @@ mod tests {
                 .with_mint(admin, reward_amount)
                 .apply()?;
 
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
             // Before any rewards, pending should be 0
             let pending_before = token.get_pending_rewards(alice)?;
@@ -770,12 +732,8 @@ mod tests {
                 .with_mint(admin, reward_amount * U256::from(2))
                 .apply()?;
 
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
             // Distribute first reward
             token.distribute_reward(
@@ -824,12 +782,7 @@ mod tests {
                 .apply()?;
 
             // Alice delegates to bob
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: bob,
-                },
-            )?;
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
 
             // Distribute immediate reward
             token.distribute_reward(
@@ -877,12 +830,8 @@ mod tests {
                 .apply()?;
 
             // Only alice opts in
-            token.set_reward_recipient(
-                alice,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: alice,
-                },
-            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
             // Distribute reward
             token.distribute_reward(
@@ -971,7 +920,7 @@ mod tests {
                 let result = token.set_reward_recipient(
                     alice,
                     ITIP20::setRewardRecipientCall {
-                        newRewardRecipient: virtual_addr,
+                        recipient: virtual_addr,
                     },
                 );
 

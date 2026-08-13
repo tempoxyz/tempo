@@ -240,9 +240,7 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
         signer
             .send_call(
                 self.token_addr,
-                ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: recipient,
-                },
+                ITIP20::setRewardRecipientCall { recipient },
             )
             .await
     }
@@ -269,7 +267,7 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
             .send_call(
                 self.token_addr,
                 ITIP20::setRewardRecipientCall {
-                    newRewardRecipient: self.reward_sender.address(),
+                    recipient: self.reward_sender.address(),
                 },
             )
             .await?;
@@ -596,7 +594,7 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
         .push(
             token_addr,
             ITIP20::setRewardRecipientCall {
-                newRewardRecipient: admin.address(),
+                recipient: admin.address(),
             },
         )
         .send(&mut admin)

@@ -183,7 +183,7 @@ fn seed_reward_bench_state(
                 token.set_reward_recipient(
                     *participant,
                     ITIP20::setRewardRecipientCall {
-                        newRewardRecipient: *participant,
+                        recipient: *participant,
                     },
                 )?;
             }
@@ -202,7 +202,7 @@ fn seed_reward_bench_state(
                 token.set_reward_recipient(
                     *participant,
                     ITIP20::setRewardRecipientCall {
-                        newRewardRecipient: *participant,
+                        recipient: *participant,
                     },
                 )?;
             }
@@ -225,12 +225,7 @@ fn apply_seed_reward_mode(
             delegates[account.as_slice()[19] as usize % delegates.len()]
         }
     };
-    token.set_reward_recipient(
-        account,
-        ITIP20::setRewardRecipientCall {
-            newRewardRecipient: recipient,
-        },
-    )?;
+    token.set_reward_recipient(account, ITIP20::setRewardRecipientCall { recipient })?;
     Ok(())
 }
 
