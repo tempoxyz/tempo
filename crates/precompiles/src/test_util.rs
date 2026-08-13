@@ -1,5 +1,7 @@
 //! Test utilities for precompile dispatch testing
 
+pub mod conformance;
+
 #[cfg(any(test, feature = "test-utils"))]
 use crate::error::TempoPrecompileError;
 use crate::{

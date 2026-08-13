@@ -13831,6 +13831,7 @@ version = "1.11.0"
 dependencies = [
  "alloy",
  "alloy-evm",
+ "alloy-json-abi",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
