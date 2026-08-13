@@ -13841,7 +13841,6 @@ dependencies = [
  "commonware-cryptography",
  "derive_more",
  "eyre",
- "itertools 0.14.0",
  "p256 0.13.2",
  "paste",
  "proptest",
