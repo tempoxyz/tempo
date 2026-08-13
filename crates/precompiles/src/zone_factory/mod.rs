@@ -126,11 +126,7 @@ impl ZoneFactory {
         if call.params.admin.is_zero() {
             return Err(ZoneFactoryError::invalid_admin().into());
         }
-        validate_sequencer_set(
-            &call.params.sequencers,
-            call.params.threshold,
-            call.params.admin,
-        )?;
+        validate_sequencer_set(&call.params.sequencers, call.params.threshold)?;
 
         let zone_id = self.next_zone_id()?;
         let portal = portal_address(zone_id);
@@ -305,12 +301,11 @@ fn validate_closed_loop_config(
     Ok(())
 }
 
-fn validate_sequencer_set(sequencers: &[Address], threshold: u8, admin: Address) -> Result<()> {
+fn validate_sequencer_set(sequencers: &[Address], threshold: u8) -> Result<()> {
     if sequencers.is_empty()
         || sequencers.len() > MAX_SEQUENCERS
         || threshold == 0
         || usize::from(threshold) > sequencers.len()
-        || sequencers.contains(&admin)
     {
         return Err(ZoneFactoryError::invalid_sequencer_set().into());
     }
@@ -705,7 +700,6 @@ mod tests {
             for (sequencers, threshold) in [
                 (vec![], 1),
                 (vec![Address::ZERO], 1),
-                (vec![ADMIN], 1),
                 (vec![SEQUENCER_A, SEQUENCER_A], 1),
                 (vec![SEQUENCER_A], 0),
                 (vec![SEQUENCER_A], 2),
@@ -728,6 +722,31 @@ mod tests {
             params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];
             factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
             assert_eq!(factory.zone(1)?.sequencers, vec![SEQUENCER_B, SEQUENCER_A]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn create_zone_allows_admin_as_sequencer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.sequencers = vec![ADMIN];
+            params.threshold = 1;
+
+            let created = factory.create_zone(OWNER, IZoneFactory::createZoneCall { params })?;
+
+            assert_eq!(factory.zone(created.zoneId)?.admin, ADMIN);
+            assert_eq!(factory.zone(created.zoneId)?.sequencers, vec![ADMIN]);
+            let portal = ZonePortalStorage::new(created.portal);
+            assert_eq!(portal.admin.read()?, ADMIN);
+            assert_eq!(portal.sequencers.read()?, vec![ADMIN]);
+            assert_eq!(
+                portal.role[ADMIN].read()?,
+                u8::from(ZonePortalRole::Sequencer)
+            );
             Ok(())
         })
     }
