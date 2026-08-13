@@ -1030,6 +1030,87 @@ mod tests {
     }
 
     #[test]
+    fn bloat_streaming_preserves_genesis_precedence() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dump = dir.path().join("state.bin");
+        let path = dir.path().join("bloat.flat");
+        let address = [7u8; 20];
+        let account = keccak256(address).0;
+        let slot_a = [1u8; 32];
+        let slot_b = [2u8; 32];
+        let value_a = U256::from(11u64);
+        let value_b = U256::from(22u64);
+        let genesis_value = U256::from(33u64);
+
+        let mut file = std::fs::File::create(&dump).unwrap();
+        let mut header = [0u8; 40];
+        header[..8].copy_from_slice(b"TEMPOSB\0");
+        header[8..10].copy_from_slice(&1u16.to_be_bytes());
+        header[12..32].copy_from_slice(&address);
+        header[32..40].copy_from_slice(&2u64.to_be_bytes());
+        file.write_all(&header).unwrap();
+        for (slot, value) in [(slot_a, value_a), (slot_b, value_b)] {
+            file.write_all(&slot).unwrap();
+            file.write_all(&value.to_be_bytes::<32>()).unwrap();
+        }
+        drop(file);
+
+        let genesis = vec![
+            acct(7, 9),
+            acct(8, 1),
+            (
+                account,
+                StateOp::SetStorage {
+                    slot: keccak256(slot_a).0,
+                    value: mpt_flat_poc::eth::storage_value_rlp(genesis_value),
+                },
+            ),
+        ];
+        let shadow = FlatShadow::init_with_bloat(
+            path.to_str().unwrap(),
+            genesis.clone(),
+            dump.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let mut oracle = FlatMpt::create(
+            dir.path().join("oracle.flat"),
+            mpt_flat_poc::Config::default(),
+        )
+        .unwrap();
+        oracle
+            .apply_block(vec![
+                (
+                    account,
+                    StateOp::SetAccount {
+                        nonce: 0,
+                        balance: U256::ZERO,
+                        code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+                    },
+                ),
+                (
+                    account,
+                    StateOp::SetStorage {
+                        slot: keccak256(slot_a).0,
+                        value: mpt_flat_poc::eth::storage_value_rlp(value_a),
+                    },
+                ),
+                (
+                    account,
+                    StateOp::SetStorage {
+                        slot: keccak256(slot_b).0,
+                        value: mpt_flat_poc::eth::storage_value_rlp(value_b),
+                    },
+                ),
+            ])
+            .unwrap();
+        let (want, _) = oracle.apply_block(genesis).unwrap();
+        assert_eq!(shadow.current_root(), B256::from(want));
+    }
+
+    #[test]
     fn prefetch_is_advisory_and_root_neutral() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.flat");
