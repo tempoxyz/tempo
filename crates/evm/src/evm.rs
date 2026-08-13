@@ -429,7 +429,8 @@ mod tests {
                 external
                 view
                 returns (uint64);
-            function pause(bool shouldPause) external;
+            function pause() external;
+            function resume() external;
             function submitBatch(
                 uint64 tempoBlockNumber,
                 uint64 recentTempoBlockNumber,
@@ -881,9 +882,7 @@ mod tests {
             .transact_system_call(
                 sequencer,
                 created.portal,
-                TestZonePortal::pauseCall { shouldPause: true }
-                    .abi_encode()
-                    .into(),
+                TestZonePortal::pauseCall {}.abi_encode().into(),
             )
             .unwrap();
         assert!(
@@ -931,9 +930,7 @@ mod tests {
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::pauseCall { shouldPause: false }
-                    .abi_encode()
-                    .into(),
+                TestZonePortal::resumeCall {}.abi_encode().into(),
             )
             .unwrap();
         assert!(
