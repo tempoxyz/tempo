@@ -4027,15 +4027,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @dev Expiring nonce key constant (TIP-1009)
     uint256 private constant EXPIRING_NONCE_KEY = type(uint256).max;
-    /// @dev Maximum expiry windows in seconds before and after T10 (TIP-1009, TIP-1093)
-    uint64 private constant PRE_T10_MAX_EXPIRY_SECS = 30;
-    uint64 private constant T10_MAX_EXPIRY_SECS = 300;
+    /// @dev Maximum expiry windows in seconds before and after T11 (TIP-1009, TIP-1093)
+    uint64 private constant PRE_T11_MAX_EXPIRY_SECS = 30;
+    uint64 private constant POST_T11_MAX_EXPIRY_SECS = 300;
 
     function _maxExpirySecs() internal view returns (uint64) {
-        bytes32 hardfork = keccak256(bytes(vm.getEvmVersion()));
-        return hardfork == keccak256(bytes("t10")) || hardfork == keccak256(bytes("t11"))
-            ? T10_MAX_EXPIRY_SECS
-            : PRE_T10_MAX_EXPIRY_SECS;
+        string memory hardfork = vm.getEvmVersion();
+        return keccak256(bytes(hardfork)) == keccak256(bytes("t10"))
+            ? PRE_T11_MAX_EXPIRY_SECS
+            : POST_T11_MAX_EXPIRY_SECS;
     }
 
     /// @notice Build an expiring nonce transaction
