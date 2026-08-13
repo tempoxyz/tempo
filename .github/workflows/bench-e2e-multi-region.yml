@@ -288,7 +288,7 @@ jobs:
       BENCH_INPUT_VALSCOPE: ${{ github.event_name == 'workflow_dispatch' && (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
-      BENCH_INPUT_FEATURE_ENV: ${{ (inputs['feature-flatmpt'] == true || inputs['feature-flatmpt'] == 'true') && 'TEMPO_FLATMPT=/opt/tempo/schelk/tempo_flatmpt TEMPO_FLATMPT_MODE=root TEMPO_FLATMPT_READS=1 TEMPO_NO_STATE_KV=1 MPT_RAM_BUILD_GIB=24' || '' }}
+      BENCH_INPUT_FEATURE_ENV: ${{ (inputs['feature-flatmpt'] == true || inputs['feature-flatmpt'] == 'true') && 'TEMPO_FLATMPT=/opt/tempo/schelk/tempo_flatmpt TEMPO_FLATMPT_MODE=root TEMPO_FLATMPT_READS=1 TEMPO_NO_STATE_KV=1 MPT_DIRECT_IO=1' || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
