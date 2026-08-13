@@ -140,7 +140,7 @@ on:
         required: true
         default: "3"
       feature-flatmpt:
-        description: Use FlatMPT root mode for feature phases.
+        description: Use Flat MPT for state roots and KV reads in feature phases.
         type: boolean
         required: true
         default: false
