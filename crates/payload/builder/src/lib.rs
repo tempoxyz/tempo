@@ -5,6 +5,7 @@
 
 mod budget;
 mod encode;
+mod flat_reads;
 mod metrics;
 mod prewarming;
 
@@ -403,16 +404,147 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let t_state_by_hash = state_setup_start.elapsed();
+        // Flat shadow + sparse worker come first: the read provider hands its
+        // walk's reveal nodes to the worker, so they must share the block.
+        let flat_shadow = if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Off {
+            let chain_spec = self.provider.chain_spec();
+            tempo_flatmpt::shadow(|| {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            })
+        } else {
+            None
+        };
+        let flat_sparse = (tempo_flatmpt::sparse_enabled())
+            .then(|| {
+                flat_shadow
+                    .map(|s| tempo_flatmpt::SparseWorker::begin(s, parent_header.state_root()))
+            })
+            .flatten();
+        let t_sparse_begin = state_setup_start.elapsed();
+        let mut flat_read_shared: Option<std::sync::Arc<flat_reads::FlatReadShared>> = None;
+        if flat_reads::flat_reads_enabled() {
+            if let Some(shadow) = flat_shadow {
+                // Reads must reflect the exact parent state. Preferred path is
+                // fully lock-free: the follower's last published snapshot plus
+                // the chain of queued-but-unapplied blocks overlaid on top —
+                // the builder never waits on the follower's apply. The direct
+                // bounded lock read covers startup (nothing published yet);
+                // past that, this block reads from MDBX — unless the KV copy
+                // isn't persisted at all, in which case the only correct
+                // option is to wait for the pending chain to become available.
+                let parent_root = parent_header.state_root();
+                let resolve = || {
+                    tempo_flatmpt::published_snapshot().and_then(|(published_root, snap)| {
+                        tempo_flatmpt::pending_chain(published_root, parent_root)
+                            .map(|overlay| (snap, overlay))
+                    })
+                };
+                let mut snap = resolve().or_else(|| {
+                    shadow
+                        .try_read_for(std::time::Duration::from_millis(50))
+                        .and_then(|g| g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new())))
+                });
+                if snap.is_none() && flat_reads::no_state_kv_active() {
+                    warn!(
+                        target: "flatmpt",
+                        parent = %parent_root,
+                        published = ?tempo_flatmpt::published_snapshot().map(|(r, _)| r),
+                        queue = tempo_flatmpt::follower(shadow).depth(),
+                        "no-KV build waiting for a servable parent state"
+                    );
+                    let deadline = Instant::now() + std::time::Duration::from_secs(15);
+                    while snap.is_none() && Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        snap = resolve().or_else(|| {
+                            shadow
+                                .try_read_for(std::time::Duration::from_millis(5))
+                                .and_then(|g| {
+                                    g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new()))
+                                })
+                        });
+                    }
+                    if snap.is_none() {
+                        return Err(PayloadBuilderError::Other(
+                            anyhow::anyhow!(
+                                "flat store never reached parent and no state KV exists to fall back to"
+                            )
+                            .into(),
+                        ));
+                    }
+                }
+                match snap {
+                    Some((snap, overlay)) => {
+                        if !overlay.is_empty() {
+                            debug!(
+                                target: "flatmpt",
+                                pending = overlay.len(),
+                                "flat lags parent; reading through the pending-block overlay"
+                            );
+                        }
+                        let shared = std::sync::Arc::new(flat_reads::FlatReadShared {
+                            snap,
+                            hashed: Default::default(),
+                            // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
+                            // feed (A/B: exec-thread reveal-walk cost vs the
+                            // worker fetching its own reveals). With an active
+                            // overlay the snapshot trie is an ancestor of the
+                            // parent trie — its node hashes are stale — so the
+                            // worker must fetch its own proofs.
+                            reveal: flat_sparse
+                                .as_ref()
+                                .filter(|_| overlay.is_empty())
+                                .filter(|_| {
+                                    std::env::var("TEMPO_FLATMPT_READ_REVEAL").as_deref() != Ok("0")
+                                })
+                                .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
+                            overlay,
+                        });
+                        state_provider = Box::new(flat_reads::FlatReadProvider {
+                            inner: state_provider,
+                            shared: shared.clone(),
+                        });
+                        flat_read_shared = Some(shared);
+                    }
+                    None => {
+                        debug!(target: "flatmpt", "flat not at parent; MDBX reads this block");
+                    }
+                }
+            }
+        }
+        debug!(
+            target: "flatmpt",
+            state_by_hash_ms = t_state_by_hash.as_millis() as u64,
+            sparse_begin_ms = (t_sparse_begin - t_state_by_hash).as_millis() as u64,
+            snapshot_ms = (state_setup_start.elapsed() - t_sparse_begin).as_millis() as u64,
+            "state setup phases"
+        );
+        // Ceiling diagnostic: per-block exec-side cache hit rate (how much of
+        // prewarm's work actually reaches the exec thread's reads).
+        let cache_stats = std::sync::Arc::new(reth_execution_cache::CacheStats::default());
         if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
+            state_provider = Box::new(CachedStateProvider::new_with_mode(
                 state_provider,
                 execution_cache.cache().clone(),
+                reth_execution_cache::CacheFillMode::LookupOnly,
                 Some(self.cache_metrics.clone()),
+                Some(cache_stats.clone()),
             ));
         }
         if self.config.state_provider_metrics {
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
+
+        // Fallback commitment worker: the prefetch stream ahead of an inline
+        // apply (used only when the sparse-trie overlay is off).
+        let flat_stream = if tempo_flatmpt::stream_enabled() && flat_sparse.is_none() {
+            flat_shadow.map(tempo_flatmpt::FlatStream::begin)
+        } else {
+            None
+        };
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
@@ -538,23 +670,32 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
+        let root_hook: Option<Box<dyn OnStateHook>> = if let Some(handle) = &mut state_root_handle {
+            Some(Box::new(handle.take_state_hook()))
+        } else if let Some(worker) = &flat_sparse {
+            // TEMPO_FLATMPT_NO_HOOK=1: skip per-tx state cloning into the
+            // worker (prewarming off; finish reveals everything) — isolates
+            // the hook's cost on the packing rate.
+            if std::env::var("TEMPO_FLATMPT_NO_HOOK").as_deref() == Ok("1") {
+                None
+            } else {
+                Some(Box::new(worker.hook()))
+            }
+        } else if let Some(stream) = &flat_stream {
+            Some(Box::new(stream.hook()))
+        } else {
+            None
+        };
         let bal_task_handle = if self.enable_bal {
-            let bal_task_handle = self.spawn_bal_task(
-                state_root_handle
-                    .as_mut()
-                    .map(|handle| handle.take_state_hook()),
-            );
+            let bal_task_handle = self.spawn_bal_task(root_hook);
             executor
                 .evm_mut()
                 .db_mut()
                 .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
             Some(bal_task_handle)
         } else {
-            if let Some(handle) = state_root_handle.as_mut() {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
+            if let Some(hook) = root_hook {
+                executor.evm_mut().db_mut().set_state_hook(Some(hook));
             }
             None
         };
@@ -577,7 +718,7 @@ where
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
         for tx in &system_txs {
-            estimated_rlp_block_size += tx.inner().length();
+            estimated_rlp_block_size += tx.inner().length() + 4;
         }
         let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
         self.metrics
@@ -607,6 +748,7 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
+            flat_read_shared.clone(),
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
@@ -625,6 +767,13 @@ where
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
+        debug!(
+            target: "flatmpt",
+            pre_fill_ms = start.elapsed().as_millis() as u64,
+            pool_fetch_us = pool_fetch_start.elapsed().as_micros() as u64,
+            prepare_system_us = prepare_system_txs_elapsed.as_micros() as u64,
+            "build phases before fill"
+        );
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -638,6 +787,11 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        // Exec-thread stall accounting: where this thread's fill time goes.
+        let mut next_wait = Duration::ZERO;
+        let mut next_wait_max = Duration::ZERO;
+        let mut next_hist = [0u64; 32]; // log2 µs buckets of individual next() waits
+        let mut execute_elapsed = Duration::ZERO;
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -678,7 +832,16 @@ where
                 }
             }
 
-            let Some(mut pool_tx) = best_txs.next() else {
+            let t_next = Instant::now();
+            let next_result = best_txs.next();
+            {
+                let d = t_next.elapsed();
+                next_wait += d;
+                next_wait_max = next_wait_max.max(d);
+                let us = d.as_micros() as u64;
+                next_hist[(64 - us.leading_zeros() as usize).min(31)] += 1;
+            }
+            let Some(mut pool_tx) = next_result else {
                 if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
@@ -744,7 +907,12 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.transaction.encoded_length();
+            // Typed transactions are re-wrapped as RLP strings inside the block
+            // body, adding a few length-prefix bytes per tx that
+            // `encoded_length()` (the pool encoding) does not include. Without
+            // this pad a full ~8 MiB block of small payment txs overshoots
+            // MAX_RLP_BLOCK_SIZE by ~0.8% and fails post-build validation.
+            let tx_rlp_length = tx.transaction.encoded_length() + 4;
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -779,6 +947,7 @@ where
                 best_txs.on_new_result(result);
             };
 
+            let t_exec = Instant::now();
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
@@ -796,6 +965,7 @@ where
                     )
                     .map(|_| ())
             };
+            execute_elapsed += t_exec.elapsed();
 
             if let Err(err) = execution_result {
                 match err {
@@ -874,6 +1044,33 @@ where
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
+        debug!(
+            target: "flatmpt",
+            at_fill_end_ms = start.elapsed().as_millis() as u64,
+            "build phases at fill end"
+        );
+        {
+            // next_hist bucket i = waits in [2^(i-1), 2^i) µs; print sparse.
+            let hist: Vec<String> = next_hist
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| **c > 0)
+                .map(|(i, c)| format!("<{}us:{}", 1u64 << i, c))
+                .collect();
+            info!(
+                target: "flatmpt",
+                fill_ms = normal_transaction_fill_elapsed.as_millis() as u64,
+                next_wait_ms = next_wait.as_millis() as u64,
+                next_wait_max_us = next_wait_max.as_micros() as u64,
+                execute_ms = execute_elapsed.as_millis() as u64,
+                other_ms = normal_transaction_fill_elapsed
+                    .saturating_sub(next_wait)
+                    .saturating_sub(execute_elapsed)
+                    .as_millis() as u64,
+                next_hist = %hist.join(" "),
+                "exec thread fill accounting"
+            );
+        }
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
@@ -995,6 +1192,14 @@ where
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
 
+        debug!(
+            target: "flatmpt",
+            acct_hits = cache_stats.account_hits(),
+            acct_miss = cache_stats.account_misses(),
+            slot_hits = cache_stats.storage_hits(),
+            slot_miss = cache_stats.storage_misses(),
+            "exec cache stats"
+        );
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
         let finish_provider = InstrumentedFinishProvider {
@@ -1019,10 +1224,98 @@ where
         // finalize the state root.
         db.set_state_hook(None);
 
+        // Flat-MPT commitment (experimental, env-gated): the flat engine's root for
+        // this bundle. In `Root` mode it becomes the header's state root; in
+        // `Compare` mode it is asserted against the regular pipeline's root below.
+        // Join the prefetcher first (its final pass must land before the apply
+        // so the read-ahead buffer is complete); then compute the root via the
+        // ordinary single-apply path — the trie was never touched mid-block.
+        if let Some(stream) = flat_stream {
+            let (prefetched_ops, passes) = stream.finish();
+            debug!(target: "flatmpt", prefetched_ops, passes, "prefetch joined");
+        }
+        let (flat_root, flat_hashed_state) = if let Some(shadow) = flat_shadow {
+            let ops = tempo_flatmpt::bundle_to_ops(&db.bundle_state);
+            // The ops already carry every hashed key, so the block's hashed
+            // state comes from them for free — the stock derivation below
+            // re-keccaks the whole bundle on the hot path.
+            let hashed = tempo_flatmpt::ops_to_post_state(&ops);
+            // Sparse overlay: root from the sparse trie (read-only against the
+            // flat store), apply queued to the background follower which
+            // cross-checks the flat engine's root against ours. Any sparse
+            // failure falls back to the inline apply below.
+            let sparse_root = flat_sparse.and_then(|worker| match worker.finish(ops.clone()) {
+                Ok((root, stats)) => {
+                    info!(
+                        target: "flatmpt",
+                        block = parent_header.number() + 1,
+                        n_ops = ops.len(),
+                        %root,
+                        finish_ms = stats.finish_ms,
+                        fin_netmap_ms = stats.fin_netmap_ms,
+                        fin_drain_ms = stats.fin_drain_ms,
+                        fin_promote_ms = stats.fin_promote_ms,
+                        fin_root_ms = stats.fin_root_ms,
+                        wait_parent_ms = stats.wait_parent_ms,
+                        proof_ms = stats.proof_ms,
+                        reveal_ms = stats.reveal_ms,
+                        exec_passes = stats.exec_passes,
+                        deferred_passes = stats.deferred_passes,
+                        finish_rounds = stats.finish_rounds,
+                        account_targets = stats.account_targets,
+                        storage_targets = stats.storage_targets,
+                        pool_hit = stats.pool_hit,
+                        trie_mem_mb = stats.trie_mem_mb,
+                        hook_dropped = stats.hook_dropped,
+                        follower_queue = tempo_flatmpt::follower(shadow).depth(),
+                        "sparse commitment"
+                    );
+                    Some(root)
+                }
+                Err(e) => {
+                    warn!(
+                        target: "flatmpt",
+                        block = parent_header.number() + 1,
+                        err = %format!("{e:#}"),
+                        "sparse commitment failed; falling back to inline flat apply"
+                    );
+                    None
+                }
+            });
+            let root = match sparse_root {
+                Some(root) => {
+                    tempo_flatmpt::follower(shadow).queue_apply(
+                        parent_header.number(),
+                        parent_header.state_root(),
+                        ops,
+                        root,
+                    );
+                    root
+                }
+                None => {
+                    let root = shadow
+                        .write()
+                        .root_for(parent_header.number(), parent_header.state_root(), ops)
+                        .map_err(|e| PayloadBuilderError::Other(e.into()))?;
+                    tempo_flatmpt::publish_snapshot(shadow);
+                    root
+                }
+            };
+            (Some(root), Some(Arc::new(hashed)))
+        } else {
+            (None, None)
+        };
+        let flat_is_root =
+            flat_root.is_some() && tempo_flatmpt::mode() == tempo_flatmpt::FlatMode::Root;
+
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
+        let hashed_state = if let Some(hashed) = flat_hashed_state.filter(|_| flat_is_root) {
+            // Root mode: the ops-derived hashed state is authoritative and
+            // already computed; skip the bundle re-hash entirely.
+            hashed
+        } else if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
             .and_then(|handle| handle.try_take_hashed_state_rx())
             .map(|rx| rx.recv())
@@ -1033,7 +1326,7 @@ where
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if self.config.skip_state_root {
+            if self.config.skip_state_root || flat_is_root {
                 debug!(
                     target: "payload_builder",
                     id = %payload_id,
@@ -1080,7 +1373,12 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if self.config.skip_state_root {
+        let (state_root, trie_updates) = if flat_is_root {
+            (
+                flat_root.expect("flat_is_root"),
+                Arc::new(Default::default()),
+            )
+        } else if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
@@ -1091,6 +1389,19 @@ where
 
             (state_root, Arc::new(trie_updates))
         };
+
+        // Compare mode: the flat engine must reproduce the pipeline's root exactly.
+        // (Skipped when the pipeline root is itself skipped — nothing real to compare.)
+        if let Some(flat_root) = flat_root
+            && !flat_is_root
+            && !self.config.skip_state_root
+            && flat_root != state_root
+        {
+            panic!(
+                "flat MPT root DIVERGENCE at block {}: flat {flat_root} vs pipeline {state_root}",
+                parent_header.number() + 1,
+            );
+        }
 
         let RootsTaskResult {
             transactions_root,
@@ -1363,7 +1674,10 @@ where
         (transactions_tx, result_rx)
     }
 
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+    fn spawn_bal_task(
+        &self,
+        mut state_root_task_hook: Option<Box<dyn OnStateHook>>,
+    ) -> BalTaskHandle {
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
         self.executor.spawn_blocking_named("builder-bal-task", || {

@@ -8,8 +8,10 @@ use crate::{
         TempoToken, TempoTokenApiServer,
     },
 };
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
+use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -33,7 +35,7 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
+use reth_storage_api::{AccountInfoReader, DBProvider, DatabaseProviderFactory, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
@@ -61,6 +63,63 @@ use tempo_transaction_pool::{
 
 /// 500M gas limit
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
+
+fn load_flat_checkpoint<Tx: DbTx>(
+    tx: &Tx,
+    flat: &mut tempo_flatmpt::FlatMpt,
+) -> anyhow::Result<(u64, u64)> {
+    const BATCH_ACCOUNTS: usize = 4096;
+    let mut accounts_cursor = tx.cursor_read::<tables::HashedAccounts>()?;
+    let mut storage_cursor = tx.cursor_read::<tables::HashedStorages>()?;
+    let mut accounts = accounts_cursor.walk(None)?;
+    let mut storages = storage_cursor.walk(None)?;
+    let mut next_storage = storages.next().transpose()?;
+    let mut batch = Vec::with_capacity(BATCH_ACCOUNTS);
+    let mut account_count = 0u64;
+    let mut slot_count = 0u64;
+
+    while let Some((account_key, account)) = accounts.next().transpose()? {
+        let mut slots = Vec::new();
+        while let Some((storage_account, entry)) = next_storage {
+            if storage_account < account_key {
+                anyhow::bail!("orphan hashed storage for account {storage_account}");
+            }
+            if storage_account != account_key {
+                next_storage = Some((storage_account, entry));
+                break;
+            }
+            if !entry.value.is_zero() {
+                slots.push((entry.key.0, tempo_flatmpt::storage_value_rlp(entry.value)));
+                slot_count += 1;
+            }
+            next_storage = storages.next().transpose()?;
+        }
+        batch.push((
+            account_key.0,
+            tempo_flatmpt::AccountSeed {
+                nonce: account.nonce,
+                balance: account.balance,
+                code_hash: account.get_bytecode_hash().0,
+                slots,
+            },
+        ));
+        account_count += 1;
+        if batch.len() == BATCH_ACCOUNTS {
+            flat.insert_batch_accounts(std::mem::take(&mut batch))
+                .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
+            batch = Vec::with_capacity(BATCH_ACCOUNTS);
+        }
+    }
+    anyhow::ensure!(
+        next_storage.is_none(),
+        "hashed storage exists without an account"
+    );
+    if !batch.is_empty() {
+        flat.insert_batch_accounts(batch)
+            .map_err(|e| anyhow::anyhow!("flat checkpoint batch: {e:#}"))?;
+    }
+    Ok((account_count, slot_count))
+}
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
@@ -345,10 +404,244 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = FlatMptEngineValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
-        self.inner.engine_validator_builder()
+        FlatMptEngineValidatorBuilder(self.inner.engine_validator_builder())
+    }
+}
+
+/// [`BasicEngineValidatorBuilder`] wrapper that, in flat-MPT `Root` mode, installs
+/// the flat engine as the tree validator's custom state-root computation — every
+/// inserted block's header root is then checked against the flat MPT.
+#[derive(Debug, Clone, Default)]
+pub struct FlatMptEngineValidatorBuilder(BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>);
+
+impl<Node> reth_node_builder::rpc::EngineValidatorBuilder<Node> for FlatMptEngineValidatorBuilder
+where
+    Node: FullNodeComponents<
+            Types = TempoNode,
+            Evm: reth_node_api::ConfigureEngineEvm<
+                <<TempoNode as NodeTypes>::Payload as PayloadTypes>::ExecutionData,
+            >,
+        >,
+    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>:
+        reth_node_builder::rpc::EngineValidatorBuilder<
+                Node,
+                EngineValidator = reth_engine_tree::tree::BasicEngineValidator<
+                    Node::Provider,
+                    Node::Evm,
+                    TempoEngineValidator,
+                >,
+            >,
+    Node::Provider: DatabaseProviderFactory,
+{
+    type EngineValidator = reth_engine_tree::tree::BasicEngineValidator<
+        Node::Provider,
+        Node::Evm,
+        TempoEngineValidator,
+    >;
+
+    async fn build_tree_validator(
+        self,
+        ctx: &AddOnsContext<'_, Node>,
+        tree_config: reth_node_api::TreeConfig,
+        state_trie_overlays: reth_node_builder::rpc::OverlayManager<TempoPrimitives>,
+    ) -> eyre::Result<Self::EngineValidator> {
+        let validator = self
+            .0
+            .build_tree_validator(ctx, tree_config, state_trie_overlays)
+            .await?;
+        if tempo_flatmpt::mode() != tempo_flatmpt::FlatMode::Root {
+            return Ok(validator);
+        }
+        let chain_spec = ctx.config.chain.clone();
+        info!(target: "flatmpt", "installing flat MPT as the engine's state-root computation");
+        // Initialize the shadow now, at node startup — a large bloat-mode load
+        // (minutes at 100M+ slots) must not run inside the first payload build.
+        {
+            use reth_provider::BlockReaderIdExt as _;
+            let canonical_tip = ctx.node.provider().latest_header()?;
+            if let Some(tip) = canonical_tip {
+                let db_provider = ctx
+                    .node
+                    .provider()
+                    .database_provider_ro()?
+                    .disable_long_read_transaction_safety();
+                let checkpoint_number = tip.number();
+                let checkpoint_root = if checkpoint_number == 0 {
+                    use reth_trie_db::{
+                        DatabaseHashedCursorFactory, DatabaseStateRoot as _,
+                        DatabaseTrieCursorFactory, PackedKeyAdapter,
+                    };
+                    type DbStateRoot<'a, Tx> = reth_trie::StateRoot<
+                        DatabaseTrieCursorFactory<&'a Tx, PackedKeyAdapter>,
+                        DatabaseHashedCursorFactory<&'a Tx>,
+                    >;
+                    DbStateRoot::<_>::from_tx(db_provider.tx_ref()).root()?
+                } else {
+                    tip.state_root()
+                };
+                tempo_flatmpt::shadow_from_checkpoint(
+                    checkpoint_number,
+                    checkpoint_root,
+                    tip.state_root(),
+                    move |flat| load_flat_checkpoint(db_provider.tx_ref(), flat),
+                );
+            } else {
+                let chain_spec = chain_spec.clone();
+                tempo_flatmpt::shadow(move || {
+                    (
+                        tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                        chain_spec.inner.genesis_header().state_root(),
+                    )
+                });
+            }
+        }
+        // TEMPO_NO_STATE_KV: the duplicate state KV is not persisted, so
+        // latest-state point reads (engine validation misses, txpool, RPC)
+        // must come from the flat store. Install the canonical-tip read hook
+        // that reth's latest-state provider consults. Correctness: these
+        // reads sit underneath the engine's in-memory overlay of unpersisted
+        // blocks, which shadows every key written after the last persisted
+        // block — so serving the canonical tip state is exact. The tip
+        // anchor (not "newest flat state") keeps not-yet-canonical candidate
+        // blocks out of the served state.
+        if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
+            let provider = ctx.node.provider().clone();
+            let chain_spec = chain_spec.clone();
+            // Resolution is cached per tip: pool validation calls this for
+            // every incoming transaction's fee-balance read, so the walk must
+            // not repeat per read.
+            type TipState = (
+                B256,
+                tempo_flatmpt::FlatSnapshot,
+                Vec<Arc<tempo_flatmpt::PendingBlock>>,
+            );
+            let cached: Arc<std::sync::Mutex<Option<Arc<TipState>>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let resolve = move || -> Result<Arc<TipState>, reth_errors::ProviderError> {
+                use reth_provider::BlockReaderIdExt as _;
+                let err = |m: &str| {
+                    reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
+                };
+                let tip_root = provider
+                    .latest_header()?
+                    .ok_or_else(|| err("no canonical head for flat tip read"))?
+                    .state_root();
+                if let Ok(guard) = cached.lock()
+                    && let Some(state) = guard.as_ref()
+                    && state.0 == tip_root
+                {
+                    return Ok(state.clone());
+                }
+                let shadow = tempo_flatmpt::shadow(|| {
+                    (
+                        tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                        chain_spec.inner.genesis_header().state_root(),
+                    )
+                })
+                .expect("flat root mode is on");
+                // Transient gaps (publish/retire races around an apply) heal
+                // within an apply cycle; a persistent failure is loud.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
+                        && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
+                    {
+                        let state = Arc::new((tip_root, snap, chain));
+                        if let Ok(mut g) = cached.lock() {
+                            *g = Some(state.clone());
+                        }
+                        return Ok(state);
+                    }
+                    if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
+                        && g.at_parent(tip_root)
+                    {
+                        let snap = g.snapshot();
+                        drop(g);
+                        let state = Arc::new((tip_root, snap, Vec::new()));
+                        if let Ok(mut g) = cached.lock() {
+                            *g = Some(state.clone());
+                        }
+                        return Ok(state);
+                    }
+                    if std::time::Instant::now() > deadline {
+                        return Err(err("flat store cannot serve the canonical tip state"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            };
+            let resolve_acct = Arc::new(resolve);
+            let resolve_slot = resolve_acct.clone();
+            let _ = reth_provider::providers::FLAT_STATE_READS.set(
+                reth_provider::providers::FlatStateReads {
+                    account: Box::new(move |address| {
+                        let state = resolve_acct()?;
+                        let (_, snap, chain) = &*state;
+                        let key = alloy_primitives::keccak256(address);
+                        let read =
+                            tempo_flatmpt::overlay_account(chain, snap, &key.0).map_err(|e| {
+                                reth_errors::ProviderError::other(std::io::Error::other(format!(
+                                    "{e:#}"
+                                )))
+                            })?;
+                        Ok(read.map(|(nonce, balance, code_hash)| {
+                            reth_primitives_traits::Account {
+                                nonce,
+                                balance,
+                                bytecode_hash: (code_hash != alloy_primitives::keccak256([]).0)
+                                    .then(|| B256::from(code_hash)),
+                            }
+                        }))
+                    }),
+                    storage: Box::new(move |address, slot| {
+                        let state = resolve_slot()?;
+                        let (_, snap, chain) = &*state;
+                        let acct_key = alloy_primitives::keccak256(address);
+                        let slot_key = alloy_primitives::keccak256(slot.0);
+                        tempo_flatmpt::overlay_storage(chain, snap, &acct_key.0, &slot_key.0)
+                            .map_err(|e| {
+                                reth_errors::ProviderError::other(std::io::Error::other(format!(
+                                    "{e:#}"
+                                )))
+                            })
+                    }),
+                },
+            );
+            info!(target: "flatmpt", "flat tip-state read hook installed (no state KV)");
+        }
+        let chain_spec = ctx.config.chain.clone();
+        Ok(validator.with_custom_state_root(Arc::new(move |input| {
+            let shadow = tempo_flatmpt::shadow(|| {
+                (
+                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                    chain_spec.inner.genesis_header().state_root(),
+                )
+            })
+            .expect("flat root mode is on");
+            let mut ops = tempo_flatmpt::bundle_to_ops(&input.output.state);
+            // A block whose sparse commitment this process already produced
+            // (and whose flat apply is queued on the follower) validates
+            // without waiting behind the apply's write lock; the follower's
+            // root cross-check is the loud gate for those.
+            if let Some(root) =
+                tempo_flatmpt::follower::pending_root(input.parent_block.state_root(), &mut ops)
+            {
+                return Ok((root, reth_trie_common::updates::TrieUpdates::default()));
+            }
+            let root = shadow
+                .write()
+                .root_for(
+                    input.parent_block.number(),
+                    input.parent_block.state_root(),
+                    ops,
+                )
+                .map_err(|e| {
+                    reth_errors::ProviderError::other(std::io::Error::other(format!("{e:#}")))
+                })?;
+            Ok((root, reth_trie_common::updates::TrieUpdates::default()))
+        })))
     }
 }
 
