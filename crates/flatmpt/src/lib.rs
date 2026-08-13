@@ -331,7 +331,12 @@ impl FlatShadow {
                 }
             }
         }
-        let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
+        // Bloat checkpoints are intentionally disk-resident. RAM-build's
+        // spill duplicates the in-memory frontier while serializing it; on
+        // 64 GiB validators that transient peaked at 56.4 GiB and was OOM-
+        // killed even with a 12 GiB trigger. Incremental direct-disk inserts
+        // avoid that whole-frontier copy.
+        let mut db = FlatMpt::create(path, mpt_flat_poc::Config::default())
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
         // 1) Dump, streamed in bounded chunks. Repeated seeds for one account
@@ -340,9 +345,7 @@ impl FlatShadow {
         let mut f = std::io::BufReader::with_capacity(64 << 20, std::fs::File::open(dump)?);
         let mut header = [0u8; 40];
         let mut n_dump: usize = 0;
-        // Keep decode/sort scratch small relative to the engine's spill-time
-        // copy. On 64 GiB validators, 250k-slot chunks plus a 24 GiB frontier
-        // peaked at 56.4 GiB RSS and tripped the service's cgroup OOM limit.
+        // Keep decode/sort scratch bounded while streaming to disk.
         const SLOT_CHUNK: usize = 64_000;
         loop {
             match f.read_exact(&mut header) {
