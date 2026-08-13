@@ -509,7 +509,7 @@ where
         // blocks out of the served state.
         if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
             let provider = ctx.node.provider().clone();
-            let chain_spec = chain_spec.clone();
+            let chain_spec = chain_spec;
             // Resolution is cached per tip: pool validation calls this for
             // every incoming transaction's fee-balance read, so the walk must
             // not repeat per read.
