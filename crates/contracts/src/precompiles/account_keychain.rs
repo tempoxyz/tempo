@@ -208,7 +208,7 @@ crate::sol! {
         ) external view returns (bool isScoped, CallScope[] memory scopes);
 
         /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
-        function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool);
+        function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool burned);
 
         /// Returns true if `keyId` is the root key or an active admin key for `account`.
         function isAdminKey(address account, address keyId) external view returns (bool);

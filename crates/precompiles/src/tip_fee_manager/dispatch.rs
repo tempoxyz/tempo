@@ -48,9 +48,12 @@ impl Precompile for TipFeeManager {
                     // ITIPFeeAMM view functions
                     getPoolId(call) => view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken))),
                     getPool(call) => view(call, |c| Ok(self.get_pool(c)?.into())),
-                    pools(call) => view(call, |c| Ok(self.pools[c.poolId].read()?.into())),
-                    totalSupply(call) => view(call, |c| self.total_supply[c.poolId].read()),
-                    liquidityBalances(call) => view(call, |c| self.liquidity_balances[c.poolId][c.user].read()),
+                    pools(call) => view(call, |c| {
+                        let pool = self.pools[c.0].read()?;
+                        Ok((pool.reserve_user_token, pool.reserve_validator_token).into())
+                    }),
+                    totalSupply(call) => view(call, |c| self.total_supply[c.0].read()),
+                    liquidityBalances(call) => view(call, |c| self.liquidity_balances[c._0][c._1].read()),
 
                     // ITIPFeeAMM mutate functions
                     mint(call) => mutate(call, msg_sender, |s, c| {

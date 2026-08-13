@@ -33,12 +33,12 @@ crate::sol! {
         function validateReceivePolicy(address token, address sender, address receiver) external view returns (bool authorized, BlockedReason blockedReason);
 
         // State-Changing Functions
-        function createPolicy(address admin, PolicyType policyType) external returns (uint64);
-        function createPolicyWithAccounts(address admin, PolicyType policyType, address[] calldata accounts) external returns (uint64);
+        function createPolicy(address admin, PolicyType policyType) external returns (uint64 newPolicyId);
+        function createPolicyWithAccounts(address admin, PolicyType policyType, address[] calldata accounts) external returns (uint64 newPolicyId);
         function setPolicyAdmin(uint64 policyId, address admin) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
-        function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
+        function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64 newPolicyId);
         function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
         function migrateTransferPolicyIds(address[] calldata tokens) external returns (uint256 migrated);
 

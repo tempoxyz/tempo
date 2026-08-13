@@ -79,7 +79,7 @@ crate::sol! {
         /// Get validator information by address
         /// @param validator The validator address to look up
         /// @return The validator struct for the given address
-        function validators(address validator) external view returns (Validator memory);
+        function validators(address validatorAddress) external view returns (bytes32 publicKey, bool active, uint64 index, address addr, string memory inboundAddress, string memory outboundAddress);
 
         /// Get the total number of validators
         /// @return The count of validators
