@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/bench-e2e.yml
     with:
       pr: "7143"
-      pr-head-sha: "03bbdc7375f59acdd181888b26c12ed73a6d00f9"
+      pr-head-sha: "dae10e7e106e65e379ba3657b327387a38df42a9"
       pr-head-ref: "centaur/bench-flatmpt-e2e-1786443703"
       actor: "dankrad"
       mode: "e2e"
@@ -30,7 +30,7 @@ jobs:
       feature: "centaur/bench-flatmpt-e2e-1786443703"
       gas-limit: "1000000000000"
       general-gas-limit: "1000000000000"
-      run-pairs: "3"
+      run-pairs: "2"
       run-side: "comparison"
       samply: "true"
       otlp: "true"
