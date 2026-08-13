@@ -570,10 +570,7 @@ fn chunked_proofs(
     for slice in flat.chunks(chunk_size) {
         let mut t = MultiProofTargetsV2::default();
         for (acct, target) in slice {
-            t.storage_targets
-                .entry(*acct)
-                .or_default()
-                .push(target.clone());
+            t.storage_targets.entry(*acct).or_default().push(*target);
         }
         chunks.push(t);
     }
@@ -741,7 +738,7 @@ impl SparseWorker {
                         }
                         // Re-check the fast lane periodically inside deep drains.
                         in_batch += 1;
-                        if in_batch % 256 == 0 && let Ok(ops) = finish_rx.try_recv() {
+                        if in_batch.is_multiple_of(256) && let Ok(ops) = finish_rx.try_recv() {
                             w.stats.hook_dropped =
                                 dropped_w.load(std::sync::atomic::Ordering::Relaxed);
                             let _ = result_tx.send(w.finish(ops));
@@ -866,8 +863,10 @@ impl Worker {
         // Retain branch-node updates: finish() publishes them as the block's
         // overlay so descendants' proofs need not wait for the flat apply.
         trie.set_updates(true);
-        let mut stats = SparseStats::default();
-        stats.pool_hit = pool_hit;
+        let stats = SparseStats {
+            pool_hit,
+            ..Default::default()
+        };
         Self {
             shadow,
             parent_root,
@@ -1230,7 +1229,7 @@ impl Worker {
                         out.push((*acct, Vec::new()));
                         continue;
                     };
-                    let mut account = account.clone();
+                    let mut account = *account;
                     account.storage_root = if destroyed_ref.contains(acct) {
                         EMPTY_ROOT_HASH
                     } else if let Some(r) = sroots_ref.get(acct) {
@@ -1497,25 +1496,23 @@ impl Worker {
                     self.refresh_snap(true);
                     sound = self.snap_at_parent || (self.stats.pool_hit && self.anchor_ok());
                 }
-                if let Some(snap) = &self.snap {
-                    if sound {
-                        match direct_reveal(snap, &acct_targets, &storage_targets) {
-                            Ok(p) => direct = Some(p),
-                            Err(e)
-                                if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
-                                    == Ok("1") =>
-                            {
-                                return Err(anyhow::anyhow!(
-                                    "direct reveal failed (strict): {e:#}"
-                                ));
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "flatmpt",
-                                    err = %format!("{e:#}"),
-                                    "direct reveal failed; using proof walk"
-                                );
-                            }
+                if let Some(snap) = &self.snap
+                    && sound
+                {
+                    match direct_reveal(snap, &acct_targets, &storage_targets) {
+                        Ok(p) => direct = Some(p),
+                        Err(e)
+                            if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
+                                == Ok("1") =>
+                        {
+                            return Err(anyhow::anyhow!("direct reveal failed (strict): {e:#}"));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "flatmpt",
+                                err = %format!("{e:#}"),
+                                "direct reveal failed; using proof walk"
+                            );
                         }
                     }
                 }
