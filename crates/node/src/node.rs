@@ -42,7 +42,7 @@ use reth_transaction_pool::{
     TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
     error::InvalidPoolTransactionError,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
@@ -83,6 +83,8 @@ fn load_flat_checkpoint<Tx: DbTx>(
     let mut next_storage = storages.next().transpose()?;
     let mut account_count = 0u64;
     let mut slot_count = 0u64;
+    let mut next_progress = 25_000_000u64;
+    let started_at = Instant::now();
 
     while let Some((account_key, account)) = accounts.next().transpose()? {
         let mut slots = Vec::with_capacity(BATCH_SLOTS);
@@ -118,6 +120,16 @@ fn load_flat_checkpoint<Tx: DbTx>(
                 slot_count += 1;
                 if slots.len() == BATCH_SLOTS {
                     flush(&mut slots)?;
+                    if slot_count >= next_progress {
+                        info!(
+                            target: "flatmpt",
+                            slots = slot_count,
+                            accounts = account_count,
+                            elapsed_s = started_at.elapsed().as_secs(),
+                            "flat MPT checkpoint build progress"
+                        );
+                        next_progress = next_progress.saturating_add(25_000_000);
+                    }
                 }
             }
             next_storage = storages.next().transpose()?;
