@@ -1817,7 +1817,7 @@ mod stall_tests {
         let proof = Proof::new(tf, hf).multiproof(targets).unwrap();
 
         eprintln!("account subtree nodes:");
-        for (p, _) in proof.account_subtree.iter() {
+        for p in proof.account_subtree.keys() {
             eprintln!("  acct node path len={} {:?}", p.len(), p);
         }
         for (a, sp) in proof.storages.iter() {
@@ -1826,7 +1826,7 @@ mod stall_tests {
                 sp.root,
                 sp.subtree.iter().count()
             );
-            let mut paths: Vec<_> = sp.subtree.iter().map(|(p, _)| p).collect();
+            let mut paths: Vec<_> = sp.subtree.keys().collect();
             paths.sort();
             for p in paths.iter() {
                 let d = format!("{p:?}");
@@ -1984,7 +1984,6 @@ mod stall_tests {
         let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
 
         let mut parent = g;
-        let mut parent_number = 0u64;
         for round in 0..2u64 {
             let mut ops: Vec<(Key, StateOp)> = vec![set_acct(200, 2 + round)];
             for s in 0..400u16 {
@@ -2000,14 +1999,13 @@ mod stall_tests {
             let (sparse_root, stats) = w
                 .finish(ops.clone())
                 .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
-            let flat_root = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            let flat_root = shadow.write().root_for(round, parent, ops).unwrap();
             assert_eq!(sparse_root, flat_root, "round {round}");
             eprintln!(
                 "round {round}: storage_targets={} rounds={}",
                 stats.storage_targets, stats.finish_rounds
             );
             parent = sparse_root;
-            parent_number += 1;
         }
     }
 
@@ -2036,7 +2034,6 @@ mod stall_tests {
         let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
 
         let mut parent = g;
-        let mut parent_number = 0u64;
         for round in 0..3u64 {
             let mut ops: Vec<(Key, StateOp)> = Vec::new();
             for a in 0..250u8 {
@@ -2056,14 +2053,13 @@ mod stall_tests {
             let (sparse_root, stats) = w
                 .finish(ops.clone())
                 .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
-            let flat_root = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            let flat_root = shadow.write().root_for(round, parent, ops).unwrap();
             assert_eq!(sparse_root, flat_root, "round {round}");
             eprintln!(
                 "round {round}: acct_targets={} storage_targets={} rounds={}",
                 stats.account_targets, stats.storage_targets, stats.finish_rounds
             );
             parent = sparse_root;
-            parent_number += 1;
         }
     }
 
@@ -2120,7 +2116,7 @@ mod stall_tests {
                 ops.push(set_slot(a, s, 5000 + s as u64));
             }
         }
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
 
         let (root, stats) = w.finish(ops.clone()).unwrap();
         let expect = shadow.write().root_for(0, g, ops).unwrap();
@@ -2425,7 +2421,7 @@ mod overlay_tests {
             let (oracle_root, _) = oracle
                 .apply_block({
                     let mut o = ops.clone();
-                    o.sort_by(|a, b| a.0.cmp(&b.0));
+                    o.sort_by_key(|a| a.0);
                     o
                 })
                 .unwrap();
@@ -2470,7 +2466,7 @@ mod overlay_tests {
         for sl in 0..8u16 {
             ops1.push(set_slot(201, sl, 900 + sl as u64));
         }
-        ops1.sort_by(|a, b| a.0.cmp(&b.0));
+        ops1.sort_by_key(|a| a.0);
         let mut w1 = Worker::new(shadow, g);
         let (root1, _) = w1.finish(ops1.clone()).unwrap();
         let (o1, _) = oracle.apply_block(ops1).unwrap();
@@ -2483,7 +2479,7 @@ mod overlay_tests {
         for sl in 0..4u16 {
             ops2.push(set_slot(201, sl, 7000 + sl as u64));
         }
-        ops2.sort_by(|a, b| a.0.cmp(&b.0));
+        ops2.sort_by_key(|a| a.0);
         let mut w2 = Worker::new(shadow, root1);
         assert!(!w2.stats.pool_hit, "block 2 must be a pool miss");
         let (root2, _) = w2
@@ -2530,7 +2526,7 @@ mod overlay_tests {
         let (o1, _) = oracle
             .apply_block({
                 let mut o = ops1.clone();
-                o.sort_by(|a, b| a.0.cmp(&b.0));
+                o.sort_by_key(|a| a.0);
                 o
             })
             .unwrap();
@@ -2552,7 +2548,7 @@ mod overlay_tests {
         for sl in 0..8u16 {
             ops3.push(set_slot(2, sl * 20, 900_000 + sl as u64));
         }
-        ops3.sort_by(|a, b| a.0.cmp(&b.0));
+        ops3.sort_by_key(|a| a.0);
         let mut w3 = Worker::new(shadow, root1);
         assert!(w3.stats.pool_hit, "block 3 must reuse the young trie");
         let (root3, _) = w3.finish(ops3.clone()).unwrap();
@@ -2619,7 +2615,7 @@ mod finishpath_bench {
         let path = path.to_str().unwrap();
 
         const EOAS: usize = 55_000;
-        const SLOTS: u16 = 55_000u16 as u16;
+        const SLOTS: u16 = 55_000_u16;
         let contract: u8 = 251;
 
         let mut genesis: Vec<(Key, StateOp)> = Vec::new();
@@ -2657,8 +2653,8 @@ mod finishpath_bench {
         let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
 
         let mut parent = g;
-        let mut parent_number = 0u64;
         for round in 1..=3u64 {
+            let parent_number = round - 1;
             let mut ops: Vec<(Key, StateOp)> = Vec::with_capacity(EOAS + SLOTS as usize);
             for i in 0..EOAS {
                 let a = keccak256(format!("eoa-{i}")).0;
@@ -2682,7 +2678,7 @@ mod finishpath_bench {
                     },
                 ));
             }
-            ops.sort_by(|a, b| a.0.cmp(&b.0));
+            ops.sort_by_key(|a| a.0);
 
             let worker = SparseWorker::begin(shadow, parent);
             let t = Instant::now();
@@ -2707,7 +2703,6 @@ mod finishpath_bench {
             let expect = shadow.write().root_for(parent_number, parent, ops).unwrap();
             assert_eq!(root, expect, "sparse/flat divergence in bench");
             parent = root;
-            parent_number += 1;
         }
     }
 
@@ -2752,7 +2747,7 @@ mod finishpath_bench {
             let build_ms = t.elapsed().as_micros() as f64 / 1000.0;
 
             let t = Instant::now();
-            ops.sort_by(|a, b| a.0.cmp(&b.0));
+            ops.sort_by_key(|a| a.0);
             let sort_ms = t.elapsed().as_micros() as f64 / 1000.0;
 
             let t = Instant::now();
