@@ -621,18 +621,6 @@ fn proof_threads() -> usize {
     })
 }
 
-/// Drop the pooled trie once it outgrows this (`TEMPO_FLATMPT_SPARSE_MEM_MB`).
-fn trie_mem_cap() -> usize {
-    static MB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MB.get_or_init(|| {
-        std::env::var("TEMPO_FLATMPT_SPARSE_MEM_MB")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096)
-    }) * 1024
-        * 1024
-}
-
 enum Msg {
     State(revm::state::EvmState),
     Reveal(RevealBatch),
@@ -899,20 +887,10 @@ impl Worker {
         }
     }
 
-    /// Return the trie to the pool as representing `root`, unless it has
-    /// outgrown the memory cap.
+    /// Return the trie to the pool as representing `root`.
     fn pool_put(&mut self, root: B256) {
-        // TODO: replace this conservative fallback once Reth exposes sparse-trie heap usage.
-        let mem = trie_mem_cap().saturating_add(1);
-        if mem <= trie_mem_cap() {
-            self.stats.trie_mem_mb = (mem >> 20) as u64;
-            let trie = std::mem::take(&mut self.trie);
-            *TRIE_POOL.lock() = Some((root, self.anchor, trie));
-        } else {
-            self.stats.trie_mem_mb = 0;
-            tracing::info!(target: "flatmpt", mem_mb = mem >> 20, "pooled sparse trie over cap; dropping");
-            *TRIE_POOL.lock() = None;
-        }
+        let trie = std::mem::take(&mut self.trie);
+        *TRIE_POOL.lock() = Some((root, self.anchor, trie));
     }
 
     /// A cancelled build's trie still represents plain parent state as long
