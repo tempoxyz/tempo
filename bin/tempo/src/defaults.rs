@@ -70,14 +70,13 @@ impl TelemetryArgs {
         base_url_no_creds.set_password(None).ok();
 
         // Build logs OTLP URL (Victoria Metrics OTLP path)
-        let logs_otlp_url = base_url_no_creds
-            .join("opentelemetry/v1/logs")
+        let logs_otlp_url = join_under_base(&base_url_no_creds, "opentelemetry/v1/logs")
             .wrap_err("failed to construct logs OTLP URL")?;
 
         // Build metrics prometheus URL (Victoria Metrics Prometheus import path)
-        let metrics_prometheus_url = base_url_no_creds
-            .join("api/v1/import/prometheus")
-            .wrap_err("failed to construct metrics URL")?;
+        let metrics_prometheus_url =
+            join_under_base(&base_url_no_creds, "api/v1/import/prometheus")
+                .wrap_err("failed to construct metrics URL")?;
 
         Ok(Some(TelemetryConfig {
             logs_otlp_url,
@@ -86,6 +85,20 @@ impl TelemetryArgs {
             metrics_auth_header: Some(auth_header),
         }))
     }
+}
+
+/// Appends `path` below `base`, keeping any path prefix `base` already carries.
+///
+/// [`Url::join`] performs RFC 3986 relative resolution, which drops the last
+/// segment of the base path unless it ends in `/`, so a telemetry URL mounted
+/// under a prefix would otherwise lose that prefix.
+fn join_under_base(base: &Url, path: &str) -> Result<Url, url::ParseError> {
+    let mut base = base.clone();
+    if !base.path().ends_with('/') {
+        let with_slash = format!("{}/", base.path());
+        base.set_path(&with_slash);
+    }
+    base.join(path)
 }
 
 /// A `Url` with username and password set.
@@ -285,4 +298,52 @@ pub(crate) fn init_defaults() {
     init_otlp_defaults();
     init_network_defaults();
     init_discovery_defaults();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metrics_url(base: &str) -> String {
+        join_under_base(&base.parse().unwrap(), "api/v1/import/prometheus")
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn join_keeps_base_path_prefix() {
+        assert_eq!(
+            metrics_url("https://metrics.example.com/tempo"),
+            "https://metrics.example.com/tempo/api/v1/import/prometheus"
+        );
+        assert_eq!(
+            metrics_url("https://vm.example.com/insert/0/prometheus"),
+            "https://vm.example.com/insert/0/prometheus/api/v1/import/prometheus"
+        );
+    }
+
+    #[test]
+    fn join_is_unchanged_for_root_and_trailing_slash_bases() {
+        assert_eq!(
+            metrics_url("https://metrics.example.com"),
+            "https://metrics.example.com/api/v1/import/prometheus"
+        );
+        assert_eq!(
+            metrics_url("https://metrics.example.com/tempo/"),
+            "https://metrics.example.com/tempo/api/v1/import/prometheus"
+        );
+    }
+
+    #[test]
+    fn join_builds_the_logs_path() {
+        let url = join_under_base(
+            &"https://metrics.example.com/tempo".parse().unwrap(),
+            "opentelemetry/v1/logs",
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://metrics.example.com/tempo/opentelemetry/v1/logs"
+        );
+    }
 }
