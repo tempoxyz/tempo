@@ -391,7 +391,7 @@ impl FlatShadow {
             .into_iter()
             .map(|(key, acc)| {
                 let mut slots: Vec<(Key, Vec<u8>)> = acc.slots.into_iter().collect();
-                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                slots.sort_by_key(|a| a.0);
                 (
                     key,
                     mpt_flat_poc::AccountSeed {
@@ -403,7 +403,7 @@ impl FlatShadow {
                 )
             })
             .collect();
-        batch.sort_by(|a, b| a.0.cmp(&b.0));
+        batch.sort_by_key(|a| a.0);
 
         let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
@@ -483,7 +483,7 @@ impl FlatShadow {
         // Account interleaving differs between two executions of the same block
         // (bundle state is a hash map); per-account op sequences are what carry
         // ordering semantics. Stable-sort by account key → canonical fingerprint.
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
 
         // Memo: the validator re-deriving the block the builder just applied.
         let fingerprint = ops_fingerprint(&ops);
@@ -492,13 +492,12 @@ impl FlatShadow {
             .iter()
             .rev()
             .find(|e| e.number == parent_number + 1 && e.parent_root == parent_root.0)
+            && e.ops_hash == fingerprint
         {
-            if e.ops_hash == fingerprint {
-                return Ok(B256::from(e.root));
-            }
-            // Same parent, different payload: a rebuilt candidate. Fall through —
-            // the rollback loop below unwinds to the shared parent state.
+            return Ok(B256::from(e.root));
         }
+        // Same parent, different payload: a rebuilt candidate. Fall through —
+        // the rollback loop below unwinds to the shared parent state.
 
         self.unwind_to(parent_root)?;
 
@@ -917,7 +916,7 @@ fn bundle_chunk_to_ops(
                 ));
             }
         }
-        slots.sort_by(|a, b| a.0.cmp(&b.0));
+        slots.sort_by_key(|a| a.0);
         ops.extend(slots.into_iter().map(|(_, op)| (key, op)));
     }
     ops
