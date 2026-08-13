@@ -570,10 +570,7 @@ fn chunked_proofs(
     for slice in flat.chunks(chunk_size) {
         let mut t = MultiProofTargetsV2::default();
         for (acct, target) in slice {
-            t.storage_targets
-                .entry(*acct)
-                .or_default()
-                .push(target.clone());
+            t.storage_targets.entry(*acct).or_default().push(*target);
         }
         chunks.push(t);
     }
@@ -619,18 +616,6 @@ fn proof_threads() -> usize {
             .unwrap_or(8)
             .clamp(1, 128)
     })
-}
-
-/// Drop the pooled trie once it outgrows this (`TEMPO_FLATMPT_SPARSE_MEM_MB`).
-fn trie_mem_cap() -> usize {
-    static MB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MB.get_or_init(|| {
-        std::env::var("TEMPO_FLATMPT_SPARSE_MEM_MB")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096)
-    }) * 1024
-        * 1024
 }
 
 enum Msg {
@@ -753,7 +738,7 @@ impl SparseWorker {
                         }
                         // Re-check the fast lane periodically inside deep drains.
                         in_batch += 1;
-                        if in_batch % 256 == 0 && let Ok(ops) = finish_rx.try_recv() {
+                        if in_batch.is_multiple_of(256) && let Ok(ops) = finish_rx.try_recv() {
                             w.stats.hook_dropped =
                                 dropped_w.load(std::sync::atomic::Ordering::Relaxed);
                             let _ = result_tx.send(w.finish(ops));
@@ -878,8 +863,10 @@ impl Worker {
         // Retain branch-node updates: finish() publishes them as the block's
         // overlay so descendants' proofs need not wait for the flat apply.
         trie.set_updates(true);
-        let mut stats = SparseStats::default();
-        stats.pool_hit = pool_hit;
+        let stats = SparseStats {
+            pool_hit,
+            ..Default::default()
+        };
         Self {
             shadow,
             parent_root,
@@ -899,20 +886,10 @@ impl Worker {
         }
     }
 
-    /// Return the trie to the pool as representing `root`, unless it has
-    /// outgrown the memory cap.
+    /// Return the trie to the pool as representing `root`.
     fn pool_put(&mut self, root: B256) {
-        // TODO: replace this conservative fallback once Reth exposes sparse-trie heap usage.
-        let mem = trie_mem_cap().saturating_add(1);
-        if mem <= trie_mem_cap() {
-            self.stats.trie_mem_mb = (mem >> 20) as u64;
-            let trie = std::mem::take(&mut self.trie);
-            *TRIE_POOL.lock() = Some((root, self.anchor, trie));
-        } else {
-            self.stats.trie_mem_mb = 0;
-            tracing::info!(target: "flatmpt", mem_mb = mem >> 20, "pooled sparse trie over cap; dropping");
-            *TRIE_POOL.lock() = None;
-        }
+        let trie = std::mem::take(&mut self.trie);
+        *TRIE_POOL.lock() = Some((root, self.anchor, trie));
     }
 
     /// A cancelled build's trie still represents plain parent state as long
@@ -1252,7 +1229,7 @@ impl Worker {
                         out.push((*acct, Vec::new()));
                         continue;
                     };
-                    let mut account = account.clone();
+                    let mut account = *account;
                     account.storage_root = if destroyed_ref.contains(acct) {
                         EMPTY_ROOT_HASH
                     } else if let Some(r) = sroots_ref.get(acct) {
@@ -1519,25 +1496,23 @@ impl Worker {
                     self.refresh_snap(true);
                     sound = self.snap_at_parent || (self.stats.pool_hit && self.anchor_ok());
                 }
-                if let Some(snap) = &self.snap {
-                    if sound {
-                        match direct_reveal(snap, &acct_targets, &storage_targets) {
-                            Ok(p) => direct = Some(p),
-                            Err(e)
-                                if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
-                                    == Ok("1") =>
-                            {
-                                return Err(anyhow::anyhow!(
-                                    "direct reveal failed (strict): {e:#}"
-                                ));
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "flatmpt",
-                                    err = %format!("{e:#}"),
-                                    "direct reveal failed; using proof walk"
-                                );
-                            }
+                if let Some(snap) = &self.snap
+                    && sound
+                {
+                    match direct_reveal(snap, &acct_targets, &storage_targets) {
+                        Ok(p) => direct = Some(p),
+                        Err(e)
+                            if std::env::var("TEMPO_FLATMPT_NO_PROOF_FALLBACK").as_deref()
+                                == Ok("1") =>
+                        {
+                            return Err(anyhow::anyhow!("direct reveal failed (strict): {e:#}"));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "flatmpt",
+                                err = %format!("{e:#}"),
+                                "direct reveal failed; using proof walk"
+                            );
                         }
                     }
                 }
@@ -1842,7 +1817,7 @@ mod stall_tests {
         let proof = Proof::new(tf, hf).multiproof(targets).unwrap();
 
         eprintln!("account subtree nodes:");
-        for (p, _) in proof.account_subtree.iter() {
+        for p in proof.account_subtree.keys() {
             eprintln!("  acct node path len={} {:?}", p.len(), p);
         }
         for (a, sp) in proof.storages.iter() {
@@ -1851,7 +1826,7 @@ mod stall_tests {
                 sp.root,
                 sp.subtree.iter().count()
             );
-            let mut paths: Vec<_> = sp.subtree.iter().map(|(p, _)| p).collect();
+            let mut paths: Vec<_> = sp.subtree.keys().collect();
             paths.sort();
             for p in paths.iter() {
                 let d = format!("{p:?}");
@@ -1864,9 +1839,7 @@ mod stall_tests {
 
         // Dump our cursor's branch entry at 0x5500 and neighbours.
         {
-            use reth_trie::trie_cursor::{
-                TrieCursor as _, TrieCursorFactory as _, TrieStorageCursor as _,
-            };
+            use reth_trie::trie_cursor::{TrieCursor as _, TrieCursorFactory as _};
             let mut c = tf.storage_trie_cursor(acct).unwrap();
             let mut path = reth_trie::Nibbles::default();
             for n in [5u8, 5, 0, 0] {
@@ -1896,9 +1869,7 @@ mod stall_tests {
                 eprintln!("next branch: NONE");
             }
             // leaves under 0x55009
-            use reth_trie::hashed_cursor::{
-                HashedCursor as _, HashedCursorFactory as _, HashedStorageCursor as _,
-            };
+            use reth_trie::hashed_cursor::{HashedCursor as _, HashedCursorFactory as _};
             let mut hc = hf.hashed_storage_cursor(acct).unwrap();
             let mut seek = [0u8; 32];
             seek[0] = 0x55;
@@ -2013,7 +1984,6 @@ mod stall_tests {
         let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
 
         let mut parent = g;
-        let mut parent_number = 0u64;
         for round in 0..2u64 {
             let mut ops: Vec<(Key, StateOp)> = vec![set_acct(200, 2 + round)];
             for s in 0..400u16 {
@@ -2029,14 +1999,13 @@ mod stall_tests {
             let (sparse_root, stats) = w
                 .finish(ops.clone())
                 .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
-            let flat_root = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            let flat_root = shadow.write().root_for(round, parent, ops).unwrap();
             assert_eq!(sparse_root, flat_root, "round {round}");
             eprintln!(
                 "round {round}: storage_targets={} rounds={}",
                 stats.storage_targets, stats.finish_rounds
             );
             parent = sparse_root;
-            parent_number += 1;
         }
     }
 
@@ -2065,7 +2034,6 @@ mod stall_tests {
         let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
 
         let mut parent = g;
-        let mut parent_number = 0u64;
         for round in 0..3u64 {
             let mut ops: Vec<(Key, StateOp)> = Vec::new();
             for a in 0..250u8 {
@@ -2085,14 +2053,13 @@ mod stall_tests {
             let (sparse_root, stats) = w
                 .finish(ops.clone())
                 .unwrap_or_else(|e| panic!("round {round}: sparse failed: {e:#}"));
-            let flat_root = shadow.write().root_for(parent_number, parent, ops).unwrap();
+            let flat_root = shadow.write().root_for(round, parent, ops).unwrap();
             assert_eq!(sparse_root, flat_root, "round {round}");
             eprintln!(
                 "round {round}: acct_targets={} storage_targets={} rounds={}",
                 stats.account_targets, stats.storage_targets, stats.finish_rounds
             );
             parent = sparse_root;
-            parent_number += 1;
         }
     }
 
@@ -2149,7 +2116,7 @@ mod stall_tests {
                 ops.push(set_slot(a, s, 5000 + s as u64));
             }
         }
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
 
         let (root, stats) = w.finish(ops.clone()).unwrap();
         let expect = shadow.write().root_for(0, g, ops).unwrap();
@@ -2254,7 +2221,7 @@ mod stall_tests {
 
 #[cfg(test)]
 mod proofbench {
-    use super::{tests::*, *};
+    use super::*;
     use reth_trie::Nibbles;
 
     #[test]
@@ -2454,7 +2421,7 @@ mod overlay_tests {
             let (oracle_root, _) = oracle
                 .apply_block({
                     let mut o = ops.clone();
-                    o.sort_by(|a, b| a.0.cmp(&b.0));
+                    o.sort_by_key(|a| a.0);
                     o
                 })
                 .unwrap();
@@ -2499,7 +2466,7 @@ mod overlay_tests {
         for sl in 0..8u16 {
             ops1.push(set_slot(201, sl, 900 + sl as u64));
         }
-        ops1.sort_by(|a, b| a.0.cmp(&b.0));
+        ops1.sort_by_key(|a| a.0);
         let mut w1 = Worker::new(shadow, g);
         let (root1, _) = w1.finish(ops1.clone()).unwrap();
         let (o1, _) = oracle.apply_block(ops1).unwrap();
@@ -2512,7 +2479,7 @@ mod overlay_tests {
         for sl in 0..4u16 {
             ops2.push(set_slot(201, sl, 7000 + sl as u64));
         }
-        ops2.sort_by(|a, b| a.0.cmp(&b.0));
+        ops2.sort_by_key(|a| a.0);
         let mut w2 = Worker::new(shadow, root1);
         assert!(!w2.stats.pool_hit, "block 2 must be a pool miss");
         let (root2, _) = w2
@@ -2559,7 +2526,7 @@ mod overlay_tests {
         let (o1, _) = oracle
             .apply_block({
                 let mut o = ops1.clone();
-                o.sort_by(|a, b| a.0.cmp(&b.0));
+                o.sort_by_key(|a| a.0);
                 o
             })
             .unwrap();
@@ -2581,7 +2548,7 @@ mod overlay_tests {
         for sl in 0..8u16 {
             ops3.push(set_slot(2, sl * 20, 900_000 + sl as u64));
         }
-        ops3.sort_by(|a, b| a.0.cmp(&b.0));
+        ops3.sort_by_key(|a| a.0);
         let mut w3 = Worker::new(shadow, root1);
         assert!(w3.stats.pool_hit, "block 3 must reuse the young trie");
         let (root3, _) = w3.finish(ops3.clone()).unwrap();
@@ -2648,7 +2615,7 @@ mod finishpath_bench {
         let path = path.to_str().unwrap();
 
         const EOAS: usize = 55_000;
-        const SLOTS: u16 = 55_000u16 as u16;
+        const SLOTS: u16 = 55_000_u16;
         let contract: u8 = 251;
 
         let mut genesis: Vec<(Key, StateOp)> = Vec::new();
@@ -2686,8 +2653,8 @@ mod finishpath_bench {
         let shadow: &'static RwLock<FlatShadow> = Box::leak(Box::new(RwLock::new(s)));
 
         let mut parent = g;
-        let mut parent_number = 0u64;
         for round in 1..=3u64 {
+            let parent_number = round - 1;
             let mut ops: Vec<(Key, StateOp)> = Vec::with_capacity(EOAS + SLOTS as usize);
             for i in 0..EOAS {
                 let a = keccak256(format!("eoa-{i}")).0;
@@ -2711,7 +2678,7 @@ mod finishpath_bench {
                     },
                 ));
             }
-            ops.sort_by(|a, b| a.0.cmp(&b.0));
+            ops.sort_by_key(|a| a.0);
 
             let worker = SparseWorker::begin(shadow, parent);
             let t = Instant::now();
@@ -2736,7 +2703,6 @@ mod finishpath_bench {
             let expect = shadow.write().root_for(parent_number, parent, ops).unwrap();
             assert_eq!(root, expect, "sparse/flat divergence in bench");
             parent = root;
-            parent_number += 1;
         }
     }
 
@@ -2781,7 +2747,7 @@ mod finishpath_bench {
             let build_ms = t.elapsed().as_micros() as f64 / 1000.0;
 
             let t = Instant::now();
-            ops.sort_by(|a, b| a.0.cmp(&b.0));
+            ops.sort_by_key(|a| a.0);
             let sort_ms = t.elapsed().as_micros() as f64 / 1000.0;
 
             let t = Instant::now();

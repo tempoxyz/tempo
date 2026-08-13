@@ -426,92 +426,92 @@ where
             .flatten();
         let t_sparse_begin = state_setup_start.elapsed();
         let mut flat_read_shared: Option<std::sync::Arc<flat_reads::FlatReadShared>> = None;
-        if flat_reads::flat_reads_enabled() {
-            if let Some(shadow) = flat_shadow {
-                // Reads must reflect the exact parent state. Preferred path is
-                // fully lock-free: the follower's last published snapshot plus
-                // the chain of queued-but-unapplied blocks overlaid on top —
-                // the builder never waits on the follower's apply. The direct
-                // bounded lock read covers startup (nothing published yet);
-                // past that, this block reads from MDBX — unless the KV copy
-                // isn't persisted at all, in which case the only correct
-                // option is to wait for the pending chain to become available.
-                let parent_root = parent_header.state_root();
-                let resolve = || {
-                    tempo_flatmpt::published_snapshot().and_then(|(published_root, snap)| {
-                        tempo_flatmpt::pending_chain(published_root, parent_root)
-                            .map(|overlay| (snap, overlay))
-                    })
-                };
-                let mut snap = resolve().or_else(|| {
-                    shadow
-                        .try_read_for(std::time::Duration::from_millis(50))
-                        .and_then(|g| g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new())))
-                });
-                if snap.is_none() && flat_reads::no_state_kv_active() {
-                    warn!(
-                        target: "flatmpt",
-                        parent = %parent_root,
-                        published = ?tempo_flatmpt::published_snapshot().map(|(r, _)| r),
-                        queue = tempo_flatmpt::follower(shadow).depth(),
-                        "no-KV build waiting for a servable parent state"
-                    );
-                    let deadline = Instant::now() + std::time::Duration::from_secs(15);
-                    while snap.is_none() && Instant::now() < deadline {
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                        snap = resolve().or_else(|| {
-                            shadow
-                                .try_read_for(std::time::Duration::from_millis(5))
-                                .and_then(|g| {
-                                    g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new()))
-                                })
-                        });
-                    }
-                    if snap.is_none() {
-                        return Err(PayloadBuilderError::Other(
-                            anyhow::anyhow!(
-                                "flat store never reached parent and no state KV exists to fall back to"
-                            )
-                            .into(),
-                        ));
-                    }
+        if flat_reads::flat_reads_enabled()
+            && let Some(shadow) = flat_shadow
+        {
+            // Reads must reflect the exact parent state. Preferred path is
+            // fully lock-free: the follower's last published snapshot plus
+            // the chain of queued-but-unapplied blocks overlaid on top —
+            // the builder never waits on the follower's apply. The direct
+            // bounded lock read covers startup (nothing published yet);
+            // past that, this block reads from MDBX — unless the KV copy
+            // isn't persisted at all, in which case the only correct
+            // option is to wait for the pending chain to become available.
+            let parent_root = parent_header.state_root();
+            let resolve = || {
+                tempo_flatmpt::published_snapshot().and_then(|(published_root, snap)| {
+                    tempo_flatmpt::pending_chain(published_root, parent_root)
+                        .map(|overlay| (snap, overlay))
+                })
+            };
+            let mut snap = resolve().or_else(|| {
+                shadow
+                    .try_read_for(std::time::Duration::from_millis(50))
+                    .and_then(|g| g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new())))
+            });
+            if snap.is_none() && flat_reads::no_state_kv_active() {
+                warn!(
+                    target: "flatmpt",
+                    parent = %parent_root,
+                    published = ?tempo_flatmpt::published_snapshot().map(|(r, _)| r),
+                    queue = tempo_flatmpt::follower(shadow).depth(),
+                    "no-KV build waiting for a servable parent state"
+                );
+                let deadline = Instant::now() + std::time::Duration::from_secs(15);
+                while snap.is_none() && Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    snap = resolve().or_else(|| {
+                        shadow
+                            .try_read_for(std::time::Duration::from_millis(5))
+                            .and_then(|g| {
+                                g.at_parent(parent_root).then(|| (g.snapshot(), Vec::new()))
+                            })
+                    });
                 }
-                match snap {
-                    Some((snap, overlay)) => {
-                        if !overlay.is_empty() {
-                            debug!(
-                                target: "flatmpt",
-                                pending = overlay.len(),
-                                "flat lags parent; reading through the pending-block overlay"
-                            );
-                        }
-                        let shared = std::sync::Arc::new(flat_reads::FlatReadShared {
-                            snap,
-                            hashed: Default::default(),
-                            // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
-                            // feed (A/B: exec-thread reveal-walk cost vs the
-                            // worker fetching its own reveals). With an active
-                            // overlay the snapshot trie is an ancestor of the
-                            // parent trie — its node hashes are stale — so the
-                            // worker must fetch its own proofs.
-                            reveal: flat_sparse
-                                .as_ref()
-                                .filter(|_| overlay.is_empty())
-                                .filter(|_| {
-                                    std::env::var("TEMPO_FLATMPT_READ_REVEAL").as_deref() != Ok("0")
-                                })
-                                .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
-                            overlay,
-                        });
-                        state_provider = Box::new(flat_reads::FlatReadProvider {
-                            inner: state_provider,
-                            shared: shared.clone(),
-                        });
-                        flat_read_shared = Some(shared);
+                if snap.is_none() {
+                    return Err(PayloadBuilderError::Other(
+                        anyhow::anyhow!(
+                            "flat store never reached parent and no state KV exists to fall back to"
+                        )
+                        .into(),
+                    ));
+                }
+            }
+            match snap {
+                Some((snap, overlay)) => {
+                    if !overlay.is_empty() {
+                        debug!(
+                            target: "flatmpt",
+                            pending = overlay.len(),
+                            "flat lags parent; reading through the pending-block overlay"
+                        );
                     }
-                    None => {
-                        debug!(target: "flatmpt", "flat not at parent; MDBX reads this block");
-                    }
+                    let shared = std::sync::Arc::new(flat_reads::FlatReadShared {
+                        snap,
+                        hashed: Default::default(),
+                        // TEMPO_FLATMPT_READ_REVEAL=0 detaches the reveal
+                        // feed (A/B: exec-thread reveal-walk cost vs the
+                        // worker fetching its own reveals). With an active
+                        // overlay the snapshot trie is an ancestor of the
+                        // parent trie — its node hashes are stale — so the
+                        // worker must fetch its own proofs.
+                        reveal: flat_sparse
+                            .as_ref()
+                            .filter(|_| overlay.is_empty())
+                            .filter(|_| {
+                                std::env::var("TEMPO_FLATMPT_READ_REVEAL").as_deref() != Ok("0")
+                            })
+                            .map(|w| flat_reads::RevealFeed::new(w.reveal_sink())),
+                        overlay,
+                    });
+                    state_provider = Box::new(flat_reads::FlatReadProvider {
+                        inner: state_provider,
+                        shared: shared.clone(),
+                    });
+                    flat_read_shared = Some(shared);
+                }
+                None => {
+                    debug!(target: "flatmpt", "flat not at parent; MDBX reads this block");
                 }
             }
         }
@@ -748,7 +748,7 @@ where
             parent_header.hash(),
             executor.evm().evm_env(),
             self.config.enable_parallel,
-            flat_read_shared.clone(),
+            flat_read_shared,
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
@@ -1322,7 +1322,7 @@ where
         {
             hashed_state
         } else {
-            Arc::new(finish_provider.hashed_post_state(&db.bundle_state))
+            Arc::new(finish_provider.hashed_post_state(&db.bundle_state)?)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =

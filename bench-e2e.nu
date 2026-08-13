@@ -1077,18 +1077,28 @@ def run-local-e2e-phase [run: record, ctx: record] {
         print $"  Tracy mode: ($ctx.tracy), sampling hz: ($TRACY_SAMPLING_HZ)"
     }
     let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
-    let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
+    let flatmpt_common_env = if $run_type == "feature" and $ctx.feature_flatmpt {
+        "TEMPO_FLATMPT_MODE=root TEMPO_NO_STATE_KV=1"
+    } else {
+        ""
+    }
+    let a_flatmpt_env = if $flatmpt_common_env != "" { $"TEMPO_FLATMPT=($ctx.a.mount)/tempo_flatmpt_($ctx.bloat)mb ($flatmpt_common_env)" } else { "" }
+    let b_flatmpt_env = if $flatmpt_common_env != "" { $"TEMPO_FLATMPT=($ctx.b.mount)/tempo_flatmpt_($ctx.bloat)mb ($flatmpt_common_env)" } else { "" }
+    let a_env = [$side_env $a_flatmpt_env] | where { |item| $item != "" } | str join " "
+    let b_env = [$side_env $b_flatmpt_env] | where { |item| $item != "" } | str join " "
+    let a_env_prefix = if $a_env != "" { $"($a_env) " } else { "" }
+    let b_env_prefix = if $b_env != "" { $"($b_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $a_env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $b_env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
     sleep 2sec
-    let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
+    let rpc_timeout = if $run_type == "feature" and $ctx.feature_flatmpt and $ctx.bloat > 0 { 3600 } else if $ctx.bloat > 0 { 600 } else { 300 }
     mut phase_exit = 0
     if ((find-tempo-pids) | length) < 2 {
         print $"Error: local e2e validators exited before readiness checks completed for ($phase)"
@@ -1389,6 +1399,7 @@ def "main e2e" [
     --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
+    --feature-flatmpt                                   # Use Flat MPT for state roots and KV reads in feature phases
     --bench-env: string = ""                            # Environment vars for the sender process
     --baseline-name: string = ""                         # Baseline display name for summary
     --feature-name: string = ""                          # Feature display name for summary
@@ -1724,6 +1735,7 @@ def "main e2e" [
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
+        feature_flatmpt: $feature_flatmpt
         bench_env: $bench_env
         victoriametrics_url: $victoriametrics_url
         clickhouse_url: $clickhouse_url

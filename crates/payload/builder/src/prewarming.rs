@@ -596,6 +596,11 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 }
 
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
+type PrewarmingChannelSwap = (
+    Receiver<Option<PrewarmedTransaction>>,
+    Sender<Option<PrewarmedTransaction>>,
+);
+
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
@@ -607,10 +612,7 @@ enum BestTransactionsCommand {
         /// conflicting buffered transactions itself, so a gas-capped block's
         /// ~17k tail invalidations cost a set insert instead of a channel
         /// swap + full buffer re-send each.
-        swap: Option<(
-            Receiver<Option<PrewarmedTransaction>>,
-            Sender<Option<PrewarmedTransaction>>,
-        )>,
+        swap: Option<PrewarmingChannelSwap>,
     },
     NoUpdates,
     SkipBlobs(bool),

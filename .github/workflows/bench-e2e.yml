@@ -139,11 +139,11 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
+      feature-flatmpt:
+        description: Use Flat MPT for state roots and KV reads in feature phases.
+        type: boolean
+        required: true
+        default: false
   workflow_call:
     inputs:
       pr:
@@ -300,6 +300,10 @@ on:
         type: string
         required: false
         default: ""
+      feature-flatmpt:
+        type: string
+        required: false
+        default: "false"
       run-pairs:
         type: string
         required: false
@@ -398,6 +402,7 @@ jobs:
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
+      BENCH_FEATURE_FLATMPT: ${{ inputs.feature-flatmpt == true || inputs.feature-flatmpt == 'true' }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       BENCH_RUN_SIDE: ${{ inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
@@ -934,6 +939,7 @@ jobs:
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
+          [ "$BENCH_FEATURE_FLATMPT" = "true" ] && cmd+=(--feature-flatmpt)
           { [ "$BENCH_METRICS" = "true" ] || [ "$BENCH_VALSCOPE" = "true" ]; } && [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
@@ -1006,6 +1012,7 @@ jobs:
           [ -n "$BENCH_BENCH_ENV" ] && derek_cmd+=(bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
+          [ "$BENCH_FEATURE_FLATMPT" = "true" ] && derek_cmd+=(feature-flatmpt)
           DEREK_BENCH_COMMAND=""
           for arg in "${derek_cmd[@]}"; do
             if [ -n "$DEREK_BENCH_COMMAND" ]; then

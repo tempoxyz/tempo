@@ -7,7 +7,7 @@
 //! engine validator (block validation, via reth's `CustomStateRoot` seam).
 //!
 //! Activation is env-driven so stock binaries are unaffected:
-//!   TEMPO_FLATMPT=<path>          enable; flat file lives at <path> (wiped on init)
+//!   `TEMPO_FLATMPT=<path>`        enable; flat file lives at `<path>` (wiped on init)
 //!   TEMPO_FLATMPT_MODE=compare    compute flat root alongside the sparse trie and
 //!                                 assert parity per block (default; bring-up gate)
 //!   TEMPO_FLATMPT_MODE=root       flat MPT is the sole commitment: the builder
@@ -146,6 +146,9 @@ fn fingerprint_chunk(ops: &[(Key, StateOp)]) -> [u8; 32] {
 pub struct FlatShadow {
     db: FlatMpt,
     entries: Vec<Entry>,
+    /// Canonical header root accepted as the parent of this checkpoint.
+    /// This differs from `db.root()` for block-0 databases initialized with state bloat.
+    checkpoint_parent: Option<B256>,
     timings: std::io::BufWriter<std::fs::File>,
     blocks_since_persist: u64,
     /// Engine phase nanos accumulated since the last commit_entry (profiling builds).
@@ -204,6 +207,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -242,6 +246,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -285,6 +290,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -385,7 +391,7 @@ impl FlatShadow {
             .into_iter()
             .map(|(key, acc)| {
                 let mut slots: Vec<(Key, Vec<u8>)> = acc.slots.into_iter().collect();
-                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                slots.sort_by_key(|a| a.0);
                 (
                     key,
                     mpt_flat_poc::AccountSeed {
@@ -397,7 +403,7 @@ impl FlatShadow {
                 )
             })
             .collect();
-        batch.sort_by(|a, b| a.0.cmp(&b.0));
+        batch.sort_by_key(|a| a.0);
 
         let mut db = FlatMpt::create_ram_build(path, mpt_flat_poc::Config::default())
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
@@ -424,6 +430,7 @@ impl FlatShadow {
         Ok(Self {
             db,
             entries: Vec::new(),
+            checkpoint_parent: None,
             timings,
             blocks_since_persist: 0,
             prof_acc: [0; 8],
@@ -450,12 +457,12 @@ impl FlatShadow {
         self.db.snapshot()
     }
 
-    /// True when the live flat state is the given parent. The bloat/golden
-    /// exception mirrors `unwind_to`'s anchor escape: at block 1 the genesis
-    /// header still carries the pre-dump root, and the post-dump live state
-    /// IS the real parent state.
+    /// True when the live flat state is the given parent. A block-0 checkpoint
+    /// may accept the genesis header root as an alias because state bloat changes
+    /// the database root without rewriting the canonical genesis header.
     pub fn at_parent(&self, parent_root: B256) -> bool {
         self.db.root() == parent_root.0
+            || (self.entries.is_empty() && self.checkpoint_parent == Some(parent_root))
             || (self.entries.is_empty()
                 && (std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
                     || std::env::var_os("TEMPO_FLATMPT_GOLDEN").is_some()))
@@ -476,7 +483,7 @@ impl FlatShadow {
         // Account interleaving differs between two executions of the same block
         // (bundle state is a hash map); per-account op sequences are what carry
         // ordering semantics. Stable-sort by account key → canonical fingerprint.
-        ops.sort_by(|a, b| a.0.cmp(&b.0));
+        ops.sort_by_key(|a| a.0);
 
         // Memo: the validator re-deriving the block the builder just applied.
         let fingerprint = ops_fingerprint(&ops);
@@ -485,13 +492,12 @@ impl FlatShadow {
             .iter()
             .rev()
             .find(|e| e.number == parent_number + 1 && e.parent_root == parent_root.0)
+            && e.ops_hash == fingerprint
         {
-            if e.ops_hash == fingerprint {
-                return Ok(B256::from(e.root));
-            }
-            // Same parent, different payload: a rebuilt candidate. Fall through —
-            // the rollback loop below unwinds to the shared parent state.
+            return Ok(B256::from(e.root));
         }
+        // Same parent, different payload: a rebuilt candidate. Fall through —
+        // the rollback loop below unwinds to the shared parent state.
 
         self.unwind_to(parent_root)?;
 
@@ -593,7 +599,8 @@ impl FlatShadow {
         // engine (CustomStateRoot) remains the hard correctness gate.
         if self.entries.is_empty()
             && self.db.root() != parent_root.0
-            && (std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
+            && (self.checkpoint_parent == Some(parent_root)
+                || std::env::var_os("TEMPO_FLATMPT_BLOAT").is_some()
                 || std::env::var_os("TEMPO_FLATMPT_GOLDEN").is_some())
         {
             tracing::warn!(
@@ -730,6 +737,7 @@ pub fn shadow(
 pub fn shadow_from_checkpoint(
     checkpoint_number: u64,
     checkpoint_root: B256,
+    checkpoint_parent: B256,
     load: impl FnOnce(&mut FlatMpt) -> anyhow::Result<(u64, u64)>,
 ) -> Option<&'static RwLock<FlatShadow>> {
     SHADOW
@@ -768,6 +776,8 @@ pub fn shadow_from_checkpoint(
                 let shadow = FlatShadow {
                     db,
                     entries: Vec::new(),
+                    checkpoint_parent: (checkpoint_parent != checkpoint_root)
+                        .then_some(checkpoint_parent),
                     timings,
                     blocks_since_persist: 0,
                     prof_acc: [0; 8],
@@ -780,8 +790,11 @@ pub fn shadow_from_checkpoint(
             })()
             .expect("flat MPT checkpoint reopen failed");
             let shadow = reopened.unwrap_or_else(|| {
-                FlatShadow::init_from_checkpoint(&path, checkpoint_root, load)
-                    .expect("flat MPT checkpoint init failed")
+                let mut shadow = FlatShadow::init_from_checkpoint(&path, checkpoint_root, load)
+                    .expect("flat MPT checkpoint init failed");
+                shadow.checkpoint_parent =
+                    (checkpoint_parent != checkpoint_root).then_some(checkpoint_parent);
+                shadow
             });
             std::fs::write(
                 &anchor_path,
@@ -903,7 +916,7 @@ fn bundle_chunk_to_ops(
                 ));
             }
         }
-        slots.sort_by(|a, b| a.0.cmp(&b.0));
+        slots.sort_by_key(|a| a.0);
         ops.extend(slots.into_iter().map(|(_, op)| (key, op)));
     }
     ops
@@ -922,6 +935,48 @@ mod tests {
                 code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
             },
         )
+    }
+
+    #[test]
+    fn repeated_account_seed_chunks_match_complete_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = keccak256([0xabu8; 20]).0;
+        let slots: Vec<(Key, Vec<u8>)> = (0..257u64)
+            .map(|i| {
+                (
+                    keccak256(i.to_be_bytes()).0,
+                    mpt_flat_poc::eth::storage_value_rlp(U256::from(i + 1)),
+                )
+            })
+            .collect();
+        let seed = |slots| AccountSeed {
+            nonce: 7,
+            balance: U256::from(11u64),
+            code_hash: mpt_flat_poc::eth::EMPTY_CODE_HASH.0,
+            slots,
+        };
+
+        let mut complete = FlatMpt::create_ram_build(
+            dir.path().join("complete.flat"),
+            mpt_flat_poc::Config::default(),
+        )
+        .unwrap();
+        complete
+            .insert_batch_accounts(vec![(account, seed(slots.clone()))])
+            .unwrap();
+
+        let mut chunked = FlatMpt::create_ram_build(
+            dir.path().join("chunked.flat"),
+            mpt_flat_poc::Config::default(),
+        )
+        .unwrap();
+        for chunk in slots.chunks(17) {
+            chunked
+                .insert_batch_accounts(vec![(account, seed(chunk.to_vec()))])
+                .unwrap();
+        }
+
+        assert_eq!(chunked.root(), complete.root());
     }
 
     #[test]
@@ -966,6 +1021,25 @@ mod tests {
             s.root_for(5, B256::from([9u8; 32]), vec![acct(5, 1)])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_parent_alias_accepts_block_zero_header_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("checkpoint.flat");
+        let path = path.to_str().unwrap();
+        let genesis = vec![acct(1, 1)];
+        let mut oracle =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (checkpoint_root, _) = oracle.apply_block(genesis.clone()).unwrap();
+        let header_root = B256::from([9u8; 32]);
+
+        let mut shadow = FlatShadow::init(path, genesis, B256::from(checkpoint_root)).unwrap();
+        shadow.checkpoint_parent = Some(header_root);
+
+        assert!(shadow.at_parent(header_root));
+        shadow.unwind_to(header_root).unwrap();
+        assert_eq!(shadow.current_root(), B256::from(checkpoint_root));
     }
 
     #[test]
@@ -1090,6 +1164,12 @@ mod tests {
 
         let ops = bundle_to_ops(&bundle);
         let ours = ops_to_post_state(&ops);
+        let destroyed: std::collections::BTreeSet<B256> = bundle
+            .state
+            .iter()
+            .filter(|(_, account)| account.was_destroyed())
+            .map(|(address, _)| alloy_primitives::keccak256(address))
+            .collect();
         let reths = reth_trie::HashedPostState::from_bundle_state::<reth_trie::KeccakKeyHasher>(
             &bundle.state,
         );
@@ -1111,7 +1191,12 @@ mod tests {
             let o = ours.storages.get(&acct);
             let r = reths.storages.get(&acct);
             let deleted = matches!(ours.accounts.get(&acct), Some(None));
-            if !deleted {
+            if destroyed.contains(&acct) {
+                assert!(
+                    o.is_some_and(|s| s.wiped),
+                    "destroyed account must wipe storage"
+                );
+            } else if !deleted {
                 assert_eq!(
                     o.map(|s| s.wiped).unwrap_or(false),
                     r.map(|s| s.wiped).unwrap_or(false),
