@@ -402,7 +402,7 @@ mod tests {
             function tokenEnablementHash() external view returns (bytes32);
             function hasRole(address account, TestZonePortalRole role) external view returns (bool);
             function isSequencer(address account) external view returns (bool);
-            function setRole(address account, TestZonePortalRole role) external;
+            function setAllowedAccount(address account, bool allowed) external;
         }
 
         interface TestZoneMessenger {
@@ -778,24 +778,24 @@ mod tests {
         assert!(TestZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
 
         let account = Address::repeat_byte(0x55);
-        let set_role = evm
+        let set_account = evm
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::setRoleCall {
+                TestZonePortal::setAllowedAccountCall {
                     account,
-                    role: TestZonePortalRole::Account,
+                    allowed: true,
                 }
                 .abi_encode()
                 .into(),
             )
             .unwrap();
         assert!(
-            set_role.result.is_success(),
-            "setRole failed: {:?}",
-            set_role.result
+            set_account.result.is_success(),
+            "setAllowedAccount failed: {:?}",
+            set_account.result
         );
-        evm.db_mut().commit(set_role.state);
+        evm.db_mut().commit(set_account.state);
 
         let account_role = evm
             .transact_system_call(
