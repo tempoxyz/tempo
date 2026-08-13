@@ -134,7 +134,7 @@ crate::sol! {
         function claimRewards() external returns (uint256 maxAmount);
         function optedInSupply() external view returns (uint128);
         function globalRewardPerToken() external view returns (uint256);
-        function userRewardInfo(address) external view returns (address rewardRecipient, uint256 rewardPerToken, uint256 rewardBalance);
+        function userRewardInfo(address) external view returns (UserRewardInfo memory);
         function getPendingRewards(address account) external view returns (uint128);
 
         // Events

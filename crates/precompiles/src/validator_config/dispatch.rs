@@ -26,14 +26,7 @@ impl Precompile for ValidatorConfig {
                             .map_err(|_| TempoPrecompileError::array_oob())?;
                         self.validators_array(index)
                     }),
-                    validators(call) => view(call, |c| self.validators(c.validatorAddress).map(|validator| (
-                        validator.publicKey,
-                        validator.active,
-                        validator.index,
-                        validator.validatorAddress,
-                        validator.inboundAddress,
-                        validator.outboundAddress,
-                    ).into())),
+                    validators(call) => view(call, |c| self.validators(c.validator)),
                     validatorCount(call) => view(call, |_| self.validator_count()),
 
                     // Mutate functions

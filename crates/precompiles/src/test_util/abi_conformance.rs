@@ -22,7 +22,7 @@ impl AbiSurface {
     /// which canonical ABI signatures cannot distinguish.
     pub fn from_abi(abi: &JsonAbi) -> Self {
         Self {
-            functions: abi.functions().map(Function::full_signature).collect(),
+            functions: abi.functions().map(function_signature).collect(),
             errors: abi.errors().map(Error::signature).collect(),
             events: abi.events().map(Event::full_signature).collect(),
         }
@@ -65,6 +65,16 @@ impl AbiSurface {
         }
         (only_self, only_other)
     }
+}
+
+fn function_signature(function: &Function) -> String {
+    let mut function = function.clone();
+    if let [output] = function.outputs.as_slice()
+        && output.ty == "tuple"
+    {
+        function.outputs = output.components.clone();
+    }
+    function.full_signature()
 }
 
 /// Reads the ABI from a Foundry JSON artifact.
@@ -125,17 +135,20 @@ mod tests {
 
     #[test]
     fn preserves_tuple_returns_mutability_and_events() {
-        let abi = JsonAbi::parse([
+        let mut abi = JsonAbi::parse([
             "function pool() external view returns ((uint128,uint128) reserves)",
             "event Bar(address indexed from, uint256 amount) anonymous",
             "error BadPerson(tuple(string,uint16) person)",
         ])
         .unwrap();
+        let pool = &mut abi.functions.get_mut("pool").unwrap()[0];
+        pool.outputs[0].components[0].name = "reserve0".into();
+        pool.outputs[0].components[1].name = "reserve1".into();
         let surface = AbiSurface::from_abi(&abi);
         assert!(
             surface
                 .functions
-                .contains("function pool() view returns (tuple(uint128, uint128) reserves)")
+                .contains("function pool() view returns (uint128 reserve0, uint128 reserve1)")
         );
         assert!(
             surface

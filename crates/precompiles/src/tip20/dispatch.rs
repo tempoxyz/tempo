@@ -84,11 +84,7 @@ impl Precompile for TIP20Token {
                     claimRewards(call) => mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender)),
                     globalRewardPerToken(call) => view(call, |_| self.get_global_reward_per_token()),
                     optedInSupply(call) => view(call, |_| self.get_opted_in_supply()),
-                    userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.0).map(|info| (
-                        info.reward_recipient,
-                        info.reward_per_token,
-                        info.reward_balance,
-                    ).into())),
+                    userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.0).map(Into::into)),
                     getPendingRewards(call) => view(call, |c| self.get_pending_rewards(c.account)),
 
                     #[schedule(since = T2)]
