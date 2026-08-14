@@ -40,6 +40,11 @@ type PoolUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 );
+type StateUpdateResult = (
+    Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+);
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -1381,12 +1386,12 @@ impl AA2dPool {
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
-    ) -> PoolUpdateResult {
+    ) -> StateUpdateResult {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
         let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         };
 
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
@@ -1407,7 +1412,7 @@ impl AA2dPool {
             }
         }
 
-        let (promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
+        let (mut promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
 
         // Remove included expiring nonce transactions
         for expiring_nonce_hash in included_expiring_nonce_hashes.drain(..) {
@@ -1418,6 +1423,14 @@ impl AA2dPool {
         self.state_update_nonce_changes = changes;
         self.state_update_included_expiring_nonce_hashes = included_expiring_nonce_hashes;
 
+        let discarded = self.discard();
+        promoted.retain(|tx| {
+            tx.transaction
+                .aa_transaction_id()
+                .and_then(|id| self.by_id.get(&id))
+                .is_some_and(|tx| tx.is_pending())
+        });
+
         // Record metrics for all changes
         if !promoted.is_empty() {
             self.metrics.inc_promoted(promoted.len());
@@ -1427,7 +1440,7 @@ impl AA2dPool {
         }
         self.update_metrics();
 
-        (promoted, mined)
+        (promoted, mined, discarded)
     }
 
     /// Asserts that all assumptions are valid.
@@ -6138,10 +6151,11 @@ mod tests {
             .push(B256::random());
 
         let state = AddressMap::default();
-        let (promoted, mined) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
         assert!(promoted.is_empty());
         assert!(mined.is_empty());
+        assert!(discarded.is_empty());
         assert!(pool.state_update_nonce_changes.is_empty());
         assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
     }
@@ -6195,10 +6209,11 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
         assert!(promoted.is_empty(), "tx2 was already pending");
         assert_eq!(mined.len(), 2, "tx0 and tx1 should be mined");
+        assert!(discarded.is_empty());
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 1, "Only tx2 should remain pending");
@@ -6258,15 +6273,78 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
         assert_eq!(mined.len(), 2, "tx0 and tx1 should be mined");
         assert!(promoted.is_empty());
+        assert!(discarded.is_empty());
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 0, "tx3 should still be queued (gap at nonce 2)");
         assert_eq!(queued, 1);
 
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn on_state_updates_discards_over_limit_and_filters_promotions() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+        let max_fee = 30_000_000_000u128;
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(2)
+            .max_fee(max_fee)
+            .max_priority_fee(1)
+            .build();
+        let tx2_hash = *tx2.hash();
+        let nonce_slot = tx2.nonce_key_slot().unwrap();
+        let tx3 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(3)
+            .max_fee(max_fee)
+            .max_priority_fee(5_000_000_000)
+            .build();
+        let tx3_hash = *tx3.hash();
+
+        for tx in [tx2, tx3] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut storage = HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(2u64)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+
+        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+
+        assert!(promoted.is_empty(), "tx3 was demoted during eviction");
+        assert!(mined.is_empty());
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].hash(), &tx2_hash);
+        assert!(!pool.contains(&tx2_hash));
+        assert!(pool.contains(&tx3_hash));
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
         pool.assert_invariants();
     }
 
@@ -6916,10 +6994,11 @@ mod tests {
             BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
 
-        let (promoted, mined) = pool.on_state_updates(&state);
+        let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
         assert!(promoted.is_empty());
         assert_eq!(mined.len(), 1);
+        assert!(discarded.is_empty());
         assert_eq!(mined[0].hash(), &tx_hash);
         assert!(!pool.contains(&tx_hash));
         assert!(pool.expiring_nonce_txs.is_empty());

@@ -106,11 +106,11 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
-            .notify_on_transaction_updates(promoted, Vec::new());
+            .notify_on_transaction_updates(promoted, discarded);
         mined
     }
 
