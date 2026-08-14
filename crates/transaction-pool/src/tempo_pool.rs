@@ -106,11 +106,11 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
-            .notify_on_transaction_updates(promoted, Vec::new());
+            .notify_on_transaction_updates(promoted, discarded);
         mined
     }
 
@@ -639,9 +639,14 @@ where
 
     fn pool_size(&self) -> PoolSize {
         let mut size = self.protocol_pool.pool_size();
-        let (pending, queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
+        let aa_2d_pool = self.aa_2d_pool.read();
+        let (pending, queued) = aa_2d_pool.pending_and_queued_txn_count();
+        let (pending_size, queued_size) = aa_2d_pool.pending_and_queued_txn_size();
         size.pending += pending;
+        size.pending_size += pending_size;
         size.queued += queued;
+        size.queued_size += queued_size;
+        size.total += pending + queued;
         size
     }
 
@@ -1608,6 +1613,24 @@ mod tests {
             },
         );
         provider
+    }
+
+    #[test]
+    fn pool_size_includes_aa_2d_transaction_counts_and_bytes() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let tx = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .build();
+        let tx_size = reth_primitives_traits::InMemorySize::size(&tx);
+
+        add_validated(&pool, tx);
+
+        let size = pool.pool_size();
+        assert_eq!(size.pending, 1);
+        assert_eq!(size.pending_size, tx_size);
+        assert_eq!(size.queued, 0);
+        assert_eq!(size.queued_size, 0);
+        assert_eq!(size.total, 1);
     }
 
     fn sponsored_keychain_transaction(
