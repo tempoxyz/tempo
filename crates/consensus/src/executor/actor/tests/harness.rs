@@ -137,6 +137,8 @@ struct FakeExecutionInner {
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
     suppress_payload_ids: AtomicBool,
+    /// Returns a payload ID without registering a job under it.
+    omit_payload_job: AtomicBool,
     next_payload_id: AtomicU64,
     /// Sender halves of registered payload build jobs, for the test to
     /// deliver (or abort) builds.
@@ -174,6 +176,7 @@ impl FakeExecution {
                 fcu_overrides: Mutex::new(VecDeque::new()),
                 reject_all_fcus: AtomicBool::new(false),
                 suppress_payload_ids: AtomicBool::new(false),
+                omit_payload_job: AtomicBool::new(false),
                 next_payload_id: AtomicU64::new(1),
                 payload_senders: Mutex::new(HashMap::new()),
                 payload_receivers: Mutex::new(HashMap::new()),
@@ -237,6 +240,12 @@ impl FakeExecution {
         self.inner
             .suppress_payload_ids
             .store(suppress, Ordering::SeqCst);
+    }
+
+    /// Returns payload IDs from build FCUs without registering their jobs,
+    /// making payload resolution report that no job exists under the ID.
+    pub(super) fn omit_payload_job(&self, omit: bool) {
+        self.inner.omit_payload_job.store(omit, Ordering::SeqCst);
     }
 
     // NOTE: the fake deliberately offers no way to hold a new-payload or
@@ -450,19 +459,21 @@ impl ExecutionLayer for FakeExecution {
                     .fetch_add(1, Ordering::SeqCst)
                     .to_be_bytes(),
             );
-            let (sender, receiver) = oneshot::channel();
-            match self.inner.scripted_builds.lock().pop_front() {
-                Some(payload) => {
-                    let _ = sender.send(payload);
+            if !self.inner.omit_payload_job.load(Ordering::SeqCst) {
+                let (sender, receiver) = oneshot::channel();
+                match self.inner.scripted_builds.lock().pop_front() {
+                    Some(payload) => {
+                        let _ = sender.send(payload);
+                    }
+                    None => {
+                        self.inner.payload_senders.lock().insert(payload_id, sender);
+                    }
                 }
-                None => {
-                    self.inner.payload_senders.lock().insert(payload_id, sender);
-                }
+                self.inner
+                    .payload_receivers
+                    .lock()
+                    .insert(payload_id, receiver);
             }
-            self.inner
-                .payload_receivers
-                .lock()
-                .insert(payload_id, receiver);
             response = response.with_payload_id(payload_id);
         }
 

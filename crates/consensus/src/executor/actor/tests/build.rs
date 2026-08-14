@@ -7,7 +7,7 @@ use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
-use super::harness::{GENESIS, Harness, built_payload, make_block, round};
+use super::harness::{ElCall, GENESIS, Harness, built_payload, make_block, round};
 use crate::consensus::Digest;
 
 #[test_traced]
@@ -136,6 +136,34 @@ fn missing_payload_id_fails_the_build() {
         h.execution.script_built_payload(built_payload(&proposal));
         let rx = h.build(round(2), 0, GENESIS);
         rx.await.expect("the later build should deliver");
+    });
+}
+
+#[test_traced]
+fn missing_payload_job_fails_the_build_without_shutdown() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        h.execution.omit_payload_job(true);
+        let rx = h.build(round(1), 0, GENESIS);
+        rx.await
+            .expect_err("a missing payload job must fail the build");
+        assert!(
+            h.execution
+                .calls()
+                .iter()
+                .any(|call| matches!(call, ElCall::Resolve(_))),
+            "the actor must attempt to resolve the payload ID returned by the FCU",
+        );
+
+        // A missing payload job is local to the build request. The actor
+        // remains available for later consensus work.
+        let b1 = make_block(1, 1, GENESIS);
+        let verdict = h
+            .verify(round(2), b1)
+            .await
+            .expect("verification should complete after the missing payload job");
+        assert!(verdict.is_some());
     });
 }
 
