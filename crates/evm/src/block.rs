@@ -165,6 +165,43 @@ impl TxResult for TempoTxResult {
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
 /// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
+///
+/// # Reuse of the inner [`EthBlockExecutor`]
+///
+/// Every [`BlockExecutor`] method delegates to the inner executor and wraps it with
+/// Tempo-specific logic:
+///
+/// - [`apply_pre_execution_changes`](BlockExecutor::apply_pre_execution_changes): after
+///   rejecting non-empty withdrawals, delegates to the inner executor, which transacts the
+///   Ethereum pre-block system calls: the [EIP-2935] blockhashes and [EIP-4788] beacon root
+///   contract calls (Cancun and Prague are active at genesis on all Tempo networks, and Tempo
+///   headers set a zero `parent_beacon_block_root`). Whether these calls have any effect
+///   depends on the respective system contract being deployed in the network's genesis state.
+///   Afterwards, Tempo deploys the `0xEF` marker bytecode for precompiles at their activation
+///   hardforks.
+/// - [`execute_transaction_without_commit`](BlockExecutor::execute_transaction_without_commit):
+///   reuses the inner executor for the block gas limit check and EVM execution, wrapped with
+///   section validation and the subblock fee recipient override.
+/// - [`commit_transaction`](BlockExecutor::commit_transaction): reuses the inner executor for
+///   block gas accounting, receipt building via [`TempoReceiptBuilder`], and committing the
+///   state changes, then updates the section-specific gas counters.
+/// - [`finish`](BlockExecutor::finish): applies Tempo end-of-block logic first (shared gas
+///   validation and the `CurrentCommittee` epoch rotation system call), then delegates to the
+///   inner executor, thereby also reusing the Ethereum post-block logic: [EIP-6110] deposit
+///   request parsing and the [EIP-7002] withdrawal requests and [EIP-7251] consolidation
+///   requests system calls (effective no-ops on Tempo because the corresponding system
+///   contracts are not deployed, so the resulting requests are empty), as well as post-block
+///   balance increments (also a no-op: withdrawals are rejected and there are no ommers or
+///   block rewards). When TIP-1016 (EIP-8037) is enabled, the returned `gas_used` is
+///   overridden with the accumulated regular gas.
+/// - [`receipts`](BlockExecutor::receipts), [`evm`](BlockExecutor::evm) and
+///   [`evm_mut`](BlockExecutor::evm_mut) are plain passthroughs to the inner executor.
+///
+/// [EIP-2935]: https://eips.ethereum.org/EIPS/eip-2935
+/// [EIP-4788]: https://eips.ethereum.org/EIPS/eip-4788
+/// [EIP-6110]: https://eips.ethereum.org/EIPS/eip-6110
+/// [EIP-7002]: https://eips.ethereum.org/EIPS/eip-7002
+/// [EIP-7251]: https://eips.ethereum.org/EIPS/eip-7251
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
