@@ -164,6 +164,31 @@ fn canceling_the_subscription_kills_the_payload_job() {
 }
 
 #[test_traced]
+fn aborted_payload_job_fails_the_build_without_shutdown() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let rx = h.build(round(1), 0, GENESIS);
+        h.wait_until(|| !h.execution.pending_payload_jobs().is_empty())
+            .await;
+        let payload_id = h.execution.pending_payload_jobs()[0];
+        h.execution.abort_payload(payload_id);
+
+        rx.await
+            .expect_err("an aborted payload job must fail the build");
+
+        // Payload-builder failures are local to the build request. The actor
+        // remains available for later consensus work.
+        let b1 = make_block(1, 1, GENESIS);
+        let verdict = h
+            .verify(round(2), b1)
+            .await
+            .expect("verification should complete after the aborted build");
+        assert!(verdict.is_some());
+    });
+}
+
+#[test_traced]
 fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
