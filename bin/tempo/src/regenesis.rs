@@ -372,7 +372,6 @@ fn replacement_hashed_post_state(replacements: &[GenesisAccountReplacement]) -> 
         )
         .with_storages(replacements.iter().map(|replacement| {
             let storage = HashedStorage::from_iter(
-                true,
                 replacement
                     .hashed_storage
                     .iter()
