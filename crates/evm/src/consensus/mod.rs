@@ -15,8 +15,8 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{
-    hardfork::TempoHardforks,
-    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec},
+    TempoChainSpec, TempoConsensusSpec,
+    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT},
 };
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -35,19 +35,22 @@ pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
-pub struct TempoConsensus {
+pub struct TempoConsensus<C = TempoChainSpec> {
     /// Inner Ethereum consensus.
-    inner: EthBeaconConsensus<TempoChainSpec>,
+    inner: EthBeaconConsensus<C>,
 }
 
-impl TempoConsensus {
+impl<C> TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     /// Creates a new [`TempoConsensus`] with the given chain spec.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+    pub fn new(chain_spec: Arc<C>) -> Self {
         Self::new_with_bal_hashes(chain_spec, false)
     }
 
     /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.
-    pub fn new_with_bal_hashes(chain_spec: Arc<TempoChainSpec>, allow_bal_hashes: bool) -> Self {
+    pub fn new_with_bal_hashes(chain_spec: Arc<C>, allow_bal_hashes: bool) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
                 .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
@@ -109,7 +112,10 @@ impl TempoConsensus {
     }
 }
 
-impl HeaderValidator<TempoHeader> for TempoConsensus {
+impl<C> HeaderValidator<TempoHeader> for TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         let current_timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -152,7 +158,10 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
     }
 }
 
-impl Consensus<Block> for TempoConsensus {
+impl<C> Consensus<Block> for TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     fn validate_body_against_header(
         &self,
         body: &BlockBody,
@@ -227,7 +236,10 @@ impl Consensus<Block> for TempoConsensus {
     }
 }
 
-impl FullConsensus<TempoPrimitives> for TempoConsensus {
+impl<C> FullConsensus<TempoPrimitives> for TempoConsensus<C>
+where
+    C: TempoConsensusSpec,
+{
     fn validate_block_post_execution(
         &self,
         block: &RecoveredBlock<Block>,

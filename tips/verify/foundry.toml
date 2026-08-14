@@ -1,5 +1,5 @@
 [profile.default]
-hardfork = "tempo:T9"
+hardfork = "tempo:T10"
 
 # layout and file system
 src = "src"
@@ -19,7 +19,7 @@ optimizer = true
 invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
 
 [profile.next]
-hardfork = "tempo:T10"
+hardfork = "tempo:T11"
 
 [profile.fuzz500]
 invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }
