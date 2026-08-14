@@ -1438,7 +1438,7 @@ impl AA2dPool {
             }
         }
 
-        let (promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
+        let (mut promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
 
         // Remove included expiring nonce transactions
         for expiring_nonce_hash in included_expiring_nonce_hashes.drain(..) {
@@ -1450,6 +1450,12 @@ impl AA2dPool {
         self.state_update_included_expiring_nonce_hashes = included_expiring_nonce_hashes;
 
         let discarded = self.discard();
+        promoted.retain(|tx| {
+            tx.transaction
+                .aa_transaction_id()
+                .and_then(|id| self.by_id.get(&id))
+                .is_some_and(|tx| tx.is_pending())
+        });
 
         // Record metrics for all changes
         if !promoted.is_empty() {
@@ -6297,7 +6303,7 @@ mod tests {
     }
 
     #[test]
-    fn on_state_updates_returns_promotions_before_discard() {
+    fn on_state_updates_discards_over_limit_and_filters_promotions() {
         use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
 
         let mut pool = AA2dPool::new(AA2dPoolConfig {
@@ -6348,9 +6354,7 @@ mod tests {
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
 
-        assert_eq!(promoted.len(), 2);
-        assert!(promoted.iter().any(|tx| tx.hash() == &tx2_hash));
-        assert!(promoted.iter().any(|tx| tx.hash() == &tx3_hash));
+        assert!(promoted.is_empty(), "tx3 was demoted during eviction");
         assert!(mined.is_empty());
         assert_eq!(discarded.len(), 1);
         assert_eq!(discarded[0].hash(), &tx2_hash);
