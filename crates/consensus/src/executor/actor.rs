@@ -543,6 +543,7 @@ where
 
     fn update_fcu_heartbeat_timer(&mut self) {
         if self.execution_task.is_none()
+            && self.payload_jobs.is_empty()
             && self.pending_finalizations.is_empty()
             && self.pending_consensus_request.is_none()
         {
@@ -556,12 +557,12 @@ where
     fn send_forkchoice_update_heartbeat(&mut self) {
         // The heartbeat timer is only armed while no other execution-layer
         // work is active or queued.
-        if !self.execution_task.is_none() {
+        if !self.execution_task.is_none() || !self.payload_jobs.is_empty() {
             return;
         }
 
         self.start_next_execution_task();
-        if !self.execution_task.is_none() {
+        if !self.execution_task.is_none() || !self.payload_jobs.is_empty() {
             return;
         }
 
@@ -746,7 +747,11 @@ where
         ),
     )]
     fn start_next_execution_task(&mut self) {
-        if !self.execution_task.is_none() {
+        // Reth's engine tree lends its in-memory overlay to payload jobs. An
+        // intervening FCU can complete persistence and block the engine until
+        // that loan is returned, so do not overlap other engine requests with
+        // payload resolution.
+        if !self.execution_task.is_none() || !self.payload_jobs.is_empty() {
             return;
         }
 
