@@ -81,8 +81,8 @@ pub struct AA2dPool {
     expiring_nonce_txs: B256Map<AA2dStoredTransaction>,
     /// Expiring nonce transactions in eviction order.
     ///
-    /// Regular 2D transactions use `by_eviction_order`, which is keyed by
-    /// `AA2dTransactionId`. Expiring nonce transactions are always pending but
+    /// Regular 2D transactions use the pending and queued eviction maps.
+    /// Expiring nonce transactions are always pending but
     /// are not stored in `by_id`, so they need a separate ordered index. Each
     /// key carries the transaction and a priority snapshot. The first entry is
     /// the expiring nonce transaction that should be evicted next:
@@ -108,13 +108,10 @@ pub struct AA2dPool {
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
     metrics: AA2dPoolMetrics,
-    /// All transactions ordered by eviction priority (lowest priority first).
-    ///
-    /// Rebuilt when the pool base fee changes. At eviction time, we scan this
-    /// set checking `is_pending` to find queued or pending transactions. Keys
-    /// own a priority snapshot so repricing does not mutate canonical
-    /// transaction storage.
-    by_eviction_order: BTreeSet<EvictionKey>,
+    /// Pending regular 2D transactions ordered by eviction priority.
+    pending_eviction_order: BTreeSet<EvictionKey>,
+    /// Queued regular 2D transactions ordered by eviction priority.
+    queued_eviction_order: BTreeSet<EvictionKey>,
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
     /// Tracks the number of transactions per sender for DoS protection.
@@ -157,7 +154,8 @@ impl AA2dPool {
             slot_to_seq_id: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
-            by_eviction_order: Default::default(),
+            pending_eviction_order: Default::default(),
+            queued_eviction_order: Default::default(),
             base_fee: 0,
             txs_by_sender: Default::default(),
             pending_count: 0,
@@ -193,13 +191,15 @@ impl AA2dPool {
     }
 
     fn rebuild_eviction_order(&mut self) {
-        self.by_eviction_order.clear();
+        self.pending_eviction_order.clear();
+        self.queued_eviction_order.clear();
         for (id, tx) in &self.by_id {
-            self.by_eviction_order.insert(EvictionKey::with_base_fee(
-                Arc::clone(tx),
-                *id,
-                self.base_fee,
-            ));
+            let key = EvictionKey::with_base_fee(&tx.inner, *id, self.base_fee);
+            if tx.is_pending() {
+                self.pending_eviction_order.insert(key);
+            } else {
+                self.queued_eviction_order.insert(key);
+            }
         }
 
         self.expiring_nonce_eviction_order.clear();
@@ -398,9 +398,23 @@ impl AA2dPool {
         // Record metrics
         self.metrics.inc_inserted();
 
-        // Create eviction key for the new transaction and add to the single eviction set
-        let new_tx_eviction_key = EvictionKey::with_base_fee(Arc::clone(&tx), tx_id, self.base_fee);
-        self.by_eviction_order.insert(new_tx_eviction_key);
+        for promoted_tx in &promoted {
+            let promoted_id = promoted_tx
+                .transaction
+                .transaction
+                .aa_transaction_id()
+                .expect("regular 2D transaction");
+            let key = EvictionKey::with_base_fee(promoted_tx, promoted_id, self.base_fee);
+            self.queued_eviction_order.remove(&key);
+            self.pending_eviction_order.insert(key);
+        }
+
+        let key = EvictionKey::with_base_fee(&tx.inner, tx_id, self.base_fee);
+        if inserted_as_pending {
+            self.pending_eviction_order.insert(key);
+        } else {
+            self.queued_eviction_order.insert(key);
+        }
 
         if inserted_as_pending {
             if !promoted.is_empty() {
@@ -846,8 +860,12 @@ impl AA2dPool {
     }
 
     fn remove_eviction_key(&mut self, tx: &Arc<AA2dInternalTransaction>) {
-        self.by_eviction_order
-            .remove(&tx.inner.eviction_key(self.base_fee));
+        let order = tx.inner.eviction_key(self.base_fee);
+        if tx.is_pending() {
+            self.pending_eviction_order.remove(&order);
+        } else {
+            self.queued_eviction_order.remove(&order);
+        }
     }
 
     /// Removes the transaction by its hash from all internal sets.
@@ -949,7 +967,7 @@ impl AA2dPool {
     /// where we want to demote once per seq_id starting from the minimum removed nonce.
     fn demote_from_nonce(&mut self, seq_id: &AASequenceId, min_nonce: u64) {
         let start_id = AA2dTransactionId::new(*seq_id, min_nonce);
-        for (_, tx) in self
+        for (id, tx) in self
             .by_id
             .range((Excluded(&start_id), Unbounded))
             .take_while(|(other, _)| *seq_id == other.seq_id)
@@ -959,6 +977,9 @@ impl AA2dPool {
                 self.queued_count += 1;
                 self.pending_size -= tx.inner.size();
                 self.queued_size += tx.inner.size();
+                let key = EvictionKey::with_base_fee(&tx.inner, *id, self.base_fee);
+                self.pending_eviction_order.remove(&key);
+                self.queued_eviction_order.insert(key);
             }
         }
     }
@@ -1096,6 +1117,13 @@ impl AA2dPool {
                     if !was_pending {
                         newly_pending += 1;
                         newly_pending_size += existing_tx.inner.size();
+                        let key = EvictionKey::with_base_fee(
+                            &existing_tx.inner,
+                            *existing_id,
+                            self.base_fee,
+                        );
+                        self.queued_eviction_order.remove(&key);
+                        self.pending_eviction_order.insert(key);
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -1111,6 +1139,13 @@ impl AA2dPool {
                     if existing_tx.set_pending(false) {
                         newly_queued += 1;
                         newly_queued_size += existing_tx.inner.size();
+                        let key = EvictionKey::with_base_fee(
+                            &existing_tx.inner,
+                            *existing_id,
+                            self.base_fee,
+                        );
+                        self.pending_eviction_order.remove(&key);
+                        self.queued_eviction_order.insert(key);
                     }
                 }
             }
@@ -1187,9 +1222,7 @@ impl AA2dPool {
 
     /// Evicts the lowest-priority transactions from the pool.
     ///
-    /// Scans the single eviction set (ordered by priority) and filters by `is_pending`
-    /// to find queued or pending transactions to evict. This is a best-effort scan
-    /// that checks a bool for each transaction.
+    /// Removes transactions from the requested subpool in eviction order.
     fn evict_lowest_priority(
         &mut self,
         evict_pending: bool,
@@ -1209,24 +1242,18 @@ impl AA2dPool {
                 }
             }
         } else {
-            // For queued, only look at by_eviction_order (expiring nonce txs are always pending)
-            let to_remove: Vec<_> = self
-                .by_eviction_order
-                .iter()
-                .filter(|key| !key.is_pending())
-                .map(|key| key.tx_id)
-                .collect();
-
-            for id in to_remove {
-                if !self
-                    .config
-                    .queued_limit
-                    .is_exceeded(self.queued_count, self.queued_size.into())
-                {
+            while self
+                .config
+                .queued_limit
+                .is_exceeded(self.queued_count, self.queued_size.into())
+            {
+                let Some(id) = self.queued_eviction_order.first().map(|key| key.tx_id) else {
                     break;
-                }
+                };
                 if let Some(tx) = self.remove_transaction_by_id(&id) {
                     removed.push(tx);
+                } else {
+                    break;
                 }
             }
         }
@@ -1236,9 +1263,8 @@ impl AA2dPool {
     /// Evicts the transaction with lowest priority; ties broken by submission order (newer first).
     fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let worst_2d = self
-            .by_eviction_order
-            .iter()
-            .find(|key| key.is_pending())
+            .pending_eviction_order
+            .first()
             .map(|key| (key.tx_id, key.priority().clone(), key.submission_id()));
 
         let worst_expiring = self
@@ -1248,7 +1274,7 @@ impl AA2dPool {
 
         match (worst_2d, worst_expiring) {
             (Some((id, pri_2d, sid_2d)), Some((pri_exp, sid_exp))) => {
-                // Same ordering as EvictionKey::Ord: lower priority first, newer first.
+                // Same ordering as EvictionOrderKey: lower priority first, newer first.
                 let evict_expiring = pri_exp
                     .cmp(&pri_2d)
                     .then_with(|| sid_2d.cmp(&sid_exp))
@@ -1471,10 +1497,10 @@ impl AA2dPool {
         );
         assert_eq!(
             self.by_id.len(),
-            self.by_eviction_order.len(),
-            "by_id.len() ({}) != by_eviction_order.len() ({})",
+            self.pending_eviction_order.len() + self.queued_eviction_order.len(),
+            "by_id.len() ({}) != regular eviction order len ({})",
             self.by_id.len(),
-            self.by_eviction_order.len()
+            self.pending_eviction_order.len() + self.queued_eviction_order.len()
         );
 
         // The cached base fee used to build the independent eviction order must match
@@ -1642,8 +1668,13 @@ impl AA2dPool {
                 .priority(&tx.inner.transaction.transaction, self.base_fee);
             let expected_order =
                 EvictionOrderKey::new(expected_priority.clone(), tx.inner.submission_id);
-            let Some(eviction_key) = self.by_eviction_order.get(&expected_order) else {
-                panic!("Transaction with id {id:?} in by_id but not in by_eviction_order");
+            let eviction_order = if tx.is_pending() {
+                &self.pending_eviction_order
+            } else {
+                &self.queued_eviction_order
+            };
+            let Some(eviction_key) = eviction_order.get(&expected_order) else {
+                panic!("Transaction with id {id:?} in by_id but not in its eviction order");
             };
             assert_eq!(
                 eviction_key.tx_id, *id,
@@ -1654,37 +1685,37 @@ impl AA2dPool {
                 &expected_priority,
                 "Eviction key for transaction {id:?} has stale priority"
             );
-            assert_eq!(
-                eviction_key.tx.inner.transaction.hash(),
-                tx.inner.transaction.hash(),
-                "Eviction key for transaction {id:?} has mismatched transaction hash"
-            );
         }
 
-        for key in &self.by_eviction_order {
-            let Some(tx) = self.by_id.get(&key.tx_id) else {
-                panic!("Eviction key {:?} not in by_id", key.tx_id);
-            };
-            assert_eq!(
-                key.submission_id(),
-                tx.inner.submission_id,
-                "Eviction key {:?} has mismatched submission id",
-                key.tx_id
-            );
-            let expected_priority = TempoTipOrdering::default()
-                .priority(&tx.inner.transaction.transaction, self.base_fee);
-            assert_eq!(
-                key.priority(),
-                &expected_priority,
-                "Eviction key {:?} has stale priority",
-                key.tx_id
-            );
-            assert_eq!(
-                key.tx.inner.transaction.hash(),
-                tx.inner.transaction.hash(),
-                "Eviction key {:?} has mismatched transaction hash",
-                key.tx_id
-            );
+        for (is_pending, eviction_order) in [
+            (true, &self.pending_eviction_order),
+            (false, &self.queued_eviction_order),
+        ] {
+            for key in eviction_order {
+                let Some(tx) = self.by_id.get(&key.tx_id) else {
+                    panic!("Eviction key {:?} not in by_id", key.tx_id);
+                };
+                assert_eq!(
+                    tx.is_pending(),
+                    is_pending,
+                    "Transaction {:?} is in the wrong eviction order",
+                    key.tx_id
+                );
+                assert_eq!(
+                    key.submission_id(),
+                    tx.inner.submission_id,
+                    "Eviction key {:?} has mismatched submission id",
+                    key.tx_id
+                );
+                let expected_priority = TempoTipOrdering::default()
+                    .priority(&tx.inner.transaction.transaction, self.base_fee);
+                assert_eq!(
+                    key.priority(),
+                    &expected_priority,
+                    "Eviction key {:?} has stale priority",
+                    key.tx_id
+                );
+            }
         }
 
         // Verify pending/queued consistency
@@ -1927,9 +1958,8 @@ struct AA2dInternalTransaction {
     ///
     /// If it's not pending, it is queued.
     ///
-    /// Uses `AtomicBool` so we can mutate this flag without removing/reinserting
-    /// the transaction from the eviction set. This allows a single eviction set for
-    /// all transactions, with pending/queued filtering done at eviction time.
+    /// Uses `AtomicBool` so status can be updated while iterating `by_id`; the
+    /// corresponding eviction key is moved between the pending and queued sets.
     is_pending: AtomicBool,
 }
 
@@ -1981,8 +2011,8 @@ impl PartialOrd for EvictionOrderKey {
 
 /// Ordering key for `AA2dPool::expiring_nonce_eviction_order`.
 ///
-/// This mirrors `EvictionKey` for expiring nonce transactions, which are not
-/// stored in `by_id` and therefore cannot use `AA2dTransactionId`. The key
+/// Expiring nonce transactions are not stored in `by_id` and therefore cannot
+/// use `AA2dTransactionId`. The key
 /// carries the transaction so `BestAA2dTransactions` can clone only the ordered
 /// index and pop expiring nonce transactions directly from it.
 ///
@@ -2071,25 +2101,16 @@ impl PartialOrd for ExpiringNonceEvictionKey {
 /// Newer transactions are evicted first to preserve older transactions that have been waiting longer.
 #[derive(Debug, Clone)]
 struct EvictionKey {
-    /// The wrapped transaction, used to read live pending/queued status.
-    tx: Arc<AA2dInternalTransaction>,
     /// The transaction's unique identifier (cached for lookup during eviction).
-    /// We cache this because deriving it from the transaction requires
-    /// `aa_transaction_id()` which returns an Option and does more work.
     tx_id: AA2dTransactionId,
     /// Priority and submission ID snapshot used for eviction ordering.
     order: EvictionOrderKey,
 }
 
 impl EvictionKey {
-    fn with_base_fee(
-        tx: Arc<AA2dInternalTransaction>,
-        tx_id: AA2dTransactionId,
-        base_fee: u64,
-    ) -> Self {
+    fn with_base_fee(tx: &AA2dStoredTransaction, tx_id: AA2dTransactionId, base_fee: u64) -> Self {
         Self {
-            order: tx.inner.eviction_key(base_fee),
-            tx,
+            order: tx.eviction_key(base_fee),
             tx_id,
         }
     }
@@ -2102,11 +2123,6 @@ impl EvictionKey {
     /// Returns the submission ID.
     fn submission_id(&self) -> u64 {
         self.order.submission_id
-    }
-
-    /// Returns whether this transaction is pending.
-    fn is_pending(&self) -> bool {
-        self.tx.is_pending()
     }
 }
 
@@ -7370,8 +7386,8 @@ mod tests {
         .unwrap();
 
         assert!(
-            pool.by_eviction_order.is_empty(),
-            "expiring nonce txs should not be inserted into by_eviction_order"
+            pool.pending_eviction_order.is_empty() && pool.queued_eviction_order.is_empty(),
+            "expiring nonce txs should not be inserted into regular eviction orders"
         );
         assert_expiring_eviction_index_len(&pool, 1);
         assert_expiring_eviction_index_contains(&pool, expiring_hash);
