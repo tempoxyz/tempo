@@ -1634,6 +1634,52 @@ fn test_2d_nonce_gas_limit_validation() {
     }
 }
 
+/// Regression test for a subtraction-overflow panic on pre-T0 (Genesis) AA
+/// transactions with a 2D nonce (`nonce_key != 0`).
+///
+/// On Genesis, 2D nonce gas is added to the intrinsic gas total *after* the
+/// gas-limit validation check runs (see `test_2d_nonce_gas_limit_validation`
+/// above), so a `gas_limit` that passes validation can still be less than
+/// `initial_gas + nonce_2d_gas` once nonce gas is folded in. Execution used
+/// to compute `gas_limit - init_and_floor_gas.initial_gas` unguarded in this
+/// case, panicking with "attempt to subtract with overflow" instead of
+/// returning an error — this crashed node sync on mainnet (see #2204).
+///
+/// `TempoEvm::initial_gas_and_reservoir` (used by the handler's `tx_gas`
+/// override) now falls back to `(u64::MAX, 0)` instead of underflowing when
+/// this happens, so this test only needs to confirm execution completes
+/// without panicking; it isn't asserting anything about the resulting call
+/// outcome itself, since the pre-T0 gas-limit check was already known to be
+/// permissive by design.
+#[test]
+fn test_pre_t0_2d_nonce_gas_underflow_does_not_panic() {
+    const BASE_INTRINSIC_GAS: u64 = 21_000;
+    // Passes Genesis's permissive intrinsic-gas validation, but falls below
+    // `BASE_INTRINSIC_GAS + gas_new_nonce_key()` once 2D nonce gas is added
+    // post-validation, reproducing the original panic conditions.
+    let gas_limit = BASE_INTRINSIC_GAS + 1_000;
+
+    let aa_env = TempoBatchCallEnv {
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        // Non-zero nonce_key triggers 2D nonce gas calculation.
+        nonce_key: U256::ONE,
+        ..Default::default()
+    };
+
+    let mut test = TestHandlerEvm::aa(TempoHardfork::Genesis, aa_env, |tx_env| {
+        tx_env.inner.gas_limit = gas_limit;
+    });
+    let init_gas = test.validate_initial_tx_gas();
+
+    // Prior to the fix, this call panicked with "attempt to subtract with
+    // overflow" instead of returning.
+    let _ = test.execute(&init_gas);
+}
+
 #[test]
 fn test_t3_scope_validation_moves_to_execution() {
     const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
