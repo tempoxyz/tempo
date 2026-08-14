@@ -13831,6 +13831,7 @@ version = "1.11.0"
 dependencies = [
  "alloy",
  "alloy-evm",
+ "alloy-json-abi",
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
@@ -13840,6 +13841,7 @@ dependencies = [
  "commonware-cryptography",
  "derive_more",
  "eyre",
+ "itertools 0.14.0",
  "p256 0.13.2",
  "paste",
  "proptest",

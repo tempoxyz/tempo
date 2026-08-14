@@ -15,11 +15,6 @@ ignore = [
   # It is pulled in transitively by reth-transaction-pool through imbl, which has
   # no release that removes bitmaps. This advisory does not report a vulnerability.
   "RUSTSEC-2026-0247",
-  # https://rustsec.org/advisories/RUSTSEC-2025-0055 tracing-subscriber 0.2
-  # is pulled in by ark-relations 0.5.1, which is pinned by commonware-cryptography.
-  # ark-relations 0.5.1 requires tracing-subscriber ^0.2, so this cannot be upgraded
-  # without commonware moving to a newer arkworks release.
-  "RUSTSEC-2025-0055",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -68,13 +63,11 @@ allow = [
   # https://github.com/rustls/webpki/blob/main/LICENSE ISC Style
   "LicenseRef-rustls-webpki",
   "CDLA-Permissive-2.0",
-  "OpenSSL",
 ]
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
 exceptions = [
-  { allow = ["MPL-2.0"], name = "option-ext" },
   { allow = ["MPL-2.0"], name = "bitmaps" },
   { allow = ["MPL-2.0"], name = "imbl" },
   { allow = ["MPL-2.0"], name = "imbl-sized-chunks" },
@@ -96,7 +89,6 @@ unknown-registry = "warn"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-git = [
-  "https://github.com/commonwarexyz/monorepo",
   "https://github.com/paradigmxyz/reth",
   "https://github.com/sigp/discv5",
 ]
