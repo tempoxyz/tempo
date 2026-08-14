@@ -360,7 +360,7 @@ where
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
-    executor: crate::executor::Actor<TContext>,
+    executor: crate::executor::Actor<TContext, Arc<TempoFullNode>, crate::alias::marshal::Mailbox>,
     executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
