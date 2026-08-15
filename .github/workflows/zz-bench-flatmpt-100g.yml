@@ -27,7 +27,9 @@ jobs:
       accounts: "1000"
       max-concurrent-requests: "5000"
       baseline: "centaur/bench-flatmpt-e2e-1786443703"
-      feature: "centaur/bench-flatmpt-e2e-1786443703"
+      # Fix-1 cycle: the feature node builds from this trigger branch, which
+      # carries the lock-free tip-state read hook on top of the PR head.
+      feature: "centaur/bench-flatmpt-e2e-100g-trigger"
       gas-limit: "1000000000000"
       general-gas-limit: "1000000000000"
       run-pairs: "2"
