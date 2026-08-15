@@ -64,6 +64,7 @@ alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
 
+arc-swap.workspace = true
 async-trait.workspace = true
 anyhow = "1"
 clap.workspace = true

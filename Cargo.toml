@@ -262,6 +262,7 @@ commonware-storage = "2026.7.0"
 commonware-utils = "2026.7.0"
 
 arbitrary = { version = "1.4", features = ["derive"] }
+arc-swap = "1.9"
 async-lock = "3.4.2"
 async-trait = "0.1"
 auto_impl = "1"

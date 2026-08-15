@@ -515,72 +515,124 @@ where
         // that reth's latest-state provider consults. Correctness: these
         // reads sit underneath the engine's in-memory overlay of unpersisted
         // blocks, which shadows every key written after the last persisted
-        // block — so serving the canonical tip state is exact. The tip
+        // block — so ANY served anchor at or after the last persisted block
+        // is exact: keys touched since the anchor are shadowed by the
+        // overlay, untouched keys are identical across anchors. That makes
+        // a slightly-lagging published tip state safe, which is what lets
+        // the readers below run without locks or provider calls. The tip
         // anchor (not "newest flat state") keeps not-yet-canonical candidate
         // blocks out of the served state.
         if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
             let provider = ctx.node.provider().clone();
             let chain_spec = chain_spec;
-            // Resolution is cached per tip: pool validation calls this for
-            // every incoming transaction's fee-balance read, so the walk must
-            // not repeat per read.
             type TipState = (
                 B256,
                 tempo_flatmpt::FlatSnapshot,
                 Vec<Arc<tempo_flatmpt::PendingBlock>>,
             );
-            let cached: Arc<std::sync::Mutex<Option<Arc<TipState>>>> =
-                Arc::new(std::sync::Mutex::new(None));
-            let resolve = move || -> Result<Arc<TipState>, reth_errors::ProviderError> {
-                use reth_provider::BlockReaderIdExt as _;
-                let err = |m: &str| {
-                    reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
-                };
-                let tip_root = provider
-                    .latest_header()?
-                    .ok_or_else(|| err("no canonical head for flat tip read"))?
-                    .state_root();
-                if let Ok(guard) = cached.lock()
-                    && let Some(state) = guard.as_ref()
-                    && state.0 == tip_root
-                {
-                    return Ok(state.clone());
-                }
-                let shadow = tempo_flatmpt::shadow(|| {
-                    (
-                        tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
-                        chain_spec.inner.genesis_header().state_root(),
-                    )
-                })
-                .expect("flat root mode is on");
-                // Transient gaps (publish/retire races around an apply) heal
-                // within an apply cycle; a persistent failure is loud.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
-                        && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
-                    {
-                        let state = Arc::new((tip_root, snap, chain));
-                        if let Ok(mut g) = cached.lock() {
-                            *g = Some(state.clone());
+            fn flat_err(m: &str) -> reth_errors::ProviderError {
+                reth_errors::ProviderError::other(std::io::Error::other(m.to_string()))
+            }
+            // Published once per canonical commit by the updater thread
+            // below; readers do a single lock-free load. (Previously each
+            // state read resolved the tip itself — a provider
+            // `latest_header()` call plus a global Mutex handoff per read;
+            // under 50k offered TPS the pool-validation threads serialized
+            // on that lock and throttled transaction ingestion.)
+            let published: Arc<arc_swap::ArcSwapOption<TipState>> =
+                Arc::new(arc_swap::ArcSwapOption::empty());
+            // Resolve the flat-side view of one canonical tip root.
+            let resolve_for = {
+                let chain_spec = chain_spec.clone();
+                Arc::new(
+                    move |tip_root: B256| -> Result<Arc<TipState>, reth_errors::ProviderError> {
+                        let shadow = tempo_flatmpt::shadow(|| {
+                            (
+                                tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                                chain_spec.inner.genesis_header().state_root(),
+                            )
+                        })
+                        .expect("flat root mode is on");
+                        // Transient gaps (publish/retire races around an
+                        // apply) heal within an apply cycle; a persistent
+                        // failure is loud.
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
+                        loop {
+                            if let Some((k, snap)) = tempo_flatmpt::published_snapshot()
+                                && let Some(chain) = tempo_flatmpt::pending_chain(k, tip_root)
+                            {
+                                return Ok(Arc::new((tip_root, snap, chain)));
+                            }
+                            if let Some(g) =
+                                shadow.try_read_for(std::time::Duration::from_millis(2))
+                                && g.at_parent(tip_root)
+                            {
+                                let snap = g.snapshot();
+                                drop(g);
+                                return Ok(Arc::new((tip_root, snap, Vec::new())));
+                            }
+                            if std::time::Instant::now() > deadline {
+                                return Err(flat_err(
+                                    "flat store cannot serve the canonical tip state",
+                                ));
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(2));
                         }
+                    },
+                )
+            };
+            // Updater: re-resolve once per committed block and publish for
+            // all readers. Its own OS thread — the resolve loop blocks.
+            {
+                use reth_provider::CanonStateSubscriptions as _;
+                let mut canon_rx = ctx.node.provider().subscribe_to_canonical_state();
+                let published = published.clone();
+                let resolve_for = resolve_for.clone();
+                std::thread::Builder::new()
+                    .name("flat-tip-reads".into())
+                    .spawn(move || loop {
+                        match canon_rx.blocking_recv() {
+                            Ok(notif) => {
+                                let tip_root = notif.tip().header().state_root();
+                                match resolve_for(tip_root) {
+                                    Ok(state) => published.store(Some(state)),
+                                    Err(e) => {
+                                        warn!(target: "flatmpt", %e, "tip-state refresh failed")
+                                    }
+                                }
+                            }
+                            // Lagged: fine — the next recv yields the newest
+                            // retained commit, and freshest-wins is all the
+                            // published cell needs.
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                debug!(target: "flatmpt", skipped = n, "tip-state refresh lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    })
+                    .expect("spawn flat-tip-reads updater");
+            }
+            // Reader-side accessor: lock-free load, with a one-time provider
+            // resolve as the bootstrap before the first canonical commit.
+            let resolve = {
+                let published = published.clone();
+                move || -> Result<Arc<TipState>, reth_errors::ProviderError> {
+                    if let Some(state) = published.load_full() {
                         return Ok(state);
                     }
-                    if let Some(g) = shadow.try_read_for(std::time::Duration::from_millis(2))
-                        && g.at_parent(tip_root)
-                    {
-                        let snap = g.snapshot();
-                        drop(g);
-                        let state = Arc::new((tip_root, snap, Vec::new()));
-                        if let Ok(mut g) = cached.lock() {
-                            *g = Some(state.clone());
-                        }
-                        return Ok(state);
+                    use reth_provider::BlockReaderIdExt as _;
+                    let tip_root = provider
+                        .latest_header()?
+                        .ok_or_else(|| flat_err("no canonical head for flat tip read"))?
+                        .state_root();
+                    let state = resolve_for(tip_root)?;
+                    // Racing bootstraps/updater stores are all valid anchors
+                    // (see the correctness note above); last write wins.
+                    if published.load().is_none() {
+                        published.store(Some(state.clone()));
                     }
-                    if std::time::Instant::now() > deadline {
-                        return Err(err("flat store cannot serve the canonical tip state"));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    Ok(state)
                 }
             };
             let resolve_acct = Arc::new(resolve);

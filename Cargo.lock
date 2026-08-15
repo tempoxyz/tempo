@@ -13749,6 +13749,7 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-serde",
  "anyhow",
+ "arc-swap",
  "async-trait",
  "base64 0.22.1",
  "clap",
