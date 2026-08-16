@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
 
 /// Domain prefix for native multisig owner approvals.
-pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:multisig:signature";
+pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable:signature";
 
 /// Maximum number of owners allowed in a native multisig config.
 pub const MAX_MULTISIG_OWNERS: usize = 255;
@@ -41,7 +41,7 @@ pub const MAX_MULTISIG_NESTING_DEPTH: usize = 2;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
+const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable:account";
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1036,6 +1036,23 @@ mod tests {
             nonzero_salt.account().unwrap()
         );
         zero_salt.validate().expect("zero salt is valid");
+    }
+
+    #[test]
+    fn multisig_domains_match_spec_vectors() {
+        let config = sorted_secp_config(&[(Address::repeat_byte(0x11), 1)], 1);
+        let account = config.account().unwrap();
+
+        assert_eq!(
+            account,
+            alloy_primitives::address!("6c70c970f6336248ad44e54d7aba67df85868846")
+        );
+        assert_eq!(
+            multisig_digest(B256::repeat_byte(0x42), account),
+            alloy_primitives::b256!(
+                "a1fdc858a3006a29824a0be2422983859ad2c87573aacc2b80eccb4bc98190ff"
+            )
+        );
     }
 
     #[test]
