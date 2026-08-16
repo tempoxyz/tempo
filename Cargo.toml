@@ -411,8 +411,7 @@ vergen-git2 = "10.0.1"
 
 [patch.crates-io]
 
-# Commonware v2026.7.0
-# Storage header truncation fix: https://github.com/commonwarexyz/monorepo/pull/4256
+# Patch right after the storage header truncation fix: https://github.com/commonwarexyz/monorepo/pull/4256
 commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "3ba3af264515e1019340ee353f470da416d5e5f8" }
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "3ba3af264515e1019340ee353f470da416d5e5f8" }
 commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "3ba3af264515e1019340ee353f470da416d5e5f8" }
