@@ -23,7 +23,7 @@ pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
 pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable:signature";
 
 /// Maximum number of owners allowed in a native multisig config.
-pub const MAX_MULTISIG_OWNERS: usize = 255;
+pub const MAX_MULTISIG_OWNERS: usize = 58;
 
 /// Maximum threshold accepted by a native multisig config.
 ///
@@ -1056,18 +1056,18 @@ mod tests {
     }
 
     #[test]
-    fn config_accepts_255_owners() {
+    fn config_accepts_max_owners() {
         let owners = (1..=MAX_MULTISIG_OWNERS as u16)
             .map(|index| (indexed_owner(index), 1))
             .collect::<Vec<_>>();
         let config = sorted_secp_config(&owners, MAX_MULTISIG_THRESHOLD);
 
-        assert_eq!(config.validate(), Ok(u8::MAX));
+        assert_eq!(config.validate(), Ok(MAX_MULTISIG_OWNERS as u8));
         assert!(config.account().is_ok());
     }
 
     #[test]
-    fn config_rejects_more_than_255_owners() {
+    fn config_rejects_more_than_max_owners() {
         let owners = (1..=MAX_MULTISIG_OWNERS as u16 + 1)
             .map(|index| (indexed_owner(index), 1))
             .collect::<Vec<_>>();

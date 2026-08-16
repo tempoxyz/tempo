@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn store_and_read_255_owner_config() -> eyre::Result<()> {
+    fn store_and_read_max_owner_config() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let owners = max_abi_owners();
         let config = InitMultisig {
