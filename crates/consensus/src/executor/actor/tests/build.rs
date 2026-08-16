@@ -221,9 +221,9 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        h.execution.script_fcu(PayloadStatusEnum::Invalid {
+        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
             validation_error: "rejected".into(),
-        });
+        }));
         let rx = h.build(round(1), 0, GENESIS);
         rx.await
             .expect_err("the failed FCU must fail the build");
@@ -234,6 +234,27 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
             .verify(round(2), b1)
             .await
             .expect("verification should complete");
+        assert!(verdict.is_some());
+    });
+}
+
+#[test_traced]
+fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        h.execution.script_fcu(Err("connection closed"));
+        let rx = h.build(round(1), 0, GENESIS);
+        rx.await
+            .expect_err("an FCU transport error must fail the build");
+
+        // Build transport failures are request-local. The actor remains
+        // available for later consensus work.
+        let b1 = make_block(1, 1, GENESIS);
+        let verdict = h
+            .verify(round(2), b1)
+            .await
+            .expect("verification should complete after the FCU transport error");
         assert!(verdict.is_some());
     });
 }

@@ -131,8 +131,8 @@ struct FakeExecutionInner {
     /// Scripted new-payload outcomes keyed by block hash, consumed in order.
     /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
     payload_overrides: Mutex<HashMap<B256, VecDeque<Result<PayloadStatusEnum, &'static str>>>>,
-    /// Scripted FCU statuses consumed in order before default behavior.
-    fcu_overrides: Mutex<VecDeque<PayloadStatusEnum>>,
+    /// Scripted FCU outcomes consumed in order before default behavior.
+    fcu_overrides: Mutex<VecDeque<Result<PayloadStatusEnum, &'static str>>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -231,9 +231,15 @@ impl FakeExecution {
             .push_back(outcome);
     }
 
-    /// Scripts the status of the next forkchoice update, whatever its target.
-    pub(super) fn script_fcu(&self, status: PayloadStatusEnum) {
-        self.inner.fcu_overrides.lock().push_back(status);
+    /// Scripts the outcome of the next forkchoice update, whatever its target.
+    /// `Ok(PayloadStatusEnum::Invalid)` models an Engine API response that
+    /// rejects the update, while `Err` models a request or transport failure
+    /// before the execution layer returns a payload status.
+    pub(super) fn script_fcu(
+        &self,
+        outcome: Result<PayloadStatusEnum, &'static str>,
+    ) {
+        self.inner.fcu_overrides.lock().push_back(outcome);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -451,46 +457,52 @@ impl ExecutionLayer for FakeExecution {
         });
 
         let scripted = self.inner.fcu_overrides.lock().pop_front();
-        let status = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
-            PayloadStatusEnum::Invalid {
+        let outcome = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected by test".into(),
-            }
-        } else if let Some(status) = scripted {
-            status
+            })
+        } else if let Some(outcome) = scripted {
+            outcome
         } else {
-            self.apply_forkchoice(&state)
+            Ok(self.apply_forkchoice(&state))
         };
 
-        let mut response = ForkchoiceUpdated::from_status(status);
-        if response.is_valid()
-            && attributes.is_some()
-            && !self.inner.suppress_payload_ids.load(Ordering::SeqCst)
-        {
-            let payload_id = PayloadId::new(
-                self.inner
-                    .next_payload_id
-                    .fetch_add(1, Ordering::SeqCst)
-                    .to_be_bytes(),
-            );
-            if !self.inner.omit_payload_job.load(Ordering::SeqCst) {
-                let (sender, receiver) = oneshot::channel();
-                match self.inner.scripted_builds.lock().pop_front() {
-                    Some(payload) => {
-                        let _ = sender.send(payload);
+        let result = match outcome {
+            Ok(status) => {
+                let mut response = ForkchoiceUpdated::from_status(status);
+                if response.is_valid()
+                    && attributes.is_some()
+                    && !self.inner.suppress_payload_ids.load(Ordering::SeqCst)
+                {
+                    let payload_id = PayloadId::new(
+                        self.inner
+                            .next_payload_id
+                            .fetch_add(1, Ordering::SeqCst)
+                            .to_be_bytes(),
+                    );
+                    if !self.inner.omit_payload_job.load(Ordering::SeqCst) {
+                        let (sender, receiver) = oneshot::channel();
+                        match self.inner.scripted_builds.lock().pop_front() {
+                            Some(payload) => {
+                                let _ = sender.send(payload);
+                            }
+                            None => {
+                                self.inner.payload_senders.lock().insert(payload_id, sender);
+                            }
+                        }
+                        self.inner
+                            .payload_receivers
+                            .lock()
+                            .insert(payload_id, receiver);
                     }
-                    None => {
-                        self.inner.payload_senders.lock().insert(payload_id, sender);
-                    }
+                    response = response.with_payload_id(payload_id);
                 }
-                self.inner
-                    .payload_receivers
-                    .lock()
-                    .insert(payload_id, receiver);
+                Ok(response)
             }
-            response = response.with_payload_id(payload_id);
-        }
+            Err(error) => Err(eyre::eyre!(error)),
+        };
 
-        async move { Ok(response) }
+        async move { result }
     }
 
     fn resolve_payload(

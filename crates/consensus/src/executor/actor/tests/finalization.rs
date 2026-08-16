@@ -117,9 +117,9 @@ fn rejected_finalization_forkchoice_update_is_fatal() {
         let mut h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
-        h.execution.script_fcu(PayloadStatusEnum::Invalid {
+        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
             validation_error: "rejected".into(),
-        });
+        }));
 
         h.deliver_tip(round(1), 1, b1.digest());
         h.deliver_finalized(b1)

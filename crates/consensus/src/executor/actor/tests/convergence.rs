@@ -224,9 +224,9 @@ fn failed_repoint_is_fatal() {
 
         // A repoint targets an ancestor the execution layer provably has;
         // failure means consensus and execution disagree fundamentally.
-        h.execution.script_fcu(PayloadStatusEnum::Invalid {
+        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
             validation_error: "corrupt".into(),
-        });
+        }));
         h.report_pending_head(5, 0, GENESIS);
 
         h.actor
