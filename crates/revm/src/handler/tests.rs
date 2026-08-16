@@ -18,6 +18,7 @@ use revm::{
         instructions::utility::IntoU256,
     },
     primitives::hardfork::SpecId,
+    state::AccountInfo,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
@@ -4888,6 +4889,42 @@ fn test_t11_bootstrap_multisig_persists_initial_config() {
 }
 
 #[test]
+fn test_t11_bootstrap_multisig_rejects_nonzero_protocol_nonce() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x42);
+    let aa_env = TempoBatchCallEnv {
+        signature: sign_native_multisig(&config, signature_hash, &owner, true),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.nonce = 1;
+    });
+    test.evm.ctx().db_mut().insert_account_info(
+        account,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+
+    assert!(matches!(
+        test.validate_against_state_and_deduct_caller(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+        )) if reason.contains("zero protocol nonce")
+    ));
+}
+
+#[test]
 fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
     let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
     let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
@@ -4920,6 +4957,25 @@ fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
         tx_hash: B256::repeat_byte(0x24),
         ..Default::default()
     };
+    let mut nonzero_nonce_test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env.clone(), |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+        tx_env.inner.nonce = 1;
+    });
+    nonzero_nonce_test.evm.ctx().db_mut().insert_account_info(
+        account,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        nonzero_nonce_test.validate_against_state_and_deduct_caller(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+        )) if reason.contains("zero protocol nonce")
+    ));
+
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.inner.kind = TxKind::Call(Address::random());

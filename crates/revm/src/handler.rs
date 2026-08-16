@@ -29,6 +29,7 @@ use revm::{
         interpreter::EthInterpreter,
     },
     precompile::PrecompileError,
+    state::AccountInfo,
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
@@ -1123,6 +1124,11 @@ where
                                             .to_string(),
                                 }
                             })?;
+                            validate_native_multisig_bootstrap_nonce(
+                                caller_account_info
+                                    .as_ref()
+                                    .expect("loaded when validating caller multisig authorization"),
+                            )?;
                             if !is_rpc_simulation {
                                 verify_native_multisig_authorization::<DB>(
                                     &multisig_precompile,
@@ -1153,6 +1159,11 @@ where
                                 }
                                 .into());
                             }
+                            validate_native_multisig_bootstrap_nonce(
+                                caller_account_info
+                                    .as_ref()
+                                    .expect("loaded when validating caller multisig authorization"),
+                            )?;
                             NativeMultisigAuthConfig::Inline(init_config)
                         } else if let Some((account, init_config)) =
                             native_multisig_bootstrap.as_ref()
@@ -2904,6 +2915,17 @@ fn verify_native_multisig_authorization<DB: Database>(
             },
         )
         .map_err(map_native_multisig_error::<DB>)
+}
+
+fn validate_native_multisig_bootstrap_nonce(
+    account_info: &AccountInfo,
+) -> Result<(), TempoInvalidTransaction> {
+    if account_info.nonce != 0 {
+        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
+            reason: "native multisig bootstrap requires zero protocol nonce".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn map_native_multisig_error<DB: Database>(
