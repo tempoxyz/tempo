@@ -14,7 +14,7 @@ keywords.workspace = true
 publish = false
 
 [dependencies]
-mpt-flat-poc = { git = "https://github.com/dankrad/mpt-flat-poc", rev = "23bc449a19a98e5760dd7f6c411d35f3a6b7f821" }
+mpt-flat-poc = { git = "https://github.com/dankrad/mpt-flat-poc", rev = "4ad613d2e1ef8cd074035f210e02247d7e992c1b" }
 alloy-primitives.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
