@@ -102,6 +102,24 @@ impl NativeMultisig {
         self.bootstrapped_account.t_write(account)
     }
 
+    pub fn derive_account(
+        &self,
+        salt: B256,
+        threshold: u8,
+        owners: Vec<INativeMultisig::MultisigOwner>,
+    ) -> Result<Address> {
+        let config = InitMultisig {
+            salt,
+            threshold,
+            owners: owners.into_iter().map(Into::into).collect(),
+        };
+        let account = config.account().map_err(map_multisig_config_error)?;
+        if !is_valid_multisig_account(account, self.storage.spec()) {
+            return Err(NativeMultisigError::invalid_account().into());
+        }
+        Ok(account)
+    }
+
     pub fn is_multisig_account(&self, account: Address) -> Result<bool> {
         Ok(self
             .load_registered_threshold_if_present(account)?
@@ -420,6 +438,52 @@ mod tests {
             assert_eq!(stored_owner.owner, expected_owner.owner);
             assert_eq!(stored_owner.weight, expected_owner.weight);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn derive_account_matches_initial_config_without_storage_reads() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let config = init_config();
+        let expected = config.account().unwrap();
+
+        StorageCtx::enter(&mut storage, || {
+            let multisig = NativeMultisig::new();
+            assert_eq!(
+                multisig.derive_account(config.salt, config.threshold, abi_owners())?,
+                expected
+            );
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        assert_eq!(storage.counter_sload(), 0);
+        assert_eq!(storage.counter_sstore(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn derive_account_returns_specific_config_errors() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+
+        StorageCtx::enter(&mut storage, || {
+            let multisig = NativeMultisig::new();
+            assert!(matches!(
+                multisig.derive_account(B256::ZERO, 1, Vec::new()),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::InvalidOwner(_)
+                ))
+            ));
+            assert!(matches!(
+                multisig.derive_account(B256::ZERO, 0, abi_owners()),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::InvalidThreshold(_)
+                ))
+            ));
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        assert_eq!(storage.counter_sload(), 0);
+        assert_eq!(storage.counter_sstore(), 0);
         Ok(())
     }
 
