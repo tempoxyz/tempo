@@ -530,6 +530,7 @@ impl MultisigSignature {
         if self
             .signatures
             .iter()
+            .filter_map(TempoSignature::as_primitive)
             .any(|sig| sig.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
         {
             return Err("multisig owner signature too large");
@@ -799,7 +800,9 @@ fn decode_multisig_owner_signature(signature: Bytes) -> Result<TempoSignature, &
     if signature.is_empty() {
         return Err("multisig owner signature cannot be empty");
     }
-    if signature.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES {
+    if signature.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES
+        && signature[0] != SIGNATURE_TYPE_MULTISIG
+    {
         return Err("multisig owner signature too large");
     }
     TempoSignature::from_bytes(&signature).map_err(|_| "invalid multisig owner signature")
@@ -848,7 +851,7 @@ mod tests {
     use crate::transaction::{
         PrimitiveSignature, TempoSignature, derive_p256_address,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
-        tt_signature::{P256SignatureWithPreHash, normalize_p256_s},
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     };
     use alloy_rlp::{Decodable, Encodable};
     use p256::{
@@ -1396,6 +1399,28 @@ mod tests {
         );
 
         assert_eq!(signature, Err("multisig owner signature too large"));
+    }
+
+    #[test]
+    fn multisig_signature_shape_allows_nested_signature_above_primitive_byte_cap() {
+        let primitive = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+            webauthn_data: Bytes::from(vec![0; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
+        });
+        let nested = TempoSignature::Multisig(MultisigSignature::new(
+            Address::repeat_byte(0x22),
+            vec![primitive.to_bytes(), primitive.to_bytes()],
+            None,
+        ));
+        assert!(nested.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES);
+
+        let signature =
+            MultisigSignature::try_new(Address::repeat_byte(0x11), vec![nested.to_bytes()], None);
+
+        assert!(signature.is_ok());
     }
 
     #[test]
