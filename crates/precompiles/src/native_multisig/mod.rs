@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn store_read_and_update_config() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn update_config_rejects_access_key_authority() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn store_and_read_255_owner_config() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let owners = max_abi_owners();
         let config = InitMultisig {
             salt: B256::ZERO,
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn get_multisig_config_reads_header_once() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = init_config();
         let account = config.account().unwrap();
         let empty_account = Address::repeat_byte(0x42);
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn is_multisig_account_parses_header_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = init_config();
         let account = config.account().unwrap();
         let empty_account = Address::repeat_byte(0x42);
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn invalid_update_does_not_deactivate_multisig() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn update_config_returns_specific_config_errors() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn store_initial_config_returns_specific_config_errors() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let account = Address::repeat_byte(0x44);
         let valid = init_config();
 

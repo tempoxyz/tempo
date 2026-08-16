@@ -1142,7 +1142,7 @@ mod tests {
         ));
         assert!(!is_valid_multisig_account(
             NATIVE_MULTISIG_ADDRESS,
-            TempoHardfork::T8
+            TempoHardfork::T11
         ));
         assert!(!is_valid_multisig_account(
             PATH_USD_ADDRESS,
@@ -1150,9 +1150,9 @@ mod tests {
         ));
 
         for &(precompile, activated) in SYSTEM_PRECOMPILES {
-            if activated <= TempoHardfork::T8 {
+            if activated <= TempoHardfork::T11 {
                 assert!(
-                    !is_valid_multisig_account(precompile, TempoHardfork::T8),
+                    !is_valid_multisig_account(precompile, TempoHardfork::T11),
                     "{precompile} should not be eligible as a native multisig account"
                 );
             }

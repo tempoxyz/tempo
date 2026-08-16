@@ -79,7 +79,7 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
-    (NATIVE_MULTISIG_ADDRESS, TempoHardfork::T8),
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
+    (NATIVE_MULTISIG_ADDRESS, TempoHardfork::T11),
 ];

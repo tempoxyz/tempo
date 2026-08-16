@@ -628,6 +628,8 @@ where
         }
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])?;
+        }
+        if self.inner.spec.is_t11_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(NATIVE_MULTISIG_ADDRESS, &[])?;
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
@@ -1949,17 +1951,13 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_t6_does_not_deploy_native_multisig_code() {
+    fn test_apply_pre_execution_pre_t11_does_not_deploy_native_multisig_code() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
-        executor.evm_mut().ctx_mut().block.inner.timestamp = U256::from(
-            TempoHardfork::T6
-                .moderato_activation_timestamp()
-                .expect("T6 is active on moderato"),
-        );
+        executor.evm_mut().ctx_mut().block.inner.timestamp = U256::from(u64::MAX);
 
         executor.apply_pre_execution_changes().unwrap();
         drop(executor);
@@ -1968,7 +1966,7 @@ mod tests {
         let info = acc.account_info();
         assert!(
             info.is_none() || info.unwrap().is_empty_code_hash(),
-            "NativeMultisig code should not be deployed before T8"
+            "NativeMultisig code should not be deployed before T11"
         );
 
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
@@ -1977,7 +1975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_deploys_t8_native_multisig_code() {
+    fn test_apply_pre_execution_deploys_t11_native_multisig_code() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()

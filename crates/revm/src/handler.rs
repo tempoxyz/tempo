@@ -978,7 +978,7 @@ where
         let spec = cfg.spec();
         let mut native_multisig_bootstrap: Option<(Address, InitMultisig)> = None;
 
-        if spec.is_t8() {
+        if spec.is_t11() {
             let tempo_tx_env = tx.tempo_tx_env.as_ref();
             let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
             let is_rpc_simulation =
@@ -1991,7 +1991,7 @@ where
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
             let has_native_multisig_fields = aa_env.signature.is_multisig();
 
-            if has_native_multisig_fields && !cfg.spec.is_t8() {
+            if has_native_multisig_fields && !cfg.spec.is_t11() {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
             }
 
@@ -2469,7 +2469,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_regular_gas += tempo_signature_verification_gas(signature);
 
     // 2b. Native multisig bootstrap storage costs.
-    if spec.is_t8()
+    if spec.is_t11()
         && let Some(init) = signature
             .as_multisig()
             .and_then(|multisig_signature| multisig_signature.init())
