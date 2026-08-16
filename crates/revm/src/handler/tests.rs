@@ -5,6 +5,8 @@ use crate::{
 };
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use proptest::prelude::*;
 use revm::{
     Context, Journal, MainContext,
@@ -24,9 +26,9 @@ use tempo_precompiles::{
     storage::ContractStorage, test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    Call, InitMultisig, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MultisigOwner,
-    MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization,
+    Call, InitMultisig, KeyAuthorization, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
+    MultisigOwner, MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization,
+    TempoSignature, TempoSignedAuthorization, multisig_digest,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -61,6 +63,26 @@ fn single_owner_native_multisig_config(salt: u8, owner: Address) -> InitMultisig
         threshold: 1,
         owners: vec![MultisigOwner { owner, weight: 1 }],
     }
+}
+
+fn sign_native_multisig(
+    config: &InitMultisig,
+    inner_digest: B256,
+    signer: &PrivateKeySigner,
+    include_init: bool,
+) -> TempoSignature {
+    let account = config.account().unwrap();
+    let owner_signature = PrimitiveSignature::Secp256k1(
+        signer
+            .sign_hash_sync(&multisig_digest(inner_digest, account))
+            .expect("owner signing succeeds"),
+    )
+    .to_bytes();
+    TempoSignature::Multisig(MultisigSignature::new(
+        account,
+        vec![owner_signature],
+        include_init.then(|| config.clone()),
+    ))
 }
 
 fn authorization(_authority: Address) -> Authorization {
@@ -1326,7 +1348,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1348,7 +1370,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -4610,6 +4632,71 @@ fn test_t10_rejects_native_multisig_signature() {
 }
 
 #[test]
+fn test_t10_rejects_native_multisig_key_authorization_signature() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x33))
+            .with_account(account)
+            .into_signed(TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![PrimitiveSignature::default().to_bytes()],
+                Some(config),
+            )));
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        key_authorization: Some(key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T10, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigNotActive
+        ))
+    ));
+}
+
+#[test]
+fn test_t11_rejects_keychain_key_authorization_signature() {
+    let caller = Address::repeat_byte(0x11);
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x33))
+            .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                caller,
+                PrimitiveSignature::default(),
+            )));
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        key_authorization: Some(key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = caller;
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+        )) if reason.contains("cannot use keychain encoding")
+    ));
+}
+
+#[test]
 fn test_t11_aa_auth_list_rejects_native_multisig_authority() {
     let config = native_multisig_config();
     let authority = config.account().unwrap();
@@ -4798,6 +4885,101 @@ fn test_t11_bootstrap_multisig_persists_initial_config() {
         Ok::<_, TempoPrecompileError>(())
     })
     .expect("stored native multisig config should be readable");
+}
+
+#[test]
+fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let signed_key_authorization = key_authorization.clone().into_signed(sign_native_multisig(
+        &config,
+        key_authorization.signature_hash(),
+        &owner,
+        true,
+    ));
+    let signature_hash = B256::repeat_byte(0x42);
+    let access_key_signature = PrimitiveSignature::Secp256k1(
+        access_key
+            .sign_hash_sync(&KeychainSignature::signing_hash(signature_hash, account))
+            .unwrap(),
+    );
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Keychain(KeychainSignature::new(account, access_key_signature)),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x24),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+
+    test.validate_env().expect("T11 key authorization is valid");
+    test.validate_against_state_and_deduct_caller()
+        .expect("key authorization bootstrap succeeds");
+
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        assert!(NativeMultisig::new().is_multisig_account(account)?);
+        assert!(AccountKeychain::new().is_active_key(account, access_key.address())?);
+        Ok::<_, TempoPrecompileError>(())
+    })
+    .expect("bootstrap config and access key are stored");
+}
+
+#[test]
+fn test_t11_registered_multisig_can_authorize_access_key() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let signed_key_authorization = key_authorization.clone().into_signed(sign_native_multisig(
+        &config,
+        key_authorization.signature_hash(),
+        &owner,
+        false,
+    ));
+    let signature_hash = B256::repeat_byte(0x42);
+    let aa_env = TempoBatchCallEnv {
+        signature: sign_native_multisig(&config, signature_hash, &owner, false),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x24),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    test.validate_env().expect("T11 key authorization is valid");
+    test.validate_against_state_and_deduct_caller()
+        .expect("registered multisig key authorization succeeds");
+
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        assert!(AccountKeychain::new().is_active_key(account, access_key.address())?);
+        Ok::<_, TempoPrecompileError>(())
+    })
+    .expect("access key is stored");
 }
 
 #[test]

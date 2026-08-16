@@ -813,6 +813,14 @@ impl TempoSignature {
         }
     }
 
+    /// Get the primitive signature if this is a primitive signature.
+    pub fn as_primitive(&self) -> Option<&PrimitiveSignature> {
+        match self {
+            Self::Primitive(signature) => Some(signature),
+            _ => None,
+        }
+    }
+
     /// Get the native multisig signature if this is a multisig signature.
     pub fn as_multisig(&self) -> Option<&MultisigSignature> {
         match self {
@@ -853,6 +861,12 @@ impl alloy_rlp::Decodable for TempoSignature {
 impl From<Signature> for TempoSignature {
     fn from(signature: Signature) -> Self {
         Self::Primitive(PrimitiveSignature::Secp256k1(signature))
+    }
+}
+
+impl From<PrimitiveSignature> for TempoSignature {
+    fn from(signature: PrimitiveSignature) -> Self {
+        Self::Primitive(signature)
     }
 }
 

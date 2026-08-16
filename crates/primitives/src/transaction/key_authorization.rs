@@ -1,5 +1,5 @@
 use super::SignatureType;
-use crate::transaction::PrimitiveSignature;
+use crate::transaction::TempoSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -356,7 +356,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
+    pub fn into_signed(self, signature: impl Into<TempoSignature>) -> SignedKeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
@@ -420,8 +420,8 @@ pub struct SignedKeyAuthorization {
     #[deref]
     pub authorization: KeyAuthorization,
 
-    /// Signature authorizing this key (signed by root key)
-    pub signature: PrimitiveSignature,
+    /// Signature authorizing this key.
+    pub signature: TempoSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -434,10 +434,10 @@ pub struct SignedKeyAuthorization {
 
 impl SignedKeyAuthorization {
     /// Create a signed key authorization with an empty signer cache.
-    pub fn new(authorization: KeyAuthorization, signature: PrimitiveSignature) -> Self {
+    pub fn new(authorization: KeyAuthorization, signature: impl Into<TempoSignature>) -> Self {
         Self {
             authorization,
-            signature,
+            signature: signature.into(),
             signer: OnceLock::new(),
         }
     }
@@ -707,7 +707,7 @@ mod selector_hex_serde {
 mod tests {
     use super::*;
     use crate::transaction::{
-        TempoSignature,
+        PrimitiveSignature, TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
     use alloy_rlp::{Decodable, Encodable};
@@ -926,6 +926,48 @@ mod tests {
         let bad_recovered = bad_signed.recover_signer();
         assert!(bad_recovered.is_ok());
         assert_ne!(bad_recovered.unwrap(), expected_address);
+    }
+
+    #[test]
+    fn primitive_signed_authorization_encoding_is_unchanged() {
+        #[derive(alloy_rlp::RlpEncodable)]
+        struct LegacySignedKeyAuthorization {
+            authorization: KeyAuthorization,
+            signature: PrimitiveSignature,
+        }
+
+        let auth = make_auth(Some(1000), None);
+        let signature = PrimitiveSignature::default();
+        let signed = auth.clone().into_signed(signature.clone());
+        let legacy = LegacySignedKeyAuthorization {
+            authorization: auth,
+            signature,
+        };
+
+        let mut encoded = Vec::new();
+        signed.encode(&mut encoded);
+        let mut legacy_encoded = Vec::new();
+        legacy.encode(&mut legacy_encoded);
+        assert_eq!(encoded, legacy_encoded);
+    }
+
+    #[test]
+    fn multisig_signed_authorization_roundtrip() {
+        let auth = make_auth(None, None).with_account(Address::repeat_byte(0x44));
+        let signature = TempoSignature::Multisig(crate::transaction::MultisigSignature::new(
+            Address::repeat_byte(0x44),
+            vec![PrimitiveSignature::default().to_bytes()],
+            None,
+        ));
+        let signed = auth.into_signed(signature);
+
+        let mut encoded = Vec::new();
+        signed.encode(&mut encoded);
+        let decoded = SignedKeyAuthorization::decode(&mut encoded.as_slice())
+            .expect("decode multisig-signed key authorization");
+
+        assert_eq!(decoded, signed);
+        assert!(decoded.signature.is_multisig());
     }
 
     #[test]
