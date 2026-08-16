@@ -26,7 +26,7 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
         // pause (1s), keeping the single execution-task slot occupied over
         // a long stretch of virtual time.
         h.execution
-            .script_new_payload(d1, PayloadStatusEnum::Syncing);
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
         h.deliver_tip(round(1), 1, d1);
         let w1 = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1]).await;

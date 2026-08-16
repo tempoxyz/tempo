@@ -172,7 +172,7 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
         marshal.add_block(b1);
         let execution = FakeExecution::new();
         // The execution layer is not ready once (e.g. rebuilding indices).
-        execution.script_new_payload(d1, PayloadStatusEnum::Syncing);
+        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
 
         let h = Harness::start(
             &context,

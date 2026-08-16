@@ -20,7 +20,10 @@ fn valid_block_resolves_with_a_duration() {
             .verify(round(1), b1.clone())
             .await
             .expect("verification should complete");
-        assert!(verdict.is_some(), "a valid block resolves with its duration");
+        assert!(
+            verdict.is_some(),
+            "a valid block resolves with its duration"
+        );
         assert_eq!(h.execution.new_payloads(), vec![b1.digest()]);
     });
 }
@@ -33,9 +36,9 @@ fn invalid_block_resolves_with_a_rejection() {
         let b1 = make_block(1, 1, GENESIS);
         h.execution.script_new_payload(
             b1.digest(),
-            PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "bad state root".into(),
-            },
+            }),
         );
 
         let verdict = h
@@ -121,7 +124,7 @@ fn accepted_payload_status_fails_the_validation() {
 
         let b1 = make_block(1, 1, GENESIS);
         h.execution
-            .script_new_payload(b1.digest(), PayloadStatusEnum::Accepted);
+            .script_new_payload(b1.digest(), Ok(PayloadStatusEnum::Accepted));
         let _ = h
             .verify(round(1), b1)
             .await
@@ -133,6 +136,29 @@ fn accepted_payload_status_fails_the_validation() {
             .verify(round(1), b1_again)
             .await
             .expect("verification should complete");
+        assert!(verdict.is_some());
+    });
+}
+
+#[test_traced]
+fn new_payload_transport_error_fails_validation_but_is_not_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        h.execution
+            .script_new_payload(b1.digest(), Err("connection closed"));
+        let _ = h
+            .verify(round(1), b1.clone())
+            .await
+            .expect_err("a new-payload transport error must fail validation");
+
+        // Validation transport failures are request-local. Once the
+        // execution layer recovers, the actor continues serving consensus.
+        let verdict = h
+            .verify(round(2), b1)
+            .await
+            .expect("verification should complete after the transport error");
         assert!(verdict.is_some());
     });
 }
@@ -171,9 +197,7 @@ fn newer_round_supersedes_a_queued_request() {
 
         // The newer round replaced the queued request, dropping its
         // response channel.
-        let _ = stale
-            .await
-            .expect_err("the superseded request must fail");
+        let _ = stale.await.expect_err("the superseded request must fail");
 
         h.deliver_finalized(b1)
             .await

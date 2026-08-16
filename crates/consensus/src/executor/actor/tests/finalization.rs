@@ -68,7 +68,8 @@ fn syncing_finalized_block_is_postponed_and_retried_in_order() {
         // The execution layer reports SYNCING once (e.g. while rebuilding
         // indices); the block must be retried, and the block queued behind
         // it must stay behind it.
-        h.execution.script_new_payload(d1, PayloadStatusEnum::Syncing);
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
 
         h.deliver_tip(round(2), 2, d2);
         let w1 = h.deliver_finalized(b1);
@@ -93,9 +94,9 @@ fn invalid_finalized_block_is_fatal() {
         let b1 = make_block(1, 1, GENESIS);
         h.execution.script_new_payload(
             b1.digest(),
-            PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "bad block".into(),
-            },
+            }),
         );
 
         h.deliver_tip(round(1), 1, b1.digest());

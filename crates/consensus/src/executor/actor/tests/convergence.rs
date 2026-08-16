@@ -151,9 +151,9 @@ fn rejected_notarized_block_is_withheld_then_retried() {
         let d1 = b1.digest();
         h.execution.script_new_payload(
             d1,
-            PayloadStatusEnum::Invalid {
+            Ok(PayloadStatusEnum::Invalid {
                 validation_error: "transient".into(),
-            },
+            }),
         );
 
         h.report_pending_head(2, 1, d1);

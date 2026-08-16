@@ -128,9 +128,9 @@ struct FakeExecutionInner {
     genesis: B256,
     state: Mutex<ElState>,
     calls: Mutex<Vec<ElCall>>,
-    /// Scripted new-payload statuses keyed by block hash, consumed in order.
-    /// A scripted `Valid` still records the block.
-    payload_overrides: Mutex<HashMap<B256, VecDeque<PayloadStatusEnum>>>,
+    /// Scripted new-payload outcomes keyed by block hash, consumed in order.
+    /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
+    payload_overrides: Mutex<HashMap<B256, VecDeque<Result<PayloadStatusEnum, &'static str>>>>,
     /// Scripted FCU statuses consumed in order before default behavior.
     fcu_overrides: Mutex<VecDeque<PayloadStatusEnum>>,
     /// Rejects every FCU while set.
@@ -212,16 +212,23 @@ impl FakeExecution {
 
     // ---- fault injection ----
 
-    /// Scripts the status returned for the next new-payload request carrying
-    /// the block with `digest`. Scripted statuses stack in FIFO order and
-    /// take precedence over the default parent-known behavior.
-    pub(super) fn script_new_payload(&self, digest: Digest, status: PayloadStatusEnum) {
+    /// Scripts the outcome of the next new-payload request carrying the block
+    /// with `digest`. Scripted outcomes stack in FIFO order and take precedence
+    /// over the default parent-known behavior. `Ok(PayloadStatusEnum::Invalid)`
+    /// models a successfully delivered Engine API response that rejects the
+    /// payload, while `Err` models a request or transport failure before the
+    /// execution layer returns any payload status.
+    pub(super) fn script_new_payload(
+        &self,
+        digest: Digest,
+        outcome: Result<PayloadStatusEnum, &'static str>,
+    ) {
         self.inner
             .payload_overrides
             .lock()
             .entry(digest.0)
             .or_default()
-            .push_back(status);
+            .push_back(outcome);
     }
 
     /// Scripts the status of the next forkchoice update, whatever its target.
@@ -408,22 +415,28 @@ impl ExecutionLayer for FakeExecution {
             .lock()
             .get_mut(&digest)
             .and_then(VecDeque::pop_front);
-        let status = scripted.unwrap_or_else(|| {
-            if self.inner.state.lock().blocks.contains_key(&parent) {
+        let outcome = scripted.unwrap_or_else(|| {
+            Ok(if self.inner.state.lock().blocks.contains_key(&parent) {
                 PayloadStatusEnum::Valid
             } else {
                 PayloadStatusEnum::Syncing
-            }
+            })
         });
-        if status == PayloadStatusEnum::Valid {
-            self.inner
-                .state
-                .lock()
-                .blocks
-                .insert(digest, (height, parent));
-        }
+        let result = match outcome {
+            Ok(status) => {
+                if status == PayloadStatusEnum::Valid {
+                    self.inner
+                        .state
+                        .lock()
+                        .blocks
+                        .insert(digest, (height, parent));
+                }
+                Ok(PayloadStatus::from_status(status))
+            }
+            Err(error) => Err(eyre::eyre!(error)),
+        };
 
-        async move { Ok(PayloadStatus::from_status(status)) }
+        async move { result }
     }
 
     fn fork_choice_updated(
