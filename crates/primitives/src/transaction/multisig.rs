@@ -241,7 +241,7 @@ impl From<MultisigOwner> for INativeMultisig::MultisigOwner {
 }
 
 /// Initial native multisig config carried by the first transaction.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -253,6 +253,53 @@ pub struct InitMultisig {
     pub threshold: u8,
     /// Sorted weighted owner list.
     pub owners: Vec<MultisigOwner>,
+}
+
+impl alloy_rlp::Decodable for InitMultisig {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        if buf.len() < header.payload_length {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        let body = *buf;
+        let (mut fields, rest) = body.split_at(header.payload_length);
+        let salt = <B256 as alloy_rlp::Decodable>::decode(&mut fields)?;
+        let threshold = <u8 as alloy_rlp::Decodable>::decode(&mut fields)?;
+
+        let owners_header = alloy_rlp::Header::decode(&mut fields)?;
+        if !owners_header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        if fields.len() < owners_header.payload_length {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+        let (mut owner_fields, trailing_fields) = fields.split_at(owners_header.payload_length);
+        let mut owners = Vec::new();
+        while !owner_fields.is_empty() {
+            if owners.len() == MAX_MULTISIG_OWNERS {
+                return Err(alloy_rlp::Error::Custom("too many multisig owners"));
+            }
+            owners.push(<MultisigOwner as alloy_rlp::Decodable>::decode(
+                &mut owner_fields,
+            )?);
+        }
+        if !trailing_fields.is_empty() {
+            return Err(alloy_rlp::Error::Custom(
+                "unexpected trailing multisig init fields",
+            ));
+        }
+
+        *buf = rest;
+        Ok(Self {
+            salt,
+            threshold,
+            owners,
+        })
+    }
 }
 
 impl InitMultisig {
@@ -1385,6 +1432,28 @@ mod tests {
         let mut tempo_encoded = vec![SIGNATURE_TYPE_MULTISIG];
         tempo_encoded.extend(encoded);
         assert!(TempoSignature::from_bytes(&tempo_encoded).is_err());
+    }
+
+    #[test]
+    fn init_multisig_decode_bounds_owner_count() {
+        let config = InitMultisig {
+            salt: B256::ZERO,
+            threshold: MAX_MULTISIG_THRESHOLD,
+            owners: (1..=MAX_MULTISIG_OWNERS as u16 + 1)
+                .map(|index| MultisigOwner {
+                    owner: Address::from_word(B256::from(alloy_primitives::U256::from(index))),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let mut encoded = Vec::new();
+        config.encode(&mut encoded);
+
+        let mut input = encoded.as_slice();
+        assert!(matches!(
+            InitMultisig::decode(&mut input),
+            Err(alloy_rlp::Error::Custom("too many multisig owners"))
+        ));
     }
 
     #[test]
