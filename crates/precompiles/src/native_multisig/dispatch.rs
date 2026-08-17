@@ -22,10 +22,10 @@ impl Precompile for NativeMultisig {
                     isMultisigAccount(call) => {
                         view(call, |c| self.is_multisig_account(c.account))
                     },
-                    getMultisigConfig(call) => {
+                    getConfig(call) => {
                         view(call, |c| self.get_multisig_config(c.account))
                     },
-                    updateMultisigConfig(call) => mutate_void(call, msg_sender, |sender, c| {
+                    updateConfig(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.update_multisig_config(sender, c.threshold, c.owners)
                     })
                 }
@@ -56,12 +56,12 @@ mod tests {
             [0x9f, 0xbf, 0x02, 0x9a]
         );
         assert_eq!(
-            INativeMultisig::getMultisigConfigCall::SELECTOR,
-            [0x58, 0x1b, 0x26, 0xec]
+            INativeMultisig::getConfigCall::SELECTOR,
+            [0xe4, 0x8a, 0x5f, 0x7b]
         );
         assert_eq!(
-            INativeMultisig::updateMultisigConfigCall::SELECTOR,
-            [0xe1, 0x5e, 0x85, 0x44]
+            INativeMultisig::updateConfigCall::SELECTOR,
+            [0xe1, 0x75, 0xd4, 0x79]
         );
     }
 

@@ -30,8 +30,8 @@ crate::sol! {
             pure
             returns (address account);
         function isMultisigAccount(address account) external view returns (bool);
-        function getMultisigConfig(address account) external view returns (MultisigConfig memory);
-        function updateMultisigConfig(uint8 threshold, MultisigOwner[] calldata owners) external;
+        function getConfig(address account) external view returns (MultisigConfig memory);
+        function updateConfig(uint8 threshold, MultisigOwner[] calldata owners) external;
 
         error NotMultisigAccount();
         error InvalidAccount();
