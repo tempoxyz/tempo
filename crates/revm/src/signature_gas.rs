@@ -37,7 +37,8 @@ pub(crate) fn native_multisig_complete_config_validation_gas(owner_count: usize)
 /// the packed `{ threshold, owner_count, version }` account header.
 const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 1;
 
-/// Approximate buffer for the LOG3/no-data `MultisigInitialized` event emitted during bootstrap.
+/// Approximate buffer for the LOG3/no-data `ConfigurableAccountInitialized` event emitted during
+/// bootstrap.
 pub(crate) const NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER: u64 = 1_500;
 
 /// Calculates the gas cost for verifying a primitive signature.

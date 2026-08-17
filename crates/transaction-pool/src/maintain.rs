@@ -334,20 +334,20 @@ impl AccountKeychainPoolEvent {
 
 /// Transaction-pool relevant subset of `INativeMultisig` events.
 enum NativeMultisigPoolEvent {
-    /// [`INativeMultisig::MultisigConfigUpdated`] log.
-    ConfigUpdated(INativeMultisig::MultisigConfigUpdated),
-    /// [`INativeMultisig::MultisigInitialized`] log.
-    Initialized(INativeMultisig::MultisigInitialized),
+    /// [`INativeMultisig::AccountConfigUpdated`] log.
+    ConfigUpdated(INativeMultisig::AccountConfigUpdated),
+    /// [`INativeMultisig::ConfigurableAccountInitialized`] log.
+    Initialized(INativeMultisig::ConfigurableAccountInitialized),
 }
 
 impl NativeMultisigPoolEvent {
     /// Decodes only native-multisig events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
-            INativeMultisig::MultisigConfigUpdated::SIGNATURE_HASH => {
+            INativeMultisig::AccountConfigUpdated::SIGNATURE_HASH => {
                 decode_event(log).map(Self::ConfigUpdated)
             }
-            INativeMultisig::MultisigInitialized::SIGNATURE_HASH => {
+            INativeMultisig::ConfigurableAccountInitialized::SIGNATURE_HASH => {
                 decode_event(log).map(Self::Initialized)
             }
             _ => None,
@@ -1355,7 +1355,7 @@ mod tests {
         fn native_multisig_decode_matches_generated_event_decoders() {
             let log = event_log(
                 NATIVE_MULTISIG_ADDRESS,
-                INativeMultisig::MultisigConfigUpdated {
+                INativeMultisig::AccountConfigUpdated {
                     account: Address::random(),
                     threshold: 2,
                     owners: vec![INativeMultisig::MultisigOwner {
@@ -1367,20 +1367,20 @@ mod tests {
             assert_decodes_like_generated!(
                 NativeMultisigPoolEvent,
                 ConfigUpdated,
-                INativeMultisig::MultisigConfigUpdated,
+                INativeMultisig::AccountConfigUpdated,
                 log
             );
 
             let log = event_log(
                 NATIVE_MULTISIG_ADDRESS,
-                INativeMultisig::MultisigInitialized {
+                INativeMultisig::ConfigurableAccountInitialized {
                     account: Address::random(),
                 },
             );
             assert_decodes_like_generated!(
                 NativeMultisigPoolEvent,
                 Initialized,
-                INativeMultisig::MultisigInitialized,
+                INativeMultisig::ConfigurableAccountInitialized,
                 log
             );
         }
