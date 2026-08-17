@@ -7092,7 +7092,7 @@ checksum = "1fafa6961cabd9c63bcd77a45d7e3b7f3b552b70417831fb0f56db717e72407e"
 [[package]]
 name = "mpt-flat-poc"
 version = "0.1.0"
-source = "git+https://github.com/dankrad/mpt-flat-poc?rev=4ad613d2e1ef8cd074035f210e02247d7e992c1b#4ad613d2e1ef8cd074035f210e02247d7e992c1b"
+source = "git+https://github.com/dankrad/mpt-flat-poc?rev=db518e1bd81c1d583bb38958281a7b98cc1acbe9#db518e1bd81c1d583bb38958281a7b98cc1acbe9"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
