@@ -33,7 +33,7 @@ use tempo_primitives::{
 
 const EXAMPLE_GAS_LIMIT: u64 = 5_000_000;
 
-fn sorted_signers() -> Vec<PrivateKeySigner> {
+pub(super) fn sorted_signers() -> Vec<PrivateKeySigner> {
     let mut signers = (1..=3)
         .map(|byte| PrivateKeySigner::from_bytes(&B256::repeat_byte(byte)).unwrap())
         .collect::<Vec<_>>();
@@ -45,7 +45,11 @@ fn signer(byte: u8) -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::repeat_byte(byte)).unwrap()
 }
 
-fn multisig_config(salt: u8, threshold: u8, owners: &[(&PrivateKeySigner, u8)]) -> InitMultisig {
+pub(super) fn multisig_config(
+    salt: u8,
+    threshold: u8,
+    owners: &[(&PrivateKeySigner, u8)],
+) -> InitMultisig {
     let owners = owners
         .iter()
         .map(|(signer, weight)| MultisigOwner {
@@ -62,11 +66,11 @@ fn multisig_config(salt: u8, threshold: u8, owners: &[(&PrivateKeySigner, u8)]) 
     }
 }
 
-fn derived_account(config: &InitMultisig) -> eyre::Result<Address> {
+pub(super) fn derived_account(config: &InitMultisig) -> eyre::Result<Address> {
     config.account().map_err(|err| eyre::eyre!(err.as_str()))
 }
 
-fn no_op_call(byte: u8) -> Call {
+pub(super) fn no_op_call(byte: u8) -> Call {
     Call {
         to: TxKind::Call(Address::repeat_byte(byte)),
         value: Default::default(),
@@ -74,7 +78,7 @@ fn no_op_call(byte: u8) -> Call {
     }
 }
 
-fn sign_multisig(
+pub(super) fn sign_multisig(
     account: Address,
     inner_digest: B256,
     version: u64,
@@ -130,7 +134,7 @@ async fn reject<E: TestEnv>(
         .await
 }
 
-async fn stored_config<E: TestEnv>(
+pub(super) async fn stored_config<E: TestEnv>(
     env: &E,
     account: Address,
 ) -> eyre::Result<INativeMultisig::MultisigConfig> {
