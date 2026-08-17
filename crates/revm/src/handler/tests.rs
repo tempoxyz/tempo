@@ -4788,6 +4788,70 @@ fn test_t11_primitive_transaction_skips_native_multisig_storage() {
 }
 
 #[test]
+fn test_t11_fee_payer_multisig_registry_read_is_metered() {
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+        tx_env.fee_payer = Some(Some(Address::repeat_byte(0x22)));
+    });
+
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("ordinary fee payer should pass");
+
+    assert_eq!(
+        init_gas.initial_regular_gas, cold_storage_read_gas,
+        "fee payer should charge one cold multisig registry read"
+    );
+}
+
+#[test]
+fn test_t11_auth_list_multisig_registry_reads_are_metered() {
+    let authorities = [Address::repeat_byte(0x22), Address::repeat_byte(0x33)];
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: authorities.map(tempo_authorization).to_vec(),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+    });
+
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("ordinary authorization-list authorities should pass");
+
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        authorities.len() as u64 * cold_storage_read_gas,
+        "each distinct authority should charge one cold multisig registry read"
+    );
+}
+
+#[test]
 fn test_t11_aa_auth_list_rejects_native_multisig_authority() {
     let config = native_multisig_config();
     let authority = config.account().unwrap();
@@ -5184,14 +5248,17 @@ fn test_t11_registered_multisig_can_authorize_access_key() {
     store_native_multisig_account(&mut test, &config);
 
     test.validate_env().expect("T11 key authorization is valid");
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
     let mut init_gas = InitialAndFloorGas::default();
     test.handler
         .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
         .expect("registered multisig key authorization succeeds");
     assert_eq!(
         init_gas.initial_regular_gas,
-        2 * native_multisig_complete_config_validation_gas(config.owners.len()),
-        "outer and key-authorization multisig roots should each charge complete config validation"
+        2 * native_multisig_complete_config_validation_gas(config.owners.len())
+            + cold_storage_read_gas,
+        "multisig roots should charge complete config validation and the access key should charge one registry read"
     );
 
     StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {

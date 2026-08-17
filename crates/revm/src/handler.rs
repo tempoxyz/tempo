@@ -1083,6 +1083,86 @@ where
             } else {
                 None
             };
+
+            let native_multisig_registry_validation_gas = {
+                let internals = EvmInternals::new(journal, block, cfg, tx);
+                let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+                    .with_actions(actions.clone());
+                let validation = StorageCtx::enter(&mut provider, || {
+                    let multisig_precompile = NativeMultisig::new();
+
+                    if tx.has_fee_payer_signature()
+                        && multisig_precompile
+                            .is_multisig_account(fee_payer)
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                    {
+                        let error = TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
+                            account: fee_payer,
+                        };
+                        return Err(error.into());
+                    }
+
+                    if let Some(key_id) = key_authorization_key_id
+                        && multisig_precompile
+                            .is_multisig_account(key_id)
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                    {
+                        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
+                            reason: format!(
+                                "native multisig account {key_id} cannot be used as an access key"
+                            ),
+                        }
+                        .into());
+                    }
+
+                    let ensure_authority_not_multisig = |authority| -> Result<
+                        (),
+                        EVMError<DB::Error, TempoInvalidTransaction>,
+                    > {
+                        if multisig_precompile
+                            .is_multisig_account(authority)
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                        {
+                            // Whether an authority is a native multisig account is read from
+                            // storage, so this rejection depends on chain state and can flip
+                            // after signing/relay. Classify it as a state-dependent validation
+                            // failure (not a bad transaction) so honest relays are not penalized.
+                            // The deterministic payload-only checks in validate_env stay
+                            // NativeMultisigInvalidTransaction.
+                            let error = TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                reason: format!(
+                                    "native multisig account {authority} cannot be used as an authorization-list authority"
+                                ),
+                            };
+                            return Err(error.into());
+                        }
+                        Ok(())
+                    };
+
+                    if let Some(tempo_tx_env) = tempo_tx_env {
+                        for auth in &tempo_tx_env.tempo_authorization_list {
+                            if let Some(authority) = auth.authority() {
+                                ensure_authority_not_multisig(authority)?;
+                            }
+                        }
+                    } else {
+                        for auth in tx.authorization_list() {
+                            if let Some(authority) = auth.authority() {
+                                ensure_authority_not_multisig(authority)?;
+                            }
+                        }
+                    }
+
+                    Ok::<(), EVMError<DB::Error, TempoInvalidTransaction>>(())
+                });
+                let gas_used = provider.gas_used();
+                validation?;
+                gas_used
+            };
+
             StorageCtx::enter_precompile(
                 journal,
                 block,
@@ -1102,69 +1182,6 @@ where
                         None
                     };
                     let caller_is_multisig = caller_multisig_config.is_some();
-
-                    if tx.has_fee_payer_signature()
-                        && multisig_precompile
-                            .is_multisig_account(fee_payer)
-                            .map_err(NativeMultisigAuthError::from)
-                            .map_err(map_native_multisig_error::<DB>)?
-                    {
-                        return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
-                            account: fee_payer,
-                        }
-                        .into());
-                    }
-
-                    if let Some(key_id) = key_authorization_key_id
-                        && multisig_precompile
-                            .is_multisig_account(key_id)
-                            .map_err(NativeMultisigAuthError::from)
-                            .map_err(map_native_multisig_error::<DB>)?
-                    {
-                        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                            reason: format!(
-                                "native multisig account {key_id} cannot be used as an access key"
-                            ),
-                        }
-                        .into());
-                    }
-
-                    let ensure_authority_not_multisig =
-                        |authority| -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-                            if multisig_precompile
-                                .is_multisig_account(authority)
-                                .map_err(NativeMultisigAuthError::from)
-                                .map_err(map_native_multisig_error::<DB>)?
-                            {
-                                // Whether an authority is a native multisig account is read from
-                                // storage, so this rejection depends on chain state and can flip
-                                // after signing/relay. Classify it as a state-dependent validation
-                                // failure (not a bad transaction) so honest relays are not penalized.
-                                // The deterministic payload-only checks in validate_env stay
-                                // NativeMultisigInvalidTransaction.
-                                return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                    reason: format!(
-                                        "native multisig account {authority} cannot be used as an authorization-list authority"
-                                    ),
-                                }
-                                .into());
-                            }
-                            Ok(())
-                        };
-
-                    if let Some(tempo_tx_env) = tempo_tx_env {
-                        for auth in &tempo_tx_env.tempo_authorization_list {
-                            if let Some(authority) = auth.authority() {
-                                ensure_authority_not_multisig(authority)?;
-                            }
-                        }
-                    } else {
-                        for auth in tx.authorization_list() {
-                            if let Some(authority) = auth.authority() {
-                                ensure_authority_not_multisig(authority)?;
-                            }
-                        }
-                    }
 
                     if validates_caller_multisig
                         && !caller_account_info
@@ -1342,6 +1359,7 @@ where
 
             init_gas.initial_regular_gas = init_gas
                 .initial_regular_gas
+                .saturating_add(native_multisig_registry_validation_gas)
                 .saturating_add(native_multisig_config_validation_gas);
 
             if tx.gas_limit() < init_gas.initial_total_gas() {
