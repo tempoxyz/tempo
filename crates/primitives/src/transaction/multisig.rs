@@ -4,7 +4,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, address, keccak256};
 use core::{
     hash::{Hash, Hasher},
     mem::size_of,
@@ -42,6 +42,8 @@ pub const MAX_MULTISIG_NESTING_DEPTH: usize = 2;
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
+
+const P256VERIFY_ADDRESS: Address = address!("0x0000000000000000000000000000000000000100");
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -824,13 +826,21 @@ impl alloy_rlp::Encodable for MultisigSignature {
 /// - `is_virtual` fixes 10 bytes (~2^80 work) and `is_tip20` fixes a 12-byte prefix (~2^96): these
 ///   are pattern namespaces a well-resourced attacker could plausibly grind, so they are the
 ///   load-bearing checks that keep a multisig account out of the virtual / TIP-20 address spaces.
-/// - `is_zero` and the fixed / low-range `is_precompile` cases fix ~152-160 bits (>= ~2^156 work):
-///   not grindable in practice, kept as cheap defense-in-depth.
+/// - `is_zero` and the fixed / low-range precompile cases fix ~152-160 bits (>= ~2^156 work): not
+///   grindable in practice, kept as cheap defense-in-depth.
 ///
-/// The precompile set is not maintained here; `is_precompile` reads the canonical
-/// `SYSTEM_PRECOMPILES` list, so this stays correct as precompiles are added.
+/// EVM built-in precompiles are checked locally so TIP-1061 does not change the shared
+/// `is_precompile` behavior used by earlier protocol features.
 pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
-    !account.is_zero() && !account.is_virtual() && !account.is_precompile(spec)
+    !account.is_zero()
+        && !account.is_virtual()
+        && !account.is_precompile(spec)
+        && !is_evm_precompile(account, spec)
+}
+
+fn is_evm_precompile(account: Address, spec: TempoHardfork) -> bool {
+    (account.as_slice()[..19] == [0; 19] && (1..=0x11).contains(&account.as_slice()[19]))
+        || (spec.is_t1c() && account == P256VERIFY_ADDRESS)
 }
 
 /// Computes the digest that native multisig owners approve.
@@ -1237,6 +1247,22 @@ mod tests {
 
     #[test]
     fn multisig_account_eligibility_uses_current_hardfork_precompile_set() {
+        let identity_precompile = Address::with_last_byte(0x04);
+        assert!(!identity_precompile.is_precompile(TempoHardfork::T11));
+        assert!(!is_valid_multisig_account(
+            identity_precompile,
+            TempoHardfork::T11
+        ));
+
+        assert!(is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1B
+        ));
+        assert!(!is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1C
+        ));
+
         assert!(is_valid_multisig_account(
             NATIVE_MULTISIG_ADDRESS,
             TempoHardfork::T7
