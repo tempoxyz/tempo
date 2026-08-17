@@ -90,23 +90,47 @@ pub(crate) struct Config<P = TempoExecutionProvider, M = MarshalMailbox, E = Epo
 }
 
 /// Execution-layer reads used by the DKG manager.
+///
+/// During initialization, these reads provide the initial validator set and
+/// public polynomial. During normal operation, they provide the validator
+/// configuration used at the end of each epoch.
 pub(crate) trait ExecutionProvider: Clone + Send + Sync {
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
-    /// Returns the validator set selected for the epoch after `digest`.
+    /// Determines the validator set selected for the epoch after the block
+    /// identified by `digest`.
+    ///
+    /// This is used while constructing or verifying a proposal, so `digest`
+    /// must identify that proposal's parent. If the corresponding execution
+    /// state is unavailable, the proposal cannot be constructed or verified.
     fn next_players(&self, digest: Digest) -> eyre::Result<Set<PublicKey>>;
 
-    /// Returns the epoch scheduled for the next full DKG ceremony at `digest`.
+    /// Reads the epoch scheduled for the next full DKG ceremony from the
+    /// validator configuration at `digest`.
+    ///
+    /// This determines whether the next ceremony creates a new polynomial
+    /// instead of resharing the current one. It is used while constructing or
+    /// verifying a proposal, so `digest` must identify that proposal's parent.
+    /// If the corresponding execution state is unavailable, the proposal
+    /// cannot be constructed or verified.
     fn next_full_dkg_epoch(&self, digest: Digest) -> eyre::Result<u64>;
 }
 
 /// Marshal operations used by the DKG manager.
 pub(crate) trait Marshal: Clone + Send + Sync {
+    /// Stream of blocks from a requested tip through its ancestry.
     type Ancestry: Stream<Item = Arc<Block>> + Send + Unpin + 'static;
 
+    /// Makes a best-effort attempt to retrieve `height` from local storage.
+    ///
+    /// This lookup does not fetch the block from the network.
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
 
+    /// Returns a stream over the ancestry of the block identified by `start`.
+    ///
+    /// The stream may fetch missing parents according to the supplied fallback
+    /// and timeout. Returns `None` when the starting block cannot be found.
     fn ancestry<C>(
         &self,
         clock: Arc<C>,
@@ -119,6 +143,10 @@ pub(crate) trait Marshal: Clone + Send + Sync {
 
 /// Epoch transitions emitted by the DKG manager.
 pub(crate) trait EpochManager: Send + Sync {
+    /// Starts consensus for `epoch` with the DKG output and participant set.
+    ///
+    /// A present `share` makes the local validator a signer; without one, it
+    /// enters the epoch as a verifier.
     fn enter(
         &mut self,
         epoch: Epoch,
@@ -127,6 +155,7 @@ pub(crate) trait EpochManager: Send + Sync {
         participants: Set<PublicKey>,
     ) -> eyre::Result<()>;
 
+    /// Stops the consensus engine for `epoch`.
     fn exit(&mut self, epoch: Epoch) -> eyre::Result<()>;
 }
 
