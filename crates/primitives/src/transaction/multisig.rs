@@ -23,7 +23,7 @@ pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
 pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:multisig:signature";
 
 /// Maximum number of owners allowed in a native multisig config.
-pub const MAX_MULTISIG_OWNERS: usize = 50;
+pub const MAX_MULTISIG_OWNERS: usize = 48;
 
 /// Maximum threshold accepted by a native multisig config.
 ///

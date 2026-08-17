@@ -6111,14 +6111,18 @@ fn test_aa_gas_native_multisig_bootstrap_charges_packed_storage_slots_t11() {
     let storage_slots = native_multisig_bootstrap_storage_slots(&config);
     assert_eq!(storage_slots, 1 + 2 * config.owners.len() as u64);
 
-    let expected_storage_gas =
-        SSTORE_CREATE_COST * storage_slots + NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER;
+    let expected_storage_gas = (SSTORE_CREATE_COST + gas_params.sstore_static_gas())
+        * storage_slots
+        + gas_params.cold_storage_cost() * storage_slots.saturating_sub(1)
+        + 2 * gas_params.warm_storage_read_cost()
+        + revm::interpreter::gas::LOG
+        + gas_params.log_cost(2, 0);
     let expected_overhead =
         NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS + expected_storage_gas;
     assert_eq!(
         multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
         expected_overhead,
-        "bootstrap should charge packed account header, indexed and lookup owner slots, and an event buffer"
+        "bootstrap should charge packed account header, indexed and lookup owner slots, and the initialization event"
     );
     assert_eq!(
         multisig_gas.initial_state_gas, base_gas.initial_state_gas,
@@ -6186,11 +6190,16 @@ fn test_aa_gas_max_native_multisig_bootstrap_allows_recursive_authorization_t11(
         bootstrap_gas <= TEMPO_T1_TX_GAS_LIMIT_CAP,
         "the maximum config and recursive authorization must fit the transaction gas cap"
     );
+    const OWNERS_TO_PREVIOUS_LIMIT: u64 = 2;
     assert!(
         bootstrap_gas
-            + 2 * SSTORE_CREATE_COST
-            + MAX_MULTISIG_SIGNATURES as u64 * native_multisig_complete_config_validation_gas(1)
+            + 2 * OWNERS_TO_PREVIOUS_LIMIT
+                * (SSTORE_CREATE_COST
+                    + gas_params.sstore_static_gas()
+                    + gas_params.cold_storage_cost())
+            + MAX_MULTISIG_SIGNATURES as u64
+                * native_multisig_complete_config_validation_gas(OWNERS_TO_PREVIOUS_LIMIT as usize,)
             > TEMPO_T1_TX_GAS_LIMIT_CAP,
-        "one more owner in each config would exceed the transaction gas cap"
+        "the previous 50-owner limit would exceed the transaction gas cap"
     );
 }

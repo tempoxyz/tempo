@@ -1,6 +1,8 @@
 use revm::{
     context_interface::cfg::{GasId, GasParams},
-    interpreter::gas::{COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul},
+    interpreter::gas::{
+        COLD_SLOAD_COST, LOG, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
+    },
 };
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_precompiles::ECRECOVER_GAS;
@@ -37,8 +39,8 @@ pub(crate) fn native_multisig_complete_config_validation_gas(owner_count: usize)
 /// the packed `{ threshold, owner_count, version }` account header.
 const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 1;
 
-/// Approximate buffer for the LOG3/no-data `MultisigInitialized` event emitted during bootstrap.
-pub(crate) const NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER: u64 = 1_500;
+/// Topic count for the non-anonymous `MultisigInitialized(address indexed account)` event.
+const NATIVE_MULTISIG_BOOTSTRAP_EVENT_TOPICS: u8 = 2;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -153,6 +155,7 @@ pub(crate) fn calculate_native_multisig_bootstrap_storage_gas(
     spec: TempoHardfork,
 ) -> (u64, u64) {
     let num_sstores = native_multisig_bootstrap_storage_slots(init);
+    let num_cold_sstores = num_sstores.saturating_sub(1);
 
     let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
     if spec.is_t7() {
@@ -161,9 +164,23 @@ pub(crate) fn calculate_native_multisig_bootstrap_storage_gas(
         sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
     }
 
-    let regular_gas = sstore_cost
+    // Bootstrap validation has already warmed the account header. The owner rows and direct
+    // weight rows are new cold slots. The committed write also re-reads the warm header and
+    // records the bootstrapped account in transient storage before emitting the event.
+    let sstore_gas = sstore_cost
+        .saturating_add(gas_params.sstore_static_gas())
         .saturating_mul(num_sstores)
-        .saturating_add(NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER);
+        .saturating_add(
+            gas_params
+                .cold_storage_cost()
+                .saturating_mul(num_cold_sstores),
+        );
+    let warm_context_gas = gas_params.warm_storage_read_cost().saturating_mul(2);
+    let event_gas =
+        LOG.saturating_add(gas_params.log_cost(NATIVE_MULTISIG_BOOTSTRAP_EVENT_TOPICS, 0));
+    let regular_gas = sstore_gas
+        .saturating_add(warm_context_gas)
+        .saturating_add(event_gas);
     let state_gas = gas_params
         .get(GasId::sstore_set_state_gas())
         .saturating_mul(num_sstores);
