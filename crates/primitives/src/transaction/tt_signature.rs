@@ -98,7 +98,6 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
-#[expect(clippy::type_complexity)]
 fn split_p256_signature_fields(
     sig_data: &[u8; P256_SIGNATURE_LENGTH],
 ) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
@@ -2043,7 +2042,7 @@ mod tests {
         let signature = TempoSignature::Multisig(MultisigSignature::new(
             account,
             vec![valid_multisig_owner_signature_bytes()],
-            Some(config.clone()),
+            Some(config),
         ));
 
         // recover_signer returns the claimed account after stateless shape checks only; it does
