@@ -403,14 +403,12 @@ fn populate_native_multisig_simulation_hints(
         request.multisig_init = None;
         if request.multisig_signature_count.is_none() {
             request.multisig_signature_count = Some(hint.approvals.len());
-            request.multisig_simulation_hint = Some(hint);
         }
+        request.multisig_simulation_hint = Some(hint);
         return Ok(());
     }
 
-    if request.multisig_signature_count.is_none()
-        && let Some(init) = request.multisig_init.as_ref()
-    {
+    if let Some(init) = request.multisig_init.as_ref() {
         let hint = native_multisig_simulation_hint_for_config(
             init.account()
                 .map_err(|err| EthApiError::InvalidParams(err.to_string()))?,
@@ -418,7 +416,9 @@ fn populate_native_multisig_simulation_hints(
             db,
             1,
         )?;
-        request.multisig_signature_count = Some(hint.approvals.len());
+        if request.multisig_signature_count.is_none() {
+            request.multisig_signature_count = Some(hint.approvals.len());
+        }
         request.multisig_simulation_hint = Some(hint);
     }
 
@@ -985,33 +985,37 @@ mod tests {
             ],
         );
 
-        let mut request = TempoTransactionRequest {
-            inner: TransactionRequest {
-                from: Some(account),
+        for signature_count in [None, Some(1)] {
+            let mut request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    from: Some(account),
+                    ..Default::default()
+                },
+                multisig_signature_count: signature_count,
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+            };
+            populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
 
-        let hint = request
-            .multisig_simulation_hint
-            .expect("registered account hint");
-        assert_eq!(hint.account, account);
-        assert_eq!(hint.owner_count, 1);
-        assert_eq!(hint.approvals.len(), 1);
-        let MultisigSimulationApproval::Multisig(nested) = &hint.approvals[0] else {
-            panic!("registered threshold owner should use a nested approval");
-        };
-        assert_eq!(nested.account, nested_account);
-        assert_eq!(nested.owner_count, 2);
-        assert_eq!(
-            nested.approvals,
-            vec![
-                MultisigSimulationApproval::Primitive,
-                MultisigSimulationApproval::Primitive,
-            ]
-        );
+            assert_eq!(request.multisig_signature_count, Some(1));
+            let hint = request
+                .multisig_simulation_hint
+                .expect("registered account hint");
+            assert_eq!(hint.account, account);
+            assert_eq!(hint.owner_count, 1);
+            assert_eq!(hint.approvals.len(), 1);
+            let MultisigSimulationApproval::Multisig(nested) = &hint.approvals[0] else {
+                panic!("registered threshold owner should use a nested approval");
+            };
+            assert_eq!(nested.account, nested_account);
+            assert_eq!(nested.owner_count, 2);
+            assert_eq!(
+                nested.approvals,
+                vec![
+                    MultisigSimulationApproval::Primitive,
+                    MultisigSimulationApproval::Primitive,
+                ]
+            );
+        }
     }
 
     #[test]
