@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
@@ -25,6 +26,26 @@ fn valid_block_resolves_with_a_duration() {
             "a valid block resolves with its duration"
         );
         assert_eq!(h.execution.new_payloads(), vec![b1.digest()]);
+    });
+}
+
+#[test_traced]
+fn validator_set_reaches_new_payload_unchanged() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let validator_set = vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+        let verdict = h
+            .verify_with_validator_set(round(1), b1.clone(), Some(validator_set.clone()))
+            .await
+            .expect("verification should complete");
+
+        assert!(verdict.is_some());
+        assert_eq!(
+            h.execution.payload_validator_sets(),
+            vec![(b1.digest(), Some(validator_set))],
+        );
     });
 }
 

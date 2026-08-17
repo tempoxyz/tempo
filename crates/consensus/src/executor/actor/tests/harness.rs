@@ -132,6 +132,8 @@ struct FakeExecutionInner {
     /// Scripted new-payload outcomes keyed by block hash, consumed in order.
     /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
     payload_overrides: Mutex<HashMap<B256, VecDeque<Result<PayloadStatusEnum, &'static str>>>>,
+    /// Validator sets received with new-payload requests, keyed by block hash.
+    payload_validator_sets: Mutex<Vec<(Digest, Option<Vec<B256>>)>>,
     /// Scripted FCU outcomes consumed in order before default behavior.
     fcu_overrides: Mutex<VecDeque<Result<PayloadStatusEnum, &'static str>>>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
@@ -178,6 +180,7 @@ impl FakeExecution {
                 }),
                 calls: Mutex::new(Vec::new()),
                 payload_overrides: Mutex::new(HashMap::new()),
+                payload_validator_sets: Mutex::new(Vec::new()),
                 fcu_overrides: Mutex::new(VecDeque::new()),
                 canonical_hash_overrides: Mutex::new(HashMap::new()),
                 block_overrides: Mutex::new(HashMap::new()),
@@ -348,6 +351,10 @@ impl FakeExecution {
             .collect()
     }
 
+    pub(super) fn payload_validator_sets(&self) -> Vec<(Digest, Option<Vec<B256>>)> {
+        self.inner.payload_validator_sets.lock().clone()
+    }
+
     pub(super) fn fcus(&self) -> Vec<(Digest, Digest, bool)> {
         self.calls()
             .into_iter()
@@ -464,6 +471,7 @@ impl ExecutionLayer for FakeExecution {
         &self,
         payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
+        let validator_set = payload.validator_set.clone();
         let block = Block::from_execution_block_unchecked(payload.block, None);
         let (digest, height, parent) = (
             block.digest().0,
@@ -471,6 +479,10 @@ impl ExecutionLayer for FakeExecution {
             block.parent_digest().0,
         );
         self.record(ElCall::NewPayload(Digest(digest)));
+        self.inner
+            .payload_validator_sets
+            .lock()
+            .push((Digest(digest), validator_set));
 
         let scripted = self
             .inner
@@ -850,8 +862,17 @@ impl Harness {
         round: Round,
         block: Block,
     ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<> {
+        self.verify_with_validator_set(round, block, None)
+    }
+
+    pub(super) fn verify_with_validator_set(
+        &self,
+        round: Round,
+        block: Block,
+        validator_set: Option<Vec<B256>>,
+    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<> {
         let mailbox = self.mailbox.clone();
-        async move { mailbox.verify_block(round, block, None).await }
+        async move { mailbox.verify_block(round, block, validator_set).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload
