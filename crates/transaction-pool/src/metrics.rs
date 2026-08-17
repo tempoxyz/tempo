@@ -96,9 +96,6 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Time spent updating the 2D nonce pool in seconds.
     pub nonce_pool_update_duration_seconds: Histogram,
 
-    /// Number of expired transactions evicted.
-    pub expired_transactions_evicted: Counter,
-
     /// Number of transactions moved to the paused pool.
     pub transactions_paused: Counter,
 

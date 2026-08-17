@@ -140,7 +140,7 @@ where
         }
 
         let all_txs = self.all_transactions();
-        self.evict_invalidated_transactions_from(updates, all_txs.iter())
+        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
     }
 
     /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
@@ -149,8 +149,9 @@ where
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        expiry_cutoff: Option<u64>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if !updates.has_invalidation_events() {
+        if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
             return Vec::new();
         }
 
@@ -241,6 +242,11 @@ where
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         for tx in transactions {
+            if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
+                to_remove.push(*tx.hash());
+                continue;
+            }
+
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates || has_key_authorization_target_updates {
                 let keychain_subject = has_keychain_subject_updates
@@ -506,7 +512,7 @@ where
             blacklisted_count,
             unwhitelisted_count,
             insolvent_fee_payer_count,
-            "Evicting invalidated transactions"
+            "Evicting invalidated or expired transactions"
         );
         self.remove_transactions(to_remove)
     }
