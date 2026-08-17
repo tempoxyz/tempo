@@ -9,8 +9,8 @@ pub mod tt_signed;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature, TempoSignature,
-    derive_p256_address,
+    KeychainInnerSignature, KeychainSignature, KeychainVersion, KeychainVersionError,
+    PrimitiveSignature, TempoSignature, derive_p256_address,
 };
 
 pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;
@@ -22,10 +22,11 @@ pub use key_authorization::{
 };
 pub use multisig::{
     InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
-    MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD,
-    MULTISIG_SIGNATURE_DOMAIN, MultisigAddress, MultisigConfigError, MultisigOwner,
-    MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG,
-    is_valid_multisig_account, multisig_digest, multisig_signature_count_for_threshold,
+    MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURE_BYTES, MAX_MULTISIG_SIGNATURES,
+    MAX_MULTISIG_THRESHOLD, MULTISIG_SIGNATURE_DOMAIN, MultisigAddress, MultisigConfigError,
+    MultisigOwner, MultisigQuorumError, MultisigSignature, MultisigWeightAccumulator,
+    SIGNATURE_TYPE_MULTISIG, is_valid_multisig_account, multisig_digest,
+    multisig_signature_count_for_threshold,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,

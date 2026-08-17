@@ -193,7 +193,29 @@ pub(super) fn create_mock_tempo_sig(
     caller_addr: Address,
     is_t1c: bool,
 ) -> TempoSignature {
-    use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
+    use tempo_primitives::transaction::{
+        MultisigSignature,
+        tt_signature::{KeychainSignature, TempoSignature},
+    };
+
+    if *key_type == SignatureType::Multisig {
+        let account = key_id.unwrap_or(caller_addr);
+        let inner_sig = MultisigSignature::new(
+            account,
+            vec![create_mock_primitive_signature(&SignatureType::Secp256k1, None).to_bytes()],
+            None,
+        );
+        return if key_id.is_some() {
+            let keychain_sig = if is_t1c {
+                KeychainSignature::new(caller_addr, inner_sig)
+            } else {
+                KeychainSignature::new_v1(caller_addr, inner_sig)
+            };
+            TempoSignature::Keychain(keychain_sig)
+        } else {
+            TempoSignature::Multisig(inner_sig)
+        };
+    }
 
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
@@ -271,6 +293,11 @@ pub(super) fn create_mock_primitive_signature(
                 pub_key_y: B256::ZERO,
             })
         }
+        SignatureType::Multisig => PrimitiveSignature::Secp256k1(Signature::new(
+            alloy_primitives::U256::ZERO,
+            alloy_primitives::U256::ZERO,
+            false,
+        )),
     }
 }
 
@@ -309,5 +336,29 @@ mod tests {
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
+    }
+
+    #[test]
+    fn configurable_access_key_request_uses_multisig_inner_signature() {
+        let root = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let key_id = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(root),
+                to: Some(TxKind::Call(Address::random())),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::Multisig),
+            key_id: Some(key_id),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect("valid configurable access-key simulation request");
+        let aa = env.tempo_tx_env.expect("AA simulation env");
+        let keychain = aa.signature.as_keychain().expect("keychain signature");
+
+        assert_eq!(keychain.signature.as_multisig().unwrap().account(), key_id);
     }
 }
