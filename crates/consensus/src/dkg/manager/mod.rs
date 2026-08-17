@@ -129,8 +129,9 @@ pub(crate) trait Marshal: Clone + Send + Sync {
 
     /// Returns a stream over the ancestry of the block identified by `start`.
     ///
-    /// The stream may fetch missing parents according to the supplied fallback
-    /// and timeout. Returns `None` when the starting block cannot be found.
+    /// The fallback controls how the starting block is obtained, and the
+    /// supplied timer records the latency of any missing-parent fetches.
+    /// Returns `None` when the starting block cannot be found.
     fn ancestry<C>(
         &self,
         clock: Arc<C>,
