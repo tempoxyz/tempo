@@ -918,7 +918,7 @@ mod tests {
             .call_identity(&[])
             .gas_limit(2_000_000)
             .build();
-        let digest = multisig_digest(tx.signature_hash(), account);
+        let digest = multisig_digest(tx.signature_hash(), account, 0);
         let owner_signature =
             PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
         let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
@@ -984,7 +984,7 @@ mod tests {
             .call_identity(&[])
             .gas_limit(2_000_000)
             .build();
-        let digest = multisig_digest(tx.signature_hash(), account);
+        let digest = multisig_digest(tx.signature_hash(), account, 0);
         let owner_signature =
             PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
         let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(

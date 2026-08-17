@@ -25,7 +25,7 @@ pub(crate) const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
 pub(crate) const NATIVE_MULTISIG_OWNER_WEIGHT_GAS: u64 = COLD_SLOAD_COST;
 
 /// Persistent storage rows created by native multisig bootstrap before owner rows:
-/// the packed `{ threshold, owner_count }` account header.
+/// the packed `{ threshold, owner_count, version }` account header.
 const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 1;
 
 /// Approximate buffer for the LOG3/no-data `MultisigInitialized` event emitted during bootstrap.
@@ -129,7 +129,7 @@ pub(crate) fn native_multisig_bootstrap_storage_slots(init: &InitMultisig) -> u6
 /// The committed bootstrap write is a protocol pre-execution write. It runs without TIP-1060
 /// storage-credit accounting because this intrinsic charge includes the creditable portion.
 /// The packed native multisig layout creates exactly:
-/// - one packed account header slot containing threshold and owner count
+/// - one packed account header slot containing threshold, owner count, and version
 /// - one packed owner slot per owner
 /// - one direct owner-weight lookup slot per owner
 #[inline]

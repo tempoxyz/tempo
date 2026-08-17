@@ -76,7 +76,7 @@ fn sign_native_multisig(
     let account = config.account().unwrap();
     let owner_signature = PrimitiveSignature::Secp256k1(
         signer
-            .sign_hash_sync(&multisig_digest(inner_digest, account))
+            .sign_hash_sync(&multisig_digest(inner_digest, account, 0))
             .expect("owner signing succeeds"),
     )
     .to_bytes();
@@ -4866,7 +4866,7 @@ fn test_t11_bootstrap_multisig_persists_initial_config() {
     };
     let account = config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x42);
-    let digest = multisig_digest(signature_hash, account);
+    let digest = multisig_digest(signature_hash, account, 0);
     let owner_signature = PrimitiveSignature::Secp256k1(
         signers[0]
             .sign_hash_sync(&digest)
@@ -5132,8 +5132,8 @@ fn test_t11_registered_native_multisig_accepts_max_depth_nested_multisig_owner()
     let parent_config = single_owner_native_multisig_config(0x43, child_account);
     let parent_account = parent_config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x44);
-    let parent_digest = multisig_digest(signature_hash, parent_account);
-    let child_digest = multisig_digest(parent_digest, child_account);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
+    let child_digest = multisig_digest(parent_digest, child_account, 0);
     let child_owner_signature = PrimitiveSignature::Secp256k1(
         signer
             .sign_hash_sync(&child_digest)
@@ -5188,9 +5188,9 @@ fn test_t11_registered_native_multisig_rejects_excessive_nesting_depth() {
     let parent_account = parent_config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x45);
 
-    let parent_digest = multisig_digest(signature_hash, parent_account);
-    let child_digest = multisig_digest(parent_digest, child_account);
-    let grandchild_digest = multisig_digest(child_digest, grandchild_account);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
+    let child_digest = multisig_digest(parent_digest, child_account, 0);
+    let grandchild_digest = multisig_digest(child_digest, grandchild_account, 0);
     let grandchild_owner_signature = PrimitiveSignature::Secp256k1(
         signer
             .sign_hash_sync(&grandchild_digest)
@@ -5365,7 +5365,7 @@ fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction(
     };
     let account = config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x43);
-    let digest = multisig_digest(signature_hash, account);
+    let digest = multisig_digest(signature_hash, account, 0);
     let mut signed = signers
         .iter()
         .map(|signer| {
@@ -5414,7 +5414,7 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
     let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x22));
     let account = config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x43);
-    let digest = multisig_digest(signature_hash, account);
+    let digest = multisig_digest(signature_hash, account, 0);
     let signature = MultisigSignature::new(
         account,
         vec![
@@ -5447,6 +5447,51 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
 }
 
 #[test]
+fn native_multisig_authorization_binds_registered_config_version() {
+    let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let config = single_owner_native_multisig_config(0x42, signer.address());
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let signature_for_version = |version| {
+        let digest = multisig_digest(signature_hash, account, version);
+        MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes(),
+            ],
+            None,
+        )
+    };
+    let verify = |signature: &MultisigSignature| {
+        NativeMultisig::new().verify_authorization(
+            signature_hash,
+            signature,
+            NativeMultisigAuthConfig::Registered {
+                account,
+                threshold: 1,
+                version: 1,
+            },
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |stored_account, owner| {
+                assert_eq!(stored_account, account);
+                Ok(u8::from(owner == signer.address()))
+            },
+        )
+    };
+
+    assert!(matches!(
+        verify(&signature_for_version(0)),
+        Err(NativeMultisigAuthError::ValidationFailed(_))
+    ));
+    verify(&signature_for_version(1)).expect("current config version should authorize");
+}
+
+#[test]
 fn native_multisig_authorization_rejects_trailing_owner_approvals() {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -5471,7 +5516,7 @@ fn native_multisig_authorization_rejects_trailing_owner_approvals() {
     };
     let account = config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x43);
-    let digest = multisig_digest(signature_hash, account);
+    let digest = multisig_digest(signature_hash, account, 0);
     let signatures = signers
         .iter()
         .map(|signer| {

@@ -453,8 +453,8 @@ pub struct MultisigSignature {
     ///
     /// Each approval is either a primitive signature or a nested native multisig signature.
     signatures: Vec<TempoSignature>,
-    /// Cached multisig digest for the transaction hash this signature approved.
-    cached_digest: OnceLock<(B256, Address, B256)>,
+    /// Cached multisig digest for the transaction hash and config version this signature approved.
+    cached_digest: OnceLock<(B256, Address, u64, B256)>,
 }
 
 #[cfg(feature = "serde")]
@@ -598,25 +598,29 @@ impl MultisigSignature {
     }
 
     /// Returns the multisig owner-approval digest for this signature and caches it on first use.
-    pub fn digest(&self, inner_digest: B256) -> B256 {
+    pub fn digest(&self, inner_digest: B256, config_version: u64) -> B256 {
         let account = self.account();
-        if let Some((cached_inner, cached_account, cached_digest)) = self.cached_digest.get()
+        if let Some((cached_inner, cached_account, cached_version, cached_digest)) =
+            self.cached_digest.get()
             && *cached_inner == inner_digest
             && *cached_account == account
+            && *cached_version == config_version
         {
             return *cached_digest;
         }
 
-        let digest = multisig_digest(inner_digest, account);
+        let digest = multisig_digest(inner_digest, account, config_version);
         if self.cached_digest.get().is_none() {
             #[allow(clippy::useless_conversion)]
             let _ = self
                 .cached_digest
-                .set((inner_digest, account, digest).into());
+                .set((inner_digest, account, config_version, digest).into());
         }
-        if let Some((cached_inner, cached_account, cached_digest)) = self.cached_digest.get()
+        if let Some((cached_inner, cached_account, cached_version, cached_digest)) =
+            self.cached_digest.get()
             && *cached_inner == inner_digest
             && *cached_account == account
+            && *cached_version == config_version
         {
             return *cached_digest;
         }
@@ -805,15 +809,17 @@ pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool 
 }
 
 /// Computes the digest that native multisig owners approve.
-pub fn multisig_digest(inner_digest: B256, account: Address) -> B256 {
-    let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20];
+pub fn multisig_digest(inner_digest: B256, account: Address, config_version: u64) -> B256 {
+    let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8];
     let mut offset = 0;
     input[offset..offset + MULTISIG_SIGNATURE_DOMAIN.len()]
         .copy_from_slice(MULTISIG_SIGNATURE_DOMAIN);
     offset += MULTISIG_SIGNATURE_DOMAIN.len();
     input[offset..offset + 32].copy_from_slice(inner_digest.as_slice());
     offset += 32;
-    input[offset..].copy_from_slice(account.as_slice());
+    input[offset..offset + 20].copy_from_slice(account.as_slice());
+    offset += 20;
+    input[offset..].copy_from_slice(&config_version.to_be_bytes());
     keccak256(input)
 }
 
@@ -1101,9 +1107,9 @@ mod tests {
             alloy_primitives::address!("6c70c970f6336248ad44e54d7aba67df85868846")
         );
         assert_eq!(
-            multisig_digest(B256::repeat_byte(0x42), account),
+            multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "a1fdc858a3006a29824a0be2422983859ad2c87573aacc2b80eccb4bc98190ff"
+                "eb2f2ecb4f15891c441a1b5c5ee660ab122def338f72d7a2a2130e24ec13592f"
             )
         );
     }
@@ -1242,8 +1248,8 @@ mod tests {
         assert_ne!(account_a, account_b);
 
         let inner_digest = B256::repeat_byte(0x42);
-        let digest_a = multisig_digest(inner_digest, account_a);
-        let digest_b = multisig_digest(inner_digest, account_b);
+        let digest_a = multisig_digest(inner_digest, account_a, 0);
+        let digest_b = multisig_digest(inner_digest, account_b, 0);
         assert_ne!(digest_a, digest_b, "digest is domain-separated by account");
 
         // An owner approval recovers the owner only against the account it was signed for; replaying
@@ -1254,12 +1260,27 @@ mod tests {
     }
 
     #[test]
+    fn owner_signature_cannot_replay_across_config_versions() {
+        let (signer, owner) = generate_secp256k1_keypair();
+        let config = sorted_secp_config(&[(owner, 1)], 1);
+        let account = config.account().unwrap();
+        let inner_digest = B256::repeat_byte(0x42);
+        let initial_digest = multisig_digest(inner_digest, account, 0);
+        let rotated_digest = multisig_digest(inner_digest, account, 1);
+
+        assert_ne!(initial_digest, rotated_digest);
+        let signature = sign_hash(&signer, &initial_digest);
+        assert_eq!(signature.recover_signer(&initial_digest).unwrap(), owner);
+        assert_ne!(signature.recover_signer(&rotated_digest).unwrap(), owner);
+    }
+
+    #[test]
     fn verifies_weighted_owner_signatures_in_sorted_order() {
         let (signer_a, owner_a) = generate_secp256k1_keypair();
         let (signer_b, owner_b) = generate_secp256k1_keypair();
         let config = sorted_secp_config(&[(owner_a, 1), (owner_b, 1)], 2);
         let account = config.account().unwrap();
-        let digest = multisig_digest(B256::repeat_byte(0x42), account);
+        let digest = multisig_digest(B256::repeat_byte(0x42), account, 0);
 
         let mut signed = [
             (owner_a, sign_hash(&signer_a, &digest)),
@@ -1296,7 +1317,7 @@ mod tests {
         let (signer, pub_key_x, pub_key_y, owner) = generate_p256_keypair();
         let config = sorted_secp_config(&[(owner, 1)], 1);
         let account = config.account().unwrap();
-        let digest = multisig_digest(B256::repeat_byte(0x42), account);
+        let digest = multisig_digest(B256::repeat_byte(0x42), account, 0);
 
         let canonical_signature =
             sign_p256_owner_approval_with_prehash(&signer, digest, pub_key_x, pub_key_y);
@@ -1543,7 +1564,7 @@ mod tests {
         let config = sorted_secp_config(&[(owner, 1)], 1);
         let account = config.account().unwrap();
         let signature_hash = B256::ZERO;
-        let digest = multisig_digest(signature_hash, account);
+        let digest = multisig_digest(signature_hash, account, 0);
         let signature =
             MultisigSignature::new(account, vec![sign_hash(&signer, &digest).to_bytes()], None);
         let tempo_signature = TempoSignature::Multisig(signature.clone());
@@ -1565,7 +1586,7 @@ mod tests {
         config.salt = B256::repeat_byte(0x33);
         let account = config.account().unwrap();
         let signature_hash = B256::ZERO;
-        let digest = multisig_digest(signature_hash, account);
+        let digest = multisig_digest(signature_hash, account, 0);
         let signatures = vec![sign_hash(&signer, &digest).to_bytes()];
         let signature = MultisigSignature::new(account, signatures.clone(), Some(config.clone()));
         let tempo_signature = TempoSignature::Multisig(signature.clone());
@@ -1595,7 +1616,7 @@ mod tests {
         let (signer, owner) = generate_secp256k1_keypair();
         let config = sorted_secp_config(&[(owner, 1)], 1);
         let account = config.account().unwrap();
-        let digest = multisig_digest(B256::ZERO, account);
+        let digest = multisig_digest(B256::ZERO, account, 0);
         let owner_signature = sign_hash(&signer, &digest);
         let signatures = vec![owner_signature.to_bytes()];
 

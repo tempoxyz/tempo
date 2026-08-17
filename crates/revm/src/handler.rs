@@ -1168,8 +1168,8 @@ where
                                 }
                             })?;
                             if !is_rpc_simulation {
-                                let threshold = multisig_precompile
-                                    .load_registered_threshold(signature.account())
+                                let (threshold, version) = multisig_precompile
+                                    .load_registered_threshold_and_version(signature.account())
                                     .map_err(NativeMultisigAuthError::from)
                                     .map_err(map_native_multisig_error::<DB>)?;
                                 verify_native_multisig_authorization::<DB>(
@@ -1179,6 +1179,7 @@ where
                                     NativeMultisigAuthConfig::Registered {
                                         account: signature.account(),
                                         threshold,
+                                        version,
                                     },
                                 )?;
                             }
@@ -1242,17 +1243,18 @@ where
                                     reason: reason.to_string(),
                                 }
                             })?;
-                            let threshold = if is_rpc_simulation {
-                                0
+                            let (threshold, version) = if is_rpc_simulation {
+                                (0, 0)
                             } else {
                                 multisig_precompile
-                                    .load_registered_threshold(signature.account())
+                                    .load_registered_threshold_and_version(signature.account())
                                     .map_err(NativeMultisigAuthError::from)
                                     .map_err(map_native_multisig_error::<DB>)?
                             };
                             NativeMultisigAuthConfig::Registered {
                                 account: signature.account(),
                                 threshold,
+                                version,
                             }
                         };
 
@@ -2989,7 +2991,7 @@ fn verify_native_multisig_authorization<DB: Database>(
             config,
             |account| {
                 multisig
-                    .load_registered_threshold(account)
+                    .load_registered_threshold_and_version(account)
                     .map_err(NativeMultisigAuthError::from)
             },
             |account, owner| {

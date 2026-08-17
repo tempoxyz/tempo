@@ -52,7 +52,11 @@ impl NativeMultisigAuthError {
 #[derive(Clone, Copy, Debug)]
 pub enum NativeMultisigAuthConfig<'a> {
     Inline(&'a InitMultisig),
-    Registered { account: Address, threshold: u8 },
+    Registered {
+        account: Address,
+        threshold: u8,
+        version: u64,
+    },
 }
 
 impl NativeMultisigAuthConfig<'_> {
@@ -60,6 +64,13 @@ impl NativeMultisigAuthConfig<'_> {
         match self {
             Self::Inline(config) => config.threshold,
             Self::Registered { threshold, .. } => threshold,
+        }
+    }
+
+    fn version(self) -> u64 {
+        match self {
+            Self::Inline(_) => 0,
+            Self::Registered { version, .. } => version,
         }
     }
 
@@ -98,7 +109,10 @@ impl NativeMultisig {
         inner_digest: B256,
         signature: &MultisigSignature,
         config: NativeMultisigAuthConfig<'_>,
-        mut load_threshold: impl FnMut(Address) -> Result<u8, NativeMultisigAuthError>,
+        mut load_threshold_and_version: impl FnMut(
+            Address,
+        )
+            -> Result<(u8, u64), NativeMultisigAuthError>,
         mut load_owner_weight: impl FnMut(Address, Address) -> Result<u8, NativeMultisigAuthError>,
     ) -> Result<(), NativeMultisigAuthError> {
         let mut account_path = vec![signature.account()];
@@ -107,7 +121,7 @@ impl NativeMultisig {
             signature,
             config,
             &mut account_path,
-            &mut load_threshold,
+            &mut load_threshold_and_version,
             &mut load_owner_weight,
         )
         .map(|_| ())
@@ -119,7 +133,10 @@ impl NativeMultisig {
         signature: &MultisigSignature,
         config: NativeMultisigAuthConfig<'_>,
         account_path: &mut Vec<Address>,
-        load_threshold: &mut impl FnMut(Address) -> Result<u8, NativeMultisigAuthError>,
+        load_threshold_and_version: &mut impl FnMut(
+            Address,
+        )
+            -> Result<(u8, u64), NativeMultisigAuthError>,
         load_owner_weight: &mut impl FnMut(Address, Address) -> Result<u8, NativeMultisigAuthError>,
     ) -> Result<u8, NativeMultisigAuthError> {
         signature
@@ -127,7 +144,7 @@ impl NativeMultisig {
             .map_err(NativeMultisigAuthError::invalid_transaction)?;
         config.validate()?;
 
-        let digest = signature.digest(inner_digest);
+        let digest = signature.digest(inner_digest, config.version());
         let mut weight_accumulator = MultisigWeightAccumulator::new(config.threshold());
 
         for (signature_index, owner_approval) in signature.signatures().iter().enumerate() {
@@ -174,7 +191,7 @@ impl NativeMultisig {
                     ));
                 }
 
-                let threshold = load_threshold(owner)?;
+                let (threshold, version) = load_threshold_and_version(owner)?;
                 account_path.push(owner);
                 self.verify_authorization_inner(
                     digest,
@@ -182,9 +199,10 @@ impl NativeMultisig {
                     NativeMultisigAuthConfig::Registered {
                         account: owner,
                         threshold,
+                        version,
                     },
                     account_path,
-                    load_threshold,
+                    load_threshold_and_version,
                     load_owner_weight,
                 )?;
                 account_path.pop();

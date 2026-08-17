@@ -13,6 +13,7 @@ crate::sol! {
         }
 
         struct MultisigConfig {
+            uint64 version;
             uint8 threshold;
             MultisigOwner[] owners;
         }
