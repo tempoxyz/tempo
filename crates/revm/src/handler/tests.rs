@@ -28,8 +28,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::transaction::{
     Call, InitMultisig, KeyAuthorization, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
-    MultisigOwner, MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization,
-    TempoSignature, TempoSignedAuthorization, multisig_digest,
+    MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner,
+    MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+    TempoSignedAuthorization, multisig_digest,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -5731,5 +5732,69 @@ fn test_aa_gas_native_multisig_bootstrap_charges_packed_storage_slots_t11() {
     assert_eq!(
         multisig_gas.initial_state_gas, base_gas.initial_state_gas,
         "native multisig bootstrap storage stays in regular intrinsic gas under non-Amsterdam params"
+    );
+}
+
+#[test]
+fn test_aa_gas_max_native_multisig_bootstrap_allows_recursive_authorization_t11() {
+    use tempo_chainspec::constants::gas::{SSTORE_CREATE_COST, TEMPO_T1_TX_GAS_LIMIT_CAP};
+
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let config = InitMultisig {
+        salt: B256::ZERO,
+        threshold: MAX_MULTISIG_SIGNATURES as u8,
+        owners: (1..=MAX_MULTISIG_OWNERS as u16)
+            .map(|index| MultisigOwner {
+                owner: Address::from_word(B256::from(U256::from(index))),
+                weight: 1,
+            })
+            .collect(),
+    };
+    let webauthn_signature = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+        webauthn_data: Bytes::from(vec![0xff; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
+    })
+    .to_bytes();
+    let nested_signatures = config
+        .owners
+        .iter()
+        .take(MAX_MULTISIG_SIGNATURES)
+        .map(|owner| {
+            TempoSignature::Multisig(MultisigSignature::new(
+                owner.owner,
+                vec![webauthn_signature.clone(); MAX_MULTISIG_SIGNATURES],
+                None,
+            ))
+            .to_bytes()
+        })
+        .collect();
+    let mut env = make_single_call_env(Bytes::new());
+    env.signature = TempoSignature::Multisig(MultisigSignature::new(
+        config.account().unwrap(),
+        nested_signatures,
+        Some(config),
+    ));
+
+    let gas = calculate_aa_batch_intrinsic_gas(
+        &env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let bootstrap_gas = gas
+        .initial_total_gas()
+        .saturating_add(gas_params.get(GasId::new_account_cost()));
+
+    assert!(
+        bootstrap_gas <= TEMPO_T1_TX_GAS_LIMIT_CAP,
+        "the maximum config and recursive authorization must fit the transaction gas cap"
+    );
+    assert!(
+        bootstrap_gas + 2 * SSTORE_CREATE_COST > TEMPO_T1_TX_GAS_LIMIT_CAP,
+        "one more owner would require two storage slots and exceed the transaction gas cap"
     );
 }
