@@ -30,7 +30,7 @@ use tempo_primitives::transaction::{
     Call, InitMultisig, KeyAuthorization, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
     MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner,
     MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization, multisig_digest,
+    TempoSignedAuthorization, derive_p256_address, multisig_digest,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -5584,6 +5584,94 @@ fn native_multisig_authorization_binds_registered_config_version() {
         Err(NativeMultisigAuthError::ValidationFailed(_))
     ));
     verify(&signature_for_version(1)).expect("current config version should authorize");
+}
+
+#[test]
+fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
+    use p256::{
+        ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+        elliptic_curve::rand_core::OsRng,
+    };
+    use sha2::{Digest, Sha256};
+    use tempo_primitives::transaction::tt_signature::normalize_p256_s;
+
+    let signing_key = SigningKey::random(&mut OsRng);
+    let encoded_point = signing_key.verifying_key().to_encoded_point(false);
+    let pub_key_x = B256::from_slice(encoded_point.x().unwrap());
+    let pub_key_y = B256::from_slice(encoded_point.y().unwrap());
+    let owner = derive_p256_address(&pub_key_x, &pub_key_y);
+    let config = single_owner_native_multisig_config(0x42, owner);
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let signature_for_version = |version| {
+        let digest = multisig_digest(signature_hash, account, version);
+        let prehashed = Sha256::digest(digest);
+        let signature: p256::ecdsa::Signature = signing_key
+            .sign_prehash(&prehashed)
+            .expect("owner signing succeeds");
+        let signature_bytes = signature.to_bytes();
+        MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r: B256::from_slice(&signature_bytes[..32]),
+                    s: normalize_p256_s(&signature_bytes[32..])
+                        .expect("p256 crate produces valid s"),
+                    pub_key_x,
+                    pub_key_y,
+                    pre_hash: true,
+                })
+                .to_bytes(),
+            ],
+            None,
+        )
+    };
+    let verify_registered = |signature: &MultisigSignature| {
+        NativeMultisig::new().verify_authorization(
+            signature_hash,
+            signature,
+            NativeMultisigAuthConfig::Registered {
+                account,
+                threshold: 1,
+                version: 1,
+            },
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |stored_account, stored_owner| {
+                assert_eq!(stored_account, account);
+                Ok(u8::from(stored_owner == owner))
+            },
+        )
+    };
+
+    let stale_signature = signature_for_version(0);
+    NativeMultisig::new()
+        .verify_authorization(
+            signature_hash,
+            &stale_signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        )
+        .expect("version-zero approval should authorize bootstrap");
+    assert!(matches!(
+        verify_registered(&stale_signature),
+        Err(NativeMultisigAuthError::ValidationFailed(reason))
+            if reason == "invalid multisig owner signature"
+    ));
+
+    let current_signature = signature_for_version(1);
+    verify_registered(&current_signature).expect("current config version should authorize");
+    assert!(matches!(
+        NativeMultisig::new().verify_authorization(
+            signature_hash,
+            &current_signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        ),
+        Err(NativeMultisigAuthError::InvalidTransaction(reason))
+            if reason == "invalid multisig owner signature"
+    ));
 }
 
 #[test]

@@ -60,6 +60,17 @@ pub enum NativeMultisigAuthConfig<'a> {
 }
 
 impl NativeMultisigAuthConfig<'_> {
+    fn invalid_owner_signature(self) -> NativeMultisigAuthError {
+        match self {
+            Self::Inline(_) => {
+                NativeMultisigAuthError::invalid_transaction("invalid multisig owner signature")
+            }
+            Self::Registered { .. } => {
+                NativeMultisigAuthError::validation_failed("invalid multisig owner signature")
+            }
+        }
+    }
+
     fn threshold(self) -> u8 {
         match self {
             Self::Inline(config) => config.threshold,
@@ -150,11 +161,9 @@ impl NativeMultisig {
         for (signature_index, owner_approval) in signature.signatures().iter().enumerate() {
             let (owner, nested_signature) = match owner_approval {
                 TempoSignature::Primitive(primitive) => {
-                    let owner = primitive.recover_signer(&digest).map_err(|_| {
-                        NativeMultisigAuthError::invalid_transaction(
-                            "invalid multisig owner signature",
-                        )
-                    })?;
+                    let owner = primitive
+                        .recover_signer(&digest)
+                        .map_err(|_| config.invalid_owner_signature())?;
                     (owner, None)
                 }
                 TempoSignature::Keychain(_) => {
