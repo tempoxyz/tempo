@@ -251,6 +251,69 @@ mod tests {
     }
 
     #[test]
+    fn test_set_allowed_calls_limits_aliased_calldata_memory() -> eyre::Result<()> {
+        fn word(value: usize) -> [u8; 32] {
+            let mut out = [0_u8; 32];
+            out[24..].copy_from_slice(&(value as u64).to_be_bytes());
+            out
+        }
+
+        /// Builds the aliased calldata from the original Account Keychain decoder regression.
+        fn aliased_set_allowed_calls_calldata(width: usize) -> Vec<u8> {
+            let mut data = Vec::new();
+            data.extend(legacySetAllowedCallsCall::SELECTOR);
+
+            // Function head: account and offset to CallScope[].
+            data.extend(word(0));
+            data.extend(word(64));
+
+            // Every outer element aliases the same CallScope tail.
+            data.extend(word(width));
+            for _ in 0..width {
+                data.extend(word(width * 32));
+            }
+
+            // Shared CallScope: target and offset to SelectorRule[].
+            data.extend(word(1));
+            data.extend(word(64));
+
+            // Every rule aliases the same SelectorRule tail.
+            data.extend(word(width));
+            for _ in 0..width {
+                data.extend(word(width * 32));
+            }
+
+            // Shared SelectorRule: selector and offset to address[].
+            let mut selector = [0_u8; 32];
+            selector[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+            data.extend(selector);
+            data.extend(word(64));
+
+            // The only physical recipient array.
+            data.extend(word(width));
+            for i in 0..width {
+                data.extend(word(i + 1));
+            }
+
+            assert_eq!(data.len(), 292 + 96 * width);
+            data
+        }
+
+        let calldata = aliased_set_allowed_calls_calldata(500);
+        assert_eq!(calldata.len(), 48_292);
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            let output = keychain.call(&calldata, Address::ZERO)?;
+
+            assert!(output.is_revert());
+            assert!(output.bytes.is_empty());
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_legacy_authorize_key_selector_rejected_post_t3() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         let account = Address::random();
