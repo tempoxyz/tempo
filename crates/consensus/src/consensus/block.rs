@@ -205,19 +205,9 @@ impl Block {
         Digest(self.execution_block.parent_hash())
     }
 
-    /// Returns the timestamp of the wrapped block.
-    pub(crate) fn timestamp(&self) -> u64 {
-        self.execution_block.timestamp()
-    }
-
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         self.execution_block.sealed_block()
-    }
-
-    /// Returns the wrapped execution block handle.
-    pub(crate) fn execution_block(&self) -> &SealedOrRecoveredBlock<tempo_primitives::Block> {
-        &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
