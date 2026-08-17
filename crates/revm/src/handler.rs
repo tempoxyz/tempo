@@ -2250,6 +2250,18 @@ where
                             .into());
                         }
                         if aa_env
+                            .tempo_authorization_list
+                            .iter()
+                            .any(|auth| auth.authority() == Some(account))
+                        {
+                            return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                                reason: format!(
+                                    "native multisig account {account} cannot be used as an authorization-list authority"
+                                ),
+                            }
+                            .into());
+                        }
+                        if aa_env
                             .signature
                             .as_multisig()
                             .is_some_and(|outer| outer.init().is_some())

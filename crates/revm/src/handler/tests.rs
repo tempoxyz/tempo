@@ -5047,6 +5047,55 @@ fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
 }
 
 #[test]
+fn test_t11_key_authorization_bootstrap_rejects_current_multisig_authority() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let signed_key_authorization = key_authorization.clone().into_signed(sign_native_multisig(
+        &config,
+        key_authorization.signature_hash(),
+        &owner,
+        true,
+    ));
+    let signature_hash = B256::repeat_byte(0x42);
+    let access_key_signature = PrimitiveSignature::Secp256k1(
+        access_key
+            .sign_hash_sync(&KeychainSignature::signing_hash(signature_hash, account))
+            .unwrap(),
+    );
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Keychain(KeychainSignature::new(account, access_key_signature)),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![tempo_authorization(account)],
+        signature_hash,
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { ref reason }
+            )) if reason.contains("authorization-list authority")
+        ),
+        "key-authorization bootstrap account cannot be an authorization-list authority: {result:?}"
+    );
+}
+
+#[test]
 fn test_t11_registered_multisig_can_authorize_access_key() {
     let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
     let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
