@@ -1671,8 +1671,8 @@ impl Metrics {
 /// A wrapper around [`marshal::ancestry::AncestorStream`] wrapped in
 /// an option to make it easier to work with select macros.
 ///
-/// Invariants: if the inner stream is set, then the matching original request
-/// is also set.
+/// Invariant: the inner stream and its matching original request are set and
+/// cleared together.
 struct AncestorStream<T> {
     pending_request: Option<(Span, GetDkgOutcome)>,
     inner: Option<T>,
@@ -1728,6 +1728,7 @@ where
         match futures::ready!(item) {
             None => {
                 self.inner.take();
+                self.pending_request.take();
                 Poll::Ready(None)
             }
             Some(block) => Poll::Ready(Some((*block).clone())),

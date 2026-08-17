@@ -287,6 +287,7 @@ impl ExecutionProvider for StubExecutionProvider {
 pub(super) struct StubMarshal {
     blocks: Arc<Mutex<BTreeMap<Height, Block>>>,
     reads: Arc<Mutex<Vec<Height>>>,
+    empty_ancestry: Arc<AtomicBool>,
 }
 
 impl StubMarshal {
@@ -296,6 +297,10 @@ impl StubMarshal {
 
     pub(super) fn reads(&self) -> Vec<Height> {
         self.reads.lock().unwrap().clone()
+    }
+
+    pub(super) fn return_empty_ancestry(&self) {
+        self.empty_ancestry.store(true, Ordering::SeqCst);
     }
 }
 
@@ -316,7 +321,9 @@ impl Marshal for StubMarshal {
     where
         C: Clock,
     {
-        None
+        self.empty_ancestry
+            .load(Ordering::SeqCst)
+            .then(futures::stream::empty)
     }
 }
 

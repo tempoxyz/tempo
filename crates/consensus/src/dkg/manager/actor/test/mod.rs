@@ -5,6 +5,7 @@ mod utils;
 use std::{
     num::{NonZeroU64, NonZeroUsize},
     sync::Arc,
+    time::Duration,
 };
 
 use alloy_primitives::B256;
@@ -16,11 +17,14 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PrivateKey;
 use commonware_runtime::{
-    Runner as _, Supervisor as _,
+    Clock as _, Runner as _, Supervisor as _,
     deterministic::{Context, Runner as DeterministicRunner},
 };
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use futures::channel::mpsc;
+use futures::{
+    FutureExt as _, StreamExt as _,
+    channel::{mpsc, oneshot},
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 use super::{
@@ -96,6 +100,76 @@ async fn report_finalized_header(mailbox: &mut Mailbox, header: TempoHeader) {
 
 async fn has_dealer_log(mailbox: &Mailbox, epoch: Epoch) -> bool {
     mailbox.get_dealer_log(epoch).await.unwrap().is_some()
+}
+
+#[test]
+fn exhausted_ancestry_releases_pending_outcome_request() {
+    DeterministicRunner::default().start(|_| async move {
+        let (response, receiver) = oneshot::channel();
+        let request = GetDkgOutcome {
+            digest: Digest(B256::repeat_byte(1)),
+            height: Height::new(1),
+            response,
+        };
+        let mut ancestry = AncestorStream::new();
+        ancestry.set((tracing::Span::none(), request), futures::stream::empty());
+
+        assert!(ancestry.next().await.is_none());
+        assert!(
+            matches!(receiver.now_or_never(), Some(Err(_))),
+            "an exhausted ancestry stream must fail its pending outcome request"
+        );
+    });
+}
+
+#[test]
+fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
+    DeterministicRunner::default().start(|mut context| async move {
+        let execution = StubExecutionProvider::default();
+        let (state, _) = full_dkg_state(&mut context, Epoch::new(1), 4);
+        execution.set_next_players(state.players().clone());
+        execution.add_header(outcome_header(Height::new(9), &state));
+
+        let marshal = StubMarshal::default();
+        marshal.return_empty_ancestry();
+
+        let (actor, mut mailbox) = init(
+            context.child("actor"),
+            config(
+                PrivateKey::from_seed(0),
+                FixedEpocher::new(NonZeroU64::new(10).unwrap()),
+                Height::new(9),
+                "exhausted_ancestry",
+                execution,
+                marshal,
+                StubEpochManager::default(),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let handle = actor.start((RecordingSender::default(), InertReceiver));
+
+        report_finalized_header(&mut mailbox, header(Height::new(10))).await;
+        report_finalized_header(&mut mailbox, header(Height::new(11))).await;
+
+        let request_mailbox = mailbox.clone();
+        let response = context
+            .timeout(Duration::from_secs(1), async move {
+                request_mailbox
+                    .get_dkg_outcome(Digest(B256::repeat_byte(1)), Height::new(11))
+                    .await
+            })
+            .await
+            .expect("an exhausted ancestry stream must not leave the outcome request pending");
+
+        assert!(response.is_err());
+
+        drop(mailbox);
+        handle
+            .await
+            .expect("actor should stop when its mailbox closes");
+    });
 }
 
 #[test]
