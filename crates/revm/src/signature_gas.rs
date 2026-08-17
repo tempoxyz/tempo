@@ -5,8 +5,7 @@ use revm::{
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_precompiles::ECRECOVER_GAS;
 use tempo_primitives::transaction::{
-    InitMultisig, KeychainInnerSignature, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature,
-    PrimitiveSignature, TempoSignature,
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, PrimitiveSignature, TempoSignature,
 };
 
 /// Additional gas for P256 signature verification
@@ -110,15 +109,9 @@ fn native_multisig_signature_verification_gas(
 pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
-        TempoSignature::Keychain(keychain_sig) => match &keychain_sig.signature {
-            KeychainInnerSignature::Primitive(signature) => {
-                primitive_signature_verification_gas(signature) + KEYCHAIN_VALIDATION_GAS
-            }
-            KeychainInnerSignature::Multisig(signature) => {
-                native_multisig_signature_verification_gas(signature, true, 1)
-                    + KEYCHAIN_VALIDATION_GAS
-            }
-        },
+        TempoSignature::Keychain(keychain_sig) => {
+            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+        }
         TempoSignature::Multisig(multisig_sig) => {
             native_multisig_signature_verification_gas(multisig_sig, true, 1)
         }
@@ -162,38 +155,4 @@ pub(crate) fn calculate_native_multisig_bootstrap_storage_gas(
         .saturating_mul(num_sstores);
 
     (regular_gas, state_gas)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::{Address, Signature};
-    use tempo_primitives::transaction::KeychainSignature;
-
-    fn secp256k1_approval() -> alloy_primitives::Bytes {
-        PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes()
-    }
-
-    #[test]
-    fn configurable_keychain_intrinsic_gas_matches_spec() {
-        let inner =
-            MultisigSignature::new(Address::repeat_byte(0x11), vec![secp256k1_approval()], None);
-        let signature = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
-
-        assert_eq!(tempo_signature_verification_gas(&signature), 7_200);
-    }
-
-    #[test]
-    fn nested_configurable_keychain_intrinsic_gas_matches_spec() {
-        let nested = TempoSignature::Multisig(MultisigSignature::new(
-            Address::repeat_byte(0x22),
-            vec![secp256k1_approval()],
-            None,
-        ));
-        let inner =
-            MultisigSignature::new(Address::repeat_byte(0x11), vec![nested.to_bytes()], None);
-        let signature = TempoSignature::Keychain(KeychainSignature::new(Address::ZERO, inner));
-
-        assert_eq!(tempo_signature_verification_gas(&signature), 11_400);
-    }
 }

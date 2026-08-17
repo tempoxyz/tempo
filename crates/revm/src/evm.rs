@@ -358,9 +358,8 @@ mod tests {
     use tempo_primitives::{
         TempoTransaction,
         transaction::{
-            InitMultisig, KeyAuthorization, KeychainInnerSignature, KeychainSignature,
-            MultisigOwner, MultisigSignature, SignatureType, TempoSignedAuthorization,
-            multisig_digest,
+            InitMultisig, KeyAuthorization, KeychainSignature, MultisigOwner, MultisigSignature,
+            SignatureType, TempoSignedAuthorization, multisig_digest,
             tempo_transaction::Call,
             tt_signature::{
                 PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
@@ -1384,7 +1383,7 @@ mod tests {
         // Verify the inner signature is WebAuthn
         assert!(matches!(
             keychain_sig.signature,
-            KeychainInnerSignature::Primitive(PrimitiveSignature::WebAuthn(_))
+            PrimitiveSignature::WebAuthn(_)
         ));
 
         // Verify key_id recovery works correctly using the transaction signature hash

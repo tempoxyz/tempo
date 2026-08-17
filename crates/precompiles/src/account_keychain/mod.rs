@@ -28,7 +28,6 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    native_multisig::NativeMultisig,
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -81,7 +80,6 @@ pub enum StoredSignatureType {
     Secp256k1,
     P256,
     WebAuthn,
-    Multisig,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -92,7 +90,6 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
-            SignatureType::ConfigurableAccount => Ok(Self::Multisig),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -104,7 +101,6 @@ impl From<StoredSignatureType> for SignatureType {
             StoredSignatureType::Secp256k1 => Self::Secp256k1,
             StoredSignatureType::P256 => Self::P256,
             StoredSignatureType::WebAuthn => Self::WebAuthn,
-            StoredSignatureType::Multisig => Self::ConfigurableAccount,
         }
     }
 }
@@ -242,7 +238,7 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidSignatureType` — the signature type is not active at the current hardfork
+    /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -274,14 +270,6 @@ impl AccountKeychain {
         // Admin keys are explicit access-key rows; the root key remains implicit.
         if is_admin && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
-        }
-        if signature_type == SignatureType::ConfigurableAccount {
-            if !self.storage.spec().is_t11() {
-                return Err(AccountKeychainError::invalid_signature_type().into());
-            }
-            if !NativeMultisig::new().is_multisig_account(key_id)? {
-                return Err(AccountKeychainError::invalid_key_id().into());
-            }
         }
 
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
@@ -3434,100 +3422,6 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_configurable_account_key_type_activates_at_t11() -> eyre::Result<()> {
-        let account = Address::random();
-        let config = InitMultisig {
-            salt: B256::repeat_byte(0x44),
-            threshold: 1,
-            owners: vec![MultisigOwner {
-                owner: Address::random(),
-                weight: 1,
-            }],
-        };
-        let key_id = config.account().map_err(|err| eyre::eyre!(err.as_str()))?;
-
-        for (spec, should_succeed) in [(TempoHardfork::T10, false), (TempoHardfork::T11, true)] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                if should_succeed {
-                    let mut multisig = NativeMultisig::new();
-                    multisig.initialize()?;
-                    multisig.store_initial_config(key_id, &config)?;
-                }
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_tx_origin(account)?;
-                let result = authorize_key(
-                    &mut keychain,
-                    account,
-                    authorizeKeyCall {
-                        keyId: key_id,
-                        signatureType: SignatureType::ConfigurableAccount,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                    },
-                );
-
-                if should_succeed {
-                    result?;
-                    let key = keychain.get_key(getKeyCall {
-                        account,
-                        keyId: key_id,
-                    })?;
-                    assert_eq!(key.signatureType, SignatureType::ConfigurableAccount);
-                } else {
-                    assert!(matches!(
-                        result,
-                        Err(TempoPrecompileError::AccountKeychainError(
-                            AccountKeychainError::InvalidSignatureType(_)
-                        ))
-                    ));
-                }
-                Ok(())
-            })?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_configurable_account_key_type_requires_registered_account() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            let account = Address::random();
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-
-            assert!(matches!(
-                keychain.authorize_key(
-                    account,
-                    Address::random(),
-                    SignatureType::ConfigurableAccount,
-                    KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                    None,
-                ),
-                Err(TempoPrecompileError::AccountKeychainError(
-                    AccountKeychainError::InvalidKeyId(_)
-                ))
-            ));
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-        Ok(())
     }
 
     #[test]

@@ -1,19 +1,11 @@
 pub mod dispatch;
 
-use crate::{
-    SIGNATURE_VERIFIER_ADDRESS,
-    account_keychain::AccountKeychain,
-    error::{Result, TempoPrecompileError},
-    native_multisig::{
-        NativeMultisig,
-        auth::{NativeMultisigAuthConfig, NativeMultisigAuthError},
-    },
-};
+use crate::{SIGNATURE_VERIFIER_ADDRESS, account_keychain::AccountKeychain, error::Result};
 use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
-    MultisigSignature, SignatureType,
+    SignatureType,
     tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 
@@ -25,26 +17,6 @@ const P256_VERIFY_GAS: u64 = 8_000;
 
 /// Gas cost for WebAuthn signature verification.
 const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
-
-fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature.signature_type() {
-        SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
-        SignatureType::P256 => P256_VERIFY_GAS,
-        SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
-        SignatureType::Multisig => unreachable!("primitive signatures exclude multisig"),
-    }
-}
-
-fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
-    signature.signatures().iter().fold(0, |gas, signature| {
-        let approval_gas = match signature {
-            TempoSignature::Primitive(signature) => primitive_verification_gas(signature),
-            TempoSignature::Multisig(signature) => multisig_verification_gas(signature),
-            TempoSignature::Keychain(_) => 0,
-        };
-        gas.saturating_add(approval_gas)
-    })
-}
 
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
@@ -60,7 +32,12 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        self.storage.deduct_gas(primitive_verification_gas(&sig))?;
+        let verify_gas = match sig.signature_type() {
+            SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
+            SignatureType::P256 => P256_VERIFY_GAS,
+            SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+        };
+        self.storage.deduct_gas(verify_gas)?;
 
         // Verify and recover signer.
         sig.recover_signer(&hash)
@@ -73,13 +50,12 @@ impl SignatureVerifier {
         hash: B256,
         signature: Bytes,
     ) -> Result<bool> {
-        let (embedded_account, key_id, signature_type) =
-            self.recover_keychain_key(hash, signature)?;
+        let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
         if embedded_account != account {
             return Ok(false);
         }
 
-        self.is_keychain_key(account, key_id, signature_type, false)
+        AccountKeychain::new().is_active_key(account, key_id)
     }
 
     pub fn verify_keychain_admin(
@@ -88,24 +64,15 @@ impl SignatureVerifier {
         hash: B256,
         signature: Bytes,
     ) -> Result<bool> {
-        let (embedded_account, key_id, signature_type) =
-            self.recover_keychain_key(hash, signature)?;
+        let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
         if embedded_account != account {
             return Ok(false);
         }
 
-        if key_id == account {
-            return Ok(true);
-        }
-
-        self.is_keychain_key(account, key_id, signature_type, true)
+        AccountKeychain::new().is_admin_key(account, key_id)
     }
 
-    fn recover_keychain_key(
-        &mut self,
-        hash: B256,
-        signature: Bytes,
-    ) -> Result<(Address, Address, SignatureType)> {
+    fn recover_keychain_key(&mut self, hash: B256, signature: Bytes) -> Result<(Address, Address)> {
         let sig = TempoSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
         let keychain_sig = sig
@@ -117,85 +84,8 @@ impl SignatureVerifier {
         }
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let key_id = match &keychain_sig.signature {
-            tempo_primitives::transaction::KeychainInnerSignature::Primitive(signature) => {
-                self.recover(signing_hash, signature.to_bytes())?
-            }
-            tempo_primitives::transaction::KeychainInnerSignature::Multisig(signature) => {
-                if !self.storage.spec().is_t11() {
-                    return Err(SignatureVerifierError::invalid_format().into());
-                }
-                signature
-                    .validate_registered_shape()
-                    .map_err(|_| SignatureVerifierError::invalid_format())?;
-                self.storage
-                    .deduct_gas(multisig_verification_gas(signature))?;
-                let key_id = signature
-                    .recover_account()
-                    .map_err(|_| SignatureVerifierError::invalid_format())?;
-                let multisig = NativeMultisig::new();
-                let threshold = multisig
-                    .load_registered_threshold(key_id)
-                    .map_err(NativeMultisigAuthError::from)
-                    .map_err(map_multisig_auth_error)?;
-                multisig
-                    .verify_authorization(
-                        signing_hash,
-                        signature,
-                        NativeMultisigAuthConfig::Registered {
-                            account: key_id,
-                            threshold,
-                        },
-                        |account| {
-                            multisig
-                                .load_registered_threshold(account)
-                                .map_err(NativeMultisigAuthError::from)
-                        },
-                        |account, owner| {
-                            multisig
-                                .read_owner_weight(account, owner)
-                                .map_err(NativeMultisigAuthError::from)
-                        },
-                    )
-                    .map_err(map_multisig_auth_error)?;
-                key_id
-            }
-        };
-        Ok((
-            keychain_sig.user_address,
-            key_id,
-            keychain_sig.signature.signature_type(),
-        ))
-    }
-
-    fn is_keychain_key(
-        &self,
-        account: Address,
-        key_id: Address,
-        signature_type: SignatureType,
-        require_admin: bool,
-    ) -> Result<bool> {
-        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        match AccountKeychain::new().validate_keychain_authorization(
-            account,
-            key_id,
-            current_timestamp,
-            Some(signature_type.into()),
-        ) {
-            Ok(key) => Ok(!require_admin || key.is_admin),
-            Err(err) if err.is_system_error() => Err(err),
-            Err(_) => Ok(false),
-        }
-    }
-}
-
-fn map_multisig_auth_error(err: NativeMultisigAuthError) -> TempoPrecompileError {
-    match err {
-        NativeMultisigAuthError::Fatal(reason) => TempoPrecompileError::Fatal(reason),
-        NativeMultisigAuthError::InvalidTransaction(_)
-        | NativeMultisigAuthError::ValidationFailed(_) => {
-            SignatureVerifierError::invalid_signature().into()
-        }
+        let key_id = self.recover(signing_hash, keychain_sig.signature.to_bytes())?;
+        Ok((keychain_sig.user_address, key_id))
     }
 }
 

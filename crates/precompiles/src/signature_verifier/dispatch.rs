@@ -1,20 +1,15 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
-use tempo_primitives::{MAX_WEBAUTHN_SIGNATURE_LENGTH, transaction::MAX_MULTISIG_SIGNATURE_BYTES};
+use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 /// Maximum valid calldata size: `verify(address,bytes32,bytes)` with a WebAuthn signature is the
 /// worst case. ABI encoding pads the dynamic `bytes` field independently, so only round the
 /// dynamic portion: selector(4) + args(4×32) + padded_sig_bytes.
-const MAX_PRIMITIVE_CALLDATA_LEN: usize =
+const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
-
-/// Maximum keychain envelope: type byte + account + initialized configurable signature.
-const MAX_KEYCHAIN_SIGNATURE_BYTES: usize = 1 + Address::len_bytes() + MAX_MULTISIG_SIGNATURE_BYTES;
-const MAX_KEYCHAIN_CALLDATA_LEN: usize =
-    4 + 32 * 4 + MAX_KEYCHAIN_SIGNATURE_BYTES.next_multiple_of(32);
 
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -22,16 +17,7 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        let is_keychain_call = calldata.get(..4).is_some_and(|selector| {
-            selector == ISignatureVerifier::verifyKeychainCall::SELECTOR
-                || selector == ISignatureVerifier::verifyKeychainAdminCall::SELECTOR
-        });
-        let max_calldata_len = if is_keychain_call {
-            MAX_KEYCHAIN_CALLDATA_LEN
-        } else {
-            MAX_PRIMITIVE_CALLDATA_LEN
-        };
-        if calldata.len() > max_calldata_len {
+        if calldata.len() > MAX_CALLDATA_LEN {
             return Ok(self
                 .storage
                 .abi_revert(SignatureVerifierError::invalid_format()));
@@ -66,7 +52,6 @@ mod tests {
         Precompile,
         account_keychain::{AccountKeychain, KeyRestrictions, SignatureType},
         expect_precompile_revert,
-        native_multisig::NativeMultisig,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
@@ -81,9 +66,8 @@ mod tests {
         ISignatureVerifier, ISignatureVerifier::ISignatureVerifierCalls as ISVCalls,
         UnknownFunctionSelector,
     };
-    use tempo_primitives::transaction::{
-        InitMultisig, MAX_MULTISIG_SIGNATURES, MultisigOwner, MultisigSignature, multisig_digest,
-        tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
+    use tempo_primitives::transaction::tt_signature::{
+        KeychainSignature, PrimitiveSignature, TempoSignature,
     };
 
     fn call_verify_keychain(
@@ -130,24 +114,6 @@ mod tests {
         Ok(TempoSignature::Keychain(KeychainSignature::new(
             account,
             PrimitiveSignature::Secp256k1(inner),
-        ))
-        .to_bytes()
-        .to_vec())
-    }
-
-    fn multisig_keychain_signature(
-        account: Address,
-        key_id: Address,
-        owner: &PrivateKeySigner,
-        hash: B256,
-    ) -> eyre::Result<Vec<u8>> {
-        let keychain_digest = KeychainSignature::signing_hash(hash, account);
-        let owner_digest = multisig_digest(keychain_digest, key_id);
-        let owner_signature =
-            PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&owner_digest)?).to_bytes();
-        Ok(TempoSignature::Keychain(KeychainSignature::new(
-            account,
-            MultisigSignature::new(key_id, vec![owner_signature], None),
         ))
         .to_bytes()
         .to_vec())
@@ -286,100 +252,6 @@ mod tests {
 
             let ret = call_verify_keychain(account, hash, signature)?;
             assert!(ret, "active keychain key should verify");
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t11_verify_keychain_accepts_configurable_admin_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            let account = Address::random();
-            let owner = PrivateKeySigner::random();
-            let config = InitMultisig {
-                salt: B256::repeat_byte(0x44),
-                threshold: 1,
-                owners: vec![MultisigOwner {
-                    owner: owner.address(),
-                    weight: 1,
-                }],
-            };
-            let key_id = config.account().map_err(|err| eyre::eyre!(err.as_str()))?;
-
-            let mut multisig = NativeMultisig::new();
-            multisig.initialize()?;
-            multisig.store_initial_config(key_id, &config)?;
-
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_admin_key(
-                account,
-                key_id,
-                SignatureType::ConfigurableAccount,
-                None,
-            )?;
-
-            let hash = B256::repeat_byte(0x55);
-            let signature = multisig_keychain_signature(account, key_id, &owner, hash)?;
-            assert!(call_verify_keychain(account, hash, signature.clone())?);
-            assert!(call_verify_keychain_admin(account, hash, signature)?);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t11_verify_keychain_distinguishes_configurable_ordinary_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            let account = Address::random();
-            let owner = PrivateKeySigner::random();
-            let config = InitMultisig {
-                salt: B256::repeat_byte(0x44),
-                threshold: 1,
-                owners: vec![MultisigOwner {
-                    owner: owner.address(),
-                    weight: 1,
-                }],
-            };
-            let key_id = config.account().map_err(|err| eyre::eyre!(err.as_str()))?;
-
-            let mut multisig = NativeMultisig::new();
-            multisig.initialize()?;
-            multisig.store_initial_config(key_id, &config)?;
-
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
-                account,
-                key_id,
-                SignatureType::ConfigurableAccount,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-                None,
-            )?;
-
-            let hash = B256::repeat_byte(0x55);
-            let signature = multisig_keychain_signature(account, key_id, &owner, hash)?;
-            assert!(call_verify_keychain(account, hash, signature.clone())?);
-            assert!(!call_verify_keychain_admin(account, hash, signature)?);
-
-            let outsider = PrivateKeySigner::random();
-            let invalid_signature = multisig_keychain_signature(account, key_id, &outsider, hash)?;
-            let calldata = ISignatureVerifier::verifyKeychainCall {
-                account,
-                hash,
-                signature: invalid_signature.into(),
-            }
-            .abi_encode();
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
-            expect_precompile_revert(&result, SignatureVerifierError::invalid_signature());
             Ok(())
         })
     }
@@ -581,7 +453,7 @@ mod tests {
     fn test_oversized_calldata_reverts_with_invalid_format() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
-            let calldata = vec![0u8; MAX_PRIMITIVE_CALLDATA_LEN + 1];
+            let calldata = vec![0u8; MAX_CALLDATA_LEN + 1];
             let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
 
             expect_precompile_revert(&result, SignatureVerifierError::invalid_format());
@@ -616,56 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn test_max_configurable_keychain_calldata_boundary() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            let primitive = PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                r: B256::ZERO,
-                s: B256::ZERO,
-                pub_key_x: B256::ZERO,
-                pub_key_y: B256::ZERO,
-                webauthn_data: vec![0; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128].into(),
-            });
-            let nested = TempoSignature::Multisig(MultisigSignature::new(
-                Address::repeat_byte(0x22),
-                vec![primitive.to_bytes(); MAX_MULTISIG_SIGNATURES],
-                None,
-            ));
-            let signature = TempoSignature::Keychain(KeychainSignature::new(
-                Address::repeat_byte(0x33),
-                MultisigSignature::new(
-                    Address::repeat_byte(0x11),
-                    vec![nested.to_bytes(); MAX_MULTISIG_SIGNATURES],
-                    None,
-                ),
-            ));
-            let calldata = ISignatureVerifier::verifyKeychainCall {
-                account: Address::repeat_byte(0x33),
-                hash: B256::ZERO,
-                signature: signature.to_bytes(),
-            }
-            .abi_encode();
-            assert_eq!(calldata.len(), MAX_KEYCHAIN_CALLDATA_LEN);
-
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
-            expect_precompile_revert(&result, SignatureVerifierError::invalid_signature());
-
-            let mut oversized = calldata;
-            oversized.push(0);
-            let result = SignatureVerifier::new().call(&oversized, Address::ZERO);
-            expect_precompile_revert(&result, SignatureVerifierError::invalid_format());
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_max_calldata_is_not_rejected() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
-            // Exactly MAX_PRIMITIVE_CALLDATA_LEN bytes should pass the size guard (and fail at ABI
+            // Exactly MAX_CALLDATA_LEN bytes should pass the size guard (and fail at ABI
             // decode instead). A zeroed selector is unknown, so we expect an
             // UnknownFunctionSelector revert — not InvalidFormat.
-            let calldata = vec![0u8; MAX_PRIMITIVE_CALLDATA_LEN];
+            let calldata = vec![0u8; MAX_CALLDATA_LEN];
             let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
 
             assert!(result.is_revert());

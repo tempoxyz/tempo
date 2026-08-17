@@ -41,44 +41,7 @@ pub const MAX_MULTISIG_NESTING_DEPTH: usize = 2;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-/// Maximum byte length of an initialized native multisig signature, including its type byte.
-pub const MAX_MULTISIG_SIGNATURE_BYTES: usize = max_multisig_signature_bytes(1);
-
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable:account";
-
-const RLP_ADDRESS_LENGTH: usize = 1 + Address::len_bytes();
-
-const fn rlp_header_length(payload_length: usize) -> usize {
-    if payload_length <= 55 {
-        return 1;
-    }
-
-    let mut value = payload_length;
-    let mut length_bytes = 0;
-    while value != 0 {
-        length_bytes += 1;
-        value >>= 8;
-    }
-    1 + length_bytes
-}
-
-const fn rlp_value_length(payload_length: usize) -> usize {
-    rlp_header_length(payload_length) + payload_length
-}
-
-const fn max_multisig_signature_bytes(depth: usize) -> usize {
-    let approval_payload_length = if depth < MAX_MULTISIG_NESTING_DEPTH {
-        max_multisig_signature_bytes(depth + 1)
-    } else {
-        MAX_MULTISIG_OWNER_SIGNATURE_BYTES
-    };
-    let approvals_payload_length =
-        MAX_MULTISIG_SIGNATURES * rlp_value_length(approval_payload_length);
-    let approvals_length = rlp_value_length(approvals_payload_length);
-    let signature_payload_length = RLP_ADDRESS_LENGTH + approvals_length;
-
-    1 + rlp_value_length(signature_payload_length)
-}
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1458,34 +1421,6 @@ mod tests {
             MultisigSignature::try_new(Address::repeat_byte(0x11), vec![nested.to_bytes()], None);
 
         assert!(signature.is_ok());
-    }
-
-    #[test]
-    fn max_multisig_signature_bytes_matches_largest_initialized_encoding() {
-        let primitive = PrimitiveSignature::WebAuthn(WebAuthnSignature {
-            r: B256::ZERO,
-            s: B256::ZERO,
-            pub_key_x: B256::ZERO,
-            pub_key_y: B256::ZERO,
-            webauthn_data: Bytes::from(vec![0; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
-        });
-        assert_eq!(
-            primitive.encoded_length(),
-            MAX_MULTISIG_OWNER_SIGNATURE_BYTES
-        );
-
-        let nested = TempoSignature::Multisig(MultisigSignature::new(
-            Address::repeat_byte(0x22),
-            vec![primitive.to_bytes(); MAX_MULTISIG_SIGNATURES],
-            None,
-        ));
-        let signature = TempoSignature::Multisig(MultisigSignature::new(
-            Address::repeat_byte(0x11),
-            vec![nested.to_bytes(); MAX_MULTISIG_SIGNATURES],
-            None,
-        ));
-
-        assert_eq!(signature.encoded_length(), MAX_MULTISIG_SIGNATURE_BYTES);
     }
 
     #[test]

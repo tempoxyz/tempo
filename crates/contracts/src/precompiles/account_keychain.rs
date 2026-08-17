@@ -25,7 +25,6 @@ crate::sol! {
             Secp256k1,
             P256,
             WebAuthn,
-            ConfigurableAccount,
         }
 
         /// Legacy token spending limit structure used before T3.
@@ -114,7 +113,7 @@ crate::sol! {
 
         /// Authorize a new key for the caller's account with T3 extensions.
         /// @param keyId The key identifier (address derived from public key)
-        /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn, 3: configurable account
+        /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn
         /// @param config Access-key expiry and optional limits / call restrictions
         function authorizeKey(
             address keyId,

@@ -60,8 +60,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        InitMultisig, KeychainSignature, MultisigSignature, SignatureType,
-        TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls,
+        InitMultisig, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+        calc_gas_balance_spending, validate_calls,
     },
 };
 
@@ -1456,39 +1456,6 @@ where
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
-            let is_rpc_simulation =
-                tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
-            if !is_rpc_simulation
-                && let Some(multisig_signature) = keychain_sig.signature.as_multisig()
-            {
-                let inner_digest = KeychainSignature::signing_hash(
-                    tempo_tx_env.signature_hash,
-                    keychain_sig.user_address,
-                );
-                StorageCtx::enter_precompile(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    actions.clone(),
-                    |multisig: NativeMultisig| {
-                        let threshold = multisig
-                            .load_registered_threshold(access_key_addr)
-                            .map_err(NativeMultisigAuthError::from)
-                            .map_err(map_native_multisig_error::<DB>)?;
-                        verify_native_multisig_authorization::<DB>(
-                            &multisig,
-                            inner_digest,
-                            multisig_signature,
-                            NativeMultisigAuthConfig::Registered {
-                                account: access_key_addr,
-                                threshold,
-                            },
-                        )
-                    },
-                )?;
-            }
-
             let key_auth = tempo_tx_env.key_authorization.as_ref();
             // Classify whether this keychain-signed tx is using the same access key that the
             // inline authorization registers.
@@ -1798,7 +1765,6 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
-                    SignatureType::Multisig => PrecompileSignatureType::ConfigurableAccount,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
@@ -2092,12 +2058,9 @@ where
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
             let has_native_multisig_fields = aa_env.signature.is_multisig()
                 || aa_env
-                    .signature
-                    .as_keychain()
-                    .is_some_and(|signature| signature.signature.as_multisig().is_some())
-                || aa_env.key_authorization.as_ref().is_some_and(|key_auth| {
-                    key_auth.signature.is_multisig() || key_auth.key_type == SignatureType::Multisig
-                });
+                    .key_authorization
+                    .as_ref()
+                    .is_some_and(|key_auth| key_auth.signature.is_multisig());
 
             if has_native_multisig_fields && !cfg.spec.is_t11() {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
@@ -2128,20 +2091,6 @@ where
                     }
                     .into());
                 }
-            }
-
-            if let Some(multisig_signature) = aa_env
-                .signature
-                .as_keychain()
-                .and_then(|signature| signature.signature.as_multisig())
-            {
-                multisig_signature
-                    .validate_registered_shape()
-                    .map_err(|reason| {
-                        TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                            reason: format!("invalid keychain multisig signature: {reason}"),
-                        }
-                    })?;
             }
 
             if aa_env.subblock_transaction && has_keychain_fields {
