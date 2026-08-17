@@ -305,6 +305,40 @@ fn repoint_transport_error_is_fatal() {
 }
 
 #[test_traced]
+fn repoint_canonical_lookup_error_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+        h.report_pending_head(2, 1, da1);
+        h.wait_until(|| h.execution.head() == da1).await;
+        let accepted_fcus = h.execution.fcus();
+
+        // Repointing checks the locally tracked finalized hash through the
+        // Reth provider before sending the forkchoice update.
+        h.execution.set_finalized(0, GENESIS);
+        h.execution
+            .script_canonical_block_hash(0, Err("database unavailable"));
+        h.report_pending_head(5, 0, GENESIS);
+
+        let execution = h.execution.clone();
+        h.actor
+            .await
+            .expect("actor should shut down cleanly when the canonical lookup fails");
+        assert_eq!(
+            execution.fcus(),
+            accepted_fcus,
+            "the provider error must be detected before the repoint FCU reaches the EL",
+        );
+    });
+}
+
+#[test_traced]
 fn branch_flip_flop_reconverges_from_resident_bodies() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
