@@ -149,11 +149,8 @@ pub(super) fn create_mock_native_multisig_sig(
     let signatures =
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?;
 
-    Ok(TempoSignature::Multisig(MultisigSignature::new(
-        account,
-        signatures,
-        Some(init.clone()),
-    )))
+    MultisigSignature::from_decoded(account, signatures, Some(init.clone()))
+        .map(TempoSignature::Multisig)
 }
 
 pub(super) fn create_mock_native_multisig_sig_for_account(
@@ -164,11 +161,12 @@ pub(super) fn create_mock_native_multisig_sig_for_account(
 ) -> Result<TempoSignature, &'static str> {
     use tempo_primitives::transaction::MultisigSignature;
 
-    Ok(TempoSignature::Multisig(MultisigSignature::new(
+    MultisigSignature::from_decoded(
         account,
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?,
         None,
-    )))
+    )
+    .map(TempoSignature::Multisig)
 }
 
 pub(super) fn create_mock_native_multisig_sig_from_hint(
@@ -206,7 +204,7 @@ fn create_mock_native_multisig_owner_signatures(
     signature_count: usize,
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
-) -> Result<Vec<Bytes>, &'static str> {
+) -> Result<Vec<TempoSignature>, &'static str> {
     use tempo_primitives::transaction::MAX_MULTISIG_SIGNATURES;
 
     if signature_count == 0 {
@@ -217,7 +215,9 @@ fn create_mock_native_multisig_owner_signatures(
     }
 
     Ok((0..signature_count)
-        .map(|_| create_mock_primitive_signature(key_type, key_data.cloned()).to_bytes())
+        .map(|_| {
+            TempoSignature::Primitive(create_mock_primitive_signature(key_type, key_data.cloned()))
+        })
         .collect())
 }
 
@@ -404,5 +404,55 @@ mod tests {
                 ))
             )
         }));
+    }
+
+    #[test]
+    fn multisig_signature_count_rejects_zero_sender() {
+        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(target)),
+                ..Default::default()
+            },
+            multisig_signature_count: Some(1),
+            ..Default::default()
+        };
+
+        let err = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect_err("zero multisig sender must be rejected");
+        assert_eq!(err.to_string(), "multisig account cannot be zero");
+    }
+
+    #[test]
+    fn multisig_init_rejects_oversized_mock_owner_signature() {
+        use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
+
+        let init = InitMultisig {
+            salt: B256::repeat_byte(0x55),
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: address!("0x1111111111111111111111111111111111111111"),
+                weight: 1,
+            }],
+        };
+        let account = init.account().expect("valid multisig config");
+        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(target)),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::WebAuthn),
+            key_data: Some(Bytes::from([0x20, 0x00])),
+            multisig_init: Some(init),
+            ..Default::default()
+        };
+
+        let err = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect_err("oversized multisig approval must be rejected");
+        assert_eq!(err.to_string(), "multisig owner signature too large");
     }
 }
