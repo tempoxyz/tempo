@@ -1,4 +1,4 @@
-use super::TempoTransactionRequest;
+use super::{MultisigSimulationApproval, MultisigSimulationHint, TempoTransactionRequest};
 use alloy_consensus::error::ValueError;
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use core::num::NonZeroU64;
@@ -42,7 +42,15 @@ impl TempoTransactionRequest {
         };
 
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
-        let mock_signature = if let Some(init) = self.multisig_init.as_ref() {
+        let mock_signature = if let Some(hint) = self.multisig_simulation_hint.as_ref() {
+            create_mock_native_multisig_sig_from_hint(
+                hint,
+                self.multisig_init.as_ref(),
+                &key_type,
+                self.key_data.as_ref(),
+            )
+            .map_err(|err| ValueError::new(self.clone(), err))?
+        } else if let Some(init) = self.multisig_init.as_ref() {
             create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
                 .map_err(|err| ValueError::new(self.clone(), err))?
         } else if let Some(signature_count) = self.multisig_signature_count {
@@ -75,6 +83,7 @@ impl TempoTransactionRequest {
             key_authorization,
             multisig_init: _,
             multisig_signature_count: _,
+            multisig_simulation_hint: _,
             valid_before,
             valid_after,
             fee_payer_signature: _,
@@ -159,6 +168,32 @@ pub(super) fn create_mock_native_multisig_sig_for_account(
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?,
         None,
     )))
+}
+
+pub(super) fn create_mock_native_multisig_sig_from_hint(
+    hint: &MultisigSimulationHint,
+    init: Option<&tempo_primitives::transaction::InitMultisig>,
+    key_type: &SignatureType,
+    key_data: Option<&Bytes>,
+) -> Result<TempoSignature, &'static str> {
+    use tempo_primitives::transaction::MultisigSignature;
+
+    let signatures = hint
+        .approvals
+        .iter()
+        .map(|approval| match approval {
+            MultisigSimulationApproval::Primitive => {
+                Ok(create_mock_primitive_signature(key_type, key_data.cloned()).to_bytes())
+            }
+            MultisigSimulationApproval::Multisig(nested) => {
+                create_mock_native_multisig_sig_from_hint(nested, None, key_type, key_data)
+                    .map(|signature| signature.to_bytes())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    MultisigSignature::try_new(hint.account, signatures, init.cloned())
+        .map(TempoSignature::Multisig)
 }
 
 fn create_mock_native_multisig_owner_signatures(
@@ -305,5 +340,59 @@ mod tests {
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
+    }
+
+    #[test]
+    fn multisig_simulation_hint_builds_nested_approval_shape() {
+        let account = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let nested_account = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(target)),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::P256),
+            multisig_simulation_hint: Some(MultisigSimulationHint {
+                account,
+                approvals: vec![MultisigSimulationApproval::Multisig(Box::new(
+                    MultisigSimulationHint {
+                        account: nested_account,
+                        approvals: vec![
+                            MultisigSimulationApproval::Primitive,
+                            MultisigSimulationApproval::Primitive,
+                        ],
+                    },
+                ))],
+            }),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect("valid simulation request");
+        let signature = env
+            .tempo_tx_env
+            .expect("AA simulation env")
+            .signature
+            .as_multisig()
+            .expect("outer multisig")
+            .clone();
+        assert_eq!(signature.account(), account);
+        assert_eq!(signature.signature_count(), 1);
+        let nested = signature.signatures()[0]
+            .as_multisig()
+            .expect("nested multisig");
+        assert_eq!(nested.account(), nested_account);
+        assert_eq!(nested.signature_count(), 2);
+        assert!(nested.signatures().iter().all(|signature| {
+            matches!(
+                signature,
+                TempoSignature::Primitive(tempo_primitives::transaction::PrimitiveSignature::P256(
+                    _
+                ))
+            )
+        }));
     }
 }

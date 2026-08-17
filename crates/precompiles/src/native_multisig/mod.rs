@@ -85,6 +85,15 @@ impl NativeMultisig {
         (weight.slot(), weight.offset())
     }
 
+    pub fn config_owner_address_storage_slot(
+        account: Address,
+        index: usize,
+    ) -> (U256, Option<usize>) {
+        let multisig = Self::new();
+        let owner = &multisig.owners[account][index as u32].owner;
+        (owner.slot(), owner.offset())
+    }
+
     pub fn config_owner_lookup_weight_storage_slot(
         account: Address,
         owner: Address,

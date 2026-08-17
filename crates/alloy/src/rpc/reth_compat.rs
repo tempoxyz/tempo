@@ -1,6 +1,9 @@
 use crate::rpc::{
     TempoHeaderResponse, TempoTransactionRequest,
-    revm_compat::{create_mock_native_multisig_sig, create_mock_native_multisig_sig_for_account},
+    revm_compat::{
+        create_mock_native_multisig_sig, create_mock_native_multisig_sig_for_account,
+        create_mock_native_multisig_sig_from_hint,
+    },
 };
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
@@ -21,7 +24,15 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
         match self.output_tx_type() {
             TempoTxType::AA => {
                 let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
-                let signature = if let Some(init) = self.multisig_init.as_ref() {
+                let signature = if let Some(hint) = self.multisig_simulation_hint.as_ref() {
+                    create_mock_native_multisig_sig_from_hint(
+                        hint,
+                        self.multisig_init.as_ref(),
+                        &key_type,
+                        self.key_data.as_ref(),
+                    )
+                    .map_err(|err| ValueError::new(self.clone(), err))?
+                } else if let Some(init) = self.multisig_init.as_ref() {
                     create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
                         .map_err(|err| ValueError::new(self.clone(), err))?
                 } else if let Some(signature_count) = self.multisig_signature_count {
@@ -55,6 +66,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_authorization,
                     multisig_init,
                     multisig_signature_count,
+                    multisig_simulation_hint,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -76,6 +88,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             multisig_init,
                             multisig_signature_count,
+                            multisig_simulation_hint,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -97,6 +110,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             multisig_init,
                             multisig_signature_count,
+                            multisig_simulation_hint,
                             valid_before,
                             valid_after,
                             fee_payer_signature,

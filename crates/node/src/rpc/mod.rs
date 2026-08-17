@@ -22,6 +22,7 @@ use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, Transact
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
+use tempo_alloy::rpc::{MultisigSimulationApproval, MultisigSimulationHint};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{FeeTokenResolver, TempoStateAccess};
 use tempo_precompiles::{
@@ -31,7 +32,8 @@ use tempo_precompiles::{
     storage::{StorageActions, packing::extract_from_word},
 };
 use tempo_primitives::transaction::{
-    TEMPO_EXPIRING_NONCE_KEY, multisig_signature_count_for_threshold,
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNERS, MAX_MULTISIG_THRESHOLD,
+    MultisigOwner, TEMPO_EXPIRING_NONCE_KEY, multisig_signature_count_for_threshold,
 };
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -391,9 +393,14 @@ fn populate_native_multisig_simulation_hints(
         return Ok(());
     };
 
+    if request.multisig_simulation_hint.is_some() {
+        return Ok(());
+    }
+
     if request.multisig_init.is_none() && request.multisig_signature_count.is_none() {
-        if let Some(signature_count) = load_native_multisig_simulation_hints(from, db)? {
-            request.multisig_signature_count = Some(signature_count);
+        if let Some(hint) = load_native_multisig_simulation_hints(from, db)? {
+            request.multisig_signature_count = Some(hint.approvals.len());
+            request.multisig_simulation_hint = Some(hint);
         }
         return Ok(());
     }
@@ -401,12 +408,28 @@ fn populate_native_multisig_simulation_hints(
     // `multisig_init` is advisory: a registered sender cannot re-init, so the
     // stored config wins and the bootstrap hint is dropped.
     if request.multisig_init.is_some()
-        && let Some(signature_count) = load_native_multisig_simulation_hints(from, db)?
+        && let Some(hint) = load_native_multisig_simulation_hints(from, db)?
     {
         request.multisig_init = None;
-        request
-            .multisig_signature_count
-            .get_or_insert(signature_count);
+        if request.multisig_signature_count.is_none() {
+            request.multisig_signature_count = Some(hint.approvals.len());
+            request.multisig_simulation_hint = Some(hint);
+        }
+        return Ok(());
+    }
+
+    if request.multisig_signature_count.is_none()
+        && let Some(init) = request.multisig_init.as_ref()
+    {
+        let hint = native_multisig_simulation_hint_for_config(
+            init.account()
+                .map_err(|err| EthApiError::InvalidParams(err.to_string()))?,
+            init,
+            db,
+            1,
+        )?;
+        request.multisig_signature_count = Some(hint.approvals.len());
+        request.multisig_simulation_hint = Some(hint);
     }
 
     Ok(())
@@ -415,14 +438,15 @@ fn populate_native_multisig_simulation_hints(
 fn load_native_multisig_simulation_hints(
     from: Address,
     db: &mut impl Database<Error: Into<EthApiError>>,
-) -> Result<Option<usize>, EthApiError> {
-    native_multisig_signature_count_for_threshold(from, db)
+) -> Result<Option<MultisigSimulationHint>, EthApiError> {
+    load_native_multisig_simulation_hint(from, db, 1)
 }
 
-fn native_multisig_signature_count_for_threshold(
+fn load_native_multisig_simulation_hint(
     account: Address,
     db: &mut impl Database<Error: Into<EthApiError>>,
-) -> Result<Option<usize>, EthApiError> {
+    depth: usize,
+) -> Result<Option<MultisigSimulationHint>, EthApiError> {
     let (threshold_slot, threshold_offset) =
         NativeMultisig::account_threshold_storage_slot(account);
     let threshold = read_native_multisig_u8(db, threshold_slot, threshold_offset)?;
@@ -433,23 +457,85 @@ fn native_multisig_signature_count_for_threshold(
     if threshold == 0 && owner_count == 0 {
         return Ok(None);
     }
-    if threshold == 0 {
+    if threshold == 0
+        || threshold > MAX_MULTISIG_THRESHOLD
+        || owner_count == 0
+        || owner_count > MAX_MULTISIG_OWNERS
+    {
         return Err(EthApiError::InvalidParams(
-            "native multisig config has zero threshold".to_string(),
+            "native multisig config has an invalid header".to_string(),
         ));
     }
 
-    let mut weights = Vec::with_capacity(owner_count);
+    let mut owners = Vec::with_capacity(owner_count);
     for index in 0..owner_count {
+        let owner = read_native_multisig_owner(db, account, index)?;
         let (weight_slot, weight_offset) =
-            NativeMultisig::config_owner_weight_storage_slot(account, index);
-        let weight = read_native_multisig_u8(db, weight_slot, weight_offset)?;
-        weights.push(weight);
+            NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner.owner);
+        if read_native_multisig_u8(db, weight_slot, weight_offset)? != owner.weight {
+            return Err(EthApiError::InvalidParams(
+                "native multisig config has mismatched owner weights".to_string(),
+            ));
+        }
+        owners.push(owner);
     }
 
-    multisig_signature_count_for_threshold(weights, threshold)
-        .map(Some)
-        .map_err(|err| EthApiError::InvalidParams(String::from(err)))
+    let config = InitMultisig {
+        salt: B256::ZERO,
+        threshold,
+        owners,
+    };
+    config
+        .validate()
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+
+    native_multisig_simulation_hint_for_config(account, &config, db, depth).map(Some)
+}
+
+fn native_multisig_simulation_hint_for_config(
+    account: Address,
+    config: &InitMultisig,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    depth: usize,
+) -> Result<MultisigSimulationHint, EthApiError> {
+    let signature_count = multisig_signature_count_for_threshold(
+        config.owners.iter().map(|owner| owner.weight),
+        config.threshold,
+    )
+    .map_err(|err| EthApiError::InvalidParams(String::from(err)))?;
+    let mut approvals = Vec::with_capacity(signature_count);
+    for owner in config.owners.iter().take(signature_count) {
+        let approval = if depth < MAX_MULTISIG_NESTING_DEPTH {
+            load_native_multisig_simulation_hint(owner.owner, db, depth + 1)?
+                .map(Box::new)
+                .map(MultisigSimulationApproval::Multisig)
+                .unwrap_or(MultisigSimulationApproval::Primitive)
+        } else {
+            MultisigSimulationApproval::Primitive
+        };
+        approvals.push(approval);
+    }
+
+    Ok(MultisigSimulationHint { account, approvals })
+}
+
+fn read_native_multisig_owner(
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    account: Address,
+    index: usize,
+) -> Result<MultisigOwner, EthApiError> {
+    let (slot, owner_offset) = NativeMultisig::config_owner_address_storage_slot(account, index);
+    let word = db
+        .storage(NATIVE_MULTISIG_ADDRESS, slot)
+        .map_err(Into::into)?;
+    let owner = extract_from_word::<Address>(word, owner_offset.unwrap_or_default(), 20)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    let (weight_slot, weight_offset) =
+        NativeMultisig::config_owner_weight_storage_slot(account, index);
+    debug_assert_eq!(slot, weight_slot);
+    let weight = extract_from_word::<u8>(word, weight_offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    Ok(MultisigOwner { owner, weight })
 }
 
 fn read_native_multisig_u8(
@@ -766,14 +852,39 @@ mod tests {
                 U256::from(value) << (offset.unwrap_or_default() * 8);
         }
 
+        fn insert_address(&mut self, (slot, offset): (U256, Option<usize>), value: Address) {
+            *self.0.entry(slot).or_default() |=
+                U256::from_be_slice(value.as_slice()) << (offset.unwrap_or_default() * 8);
+        }
+
+        fn insert_config(&mut self, account: Address, threshold: u8, owners: &[(Address, u8)]) {
+            self.insert_u8(
+                NativeMultisig::account_threshold_storage_slot(account),
+                threshold,
+            );
+            self.insert_u8(
+                NativeMultisig::account_owners_len_storage_slot(account),
+                owners.len() as u8,
+            );
+            for (index, &(owner, weight)) in owners.iter().enumerate() {
+                self.insert_address(
+                    NativeMultisig::config_owner_address_storage_slot(account, index),
+                    owner,
+                );
+                self.insert_u8(
+                    NativeMultisig::config_owner_weight_storage_slot(account, index),
+                    weight,
+                );
+                self.insert_u8(
+                    NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner),
+                    weight,
+                );
+            }
+        }
+
         fn registered_one_of_one(account: Address) -> Self {
             let mut db = Self::default();
-            db.insert_u8(NativeMultisig::account_threshold_storage_slot(account), 1);
-            db.insert_u8(NativeMultisig::account_owners_len_storage_slot(account), 1);
-            db.insert_u8(
-                NativeMultisig::config_owner_weight_storage_slot(account, 0),
-                1,
-            );
+            db.insert_config(account, 1, &[(Address::from([0x11; 20]), 1)]);
             db
         }
     }
@@ -817,15 +928,17 @@ mod tests {
     fn populate_drops_multisig_init_for_registered_senders() {
         let account = Address::from([0xaa; 20]);
         let mut db = SlotDb::registered_one_of_one(account);
-        assert_eq!(
-            load_native_multisig_simulation_hints(account, &mut db).unwrap(),
-            Some(1),
-        );
+        let hint = load_native_multisig_simulation_hints(account, &mut db)
+            .unwrap()
+            .expect("registered account hint");
+        assert_eq!(hint.account, account);
+        assert_eq!(hint.approvals, vec![MultisigSimulationApproval::Primitive]);
 
         let mut request = init_request(account);
         populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
         assert!(request.multisig_init.is_none());
         assert_eq!(request.multisig_signature_count, Some(1));
+        assert_eq!(request.multisig_simulation_hint, Some(hint));
     }
 
     #[test]
@@ -836,6 +949,44 @@ mod tests {
         let mut request = init_request(account);
         populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
         assert!(request.multisig_init.is_some());
-        assert_eq!(request.multisig_signature_count, None);
+        assert_eq!(request.multisig_signature_count, Some(1));
+        assert!(request.multisig_simulation_hint.is_some());
+    }
+
+    #[test]
+    fn populate_models_nested_multisig_approvals() {
+        let account = Address::from([0xaa; 20]);
+        let nested_account = Address::from([0x11; 20]);
+        let mut db = SlotDb::default();
+        db.insert_config(account, 1, &[(nested_account, 1)]);
+        db.insert_config(
+            nested_account,
+            2,
+            &[
+                (Address::from([0x21; 20]), 1),
+                (Address::from([0x22; 20]), 1),
+            ],
+        );
+
+        let mut request = TempoTransactionRequest::default();
+        request.from = Some(account);
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+
+        let hint = request
+            .multisig_simulation_hint
+            .expect("registered account hint");
+        assert_eq!(hint.account, account);
+        assert_eq!(hint.approvals.len(), 1);
+        let MultisigSimulationApproval::Multisig(nested) = &hint.approvals[0] else {
+            panic!("registered threshold owner should use a nested approval");
+        };
+        assert_eq!(nested.account, nested_account);
+        assert_eq!(
+            nested.approvals,
+            vec![
+                MultisigSimulationApproval::Primitive,
+                MultisigSimulationApproval::Primitive,
+            ]
+        );
     }
 }

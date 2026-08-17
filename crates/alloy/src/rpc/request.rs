@@ -16,6 +16,26 @@ use tempo_primitives::{
 
 use crate::TempoNetwork;
 
+/// Native multisig approval shape inferred from state for RPC simulation.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MultisigSimulationHint {
+    /// Account authorized by this signature node.
+    pub account: Address,
+    /// Owner approvals required to reach this account's threshold.
+    pub approvals: Vec<MultisigSimulationApproval>,
+}
+
+/// Native multisig owner approval inferred from state for RPC simulation.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigSimulationApproval {
+    /// Primitive owner signature using the request's signature-type hints.
+    Primitive,
+    /// Nested native multisig owner signature.
+    Multisig(Box<MultisigSimulationHint>),
+}
+
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
 #[derive(
     Clone,
@@ -88,6 +108,11 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multisig_signature_count: Option<usize>,
 
+    /// Native multisig approval tree inferred from state for RPC simulation.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub multisig_simulation_hint: Option<MultisigSimulationHint>,
+
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
     ///
@@ -129,6 +154,7 @@ impl TempoTransactionRequest {
             || self.key_data.is_some()
             || self.multisig_init.is_some()
             || self.multisig_signature_count.is_some()
+            || self.multisig_simulation_hint.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -473,6 +499,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_authorization: tx.key_authorization,
             multisig_init: None,
             multisig_signature_count: None,
+            multisig_simulation_hint: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
