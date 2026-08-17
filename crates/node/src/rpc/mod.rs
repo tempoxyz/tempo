@@ -439,11 +439,17 @@ fn load_native_multisig_simulation_hint(
 ) -> Result<Option<MultisigSimulationHint>, EthApiError> {
     let (threshold_slot, threshold_offset) =
         NativeMultisig::account_threshold_storage_slot(account);
-    let threshold = read_native_multisig_u8(db, threshold_slot, threshold_offset)?;
-
     let (owner_count_slot, owner_count_offset) =
         NativeMultisig::account_owners_len_storage_slot(account);
-    let owner_count = read_native_multisig_u8(db, owner_count_slot, owner_count_offset)? as usize;
+    debug_assert_eq!(threshold_slot, owner_count_slot);
+    let header = db
+        .storage(NATIVE_MULTISIG_ADDRESS, threshold_slot)
+        .map_err(Into::into)?;
+    validate_native_multisig_storage_word(header, 10)?;
+    let threshold = extract_from_word::<u8>(header, threshold_offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    let owner_count = extract_from_word::<u8>(header, owner_count_offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))? as usize;
     if threshold == 0 && owner_count == 0 {
         return Ok(None);
     }
@@ -462,7 +468,7 @@ fn load_native_multisig_simulation_hint(
         let owner = read_native_multisig_owner(db, account, index)?;
         let (weight_slot, weight_offset) =
             NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner.owner);
-        if read_native_multisig_u8(db, weight_slot, weight_offset)? != owner.weight {
+        if read_native_multisig_weight(db, weight_slot, weight_offset)? != owner.weight {
             return Err(EthApiError::InvalidParams(
                 "native multisig config has mismatched owner weights".to_string(),
             ));
@@ -522,6 +528,7 @@ fn read_native_multisig_owner(
     let word = db
         .storage(NATIVE_MULTISIG_ADDRESS, slot)
         .map_err(Into::into)?;
+    validate_native_multisig_storage_word(word, 21)?;
     let owner = extract_from_word::<Address>(word, owner_offset.unwrap_or_default(), 20)
         .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
     let (weight_slot, weight_offset) =
@@ -532,7 +539,7 @@ fn read_native_multisig_owner(
     Ok(MultisigOwner { owner, weight })
 }
 
-fn read_native_multisig_u8(
+fn read_native_multisig_weight(
     db: &mut impl Database<Error: Into<EthApiError>>,
     slot: U256,
     offset: Option<usize>,
@@ -540,8 +547,18 @@ fn read_native_multisig_u8(
     let word = db
         .storage(NATIVE_MULTISIG_ADDRESS, slot)
         .map_err(Into::into)?;
+    validate_native_multisig_storage_word(word, 1)?;
     extract_from_word::<u8>(word, offset.unwrap_or_default(), 1)
         .map_err(|err| EthApiError::InvalidParams(err.to_string()))
+}
+
+fn validate_native_multisig_storage_word(word: U256, used_bytes: usize) -> Result<(), EthApiError> {
+    if word >> (used_bytes * 8) != U256::ZERO {
+        return Err(EthApiError::InvalidParams(
+            "native multisig config has nonzero reserved bits".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -985,5 +1002,26 @@ mod tests {
                 MultisigSimulationApproval::Primitive,
             ]
         );
+    }
+
+    #[test]
+    fn simulation_hints_reject_nonzero_reserved_storage_bits() {
+        let account = Address::from([0xaa; 20]);
+        let owner = Address::from([0x11; 20]);
+        let corrupted_slots = [
+            NativeMultisig::account_threshold_storage_slot(account).0,
+            NativeMultisig::config_owner_address_storage_slot(account, 0).0,
+            NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner).0,
+        ];
+
+        for corrupted_slot in corrupted_slots {
+            let mut db = SlotDb::registered_one_of_one(account);
+            *db.0.entry(corrupted_slot).or_default() |= U256::ONE << 255;
+            assert!(matches!(
+                load_native_multisig_simulation_hints(account, &mut db),
+                Err(EthApiError::InvalidParams(reason))
+                    if reason.contains("nonzero reserved bits")
+            ));
+        }
     }
 }
