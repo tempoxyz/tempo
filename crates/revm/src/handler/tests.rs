@@ -291,7 +291,7 @@ fn test_invalid_fee_token_rejected() {
         tx_env.fee_token = Some(invalid_token);
     });
 
-    let result = test.validate_env();
+    let result = test.validate_against_state_and_deduct_caller();
 
     assert!(
         matches!(
@@ -322,7 +322,7 @@ fn test_non_usd_fee_token_rejected() {
 
     test.evm.inner.ctx.tx.fee_token = Some(fee_token);
 
-    let result = test.validate_env();
+    let result = test.validate_against_state_and_deduct_caller();
 
     assert!(
         matches!(
