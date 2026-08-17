@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256, Bytes, Signature};
 use core::num::NonZeroU64;
 use tempo_primitives::{
     SignatureType, TempoSignature,
-    transaction::{Call, RecoveredTempoAuthorization},
+    transaction::{Call, PrimitiveSignature, RecoveredTempoAuthorization},
 };
 use tempo_revm::{
     ExecutionContext, RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, TempoBatchCallEnv, TempoTxEnv,
@@ -43,14 +43,8 @@ impl TempoTransactionRequest {
 
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
         let mock_signature = if let Some(hint) = self.multisig_simulation_hint.as_ref() {
-            create_mock_native_multisig_sig_from_hint(
-                hint,
-                self.multisig_init.as_ref(),
-                &key_type,
-                self.key_data.as_ref(),
-                false,
-            )
-            .map_err(|err| ValueError::new(self.clone(), err))?
+            create_mock_native_multisig_sig_from_hint(hint, self.multisig_init.as_ref(), false)
+                .map_err(|err| ValueError::new(self.clone(), err))?
         } else if let Some(init) = self.multisig_init.as_ref() {
             create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
                 .map_err(|err| ValueError::new(self.clone(), err))?
@@ -172,8 +166,6 @@ pub(super) fn create_mock_native_multisig_sig_for_account(
 pub(super) fn create_mock_native_multisig_sig_from_hint(
     hint: &MultisigSimulationHint,
     init: Option<&tempo_primitives::transaction::InitMultisig>,
-    key_type: &SignatureType,
-    key_data: Option<&Bytes>,
     attach_config_validation_gas: bool,
 ) -> Result<TempoSignature, &'static str> {
     use tempo_primitives::transaction::MultisigSignature;
@@ -182,11 +174,17 @@ pub(super) fn create_mock_native_multisig_sig_from_hint(
         .approvals
         .iter()
         .map(|approval| match approval {
-            MultisigSimulationApproval::Primitive => Ok(TempoSignature::Primitive(
-                create_mock_primitive_signature(key_type, key_data.cloned()),
+            MultisigSimulationApproval::Primitive { key_type, key_data } => {
+                Ok(TempoSignature::Primitive(create_mock_primitive_signature(
+                    key_type,
+                    key_data.clone(),
+                )))
+            }
+            MultisigSimulationApproval::UnknownPrimitive => Ok(TempoSignature::Primitive(
+                create_conservative_native_multisig_primitive_signature(),
             )),
             MultisigSimulationApproval::Multisig(nested) => {
-                create_mock_native_multisig_sig_from_hint(nested, None, key_type, key_data, true)
+                create_mock_native_multisig_sig_from_hint(nested, None, true)
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -198,6 +196,25 @@ pub(super) fn create_mock_native_multisig_sig_from_hint(
         signature
     };
     Ok(TempoSignature::Multisig(signature))
+}
+
+fn create_conservative_native_multisig_primitive_signature() -> PrimitiveSignature {
+    use tempo_primitives::transaction::{
+        MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::WebAuthnSignature,
+    };
+
+    const WEBAUTHN_FIXED_SIGNATURE_BYTES: usize = 128;
+    PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::from(vec![
+            0xff;
+            MAX_WEBAUTHN_SIGNATURE_LENGTH
+                - WEBAUTHN_FIXED_SIGNATURE_BYTES
+        ]),
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+    })
 }
 
 fn create_mock_native_multisig_owner_signatures(
@@ -349,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn multisig_simulation_hint_builds_nested_approval_shape() {
+    fn multisig_simulation_hint_preserves_nested_primitive_types() {
         let account = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let nested_account = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
@@ -359,7 +376,7 @@ mod tests {
                 to: Some(TxKind::Call(target)),
                 ..Default::default()
             },
-            key_type: Some(SignatureType::P256),
+            key_type: Some(SignatureType::Secp256k1),
             multisig_simulation_hint: Some(MultisigSimulationHint {
                 account,
                 owner_count: 1,
@@ -368,8 +385,14 @@ mod tests {
                         account: nested_account,
                         owner_count: 2,
                         approvals: vec![
-                            MultisigSimulationApproval::Primitive,
-                            MultisigSimulationApproval::Primitive,
+                            MultisigSimulationApproval::Primitive {
+                                key_type: SignatureType::P256,
+                                key_data: None,
+                            },
+                            MultisigSimulationApproval::Primitive {
+                                key_type: SignatureType::WebAuthn,
+                                key_data: Some(Bytes::from_static(&[0x00, 0x80])),
+                            },
                         ],
                     },
                 ))],
@@ -396,14 +419,69 @@ mod tests {
         assert_eq!(nested.account(), nested_account);
         assert_eq!(nested.signature_count(), 2);
         assert_eq!(nested.simulation_config_owner_count(), Some(2));
-        assert!(nested.signatures().iter().all(|signature| {
-            matches!(
-                signature,
-                TempoSignature::Primitive(tempo_primitives::transaction::PrimitiveSignature::P256(
-                    _
-                ))
-            )
-        }));
+        assert!(matches!(
+            &nested.signatures()[0],
+            TempoSignature::Primitive(tempo_primitives::transaction::PrimitiveSignature::P256(_))
+        ));
+        let TempoSignature::Primitive(tempo_primitives::transaction::PrimitiveSignature::WebAuthn(
+            signature,
+        )) = &nested.signatures()[1]
+        else {
+            panic!("second nested approval should use WebAuthn")
+        };
+        assert_eq!(signature.webauthn_data.len(), 128);
+    }
+
+    #[test]
+    fn unknown_multisig_primitive_uses_conservative_webauthn_cost() {
+        use tempo_primitives::transaction::{
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_WEBAUTHN_SIGNATURE_LENGTH,
+        };
+
+        let account = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(target)),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::Secp256k1),
+            multisig_simulation_hint: Some(MultisigSimulationHint {
+                account,
+                owner_count: 1,
+                approvals: vec![MultisigSimulationApproval::UnknownPrimitive],
+            }),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect("valid simulation request");
+        let signature = env
+            .tempo_tx_env
+            .expect("AA simulation env")
+            .signature
+            .as_multisig()
+            .expect("outer multisig")
+            .signatures()[0]
+            .clone();
+        assert_eq!(
+            signature.encoded_length(),
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES
+        );
+        let TempoSignature::Primitive(tempo_primitives::transaction::PrimitiveSignature::WebAuthn(
+            signature,
+        )) = signature
+        else {
+            panic!("unknown primitive should use a WebAuthn mock")
+        };
+
+        assert_eq!(
+            signature.webauthn_data.len(),
+            MAX_WEBAUTHN_SIGNATURE_LENGTH - 128
+        );
+        assert!(signature.webauthn_data.iter().all(|byte| *byte == 0xff));
     }
 
     #[test]

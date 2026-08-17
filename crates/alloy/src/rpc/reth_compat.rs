@@ -28,8 +28,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     create_mock_native_multisig_sig_from_hint(
                         hint,
                         self.multisig_init.as_ref(),
-                        &key_type,
-                        self.key_data.as_ref(),
                         false,
                     )
                     .map_err(|err| ValueError::new(self.clone(), err))?

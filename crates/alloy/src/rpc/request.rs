@@ -32,8 +32,15 @@ pub struct MultisigSimulationHint {
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MultisigSimulationApproval {
-    /// Primitive owner signature using the request's signature-type hints.
-    Primitive,
+    /// Primitive owner signature with an exact per-approval simulation hint.
+    Primitive {
+        /// Signature verification algorithm used by this owner approval.
+        key_type: SignatureType,
+        /// Optional signature-specific gas-estimation data.
+        key_data: Option<Bytes>,
+    },
+    /// Primitive owner whose signature scheme is unavailable from stored configuration.
+    UnknownPrimitive,
     /// Nested native multisig owner signature.
     Multisig(Box<MultisigSimulationHint>),
 }
