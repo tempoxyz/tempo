@@ -1098,12 +1098,6 @@ where
                         None
                     };
                     let caller_is_multisig = caller_multisig_config.is_some();
-                    if let Some(config) = caller_multisig_config {
-                        native_multisig_config_validation_gas =
-                            native_multisig_config_validation_gas.saturating_add(
-                                native_multisig_complete_config_validation_gas(config.owner_count),
-                            );
-                    }
 
                     if tx.has_fee_payer_signature()
                         && multisig_precompile
@@ -1176,9 +1170,15 @@ where
                                     reason: reason.to_string(),
                                 }
                             })?;
+                            let config = caller_multisig_config
+                                .expect("caller is a registered native multisig account");
+                            native_multisig_config_validation_gas =
+                                native_multisig_config_validation_gas.saturating_add(
+                                    native_multisig_complete_config_validation_gas(
+                                        config.owner_count,
+                                    ),
+                                );
                             if !is_rpc_simulation {
-                                let config = caller_multisig_config
-                                    .expect("caller is a registered native multisig account");
                                 verify_native_multisig_authorization::<DB>(
                                     &multisig_precompile,
                                     tempo_tx_env.signature_hash,
@@ -1265,18 +1265,17 @@ where
                                     },
                                 )?
                             } else {
-                                let config = multisig_precompile
+                                multisig_precompile
                                     .load_registered_config_summary(signature.account())
                                     .map_err(NativeMultisigAuthError::from)
-                                    .map_err(map_native_multisig_error::<DB>)?;
-                                native_multisig_config_validation_gas =
-                                    native_multisig_config_validation_gas.saturating_add(
-                                        native_multisig_complete_config_validation_gas(
-                                            config.owner_count,
-                                        ),
-                                    );
-                                config
+                                    .map_err(map_native_multisig_error::<DB>)?
                             };
+                            native_multisig_config_validation_gas =
+                                native_multisig_config_validation_gas.saturating_add(
+                                    native_multisig_complete_config_validation_gas(
+                                        config.owner_count,
+                                    ),
+                                );
                             NativeMultisigAuthConfig::Registered {
                                 account: signature.account(),
                                 threshold: config.threshold,

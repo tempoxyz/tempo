@@ -5081,8 +5081,15 @@ fn test_t11_registered_multisig_can_authorize_access_key() {
     store_native_multisig_account(&mut test, &config);
 
     test.validate_env().expect("T11 key authorization is valid");
-    test.validate_against_state_and_deduct_caller()
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
         .expect("registered multisig key authorization succeeds");
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        2 * native_multisig_complete_config_validation_gas(config.owners.len()),
+        "outer and key-authorization multisig roots should each charge complete config validation"
+    );
 
     StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
         assert!(AccountKeychain::new().is_active_key(account, access_key.address())?);
