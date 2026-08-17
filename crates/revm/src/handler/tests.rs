@@ -5304,6 +5304,61 @@ fn test_t11_rpc_simulation_skips_registered_multisig_owner_verification() {
 }
 
 #[test]
+fn test_t11_rpc_simulation_charges_nested_key_authorization_config() {
+    use tempo_primitives::transaction::SignatureType;
+
+    let nested_config = single_owner_native_multisig_config(0x41, Address::from([0x11; 20]));
+    let nested_account = nested_config.account().unwrap();
+    let config = single_owner_native_multisig_config(0x42, nested_account);
+    let account = config.account().unwrap();
+    let access_key = Address::from([0x33; 20]);
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
+        nested_account,
+        vec![owner_signature],
+        None,
+    ));
+    let key_authorization = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key)
+        .with_account(account)
+        .into_signed(TempoSignature::Multisig(
+            MultisigSignature::from_decoded(account, vec![nested_signature], None).unwrap(),
+        ));
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        key_authorization: Some(key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+        tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+    });
+    store_native_multisig_account(&mut test, &config);
+    store_native_multisig_account(&mut test, &nested_config);
+
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("RPC simulation should model nested key-authorization config validation");
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        cold_storage_read_gas
+            + native_multisig_complete_config_validation_gas(config.owners.len())
+            + native_multisig_complete_config_validation_gas(nested_config.owners.len()),
+    );
+}
+
+#[test]
 fn test_t11_registered_account_rejects_multisig_init_outside_simulation() {
     let config = native_multisig_config();
     let account = config.account().unwrap();

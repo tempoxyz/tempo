@@ -60,7 +60,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        InitMultisig, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+        InitMultisig, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
         calc_gas_balance_spending, validate_calls,
     },
 };
@@ -79,9 +79,8 @@ use crate::{
 
 #[cfg(test)]
 use crate::signature_gas::{
-    NATIVE_MULTISIG_BOOTSTRAP_EVENT_BUFFER, NATIVE_MULTISIG_OWNER_WEIGHT_GAS,
-    NATIVE_MULTISIG_VALIDATION_GAS, P256_VERIFY_GAS, native_multisig_bootstrap_storage_slots,
-    primitive_signature_verification_gas,
+    NATIVE_MULTISIG_OWNER_WEIGHT_GAS, NATIVE_MULTISIG_VALIDATION_GAS, P256_VERIFY_GAS,
+    native_multisig_bootstrap_storage_slots, primitive_signature_verification_gas,
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -1260,6 +1259,14 @@ where
                             native_multisig_bootstrap =
                                 Some((signature.account(), init_config.clone()));
                         }
+
+                        if is_rpc_simulation {
+                            add_rpc_nested_multisig_config_validation_gas::<DB>(
+                                &multisig_precompile,
+                                signature,
+                                &mut native_multisig_config_validation_gas,
+                            )?;
+                        }
                     }
 
                     if let Some(signature) = key_authorization_multisig_signature {
@@ -1336,7 +1343,13 @@ where
                             }
                         };
 
-                        if !is_rpc_simulation {
+                        if is_rpc_simulation {
+                            add_rpc_nested_multisig_config_validation_gas::<DB>(
+                                &multisig_precompile,
+                                signature,
+                                &mut native_multisig_config_validation_gas,
+                            )?;
+                        } else {
                             verify_native_multisig_authorization::<DB>(
                                 &multisig_precompile,
                                 key_auth.authorization.signature_hash(),
@@ -3120,6 +3133,36 @@ fn verify_native_multisig_authorization<DB: Database>(
             },
         )
         .map_err(map_native_multisig_error::<DB>)
+}
+
+fn add_rpc_nested_multisig_config_validation_gas<DB: Database>(
+    multisig: &NativeMultisig,
+    signature: &MultisigSignature,
+    config_validation_gas: &mut u64,
+) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+    for approval in signature.signatures() {
+        let TempoSignature::Multisig(nested) = approval else {
+            continue;
+        };
+
+        if nested.simulation_config_owner_count().is_none() {
+            let config = multisig
+                .load_registered_config_summary(nested.account())
+                .map_err(NativeMultisigAuthError::from)
+                .map_err(map_native_multisig_error::<DB>)?;
+            *config_validation_gas = config_validation_gas.saturating_add(
+                native_multisig_complete_config_validation_gas(config.owner_count),
+            );
+        }
+
+        add_rpc_nested_multisig_config_validation_gas::<DB>(
+            multisig,
+            nested,
+            config_validation_gas,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn validate_native_multisig_bootstrap_nonce(
