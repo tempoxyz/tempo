@@ -153,7 +153,9 @@ impl NativeMultisig {
         let header = self.accounts[account].read()?;
         match parse_multisig_header(header)? {
             ParsedMultisigHeader::Uninitialized => Ok(None),
-            ParsedMultisigHeader::Initialized { threshold, .. } => Ok(Some(threshold)),
+            ParsedMultisigHeader::Initialized { .. } => self
+                .load_stored_config_with_header(account, header)
+                .map(|config| Some(config.threshold)),
         }
     }
 
@@ -257,7 +259,14 @@ impl NativeMultisig {
                     threshold,
                     owners,
                 };
-                config.validate().map_err(map_multisig_config_error)?;
+                if config.validate().is_err() {
+                    return Err(NativeMultisigError::invalid_config().into());
+                }
+                for owner in &config.owners {
+                    if self.owner_weights[account][owner.owner].read()? != owner.weight {
+                        return Err(NativeMultisigError::invalid_config().into());
+                    }
+                }
                 Ok(config)
             }
         }
@@ -659,8 +668,8 @@ mod tests {
         })?;
         assert_eq!(
             storage.counter_sload(),
-            1 + config.owners.len() as u64,
-            "registered config should read one header plus each owner"
+            1 + 2 * config.owners.len() as u64,
+            "registered config should read one header plus each owner row and direct weight"
         );
 
         storage.reset_counters();
@@ -729,6 +738,48 @@ mod tests {
                     NativeMultisigError::InvalidConfig(_)
                 ))
             ));
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn is_multisig_account_rejects_incomplete_stored_config() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let missing_owner_account = Address::repeat_byte(0x42);
+        let mismatched_weight_account = Address::repeat_byte(0x43);
+        let owner = StoredMultisigOwner {
+            owner: Address::repeat_byte(0x11),
+            weight: 1,
+        };
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.accounts[missing_owner_account].write(StoredMultisigHeader {
+                threshold: 1,
+                owner_count: 1,
+            })?;
+            multisig.accounts[mismatched_weight_account].write(StoredMultisigHeader {
+                threshold: 1,
+                owner_count: 1,
+            })?;
+            multisig.owners[mismatched_weight_account][0].write(owner.clone())?;
+            multisig.owner_weights[mismatched_weight_account][owner.owner].write(2)?;
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        StorageCtx::enter(&mut storage, || {
+            let multisig = NativeMultisig::new();
+            for account in [missing_owner_account, mismatched_weight_account] {
+                assert!(matches!(
+                    multisig.is_multisig_account(account),
+                    Err(TempoPrecompileError::NativeMultisigError(
+                        NativeMultisigError::InvalidConfig(_)
+                    ))
+                ));
+            }
             Ok::<_, TempoPrecompileError>(())
         })?;
 
