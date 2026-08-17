@@ -72,7 +72,8 @@ use crate::{
     evm::TempoContext,
     gas_credits,
     signature_gas::{
-        calculate_native_multisig_bootstrap_storage_gas, tempo_signature_verification_gas,
+        calculate_native_multisig_bootstrap_storage_gas,
+        native_multisig_complete_config_validation_gas, tempo_signature_verification_gas,
     },
 };
 
@@ -1044,6 +1045,7 @@ where
 
         let spec = cfg.spec();
         let mut native_multisig_bootstrap: Option<(Address, InitMultisig)> = None;
+        let mut native_multisig_config_validation_gas = 0u64;
 
         if spec.is_t11() {
             let tempo_tx_env = tx.tempo_tx_env.as_ref();
@@ -1077,10 +1079,17 @@ where
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
-                    let caller_is_multisig = multisig_precompile
-                        .is_multisig_account(tx.caller())
+                    let caller_multisig_config = multisig_precompile
+                        .load_registered_config_summary_if_present(tx.caller())
                         .map_err(NativeMultisigAuthError::from)
                         .map_err(map_native_multisig_error::<DB>)?;
+                    let caller_is_multisig = caller_multisig_config.is_some();
+                    if let Some(config) = caller_multisig_config {
+                        native_multisig_config_validation_gas =
+                            native_multisig_config_validation_gas.saturating_add(
+                                native_multisig_complete_config_validation_gas(config.owner_count),
+                            );
+                    }
 
                     if tx.has_fee_payer_signature()
                         && multisig_precompile
@@ -1168,19 +1177,18 @@ where
                                 }
                             })?;
                             if !is_rpc_simulation {
-                                let (threshold, version) = multisig_precompile
-                                    .load_registered_threshold_and_version(signature.account())
-                                    .map_err(NativeMultisigAuthError::from)
-                                    .map_err(map_native_multisig_error::<DB>)?;
+                                let config = caller_multisig_config
+                                    .expect("caller is a registered native multisig account");
                                 verify_native_multisig_authorization::<DB>(
                                     &multisig_precompile,
                                     tempo_tx_env.signature_hash,
                                     signature,
                                     NativeMultisigAuthConfig::Registered {
                                         account: signature.account(),
-                                        threshold,
-                                        version,
+                                        threshold: config.threshold,
+                                        version: config.version,
                                     },
+                                    &mut native_multisig_config_validation_gas,
                                 )?;
                             }
                         } else {
@@ -1202,6 +1210,7 @@ where
                                     tempo_tx_env.signature_hash,
                                     signature,
                                     NativeMultisigAuthConfig::Inline(init_config),
+                                    &mut native_multisig_config_validation_gas,
                                 )?;
                             }
                             native_multisig_bootstrap =
@@ -1243,18 +1252,35 @@ where
                                     reason: reason.to_string(),
                                 }
                             })?;
-                            let (threshold, version) = if is_rpc_simulation {
-                                (0, 0)
+                            let config = if signature.account() == tx.caller() {
+                                caller_multisig_config.ok_or_else(
+                                    || -> EVMError<DB::Error, TempoInvalidTransaction> {
+                                        TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                            reason: format!(
+                                                "native multisig account {} is not registered",
+                                                signature.account()
+                                            ),
+                                        }
+                                        .into()
+                                    },
+                                )?
                             } else {
-                                multisig_precompile
-                                    .load_registered_threshold_and_version(signature.account())
+                                let config = multisig_precompile
+                                    .load_registered_config_summary(signature.account())
                                     .map_err(NativeMultisigAuthError::from)
-                                    .map_err(map_native_multisig_error::<DB>)?
+                                    .map_err(map_native_multisig_error::<DB>)?;
+                                native_multisig_config_validation_gas =
+                                    native_multisig_config_validation_gas.saturating_add(
+                                        native_multisig_complete_config_validation_gas(
+                                            config.owner_count,
+                                        ),
+                                    );
+                                config
                             };
                             NativeMultisigAuthConfig::Registered {
                                 account: signature.account(),
-                                threshold,
-                                version,
+                                threshold: config.threshold,
+                                version: config.version,
                             }
                         };
 
@@ -1264,6 +1290,7 @@ where
                                 key_auth.authorization.signature_hash(),
                                 signature,
                                 config,
+                                &mut native_multisig_config_validation_gas,
                             )?;
                         }
                         if let NativeMultisigAuthConfig::Inline(init_config) = config
@@ -1277,6 +1304,28 @@ where
                     Ok(())
                 },
             )?;
+
+            init_gas.initial_regular_gas = init_gas
+                .initial_regular_gas
+                .saturating_add(native_multisig_config_validation_gas);
+
+            if tx.gas_limit() < init_gas.initial_total_gas() {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    gas_limit: tx.gas_limit(),
+                    initial_gas: init_gas.initial_total_gas(),
+                }
+                .into());
+            }
+
+            if cfg.is_amsterdam_eip8037_enabled()
+                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
+            {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                    gas_floor: init_gas.initial_regular_gas(),
+                    gas_limit: cfg.tx_gas_limit_cap(),
+                }
+                .into());
+            }
         }
 
         // Load caller's account mutably after multisig validation.
@@ -2983,6 +3032,7 @@ fn verify_native_multisig_authorization<DB: Database>(
     inner_digest: B256,
     signature: &MultisigSignature,
     config: NativeMultisigAuthConfig<'_>,
+    config_validation_gas: &mut u64,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
     multisig
         .verify_authorization(
@@ -2990,9 +3040,13 @@ fn verify_native_multisig_authorization<DB: Database>(
             signature,
             config,
             |account| {
-                multisig
-                    .load_registered_threshold_and_version(account)
-                    .map_err(NativeMultisigAuthError::from)
+                let config = multisig
+                    .load_registered_config_summary(account)
+                    .map_err(NativeMultisigAuthError::from)?;
+                *config_validation_gas = config_validation_gas.saturating_add(
+                    native_multisig_complete_config_validation_gas(config.owner_count),
+                );
+                Ok((config.threshold, config.version))
             },
             |account, owner| {
                 multisig

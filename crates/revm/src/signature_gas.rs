@@ -24,6 +24,15 @@ pub(crate) const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
 /// Additional gas for each native multisig owner-weight lookup.
 pub(crate) const NATIVE_MULTISIG_OWNER_WEIGHT_GAS: u64 = COLD_SLOAD_COST;
 
+/// Additional storage reads required to validate every ordered owner row against its direct
+/// weight row before using a registered configuration.
+#[inline]
+pub(crate) fn native_multisig_complete_config_validation_gas(owner_count: usize) -> u64 {
+    (owner_count as u64)
+        .saturating_mul(2)
+        .saturating_mul(COLD_SLOAD_COST)
+}
+
 /// Persistent storage rows created by native multisig bootstrap before owner rows:
 /// the packed `{ threshold, owner_count, version }` account header.
 const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 1;
@@ -90,9 +99,14 @@ fn native_multisig_signature_verification_gas(
         .fold(0u64, u64::saturating_add);
     let owner_weight_gas =
         NATIVE_MULTISIG_OWNER_WEIGHT_GAS.saturating_mul(signature.signatures().len() as u64);
+    let complete_config_validation_gas = signature
+        .simulation_config_owner_count()
+        .map(native_multisig_complete_config_validation_gas)
+        .unwrap_or_default();
 
     let gas = NATIVE_MULTISIG_VALIDATION_GAS
         .saturating_add(owner_weight_gas)
+        .saturating_add(complete_config_validation_gas)
         .saturating_add(owner_signature_gas);
     if subtract_base_secp256k1 {
         gas.saturating_sub(ECRECOVER_GAS)

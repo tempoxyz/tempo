@@ -30,6 +30,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                         self.multisig_init.as_ref(),
                         &key_type,
                         self.key_data.as_ref(),
+                        false,
                     )
                     .map_err(|err| ValueError::new(self.clone(), err))?
                 } else if let Some(init) = self.multisig_init.as_ref() {

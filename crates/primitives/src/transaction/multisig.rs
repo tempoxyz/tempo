@@ -23,7 +23,7 @@ pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
 pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable:signature";
 
 /// Maximum number of owners allowed in a native multisig config.
-pub const MAX_MULTISIG_OWNERS: usize = 53;
+pub const MAX_MULTISIG_OWNERS: usize = 50;
 
 /// Maximum threshold accepted by a native multisig config.
 ///
@@ -455,6 +455,8 @@ pub struct MultisigSignature {
     signatures: Vec<TempoSignature>,
     /// Cached multisig digest for the transaction hash and config version this signature approved.
     cached_digest: OnceLock<(B256, Address, u64, B256)>,
+    /// Stored config size inferred by RPC simulation. This is never serialized or signed.
+    simulation_config_owner_count: Option<usize>,
 }
 
 #[cfg(feature = "serde")]
@@ -532,6 +534,7 @@ impl MultisigSignature {
             address,
             signatures,
             cached_digest: OnceLock::new(),
+            simulation_config_owner_count: None,
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -555,6 +558,28 @@ impl MultisigSignature {
     /// Returns the optional bootstrap config.
     pub fn init(&self) -> Option<&InitMultisig> {
         self.address.init()
+    }
+
+    /// Attaches the registered config size inferred for RPC gas simulation.
+    #[doc(hidden)]
+    pub fn with_simulation_config_owner_count(
+        mut self,
+        owner_count: usize,
+    ) -> Result<Self, &'static str> {
+        if owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
+            return Err("invalid multisig simulation owner count");
+        }
+        if self.init().is_some() {
+            return Err("bootstrap multisig signatures cannot have a stored config owner count");
+        }
+        self.simulation_config_owner_count = Some(owner_count);
+        Ok(self)
+    }
+
+    /// Returns the registered config size inferred for RPC gas simulation.
+    #[doc(hidden)]
+    pub const fn simulation_config_owner_count(&self) -> Option<usize> {
+        self.simulation_config_owner_count
     }
 
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.

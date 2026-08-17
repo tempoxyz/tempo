@@ -397,19 +397,9 @@ fn populate_native_multisig_simulation_hints(
         return Ok(());
     }
 
-    if request.multisig_init.is_none() && request.multisig_signature_count.is_none() {
-        if let Some(hint) = load_native_multisig_simulation_hints(from, db)? {
-            request.multisig_signature_count = Some(hint.approvals.len());
-            request.multisig_simulation_hint = Some(hint);
-        }
-        return Ok(());
-    }
-
-    // `multisig_init` is advisory: a registered sender cannot re-init, so the
-    // stored config wins and the bootstrap hint is dropped.
-    if request.multisig_init.is_some()
-        && let Some(hint) = load_native_multisig_simulation_hints(from, db)?
-    {
+    if let Some(hint) = load_native_multisig_simulation_hints(from, db)? {
+        // `multisig_init` is advisory: a registered sender cannot re-init, so the
+        // stored config wins and the bootstrap hint is dropped.
         request.multisig_init = None;
         if request.multisig_signature_count.is_none() {
             request.multisig_signature_count = Some(hint.approvals.len());
@@ -516,7 +506,11 @@ fn native_multisig_simulation_hint_for_config(
         approvals.push(approval);
     }
 
-    Ok(MultisigSimulationHint { account, approvals })
+    Ok(MultisigSimulationHint {
+        account,
+        owner_count: config.owners.len(),
+        approvals,
+    })
 }
 
 fn read_native_multisig_owner(
@@ -932,6 +926,7 @@ mod tests {
             .unwrap()
             .expect("registered account hint");
         assert_eq!(hint.account, account);
+        assert_eq!(hint.owner_count, 1);
         assert_eq!(hint.approvals, vec![MultisigSimulationApproval::Primitive]);
 
         let mut request = init_request(account);
@@ -976,11 +971,13 @@ mod tests {
             .multisig_simulation_hint
             .expect("registered account hint");
         assert_eq!(hint.account, account);
+        assert_eq!(hint.owner_count, 1);
         assert_eq!(hint.approvals.len(), 1);
         let MultisigSimulationApproval::Multisig(nested) = &hint.approvals[0] else {
             panic!("registered threshold owner should use a nested approval");
         };
         assert_eq!(nested.account, nested_account);
+        assert_eq!(nested.owner_count, 2);
         assert_eq!(
             nested.approvals,
             vec![

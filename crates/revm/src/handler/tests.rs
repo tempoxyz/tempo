@@ -5083,8 +5083,15 @@ fn test_t11_rpc_simulation_skips_registered_multisig_owner_verification() {
     });
     store_native_multisig_account(&mut test, &config);
 
-    test.validate_against_state_and_deduct_caller()
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
         .expect("RPC simulation should skip native multisig owner-signature verification");
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        native_multisig_complete_config_validation_gas(config.owners.len()),
+        "RPC simulation should charge every stored owner and direct-weight row"
+    );
 }
 
 #[test]
@@ -5732,6 +5739,47 @@ fn test_aa_gas_native_multisig_nested_owner_overhead() {
 }
 
 #[test]
+fn test_aa_gas_native_multisig_simulation_models_nested_config_validation() {
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let nested_signature = TempoSignature::Multisig(
+        MultisigSignature::new(Address::from([0x33; 20]), vec![owner_signature], None)
+            .with_simulation_config_owner_count(2)
+            .unwrap(),
+    );
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(
+        MultisigSignature::from_decoded(Address::from([0x44; 20]), vec![nested_signature], None)
+            .unwrap(),
+    );
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let expected_overhead = (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2
+        + native_multisig_complete_config_validation_gas(2);
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "RPC simulation should include complete validation of nested registered configs"
+    );
+}
+
+#[test]
 fn test_aa_gas_native_multisig_bootstrap_charges_packed_storage_slots_t11() {
     use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
 
@@ -5803,25 +5851,27 @@ fn test_aa_gas_max_native_multisig_bootstrap_allows_recursive_authorization_t11(
         webauthn_data: Bytes::from(vec![0xff; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
     })
     .to_bytes();
+    let account = config.account().unwrap();
     let nested_signatures = config
         .owners
         .iter()
         .take(MAX_MULTISIG_SIGNATURES)
         .map(|owner| {
-            TempoSignature::Multisig(MultisigSignature::new(
-                owner.owner,
-                vec![webauthn_signature.clone(); MAX_MULTISIG_SIGNATURES],
-                None,
-            ))
-            .to_bytes()
+            TempoSignature::Multisig(
+                MultisigSignature::new(
+                    owner.owner,
+                    vec![webauthn_signature.clone(); MAX_MULTISIG_SIGNATURES],
+                    None,
+                )
+                .with_simulation_config_owner_count(MAX_MULTISIG_OWNERS)
+                .unwrap(),
+            )
         })
         .collect();
     let mut env = make_single_call_env(Bytes::new());
-    env.signature = TempoSignature::Multisig(MultisigSignature::new(
-        config.account().unwrap(),
-        nested_signatures,
-        Some(config),
-    ));
+    env.signature = TempoSignature::Multisig(
+        MultisigSignature::from_decoded(account, nested_signatures, Some(config)).unwrap(),
+    );
 
     let gas = calculate_aa_batch_intrinsic_gas(
         &env,
@@ -5839,7 +5889,10 @@ fn test_aa_gas_max_native_multisig_bootstrap_allows_recursive_authorization_t11(
         "the maximum config and recursive authorization must fit the transaction gas cap"
     );
     assert!(
-        bootstrap_gas + 2 * SSTORE_CREATE_COST > TEMPO_T1_TX_GAS_LIMIT_CAP,
-        "one more owner would require two storage slots and exceed the transaction gas cap"
+        bootstrap_gas
+            + 2 * SSTORE_CREATE_COST
+            + MAX_MULTISIG_SIGNATURES as u64 * native_multisig_complete_config_validation_gas(1)
+            > TEMPO_T1_TX_GAS_LIMIT_CAP,
+        "one more owner in each config would exceed the transaction gas cap"
     );
 }

@@ -48,6 +48,7 @@ impl TempoTransactionRequest {
                 self.multisig_init.as_ref(),
                 &key_type,
                 self.key_data.as_ref(),
+                false,
             )
             .map_err(|err| ValueError::new(self.clone(), err))?
         } else if let Some(init) = self.multisig_init.as_ref() {
@@ -175,6 +176,7 @@ pub(super) fn create_mock_native_multisig_sig_from_hint(
     init: Option<&tempo_primitives::transaction::InitMultisig>,
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
+    attach_config_validation_gas: bool,
 ) -> Result<TempoSignature, &'static str> {
     use tempo_primitives::transaction::MultisigSignature;
 
@@ -182,18 +184,22 @@ pub(super) fn create_mock_native_multisig_sig_from_hint(
         .approvals
         .iter()
         .map(|approval| match approval {
-            MultisigSimulationApproval::Primitive => {
-                Ok(create_mock_primitive_signature(key_type, key_data.cloned()).to_bytes())
-            }
+            MultisigSimulationApproval::Primitive => Ok(TempoSignature::Primitive(
+                create_mock_primitive_signature(key_type, key_data.cloned()),
+            )),
             MultisigSimulationApproval::Multisig(nested) => {
-                create_mock_native_multisig_sig_from_hint(nested, None, key_type, key_data)
-                    .map(|signature| signature.to_bytes())
+                create_mock_native_multisig_sig_from_hint(nested, None, key_type, key_data, true)
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    MultisigSignature::try_new(hint.account, signatures, init.cloned())
-        .map(TempoSignature::Multisig)
+    let signature = MultisigSignature::from_decoded(hint.account, signatures, init.cloned())?;
+    let signature = if attach_config_validation_gas {
+        signature.with_simulation_config_owner_count(hint.owner_count)?
+    } else {
+        signature
+    };
+    Ok(TempoSignature::Multisig(signature))
 }
 
 fn create_mock_native_multisig_owner_signatures(
@@ -356,9 +362,11 @@ mod tests {
             key_type: Some(SignatureType::P256),
             multisig_simulation_hint: Some(MultisigSimulationHint {
                 account,
+                owner_count: 1,
                 approvals: vec![MultisigSimulationApproval::Multisig(Box::new(
                     MultisigSimulationHint {
                         account: nested_account,
+                        owner_count: 2,
                         approvals: vec![
                             MultisigSimulationApproval::Primitive,
                             MultisigSimulationApproval::Primitive,
@@ -381,11 +389,13 @@ mod tests {
             .clone();
         assert_eq!(signature.account(), account);
         assert_eq!(signature.signature_count(), 1);
+        assert_eq!(signature.simulation_config_owner_count(), None);
         let nested = signature.signatures()[0]
             .as_multisig()
             .expect("nested multisig");
         assert_eq!(nested.account(), nested_account);
         assert_eq!(nested.signature_count(), 2);
+        assert_eq!(nested.simulation_config_owner_count(), Some(2));
         assert!(nested.signatures().iter().all(|signature| {
             matches!(
                 signature,

@@ -22,6 +22,8 @@ use crate::TempoNetwork;
 pub struct MultisigSimulationHint {
     /// Account authorized by this signature node.
     pub account: Address,
+    /// Number of owners in the account's complete stored configuration.
+    pub owner_count: usize,
     /// Owner approvals required to reach this account's threshold.
     pub approvals: Vec<MultisigSimulationApproval>,
 }

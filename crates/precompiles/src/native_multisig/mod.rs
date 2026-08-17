@@ -55,6 +55,14 @@ struct StoredMultisigConfig {
     version: u64,
 }
 
+/// Registered configuration fields needed during transaction authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisteredMultisigConfig {
+    pub threshold: u8,
+    pub version: u64,
+    pub owner_count: usize,
+}
+
 /// Native multisig account storage.
 #[contract(addr = NATIVE_MULTISIG_ADDRESS)]
 pub struct NativeMultisig {
@@ -148,7 +156,7 @@ impl NativeMultisig {
 
     pub fn is_multisig_account(&self, account: Address) -> Result<bool> {
         Ok(self
-            .load_registered_threshold_and_version_if_present(account)?
+            .load_registered_config_summary_if_present(account)?
             .is_some())
     }
 
@@ -170,21 +178,30 @@ impl NativeMultisig {
         self.load_stored_config(account).map(|stored| stored.config)
     }
 
-    pub fn load_registered_threshold_and_version(&self, account: Address) -> Result<(u8, u64)> {
-        self.load_registered_threshold_and_version_if_present(account)?
+    pub fn load_registered_config_summary(
+        &self,
+        account: Address,
+    ) -> Result<RegisteredMultisigConfig> {
+        self.load_registered_config_summary_if_present(account)?
             .ok_or_else(|| NativeMultisigError::not_multisig_account().into())
     }
 
-    pub fn load_registered_threshold_and_version_if_present(
+    pub fn load_registered_config_summary_if_present(
         &self,
         account: Address,
-    ) -> Result<Option<(u8, u64)>> {
+    ) -> Result<Option<RegisteredMultisigConfig>> {
         let header = self.accounts[account].read()?;
         match parse_multisig_header(header)? {
             ParsedMultisigHeader::Uninitialized => Ok(None),
             ParsedMultisigHeader::Initialized { .. } => self
                 .load_stored_config_with_header(account, header)
-                .map(|stored| Some((stored.config.threshold, stored.version))),
+                .map(|stored| {
+                    Some(RegisteredMultisigConfig {
+                        threshold: stored.config.threshold,
+                        version: stored.version,
+                        owner_count: stored.config.owners.len(),
+                    })
+                }),
         }
     }
 
