@@ -74,7 +74,8 @@ fn syncing_finalized_block_is_postponed_and_retried_in_order() {
         h.deliver_tip(round(2), 2, d2);
         let w1 = h.deliver_finalized(b1);
         let w2 = h.deliver_finalized(b2);
-        w1.await.expect("postponed block should still be acknowledged");
+        w1.await
+            .expect("postponed block should still be acknowledged");
         w2.await.expect("queued block should be acknowledged");
 
         assert_eq!(
@@ -107,7 +108,54 @@ fn invalid_finalized_block_is_fatal() {
         h.actor
             .await
             .expect("actor should shut down cleanly on a fatal error");
-        assert_eq!(h.execution.fcus(), vec![], "no forkchoice update may follow");
+        assert_eq!(
+            h.execution.fcus(),
+            vec![],
+            "no forkchoice update may follow"
+        );
+    });
+}
+
+#[test_traced]
+fn new_payload_transport_error_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        h.execution
+            .script_new_payload(b1.digest(), Err("connection closed"));
+
+        h.deliver_tip(round(1), 1, b1.digest());
+        h.deliver_finalized(b1)
+            .await
+            .expect_err("a transport failure must not acknowledge the finalized block");
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a finalization transport error");
+        assert!(h.execution.fcus().is_empty());
+    });
+}
+
+#[test_traced]
+fn canonical_block_lookup_error_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        h.execution
+            .script_canonical_block_hash(1, Err("database unavailable"));
+
+        h.deliver_tip(round(1), 1, b1.digest());
+        h.deliver_finalized(b1)
+            .await
+            .expect_err("a canonical lookup failure must not acknowledge the finalized block");
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a canonical lookup error");
+        assert!(h.execution.new_payloads().is_empty());
+        assert!(h.execution.fcus().is_empty());
     });
 }
 
@@ -200,7 +248,10 @@ fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
         h.deliver_finalized(b1)
             .await
             .expect("the re-delivered block should be acknowledged");
-        assert_eq!(h.execution.finalized(), Some((1, make_block(1, 1, GENESIS).digest())));
+        assert_eq!(
+            h.execution.finalized(),
+            Some((1, make_block(1, 1, GENESIS).digest()))
+        );
     });
 }
 

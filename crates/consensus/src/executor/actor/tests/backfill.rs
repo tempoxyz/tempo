@@ -8,7 +8,9 @@ use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
-use super::harness::{FakeExecution, FakeMarshal, GENESIS, Harness, HarnessOptions, make_block, round};
+use super::harness::{
+    FakeExecution, FakeMarshal, GENESIS, Harness, HarnessOptions, make_block, round,
+};
 
 #[test_traced]
 fn no_backfill_when_already_at_the_floor() {
@@ -85,6 +87,36 @@ fn backfill_falls_back_to_the_execution_layer_for_missing_blocks() {
             .await;
         assert_eq!(h.marshal.get_block_log(), vec![1]);
         assert_eq!(h.execution.new_payloads(), vec![d1]);
+    });
+}
+
+#[test_traced]
+fn execution_layer_body_lookup_error_fails_startup() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        let marshal = FakeMarshal::new();
+        marshal.add_info(1, d1);
+        let execution = FakeExecution::new();
+        execution.script_block_by_digest(d1, Err("database unavailable"));
+
+        let h = Harness::start(
+            &context,
+            execution,
+            marshal,
+            HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, d1),
+                ..Default::default()
+            },
+        );
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly when the body lookup fails");
+        assert!(h.execution.new_payloads().is_empty());
+        assert!(h.execution.fcus().is_empty());
     });
 }
 
@@ -192,5 +224,35 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
             vec![d1, d1],
             "the backfill must retry the postponed block until it is accepted",
         );
+    });
+}
+
+#[test_traced]
+fn new_payload_transport_error_fails_startup() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        let execution = FakeExecution::new();
+        execution.script_new_payload(d1, Err("connection closed"));
+
+        let h = Harness::start(
+            &context,
+            execution,
+            marshal,
+            HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, d1),
+                ..Default::default()
+            },
+        );
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly when startup forwarding fails");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert!(h.execution.fcus().is_empty());
     });
 }

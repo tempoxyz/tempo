@@ -76,7 +76,11 @@ fn missing_ancestor_bodies_are_fetched_and_forwarded_bottom_up() {
         );
         assert_eq!(
             h.execution.fcus(),
-            vec![(d1, GENESIS, false), (d2, GENESIS, false), (d3, GENESIS, false)],
+            vec![
+                (d1, GENESIS, false),
+                (d2, GENESIS, false),
+                (d3, GENESIS, false)
+            ],
         );
     });
 }
@@ -111,7 +115,8 @@ fn stale_body_fetch_is_dropped_when_the_pending_head_moves() {
         let (d1, da1) = (b1.digest(), a1.digest());
 
         h.report_pending_head(2, 1, d1);
-        h.wait_until(|| !h.marshal.open_subscriptions().is_empty()).await;
+        h.wait_until(|| !h.marshal.open_subscriptions().is_empty())
+            .await;
 
         // A newer context re-anchors the pending head onto a different
         // block; the in-flight fetch is now pointless and must be dropped
@@ -161,7 +166,8 @@ fn rejected_notarized_block_is_withheld_then_retried() {
             .await;
 
         // The forward is rejected; the block is withheld from retries.
-        h.wait_until(|| h.execution.new_payloads() == vec![d1]).await;
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
         h.run_for(Duration::from_secs(5)).await;
         assert_eq!(
             h.execution.new_payloads(),
@@ -171,6 +177,42 @@ fn rejected_notarized_block_is_withheld_then_retried() {
         assert_eq!(h.execution.head(), GENESIS);
 
         // After the retry delay (10s) the block becomes forwardable again.
+        h.run_for(Duration::from_secs(6)).await;
+        h.wait_until(|| h.execution.head() == d1).await;
+        assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
+    });
+}
+
+#[test_traced]
+fn new_payload_transport_error_is_withheld_then_retried() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start(
+            &context,
+            FakeExecution::new(),
+            FakeMarshal::new(),
+            HarnessOptions {
+                fcu_heartbeat_interval: Duration::from_millis(200),
+                ..Default::default()
+            },
+        );
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution.script_new_payload(d1, Err("connection closed"));
+
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+        h.run_for(Duration::from_secs(5)).await;
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![d1],
+            "a transport failure must not trigger a tight retry loop",
+        );
+
         h.run_for(Duration::from_secs(6)).await;
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
@@ -232,6 +274,33 @@ fn failed_repoint_is_fatal() {
         h.actor
             .await
             .expect("actor should shut down cleanly on a failed repoint");
+    });
+}
+
+// A repoint transport error is fatal because repointing is currently limited
+// to the local finalized tip, which the execution layer must already know.
+// TODO: Adjust this policy once repointing can target any block between the
+// finalized and pending heads.
+#[test_traced]
+fn repoint_transport_error_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let a1 = make_block(1, 1, GENESIS);
+        let da1 = a1.digest();
+        h.verify(round(1), a1)
+            .await
+            .expect("verification should complete")
+            .expect("block should be valid");
+        h.report_pending_head(2, 1, da1);
+        h.wait_until(|| h.execution.head() == da1).await;
+
+        h.execution.script_fcu(Err("connection closed"));
+        h.report_pending_head(5, 0, GENESIS);
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a repoint transport error");
     });
 }
 

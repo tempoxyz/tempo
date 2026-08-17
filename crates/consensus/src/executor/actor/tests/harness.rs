@@ -33,6 +33,7 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock as _, Handle, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
+use eyre::{Report, WrapErr as _};
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
@@ -133,6 +134,10 @@ struct FakeExecutionInner {
     payload_overrides: Mutex<HashMap<B256, VecDeque<Result<PayloadStatusEnum, &'static str>>>>,
     /// Scripted FCU outcomes consumed in order before default behavior.
     fcu_overrides: Mutex<VecDeque<Result<PayloadStatusEnum, &'static str>>>,
+    /// Scripted canonical-hash lookup outcomes keyed by height.
+    canonical_hash_overrides: Mutex<HashMap<u64, VecDeque<Result<Option<B256>, &'static str>>>>,
+    /// Scripted block lookup outcomes keyed by digest.
+    block_overrides: Mutex<HashMap<B256, VecDeque<Result<Option<Block>, &'static str>>>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -174,6 +179,8 @@ impl FakeExecution {
                 calls: Mutex::new(Vec::new()),
                 payload_overrides: Mutex::new(HashMap::new()),
                 fcu_overrides: Mutex::new(VecDeque::new()),
+                canonical_hash_overrides: Mutex::new(HashMap::new()),
+                block_overrides: Mutex::new(HashMap::new()),
                 reject_all_fcus: AtomicBool::new(false),
                 suppress_payload_ids: AtomicBool::new(false),
                 omit_payload_job: AtomicBool::new(false),
@@ -235,11 +242,36 @@ impl FakeExecution {
     /// `Ok(PayloadStatusEnum::Invalid)` models an Engine API response that
     /// rejects the update, while `Err` models a request or transport failure
     /// before the execution layer returns a payload status.
-    pub(super) fn script_fcu(
-        &self,
-        outcome: Result<PayloadStatusEnum, &'static str>,
-    ) {
+    pub(super) fn script_fcu(&self, outcome: Result<PayloadStatusEnum, &'static str>) {
         self.inner.fcu_overrides.lock().push_back(outcome);
+    }
+
+    /// Scripts the outcome of the next canonical block lookup at `height`.
+    pub(super) fn script_canonical_block_hash(
+        &self,
+        height: u64,
+        outcome: Result<Option<B256>, &'static str>,
+    ) {
+        self.inner
+            .canonical_hash_overrides
+            .lock()
+            .entry(height)
+            .or_default()
+            .push_back(outcome);
+    }
+
+    /// Scripts the outcome of the next block lookup for `digest`.
+    pub(super) fn script_block_by_digest(
+        &self,
+        digest: Digest,
+        outcome: Result<Option<Block>, &'static str>,
+    ) {
+        self.inner
+            .block_overrides
+            .lock()
+            .entry(digest.0)
+            .or_default()
+            .push_back(outcome);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -379,7 +411,10 @@ impl FakeExecution {
         state.head = fcu.head_block_hash;
 
         if let Some(&(finalized_height, _)) = state.blocks.get(&fcu.finalized_block_hash) {
-            state.finalized = Some(BlockNumHash::new(finalized_height, fcu.finalized_block_hash));
+            state.finalized = Some(BlockNumHash::new(
+                finalized_height,
+                fcu.finalized_block_hash,
+            ));
         }
 
         PayloadStatusEnum::Valid
@@ -396,10 +431,32 @@ impl ExecutionLayer for FakeExecution {
     }
 
     fn canonical_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
+        if let Some(outcome) = self
+            .inner
+            .canonical_hash_overrides
+            .lock()
+            .get_mut(&height)
+            .and_then(VecDeque::pop_front)
+        {
+            return outcome.map_err(Report::msg).wrap_err_with(|| {
+                format!("scripted canonical block lookup failed at height `{height}`")
+            });
+        }
         Ok(self.inner.state.lock().canonical.get(&height).copied())
     }
 
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>> {
+        if let Some(outcome) = self
+            .inner
+            .block_overrides
+            .lock()
+            .get_mut(&digest.0)
+            .and_then(VecDeque::pop_front)
+        {
+            return outcome
+                .map_err(Report::msg)
+                .wrap_err_with(|| format!("scripted block lookup failed for `{digest}"));
+        }
         Ok(self.inner.bodies.lock().get(&digest.0).cloned())
     }
 
@@ -428,6 +485,12 @@ impl ExecutionLayer for FakeExecution {
                 PayloadStatusEnum::Syncing
             })
         });
+        let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
+            format!(
+                "scripted new-payload request failed for `{}`",
+                Digest(digest)
+            )
+        });
         let result = match outcome {
             Ok(status) => {
                 if status == PayloadStatusEnum::Valid {
@@ -439,7 +502,7 @@ impl ExecutionLayer for FakeExecution {
                 }
                 Ok(PayloadStatus::from_status(status))
             }
-            Err(error) => Err(eyre::eyre!(error)),
+            Err(error) => Err(error),
         };
 
         async move { result }
@@ -467,6 +530,12 @@ impl ExecutionLayer for FakeExecution {
             Ok(self.apply_forkchoice(&state))
         };
 
+        let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
+            format!(
+                "scripted forkchoice update failed for head `{}`",
+                Digest(state.head_block_hash)
+            )
+        });
         let result = match outcome {
             Ok(status) => {
                 let mut response = ForkchoiceUpdated::from_status(status);
@@ -499,7 +568,7 @@ impl ExecutionLayer for FakeExecution {
                 }
                 Ok(response)
             }
-            Err(error) => Err(eyre::eyre!(error)),
+            Err(error) => Err(error),
         };
 
         async move { result }
@@ -516,7 +585,7 @@ impl ExecutionLayer for FakeExecution {
                 Some(receiver) => Some(
                     receiver
                         .await
-                        .map_err(|_| eyre::eyre!("payload build was aborted")),
+                        .map_err(|_| Report::msg("payload build was aborted")),
                 ),
                 None => None,
             }

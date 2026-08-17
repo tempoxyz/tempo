@@ -29,7 +29,8 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
             .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
         h.deliver_tip(round(1), 1, d1);
         let w1 = h.deliver_finalized(b1);
-        h.wait_until(|| h.execution.new_payloads() == vec![d1]).await;
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
 
         // While the slot is held, a validation and another finalization
         // queue up. Nothing may reach the execution layer.
@@ -119,6 +120,35 @@ fn idle_actor_sends_forkchoice_heartbeats_and_survives_their_failure() {
             .verify(round(1), b1)
             .await
             .expect("the actor must still be serving requests");
+        assert!(verdict.is_some());
+    });
+}
+
+#[test_traced]
+fn idle_actor_survives_heartbeat_transport_error() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start(
+            &context,
+            FakeExecution::new(),
+            FakeMarshal::new(),
+            HarnessOptions {
+                fcu_heartbeat_interval: Duration::from_millis(300),
+                ..Default::default()
+            },
+        );
+        h.execution.script_fcu(Err("connection closed"));
+
+        h.run_for(Duration::from_secs(1)).await;
+        assert!(
+            h.execution.fcus().len() >= 2,
+            "a failed heartbeat must not stop later heartbeats",
+        );
+
+        let b1 = make_block(1, 1, GENESIS);
+        let verdict = h
+            .verify(round(1), b1)
+            .await
+            .expect("actor must keep serving after a heartbeat transport error");
         assert!(verdict.is_some());
     });
 }
