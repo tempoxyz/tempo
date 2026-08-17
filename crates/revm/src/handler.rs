@@ -1046,13 +1046,23 @@ where
         let spec = cfg.spec();
         let mut native_multisig_bootstrap: Option<(Address, InitMultisig)> = None;
         let mut native_multisig_config_validation_gas = 0u64;
+        let tempo_tx_env = tx.tempo_tx_env.as_deref();
+        let outer_multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
+        let key_authorization_multisig_signature = tempo_tx_env
+            .and_then(|aa| aa.key_authorization.as_ref())
+            .and_then(|key_auth| key_auth.signature.as_multisig());
+        let has_authorization_list = tempo_tx_env.map_or_else(
+            || tx.authorization_list_len() != 0,
+            |aa| !aa.tempo_authorization_list.is_empty(),
+        );
+        // Primitive signatures cannot feasibly recover to derived multisig addresses, and
+        // keychain validation is handled separately.
+        let requires_native_multisig_state = outer_multisig_signature.is_some()
+            || key_authorization_multisig_signature.is_some()
+            || tx.has_fee_payer_signature()
+            || has_authorization_list;
 
-        if spec.is_t11() {
-            let tempo_tx_env = tx.tempo_tx_env.as_ref();
-            let outer_multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
-            let key_authorization_multisig_signature = tempo_tx_env
-                .and_then(|aa| aa.key_authorization.as_ref())
-                .and_then(|key_auth| key_auth.signature.as_multisig());
+        if spec.is_t11() && requires_native_multisig_state {
             let is_rpc_simulation =
                 tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
             let validates_caller_multisig = outer_multisig_signature.is_some()
@@ -1079,10 +1089,14 @@ where
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
-                    let caller_multisig_config = multisig_precompile
-                        .load_registered_config_summary_if_present(tx.caller())
-                        .map_err(NativeMultisigAuthError::from)
-                        .map_err(map_native_multisig_error::<DB>)?;
+                    let caller_multisig_config = if validates_caller_multisig {
+                        multisig_precompile
+                            .load_registered_config_summary_if_present(tx.caller())
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                    } else {
+                        None
+                    };
                     let caller_is_multisig = caller_multisig_config.is_some();
                     if let Some(config) = caller_multisig_config {
                         native_multisig_config_validation_gas =
@@ -1138,20 +1152,6 @@ where
                                 ensure_authority_not_multisig(authority)?;
                             }
                         }
-                    }
-
-                    let is_keychain_multisig_transaction =
-                        tempo_tx_env.is_some_and(|aa| aa.signature.is_keychain());
-                    if caller_is_multisig
-                        && outer_multisig_signature.is_none()
-                        && !is_keychain_multisig_transaction
-                    {
-                        return Err(
-                            TempoInvalidTransaction::NativeMultisigRequiresMultisigSignature {
-                                account: tx.caller(),
-                            }
-                            .into(),
-                        );
                     }
 
                     if validates_caller_multisig

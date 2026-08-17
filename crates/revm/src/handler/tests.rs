@@ -21,7 +21,7 @@ use revm::{
     state::AccountInfo,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM, NATIVE_MULTISIG_ADDRESS};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, account_keychain::getTransactionKeyCall,
     storage::ContractStorage, test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
@@ -4716,6 +4716,38 @@ fn test_t11_rejects_keychain_key_authorization_signature() {
             TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
         )) if reason.contains("cannot use keychain encoding")
     ));
+}
+
+#[test]
+fn test_t11_primitive_transaction_skips_native_multisig_storage() {
+    let caller = Address::repeat_byte(0x11);
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = caller;
+    });
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
+
+    test.validate_against_state_and_deduct_caller()
+        .expect("plain primitive transaction should pass");
+
+    let actions = actions.take().expect("storage actions are enabled");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "plain primitive transaction must not read native multisig storage: {actions:?}"
+    );
 }
 
 #[test]
