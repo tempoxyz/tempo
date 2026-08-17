@@ -351,7 +351,6 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceNonceNotZero
             | Self::SubblockTransactionMustHaveZeroFee
             | Self::KeychainOpInSubblockTransaction
-            | Self::NativeMultisigNotActive
             | Self::NativeMultisigInvalidTransaction { .. }
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
@@ -366,6 +365,7 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
+            | Self::NativeMultisigNotActive
             | Self::NativeMultisigValidationFailed { .. }
             | Self::NativeMultisigRequiresMultisigSignature { .. }
             | Self::NativeMultisigFeePayerNotAllowed { .. }
@@ -598,6 +598,11 @@ mod tests {
         assert!(
             !validation_failed.is_bad_transaction(),
             "config/quorum validation can depend on native multisig account state"
+        );
+
+        assert!(
+            !TempoInvalidTransaction::NativeMultisigNotActive.is_bad_transaction(),
+            "native multisig transactions can become valid after fork activation"
         );
 
         let config_error = TempoInvalidTransaction::from(MultisigConfigError::ZeroThreshold);

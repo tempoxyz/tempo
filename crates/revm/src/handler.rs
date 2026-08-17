@@ -1165,6 +1165,15 @@ where
                         let tempo_tx_env = tempo_tx_env
                             .expect("outer multisig signature is derived from tempo_tx_env");
                         if caller_is_multisig {
+                            if signature.init().is_some() {
+                                return Err(
+                                    TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                        reason: "native multisig account already initialized"
+                                            .to_string(),
+                                    }
+                                    .into(),
+                                );
+                            }
                             signature.validate_registered_shape().map_err(|reason| {
                                 TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                                     reason: reason.to_string(),
@@ -1223,7 +1232,16 @@ where
                             .and_then(|aa| aa.key_authorization.as_ref())
                             .expect("key authorization multisig signature is derived from key auth");
                         let config = if let Some(init_config) = signature.init() {
-                            if caller_is_multisig || native_multisig_bootstrap.is_some() {
+                            if caller_is_multisig {
+                                return Err(
+                                    TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                        reason: "native multisig account already initialized"
+                                            .to_string(),
+                                    }
+                                    .into(),
+                                );
+                            }
+                            if native_multisig_bootstrap.is_some() {
                                 return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                                     reason: "multisig_init must be carried by exactly one of the outer or key authorization signatures".to_string(),
                                 }

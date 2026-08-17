@@ -5029,6 +5029,23 @@ fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
         )) if reason.contains("zero protocol nonce")
     ));
 
+    let mut registered_test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env.clone(), |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut registered_test, &config);
+    let Err(EVMError::Transaction(err)) =
+        registered_test.validate_against_state_and_deduct_caller()
+    else {
+        panic!("registered account should reject key-authorization bootstrap");
+    };
+    assert!(matches!(
+        &err,
+        TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            if reason.contains("already initialized")
+    ));
+    assert!(!err.is_bad_transaction());
+
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.inner.kind = TxKind::Call(Address::random());
@@ -5205,14 +5222,15 @@ fn test_t11_registered_account_rejects_multisig_init_outside_simulation() {
     });
     store_native_multisig_account(&mut test, &config);
 
-    let err = test
-        .validate_against_state_and_deduct_caller()
-        .expect_err("registered accounts must reject multisig_init");
-    assert!(
-        err.to_string()
-            .contains("multisig_init is only allowed when bootstrapping an account"),
-        "unexpected error: {err}"
-    );
+    let Err(EVMError::Transaction(err)) = test.validate_against_state_and_deduct_caller() else {
+        panic!("registered account should reject bootstrap");
+    };
+    assert!(matches!(
+        &err,
+        TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            if reason.contains("already initialized")
+    ));
+    assert!(!err.is_bad_transaction());
 }
 
 #[test]
