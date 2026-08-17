@@ -393,6 +393,10 @@ fn populate_native_multisig_simulation_hints(
         return Ok(());
     };
 
+    if request.key_id.is_some() {
+        return Ok(());
+    }
+
     if request.multisig_simulation_hint.is_some() {
         return Ok(());
     }
@@ -847,7 +851,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::{Address, B256, TxKind};
     use alloy_rpc_types_eth::TransactionRequest;
     use reth_evm::revm::{bytecode::Bytecode, state::AccountInfo};
     use std::collections::HashMap;
@@ -968,6 +972,33 @@ mod tests {
         assert!(request.multisig_init.is_some());
         assert_eq!(request.multisig_signature_count, Some(1));
         assert!(request.multisig_simulation_hint.is_some());
+    }
+
+    #[test]
+    fn populate_preserves_access_key_simulation_for_registered_multisig_sender() {
+        let account = Address::from([0xaa; 20]);
+        let key_id = Address::from([0xbb; 20]);
+        let mut db = SlotDb::registered_one_of_one(account);
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(Address::from([0xcc; 20]))),
+                ..Default::default()
+            },
+            key_id: Some(key_id),
+            ..Default::default()
+        };
+
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+        assert!(request.multisig_signature_count.is_none());
+        assert!(request.multisig_simulation_hint.is_none());
+
+        let tx_env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect("valid access-key simulation request");
+        let aa_env = tx_env.tempo_tx_env.expect("AA simulation env");
+        assert_eq!(aa_env.override_key_id, Some(key_id));
+        assert!(aa_env.signature.is_v2_keychain());
     }
 
     #[test]
