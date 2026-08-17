@@ -942,12 +942,7 @@ where
                 // Send to remote player
                 let payload = Message::Dealer(pub_msg, priv_msg).encode();
                 let success = round_channel.send(Recipients::One(player.clone()), payload, true);
-                if success.is_empty() {
-                    // TODO(janis): figure out what it means if the response
-                    // is empty. Does it just mean the other party failed
-                    // to respond?
-                    info!(%player, "failed to send share");
-                } else {
+                if !success.is_empty() {
                     self.metrics.shares_distributed.metric().inc();
                     info!(%player, "share sent");
                 }
