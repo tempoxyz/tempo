@@ -78,15 +78,15 @@ main() {
     info "Tempoup installed to $BIN_DIR/tempoup"
 
     # Create env file that can be sourced to set PATH (POSIX shells)
-    cat > "$ENV_FILE" <<'ENVEOF'
+    cat > "$ENV_FILE" <<ENVEOF
 # tempo shell setup
-export PATH="$HOME/.tempo/bin:$PATH"
+export PATH="$BIN_DIR:\$PATH"
 ENVEOF
 
     # Create env file for fish shell
-    cat > "$ENV_FILE.fish" <<'ENVEOF'
+    cat > "$ENV_FILE.fish" <<ENVEOF
 # tempo shell setup
-fish_add_path -g $HOME/.tempo/bin
+fish_add_path -g "$BIN_DIR"
 ENVEOF
 
     # Add BIN_DIR to PATH for current session
