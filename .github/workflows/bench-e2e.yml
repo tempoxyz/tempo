@@ -364,7 +364,9 @@ jobs:
   bench-e2e:
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
-    timeout-minutes: 300
+    # 100 GiB flatmpt runs carry two ~1.5h flat bootstraps on top of the bench
+    # segments; 300 min cancelled a run at 4h59m with results unsaved.
+    timeout-minutes: 390
     env:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
