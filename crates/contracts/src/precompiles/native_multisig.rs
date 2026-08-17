@@ -18,8 +18,8 @@ crate::sol! {
             MultisigOwner[] owners;
         }
 
-        event ConfigurableAccountInitialized(address indexed account);
-        event AccountConfigUpdated(
+        event MultisigInitialized(address indexed account);
+        event MultisigConfigUpdated(
             address indexed account,
             uint8 threshold,
             MultisigOwner[] owners
@@ -29,11 +29,11 @@ crate::sol! {
             external
             pure
             returns (address account);
-        function isConfigurableAccount(address account) external view returns (bool);
-        function getAccountConfig(address account) external view returns (MultisigConfig memory);
-        function updateAccountConfig(uint8 threshold, MultisigOwner[] calldata owners) external;
+        function isMultisigAccount(address account) external view returns (bool);
+        function getMultisigConfig(address account) external view returns (MultisigConfig memory);
+        function updateMultisigConfig(uint8 threshold, MultisigOwner[] calldata owners) external;
 
-        error NotConfigurableAccount();
+        error NotMultisigAccount();
         error InvalidAccount();
         error InvalidConfig();
         error InvalidThreshold();

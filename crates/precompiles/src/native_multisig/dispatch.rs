@@ -19,13 +19,13 @@ impl Precompile for NativeMultisig {
                     deriveAccount(call) => view(call, |c| {
                         self.derive_account(c.salt, c.threshold, c.owners)
                     }),
-                    isConfigurableAccount(call) => {
+                    isMultisigAccount(call) => {
                         view(call, |c| self.is_multisig_account(c.account))
                     },
-                    getAccountConfig(call) => {
+                    getMultisigConfig(call) => {
                         view(call, |c| self.get_multisig_config(c.account))
                     },
-                    updateAccountConfig(call) => mutate_void(call, msg_sender, |sender, c| {
+                    updateMultisigConfig(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.update_multisig_config(sender, c.threshold, c.owners)
                     })
                 }
@@ -52,16 +52,16 @@ mod tests {
             [0xce, 0x8e, 0x07, 0x1c]
         );
         assert_eq!(
-            INativeMultisig::isConfigurableAccountCall::SELECTOR,
-            [0x1c, 0xf3, 0x2a, 0x4e]
+            INativeMultisig::isMultisigAccountCall::SELECTOR,
+            [0x9f, 0xbf, 0x02, 0x9a]
         );
         assert_eq!(
-            INativeMultisig::getAccountConfigCall::SELECTOR,
-            [0x93, 0x71, 0x0d, 0x09]
+            INativeMultisig::getMultisigConfigCall::SELECTOR,
+            [0x58, 0x1b, 0x26, 0xec]
         );
         assert_eq!(
-            INativeMultisig::updateAccountConfigCall::SELECTOR,
-            [0x49, 0xdb, 0x23, 0xa9]
+            INativeMultisig::updateMultisigConfigCall::SELECTOR,
+            [0xe1, 0x5e, 0x85, 0x44]
         );
     }
 

@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
 
 /// Domain prefix for native multisig owner approvals.
-pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:configurable:signature";
+pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:multisig:signature";
 
 /// Maximum number of owners allowed in a native multisig config.
 pub const MAX_MULTISIG_OWNERS: usize = 50;
@@ -41,7 +41,7 @@ pub const MAX_MULTISIG_NESTING_DEPTH: usize = 2;
 /// Maximum encoded byte length for one primitive owner approval.
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
-const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:configurable:account";
+const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1129,12 +1129,12 @@ mod tests {
 
         assert_eq!(
             account,
-            alloy_primitives::address!("6c70c970f6336248ad44e54d7aba67df85868846")
+            alloy_primitives::address!("8820d1497eeaf4f68e00b2cfc00a2f3b1dbb00da")
         );
         assert_eq!(
             multisig_digest(B256::repeat_byte(0x42), account, 0),
             alloy_primitives::b256!(
-                "eb2f2ecb4f15891c441a1b5c5ee660ab122def338f72d7a2a2130e24ec13592f"
+                "bf944a7a752b2cfab0418d5fb4591c5a7ff62976488edce11794d7f35fb34f41"
             )
         );
     }

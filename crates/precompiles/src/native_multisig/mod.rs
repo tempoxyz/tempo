@@ -185,7 +185,7 @@ impl NativeMultisig {
         account: Address,
     ) -> Result<RegisteredMultisigConfig> {
         self.load_registered_config_summary_if_present(account)?
-            .ok_or_else(|| NativeMultisigError::not_configurable_account().into())
+            .ok_or_else(|| NativeMultisigError::not_multisig_account().into())
     }
 
     pub fn load_registered_config_summary_if_present(
@@ -240,9 +240,7 @@ impl NativeMultisig {
 
         self.write_stored_config(account, config, &[], 0)?;
         self.set_bootstrapped_account(account)?;
-        self.emit_event(NativeMultisigEvent::configurable_account_initialized(
-            account,
-        ))
+        self.emit_event(NativeMultisigEvent::multisig_initialized(account))
     }
 
     pub fn update_multisig_config(
@@ -278,7 +276,7 @@ impl NativeMultisig {
         let init_config = abi_config_to_init(threshold, owners)?;
 
         self.write_stored_config(msg_sender, &init_config, &stored.config.owners, version)?;
-        self.emit_event(NativeMultisigEvent::account_config_updated(
+        self.emit_event(NativeMultisigEvent::multisig_config_updated(
             msg_sender,
             threshold,
             event_owners,
@@ -297,7 +295,7 @@ impl NativeMultisig {
     ) -> Result<StoredMultisigConfig> {
         match parse_multisig_header(header)? {
             ParsedMultisigHeader::Uninitialized => {
-                Err(NativeMultisigError::not_configurable_account().into())
+                Err(NativeMultisigError::not_multisig_account().into())
             }
             ParsedMultisigHeader::Initialized {
                 threshold,
@@ -857,7 +855,7 @@ mod tests {
             assert!(matches!(
                 multisig.get_multisig_config(empty_account),
                 Err(TempoPrecompileError::NativeMultisigError(
-                    NativeMultisigError::NotConfigurableAccount(_)
+                    NativeMultisigError::NotMultisigAccount(_)
                 ))
             ));
             Ok::<_, TempoPrecompileError>(())
