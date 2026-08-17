@@ -28,6 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
+    native_multisig::NativeMultisig,
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -266,6 +267,9 @@ impl AccountKeychain {
         // Validate inputs
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
+        }
+        if self.storage.spec().is_t11() && NativeMultisig::new().is_multisig_account(key_id)? {
+            return Err(AccountKeychainError::invalid_key_id().into());
         }
         // Admin keys are explicit access-key rows; the root key remains implicit.
         if is_admin && key_id == msg_sender {
@@ -1566,7 +1570,6 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        native_multisig::NativeMultisig,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -1787,6 +1790,38 @@ mod tests {
             })?;
             assert!(!allowed.isScoped);
             assert!(allowed.scopes.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t11_native_multisig_account_cannot_be_authorized_as_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let config = native_multisig_config();
+        let multisig_account = config.account().unwrap();
+        let account = Address::from([0x44; 20]);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(multisig_account, &config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            assert_invalid_key_id(
+                keychain
+                    .authorize_key(
+                        account,
+                        multisig_account,
+                        SignatureType::Secp256k1,
+                        unrestricted_restrictions(),
+                        None,
+                    )
+                    .expect_err("native multisig account must not become an access key"),
+            );
+            assert!(!keychain.is_active_key(account, multisig_account)?);
 
             Ok(())
         })

@@ -3615,6 +3615,43 @@ mod keychain {
     }
 
     #[test]
+    fn test_t11_key_authorization_rejects_multisig_access_key() {
+        let (signer, user) = generate_keypair();
+        let config = native_multisig_config();
+        let multisig_account = config.account().unwrap();
+        let signed = sign_key_auth(
+            &signer,
+            KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, multisig_account),
+        );
+        let (mut evm, h) = make_evm(
+            user,
+            multisig_account,
+            Some(signed),
+            TempoHardfork::T11,
+            None,
+            false,
+        );
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(multisig_account, &config)
+        })
+        .expect("native multisig setup succeeds");
+
+        let Err(EVMError::Transaction(err)) =
+            h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
+        else {
+            panic!("native multisig account must not become an access key");
+        };
+        assert!(matches!(
+            &err,
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                if reason.contains("cannot be used as an access key")
+        ));
+        assert!(!err.is_bad_transaction());
+    }
+
+    #[test]
     fn test_keychain_version_rejection() {
         let caller = Address::random();
 

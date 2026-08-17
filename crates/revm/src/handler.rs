@@ -1051,6 +1051,9 @@ where
         let key_authorization_multisig_signature = tempo_tx_env
             .and_then(|aa| aa.key_authorization.as_ref())
             .and_then(|key_auth| key_auth.signature.as_multisig());
+        let key_authorization_key_id = tempo_tx_env
+            .and_then(|aa| aa.key_authorization.as_ref())
+            .map(|key_auth| key_auth.key_id);
         let has_authorization_list = tempo_tx_env.map_or_else(
             || tx.authorization_list_len() != 0,
             |aa| !aa.tempo_authorization_list.is_empty(),
@@ -1059,6 +1062,7 @@ where
         // keychain validation is handled separately.
         let requires_native_multisig_state = outer_multisig_signature.is_some()
             || key_authorization_multisig_signature.is_some()
+            || key_authorization_key_id.is_some()
             || tx.has_fee_payer_signature()
             || has_authorization_list;
 
@@ -1107,6 +1111,20 @@ where
                     {
                         return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
                             account: fee_payer,
+                        }
+                        .into());
+                    }
+
+                    if let Some(key_id) = key_authorization_key_id
+                        && multisig_precompile
+                            .is_multisig_account(key_id)
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                    {
+                        return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
+                            reason: format!(
+                                "native multisig account {key_id} cannot be used as an access key"
+                            ),
                         }
                         .into());
                     }
