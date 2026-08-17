@@ -465,15 +465,21 @@ impl FromTxWithEncoded<AASigned> for TempoTxEnv {
 }
 
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, encoded: Bytes) -> Self {
+        let mut tx_env = Self::from_recovered_tx(tx, sender);
+        // Reth wraps eth_simulateV1 transactions with an empty encoding before execution.
+        if encoded.is_empty() {
+            tx_env.execution_context = ExecutionContext::Simulation;
+            tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        }
+        tx_env
     }
 }
 
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
-    use alloy_evm::FromRecoveredTx;
+    use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
     use core::num::NonZeroU64;
     use proptest::prelude::*;
@@ -481,7 +487,7 @@ mod tests {
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
-            Call, calc_gas_balance_spending,
+            Call, MultisigSignature, calc_gas_balance_spending,
             tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
             tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
@@ -661,6 +667,31 @@ mod tests {
         assert_eq!(
             tx_env.channel_open_context_hash(),
             Some(encoded_payload_context)
+        );
+    }
+
+    #[test]
+    fn test_empty_encoded_tx_marks_rpc_block_simulation() {
+        let account = Address::repeat_byte(0xAA);
+        let tx = tempo_primitives::transaction::TempoTransaction {
+            chain_id: 1,
+            gas_limit: 100_000,
+            calls: vec![create_call(TxKind::Call(Address::repeat_byte(0x42)))],
+            ..Default::default()
+        };
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xAA; 65])],
+            None,
+        ));
+        let envelope = TempoTxEnvelope::AA(AASigned::new_unhashed(tx, signature));
+
+        let tx_env = TempoTxEnv::from_encoded_tx(&envelope, account, Bytes::new());
+
+        assert_eq!(tx_env.execution_context(), ExecutionContext::Simulation);
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(super::RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
     }
 
