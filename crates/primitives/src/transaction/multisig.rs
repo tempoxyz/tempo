@@ -729,6 +729,9 @@ impl MultisigSignature {
         let (mut sig_fields, sig_rest) = fields.split_at(sig_header.payload_length);
         let mut signatures = Vec::new();
         while !sig_fields.is_empty() {
+            if signatures.len() == MAX_MULTISIG_SIGNATURES {
+                return Err(alloy_rlp::Error::Custom("too many multisig signatures"));
+            }
             signatures.push(TempoSignature::decode_with_depth(
                 &mut sig_fields,
                 depth + 1,
@@ -1453,6 +1456,20 @@ mod tests {
         assert!(matches!(
             InitMultisig::decode(&mut input),
             Err(alloy_rlp::Error::Custom("too many multisig owners"))
+        ));
+    }
+
+    #[test]
+    fn multisig_signature_decode_bounds_approval_count() {
+        let encoded = encoded_multisig_without_init_slot(
+            Address::repeat_byte(0x11),
+            vec![valid_owner_signature_bytes().to_vec(); MAX_MULTISIG_SIGNATURES + 1],
+        );
+
+        let mut input = encoded.as_slice();
+        assert!(matches!(
+            MultisigSignature::decode(&mut input),
+            Err(alloy_rlp::Error::Custom("too many multisig signatures"))
         ));
     }
 
