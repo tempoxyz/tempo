@@ -4,10 +4,10 @@
 //! match their Solidity equivalents, ensuring compatibility with the EVM.
 
 use super::*;
+use tempo_precompiles::test_util::storage_conformance::*;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
 };
-use utils::*;
 
 #[test]
 fn test_tip403_registry_layout() {
@@ -228,7 +228,7 @@ fn export_all_storage_constants() {
     let mut all_constants = serde_json::Map::new();
 
     // Helper to convert RustStorageField to JSON
-    let field_to_json = |field: &utils::RustStorageField| {
+    let field_to_json = |field: &RustStorageField| {
         json!({
             "name": field.name,
             "slot": format!("{:#x}", field.slot),

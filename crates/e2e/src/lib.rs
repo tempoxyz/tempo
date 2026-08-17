@@ -52,6 +52,8 @@ mod tests;
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
+const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+
 fn generate_consensus_node_config(
     rng: &mut impl CryptoRng,
     signers: u32,
@@ -243,7 +245,7 @@ pub async fn setup_validators(
     let (network, mut oracle) = Network::new(
         context.child("network"),
         simulated::Config {
-            max_size: 1024 * 1024,
+            max_size: MAX_MESSAGE_SIZE,
             disconnect_on_block: true,
             tracked_peer_sets: commonware_utils::NZUsize!(3),
         },
@@ -296,6 +298,7 @@ pub async fn setup_validators(
             signer: private_key.clone(),
             mailbox_size: commonware_utils::NZUsize!(1024),
             deque_size: 10,
+            max_message_size: MAX_MESSAGE_SIZE,
             time_to_propose: Duration::from_secs(2),
             time_to_collect_notarizations: Duration::from_secs(3),
             time_to_retry_nullify_broadcast: Duration::from_secs(10),

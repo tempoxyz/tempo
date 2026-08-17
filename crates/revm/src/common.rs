@@ -383,6 +383,10 @@ where
         unreachable!("'state_gas_used' not implemented in read-only context yet")
     }
 
+    fn state_gas_spilled(&self) -> u64 {
+        unreachable!("'state_gas_spilled' not implemented in read-only context yet")
+    }
+
     fn gas_refunded(&self) -> i64 {
         unreachable!("'gas_refunded' not implemented in read-only context yet")
     }

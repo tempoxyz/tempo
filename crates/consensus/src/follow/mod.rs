@@ -8,6 +8,8 @@ pub mod engine;
 pub(crate) mod executor;
 mod resolver;
 mod stubs;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub mod upstream;
 
 pub use engine::Config;

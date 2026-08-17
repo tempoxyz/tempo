@@ -347,19 +347,23 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
-    use alloy_primitives::{B256, U256};
-    use alloy_sol_types::SolCall;
+    use alloy_primitives::{B256, U256, keccak256};
+    use alloy_sol_types::{SolCall, SolError, SolValue};
     use indexmap::IndexMap;
     use revm::{
         DatabaseCommit, DatabaseRef,
+        bytecode::opcode,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
         database::{EmptyDB, in_memory_db::CacheDB},
         state::{AccountInfo, Bytecode, EvmState},
     };
     use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    use tempo_contracts::{
+        precompiles::{
+            IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
     use tempo_precompiles::{
         NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
@@ -385,6 +389,105 @@ mod tests {
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
+
+    alloy_sol_types::sol! {
+        enum TestZonePortalRole {
+            None,
+            Sequencer,
+            Account,
+            CallbackGateway,
+            PauseGuardian
+        }
+
+        enum TestZonePortalCapability {
+            PausePortal,
+            AccessPolicy
+        }
+
+        struct TestBlockTransition {
+            bytes32 prevBlockHash;
+            bytes32 nextBlockHash;
+        }
+
+        struct TestDepositQueueTransition {
+            bytes32 prevProcessedHash;
+            bytes32 nextProcessedHash;
+            uint64 prevDepositNumber;
+            uint64 nextDepositNumber;
+        }
+
+        interface TestZonePortal {
+            error InvalidProof();
+
+            function enableToken(address token) external;
+            function tokenEnablementHash() external view returns (bytes32);
+            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
+            function isSequencer(address account) external view returns (bool);
+            function setAllowedAccount(address account, bool allowed) external;
+            function paused() external view returns (bool);
+            function pauseExpiry() external view returns (uint64);
+            function abdicationEffectiveAt(TestZonePortalCapability capability)
+                external
+                view
+                returns (uint64);
+            function pause() external;
+            function resume() external;
+            function submitBatch(
+                uint64 tempoBlockNumber,
+                uint64 recentTempoBlockNumber,
+                TestBlockTransition calldata blockTransition,
+                TestDepositQueueTransition calldata depositQueueTransition,
+                bytes32 withdrawalQueueHash,
+                bytes calldata verifierConfig,
+                bytes calldata proof,
+                uint256 nextZoneHeight,
+                bytes[] calldata signatures
+            ) external;
+        }
+
+        interface TestZoneMessenger {
+            function relayMessage(
+                uint32 zoneId,
+                address token,
+                bytes32 senderTag,
+                address target,
+                uint128 amount,
+                uint64 gasLimit,
+                bytes calldata data
+            ) external;
+        }
+
+        interface TestWithdrawalReceiver {
+            function onWithdrawalReceived(
+                uint32 zoneId,
+                address portal,
+                bytes32 senderTag,
+                address token,
+                uint128 amount,
+                bytes calldata data
+            ) external returns (bytes4);
+        }
+    }
+
+    fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
+        const SELECTOR_SHIFT_BITS: u8 = 224;
+        const ABI_WORD_BYTES: u8 = 32;
+
+        let mut code = vec![opcode::PUSH4];
+        code.extend_from_slice(&selector);
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            SELECTOR_SHIFT_BITS,
+            opcode::SHL,
+            opcode::PUSH0,
+            opcode::MSTORE,
+            opcode::PUSH1,
+            ABI_WORD_BYTES,
+            opcode::PUSH0,
+            opcode::RETURN,
+        ]);
+        Bytecode::new_legacy(code.into())
+    }
 
     fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
         let code = Bytecode::new_legacy([0xef].into());
@@ -631,6 +734,369 @@ mod tests {
             result => panic!("portal call failed: {result:?}"),
         };
         assert_eq!(U256::from_be_slice(&output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_portal_runtime_commits_subsequent_token_enablements() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let portal_runtime = Bytecode::new_legacy(tempo_contracts::zones::ZONE_PORTAL_RUNTIME);
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo {
+                code_hash: portal_runtime.hash_slow(),
+                code: Some(portal_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        let second_token = StorageCtx::enter_ctx(
+            evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> Result<_, TempoPrecompileError> {
+                TIP20Setup::path_usd(admin).apply()?;
+                Ok(TIP20Setup::create("Second Token", "SECOND", admin)
+                    .apply()?
+                    .address())
+            },
+        )
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let create = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: true,
+                        gatewayMode: true,
+                        allowedAccounts: vec![],
+                        zoneGateways: vec![],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match &create.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("createZone failed: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
+        evm.db_mut().commit(create.state);
+
+        let sequencer_status = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::isSequencerCall { account: sequencer }
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match sequencer_status.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("isSequencer failed: {result:?}"),
+        };
+        assert!(TestZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
+
+        let account = Address::repeat_byte(0x55);
+        let set_account = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::setAllowedAccountCall {
+                    account,
+                    allowed: true,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            set_account.result.is_success(),
+            "setAllowedAccount failed: {:?}",
+            set_account.result
+        );
+        evm.db_mut().commit(set_account.state);
+
+        let account_role = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::hasRoleCall {
+                    account,
+                    role: TestZonePortalRole::Account,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match account_role.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("hasRole failed: {result:?}"),
+        };
+        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
+
+        for call in [
+            TestZonePortal::pausedCall {}.abi_encode(),
+            TestZonePortal::pauseExpiryCall {}.abi_encode(),
+            TestZonePortal::abdicationEffectiveAtCall {
+                capability: TestZonePortalCapability::PausePortal,
+            }
+            .abi_encode(),
+        ] {
+            let result = evm
+                .transact_system_call(Address::ZERO, created.portal, call.into())
+                .unwrap();
+            let output = match result.result {
+                ExecutionResult::Success {
+                    output: revm::context::result::Output::Call(output),
+                    ..
+                } => output,
+                result => panic!("pause ABI call failed: {result:?}"),
+            };
+            assert_eq!(U256::from_be_slice(&output), U256::ZERO);
+        }
+
+        let pause = evm
+            .transact_system_call(
+                sequencer,
+                created.portal,
+                TestZonePortal::pauseCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        assert!(
+            pause.result.is_success(),
+            "pause failed: {:?}",
+            pause.result
+        );
+        evm.db_mut().commit(pause.state);
+
+        let submit = evm
+            .transact_system_call(
+                sequencer,
+                created.portal,
+                TestZonePortal::submitBatchCall {
+                    tempoBlockNumber: 0,
+                    recentTempoBlockNumber: 0,
+                    blockTransition: TestBlockTransition {
+                        prevBlockHash: B256::repeat_byte(1),
+                        nextBlockHash: B256::ZERO,
+                    },
+                    depositQueueTransition: TestDepositQueueTransition {
+                        prevProcessedHash: B256::ZERO,
+                        nextProcessedHash: B256::ZERO,
+                        prevDepositNumber: 0,
+                        nextDepositNumber: 0,
+                    },
+                    withdrawalQueueHash: B256::ZERO,
+                    verifierConfig: Bytes::new(),
+                    proof: Bytes::new(),
+                    nextZoneHeight: U256::ZERO,
+                    signatures: Vec::new(),
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        match submit.result {
+            ExecutionResult::Revert { output, .. } => {
+                assert_eq!(output.as_ref(), TestZonePortal::InvalidProof::SELECTOR)
+            }
+            result => panic!("paused submitBatch should reach proof validation: {result:?}"),
+        }
+
+        let resume = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::resumeCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        assert!(
+            resume.result.is_success(),
+            "resume failed: {:?}",
+            resume.result
+        );
+        evm.db_mut().commit(resume.state);
+
+        let paused = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::pausedCall {}.abi_encode().into(),
+            )
+            .unwrap();
+        let output = match paused.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("paused failed after resume: {result:?}"),
+        };
+        assert_eq!(U256::from_be_slice(&output), U256::ZERO);
+
+        let enable = evm
+            .transact_system_call(
+                admin,
+                created.portal,
+                TestZonePortal::enableTokenCall {
+                    token: second_token,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            enable.result.is_success(),
+            "enableToken failed: {:?}",
+            enable.result
+        );
+        evm.db_mut().commit(enable.state);
+
+        let commitment = evm
+            .transact_system_call(
+                Address::ZERO,
+                created.portal,
+                TestZonePortal::tokenEnablementHashCall {}
+                    .abi_encode()
+                    .into(),
+            )
+            .unwrap();
+        let output = match commitment.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("tokenEnablementHash failed: {result:?}"),
+        };
+        let actual = TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
+        let initial = keccak256(
+            (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
+        );
+        let expected =
+            keccak256((initial, second_token, "Second Token", "SECOND", "USD").abi_encode_params());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn zone_messenger_runtime_authorizes_registered_callback_gateway() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let gateway = Address::repeat_byte(0x44);
+        let mut db = CacheDB::new(EmptyDB::default());
+        for (address, runtime) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        ] {
+            let code = Bytecode::new_legacy(runtime);
+            db.insert_account_info(
+                address,
+                AccountInfo {
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+            );
+        }
+        let callback_runtime =
+            runtime_returning_selector(TestWithdrawalReceiver::onWithdrawalReceivedCall::SELECTOR);
+        db.insert_account_info(
+            gateway,
+            AccountInfo {
+                code_hash: callback_runtime.hash_slow(),
+                code: Some(callback_runtime),
+                ..Default::default()
+            },
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = TempoEvm::new(db, evm_env_with_spec(TempoHardfork::T10));
+
+        StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(ZONE_MESSENGER_ADDRESS, U256::from(100))
+                .apply()
+        })
+        .unwrap();
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let create = evm
+            .transact_system_call(
+                owner,
+                ZONE_FACTORY_ADDRESS,
+                IZoneFactory::createZoneCall {
+                    params: IZoneFactory::CreateZoneParams {
+                        initialToken: PATH_USD_ADDRESS,
+                        accessMode: false,
+                        gatewayMode: true,
+                        allowedAccounts: vec![],
+                        zoneGateways: vec![gateway],
+                        admin,
+                        sequencers: vec![sequencer],
+                        threshold: 1,
+                        rpcUrl: "https://zone.example".to_string(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        let output = match &create.result {
+            ExecutionResult::Success {
+                output: revm::context::result::Output::Call(output),
+                ..
+            } => output,
+            result => panic!("createZone failed: {result:?}"),
+        };
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(output).unwrap();
+        evm.db_mut().commit(create.state);
+
+        let relay = evm
+            .transact_system_call(
+                created.portal,
+                ZONE_MESSENGER_ADDRESS,
+                TestZoneMessenger::relayMessageCall {
+                    zoneId: created.zoneId,
+                    token: PATH_USD_ADDRESS,
+                    senderTag: B256::ZERO,
+                    target: gateway,
+                    amount: 1,
+                    gasLimit: 100_000,
+                    data: Bytes::new(),
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap();
+        assert!(
+            relay.result.is_success(),
+            "registered gateway callback failed: {:?}",
+            relay.result
+        );
     }
 
     #[test]
@@ -939,13 +1405,9 @@ mod tests {
             let amm_liquidity_reserve = 500_000u128;
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(*hardfork);
-
             let mut evm = TempoEvm::new(
                 CacheDB::new(EmptyDB::default()),
                 EvmEnv {
-                    cfg_env: cfg,
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
                             beneficiary,
@@ -955,6 +1417,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
+                    ..evm_env_with_spec(*hardfork)
                 },
             );
 
