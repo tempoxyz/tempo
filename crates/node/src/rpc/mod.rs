@@ -848,6 +848,7 @@ where
 mod tests {
     use super::*;
     use alloy::primitives::{Address, B256};
+    use alloy_rpc_types_eth::TransactionRequest;
     use reth_evm::revm::{bytecode::Bytecode, state::AccountInfo};
     use std::collections::HashMap;
     use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
@@ -922,17 +923,21 @@ mod tests {
     }
 
     fn init_request(from: Address) -> TempoTransactionRequest {
-        let mut request = TempoTransactionRequest::default();
-        request.from = Some(from);
-        request.multisig_init = Some(InitMultisig {
-            salt: B256::ZERO,
-            threshold: 1,
-            owners: vec![MultisigOwner {
-                owner: Address::from([0x11; 20]),
-                weight: 1,
-            }],
-        });
-        request
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(from),
+                ..Default::default()
+            },
+            multisig_init: Some(InitMultisig {
+                salt: B256::ZERO,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::from([0x11; 20]),
+                    weight: 1,
+                }],
+            }),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -980,8 +985,13 @@ mod tests {
             ],
         );
 
-        let mut request = TempoTransactionRequest::default();
-        request.from = Some(account);
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
 
         let hint = request

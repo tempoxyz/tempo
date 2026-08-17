@@ -2396,7 +2396,7 @@ struct WritableAccessKey {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum WritableKeyAuthorization {
-    Structured(WritableSignedKeyAuthorization),
+    Structured(Box<WritableSignedKeyAuthorization>),
     Rlp(String),
 }
 
@@ -2602,7 +2602,7 @@ fn writable_access_key(
             .collect()
     });
     let key_authorization = if let Some(signature) = authorization.signature.as_primitive() {
-        WritableKeyAuthorization::Structured(WritableSignedKeyAuthorization {
+        WritableKeyAuthorization::Structured(Box::new(WritableSignedKeyAuthorization {
             address: authorization.key_id,
             chain_id: writable_bigint(U256::from(authorization.chain_id)),
             expiry: authorization.expiry.map(NonZeroU64::get),
@@ -2613,7 +2613,7 @@ fn writable_access_key(
             account: authorization.account,
             key_type: "secp256k1",
             signature: writable_signature(signature)?,
-        })
+        }))
     } else {
         let mut encoded = Vec::new();
         alloy_rlp::Encodable::encode(authorization, &mut encoded);
@@ -2627,7 +2627,7 @@ fn writable_access_key(
         key_type: "secp256k1",
         private_key: alloy_primitives::hex::encode_prefixed(signer.to_bytes()),
         expiry: authorization.expiry.map(NonZeroU64::get),
-        limits: limits.clone(),
+        limits,
         scopes: writable_scopes(authorization),
         key_authorization,
     })
