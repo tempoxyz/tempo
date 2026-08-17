@@ -598,7 +598,8 @@ impl TempoSignature {
     /// Parses a signature while tracking native multisig nesting `depth`.
     ///
     /// The top-level signature is depth `1`; each nested owner approval is parsed one level deeper.
-    /// [`MultisigSignature::decode_with_depth`] rejects nodes past [`MAX_MULTISIG_NESTING_DEPTH`],
+    /// [`MultisigSignature::decode_with_depth`] rejects nodes past
+    /// [`crate::transaction::MAX_MULTISIG_NESTING_DEPTH`],
     /// so deeply nested untrusted input cannot recurse the parser into a stack overflow.
     fn from_bytes_with_depth(data: &[u8], depth: usize) -> Result<Self, &'static str> {
         if data.is_empty() {
