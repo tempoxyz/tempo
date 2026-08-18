@@ -432,17 +432,9 @@ enum InboundAction {
 }
 
 /// Offers `tempo/1` on every connection.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct GossipProtocolHandler {
     shared: Arc<Shared>,
-}
-
-impl fmt::Debug for GossipProtocolHandler {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GossipProtocolHandler")
-            .field("shared", &self.shared)
-            .finish_non_exhaustive()
-    }
 }
 
 impl ProtocolHandler for GossipProtocolHandler {
