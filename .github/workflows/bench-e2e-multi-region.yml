@@ -71,6 +71,10 @@ on:
         type: boolean
         required: false
         default: true
+      rpc-path-comparison:
+        type: boolean
+        required: false
+        default: false
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -290,6 +294,7 @@ jobs:
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_RPC_PATH_COMPARISON: ${{ inputs['rpc-path-comparison'] == true || inputs['rpc-path-comparison'] == 'true' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
@@ -375,7 +380,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: joshie/compare-ssm-direct-rpc
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false

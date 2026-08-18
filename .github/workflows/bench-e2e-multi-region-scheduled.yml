@@ -24,6 +24,16 @@ on:
         type: boolean
         required: false
         default: false
+      tempo-ref:
+        description: Optional Tempo ref used for both sides of a diagnostic comparison.
+        type: string
+        required: false
+        default: ""
+      rpc-path-comparison:
+        description: Compare runner-to-SSM RPC with validator-local loopback RPC.
+        type: boolean
+        required: false
+        default: false
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -90,7 +100,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo
-          ref: main
+          ref: ${{ inputs['tempo-ref'] || 'main' }}
           fetch-depth: 0
           path: tempo
           persist-credentials: false
@@ -100,12 +110,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
+          INPUT_TEMPO_REF: ${{ inputs['tempo-ref'] || '' }}
           STATE_ARTIFACT: tempo-e2e-multi-region-nightly-state
         run: |
           feature_ref="$(git -C tempo rev-parse HEAD)"
           baseline_ref=""
-          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT" \
-            --jq '.artifacts | map(select(.expired == false)) | first | .id // empty')"
+          if [ -n "$INPUT_TEMPO_REF" ]; then
+            baseline_ref="$feature_ref"
+            artifact_id=""
+          else
+            artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$STATE_ARTIFACT" \
+              --jq '.artifacts | map(select(.expired == false)) | first | .id // empty')"
+          fi
 
           if [ -n "$artifact_id" ]; then
             state_dir="$(mktemp -d)"
@@ -121,19 +137,26 @@ jobs:
           fi
 
           should_run="true"
-          if [ "$baseline_ref" = "$feature_ref" ] && [ "$INPUT_FORCE" != "true" ] && [ -n "$artifact_id" ]; then
+          if [ -z "$INPUT_TEMPO_REF" ] && [ "$baseline_ref" = "$feature_ref" ] && [ "$INPUT_FORCE" != "true" ] && [ -n "$artifact_id" ]; then
             should_run="false"
             echo "Tempo main has not changed since the last successful scheduled run; skipping"
           fi
 
           baseline_date="$(git -C tempo show -s --format=%cs "$baseline_ref")"
           feature_date="$(git -C tempo show -s --format=%cs "$feature_ref")"
+          if [ -n "$INPUT_TEMPO_REF" ]; then
+            baseline_name="ssm-${baseline_ref:0:8}"
+            feature_name="loopback-${feature_ref:0:8}"
+          else
+            baseline_name="nightly-${baseline_date}-${baseline_ref:0:8}"
+            feature_name="main-${feature_date}-${feature_ref:0:8}"
+          fi
 
           {
             echo "baseline-ref=$baseline_ref"
-            echo "baseline-name=nightly-${baseline_date}-${baseline_ref:0:8}"
+            echo "baseline-name=$baseline_name"
             echo "feature-ref=$feature_ref"
-            echo "feature-name=main-${feature_date}-${feature_ref:0:8}"
+            echo "feature-name=$feature_name"
             echo "should-run=$should_run"
           } >> "$GITHUB_OUTPUT"
 
@@ -169,9 +192,10 @@ jobs:
       accounts: ${{ inputs.accounts || '1000' }}
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
-      clickhouse-run: feature-1
+      clickhouse-run: ${{ inputs['rpc-path-comparison'] && 'baseline-1' || 'feature-1' }}
       otlp: true
       valscope: true
+      rpc-path-comparison: ${{ inputs['rpc-path-comparison'] || false }}
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
