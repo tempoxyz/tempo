@@ -1752,11 +1752,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
     let tx_hash = if uses_p256 {
         let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
 
-        // In the E2E fill flow, P256/WebAuthn signers use a fee payer
-        // to cover gas (the fee_payer flag on FillTestCase is not checked
-        // here because eth_fillTransaction always requires one).
-        let fee_payer_signer = PrivateKeySigner::random();
-        let _ = env.fund_account(fee_payer_signer.address()).await?;
+        let _ = env.fund_account(signer_addr).await?;
 
         let current_timestamp = env.current_block_timestamp().await?;
 
@@ -1790,7 +1786,6 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
             "eth_fillTransaction should not set fee_token (client must set it)"
         );
         tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-        sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
 
         let signature = match test_case.key_type {
             KeyType::P256 => sign_aa_tx_p256(&tx, &signing_key, pub_key_x, pub_key_y)?,
