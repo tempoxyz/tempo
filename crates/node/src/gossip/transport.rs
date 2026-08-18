@@ -186,13 +186,13 @@ fn build(config: Config) -> (GossipProtocol, TransportCoordinator, TransportHand
         metrics: Arc::clone(&metrics),
     });
     let sender = TransportSender::new({
-        move |peer, frame| match outbound_tx.try_send(OutboundFrame { peer, frame }) {
+        move |peer, frame| match outbound_tx.try_send((peer, frame)) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(outbound)) => {
-                Err(mpsc::error::TrySendError::Full(outbound.frame))
+            Err(mpsc::error::TrySendError::Full((_, frame))) => {
+                Err(mpsc::error::TrySendError::Full(frame))
             }
-            Err(mpsc::error::TrySendError::Closed(outbound)) => {
-                Err(mpsc::error::TrySendError::Closed(outbound.frame))
+            Err(mpsc::error::TrySendError::Closed((_, frame))) => {
+                Err(mpsc::error::TrySendError::Closed(frame))
             }
         }
     });
@@ -279,7 +279,7 @@ impl Shared {
 #[derive(Debug)]
 struct TransportCoordinator {
     commands: mpsc::UnboundedReceiver<ConnectionCommand>,
-    outbound: mpsc::Receiver<OutboundFrame>,
+    outbound: mpsc::Receiver<(PeerId, Bytes)>,
     peers: HashMap<PeerId, PeerConnections>,
     peer_events: mpsc::UnboundedSender<PeerEvent>,
     metrics: Arc<GossipMetrics>,
@@ -368,11 +368,11 @@ impl TransportCoordinator {
         }
     }
 
-    fn on_outbound(&mut self, outbound: OutboundFrame) {
-        let Some(peer) = self.peers.get(&outbound.peer) else {
+    fn on_outbound(&mut self, (peer, frame): (PeerId, Bytes)) {
+        let Some(peer) = self.peers.get(&peer) else {
             return;
         };
-        peer.outbound.send_replace(Some(outbound.frame));
+        peer.outbound.send_replace(Some(frame));
     }
 }
 
@@ -386,12 +386,6 @@ enum ConnectionCommand {
         peer: PeerId,
         id: ConnectionId,
     },
-}
-
-#[derive(Debug)]
-struct OutboundFrame {
-    peer: PeerId,
-    frame: Bytes,
 }
 
 #[derive(Debug)]
