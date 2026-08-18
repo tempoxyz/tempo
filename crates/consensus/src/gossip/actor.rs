@@ -11,7 +11,6 @@ use std::{
 };
 
 use alloy_primitives::{B256, Bytes, keccak256};
-use commonware_codec::Encode as _;
 use commonware_consensus::{
     Epochable as _,
     types::{Epoch, Round},
@@ -346,7 +345,7 @@ where
                     return;
                 };
                 self.advance_latest_verified_round(round);
-                let frame = wire::encode(&certificate.encode()).freeze().into();
+                let frame = wire::encode(&certificate).freeze().into();
                 self.publish(round, frame);
             }
         }
@@ -609,8 +608,7 @@ where
 }
 
 fn decode(frame: &Bytes) -> Option<Certificate> {
-    let payload = wire::decode(frame).ok()?;
-    commonware_codec::DecodeExt::decode(payload).ok()
+    wire::decode(frame).ok()
 }
 
 /// Bounded cache of settled or published frames and their rounds.

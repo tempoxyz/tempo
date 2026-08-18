@@ -11,7 +11,6 @@ use std::{
 };
 
 use alloy_primitives::{B256, B512, Bytes};
-use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
     Reporter as _,
     marshal::Update,
@@ -200,7 +199,7 @@ impl Rig {
 
     /// Builds a frame carrying a real certificate over a synthetic block.
     fn frame(&self, view: u64) -> Bytes {
-        gossip::wire::encode(&self.certificate(view).encode())
+        gossip::wire::encode(&self.certificate(view))
             .freeze()
             .into()
     }
@@ -321,12 +320,12 @@ fn full_frame_layout_is_frozen() {
         "000001000000000000000000000000000000000000000000000000000000000000000001893a6fba4f0630edd4f1f610258f9b3a1e1fbf9c1abefaea77a62bfd27b0dea1d448c4b4b992fa094bf96c8789b49cfa8565f0bc98152e274fd6d0e3b85955736432cdca1a52201ff244bf69a65b566ffbcf642a53a23e66b4d9bd6819dd95cc",
     )
     .expect("golden frame is valid hex");
-    let payload = gossip::wire::decode(&frame).expect("golden frame uses the tempo/1 envelope");
-    let certificate = Certificate::decode(payload).expect("golden certificate still decodes");
+    let certificate: Certificate =
+        gossip::wire::decode(&frame).expect("golden finalization frame still decodes");
 
     assert_eq!(certificate.round(), round(1));
     assert_eq!(
-        gossip::wire::encode(&certificate.encode()).as_ref(),
+        gossip::wire::encode(&certificate).as_ref(),
         frame.as_slice(),
     );
 }
