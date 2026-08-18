@@ -12,7 +12,7 @@ use crate::{
     setup_validators,
 };
 use alloy::consensus::BlockHeader as _;
-use commonware_codec::{DecodeExt as _, Encode};
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
     types::FixedEpocher,
@@ -366,7 +366,7 @@ impl MetricScope for Follower {
 
 type GossipCertificate = Finalization<Scheme<PublicKey, MinSig>, Digest>;
 
-fn gossip_frame(certificate: &[u8]) -> alloy_primitives::Bytes {
+fn gossip_frame(certificate: &GossipCertificate) -> alloy_primitives::Bytes {
     tempo_node::gossip::wire::encode(certificate)
         .freeze()
         .into()
@@ -398,8 +398,9 @@ fn follower_gossip_admission_rejects_bad_frames_and_applies_a_valid_certificate(
         };
         let encoded_certificate = alloy_primitives::hex::decode(&certified.certificate)
             .expect("the feed encodes valid hex");
-        let mut forged_certificate = GossipCertificate::decode(&*encoded_certificate)
+        let certificate = GossipCertificate::decode(&*encoded_certificate)
             .expect("the feed encodes a valid finalization certificate");
+        let mut forged_certificate = certificate.clone();
         forged_certificate.proposal.payload = Digest(alloy_primitives::B256::ZERO);
 
         // Stop finalization events but keep the execution node available for block lookup.
@@ -434,7 +435,7 @@ fn follower_gossip_admission_rejects_bad_frames_and_applies_a_valid_certificate(
         gossip
             .send_from(
                 alloy_primitives::B512::with_last_byte(2),
-                gossip_frame(&forged_certificate.encode()),
+                gossip_frame(&forged_certificate),
             )
             .await;
         wait_for_metrics(&context, |metrics| {
@@ -463,7 +464,7 @@ fn follower_gossip_admission_rejects_bad_frames_and_applies_a_valid_certificate(
         gossip
             .send_from(
                 alloy_primitives::B512::with_last_byte(3),
-                gossip_frame(&encoded_certificate),
+                gossip_frame(&certificate),
             )
             .await;
 
