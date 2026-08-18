@@ -15,7 +15,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, keccak256},
     sol_types::SolValue,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tempo_contracts::precompiles::{
     IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
     ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
@@ -288,14 +288,19 @@ fn validate_closed_loop_config(
     zone_gateways: &[Address],
     sequencers: &[Address],
 ) -> Result<()> {
-    if allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS)
-        || zone_gateways
-            .iter()
-            .any(|gateway| allowed_accounts.contains(gateway))
-        || sequencers.iter().any(|sequencer| {
-            allowed_accounts.contains(sequencer) || zone_gateways.contains(sequencer)
-        })
-    {
+    if allowed_accounts.contains(&ZONE_MESSENGER_ADDRESS) {
+        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+    }
+
+    let mut seen =
+        HashSet::with_capacity(allowed_accounts.len().saturating_add(zone_gateways.len()));
+    seen.extend(allowed_accounts.iter().copied());
+    if zone_gateways.iter().any(|gateway| seen.contains(gateway)) {
+        return Err(ZoneFactoryError::invalid_closed_loop_config().into());
+    }
+    seen.extend(zone_gateways.iter().copied());
+
+    if sequencers.iter().any(|sequencer| seen.contains(sequencer)) {
         return Err(ZoneFactoryError::invalid_closed_loop_config().into());
     }
     Ok(())
