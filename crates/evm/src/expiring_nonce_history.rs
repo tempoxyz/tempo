@@ -1,8 +1,11 @@
 use alloy_consensus::transaction::{SignerRecoverable, TxHashRef};
-use alloy_primitives::{B256, Keccak256, map::B256Map};
+use alloy_primitives::{
+    B256,
+    map::{B256Map, HashMap},
+};
 use smallvec::SmallVec;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, RwLock},
     time::Instant,
 };
@@ -72,12 +75,30 @@ struct Anchor {
 }
 
 #[derive(Debug)]
+struct PendingBlock {
+    sequence: u64,
+    transaction_hashes: Arc<[B256]>,
+    entries: Vec<ExpiringNonceEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PendingKey {
+    parent_hash: B256,
+    timestamp: u64,
+}
+
+#[derive(Debug)]
 struct HistoryInner {
     blocks: B256Map<BlockRecord>,
+    blocks_by_timestamp: BTreeMap<u64, SmallVec<[B256; 2]>>,
+    children: B256Map<SmallVec<[B256; 2]>>,
     inclusions: B256Map<SmallVec<[Inclusion; 1]>>,
     anchors: B256Map<Anchor>,
-    pending_blocks: B256Map<Vec<ExpiringNonceEntry>>,
-    pending_order: VecDeque<B256>,
+    pending_blocks: HashMap<PendingKey, SmallVec<[PendingBlock; 1]>>,
+    pending_order: VecDeque<(u64, PendingKey)>,
+    next_pending_sequence: u64,
+    pending_count: usize,
+    retained_identifiers: usize,
     highest_timestamp: u64,
 }
 
@@ -87,10 +108,15 @@ impl Default for HistoryInner {
         anchors.insert(B256::ZERO, Anchor { complete_at: 0 });
         Self {
             blocks: B256Map::default(),
+            blocks_by_timestamp: BTreeMap::new(),
+            children: B256Map::default(),
             inclusions: B256Map::default(),
             anchors,
-            pending_blocks: B256Map::default(),
+            pending_blocks: HashMap::default(),
             pending_order: VecDeque::new(),
+            next_pending_sequence: 0,
+            pending_count: 0,
+            retained_identifiers: 0,
             highest_timestamp: 0,
         }
     }
@@ -179,25 +205,41 @@ impl ExpiringNonceHistory {
         timestamp: u64,
         entries: Vec<(B256, ExpiringNonceEntry)>,
     ) {
-        let key = Self::pending_key(
+        let key = PendingKey {
             parent_hash,
             timestamp,
-            entries.iter().map(|(hash, _)| *hash),
-        );
-        let entries = entries.into_iter().map(|(_, entry)| entry).collect();
+        };
+        let mut transaction_hashes = Vec::with_capacity(entries.len());
+        let mut replay_entries = Vec::with_capacity(entries.len());
+        for (transaction_hash, entry) in entries {
+            transaction_hashes.push(transaction_hash);
+            replay_entries.push(entry);
+        }
         let mut inner = self
             .inner
             .write()
             .expect("expiring nonce history lock poisoned");
-        if inner.pending_blocks.insert(key, entries).is_some() {
+        if inner.pending_blocks.get(&key).is_some_and(|pending| {
+            pending
+                .iter()
+                .any(|block| block.transaction_hashes.as_ref() == transaction_hashes)
+        }) {
             return;
         }
-        inner.pending_order.push_back(key);
-        while inner.pending_order.len() > MAX_PENDING_BLOCKS {
-            if let Some(oldest) = inner.pending_order.pop_front() {
-                inner.pending_blocks.remove(&oldest);
-            }
-        }
+        let sequence = inner.next_pending_sequence;
+        inner.next_pending_sequence = inner.next_pending_sequence.wrapping_add(1);
+        inner
+            .pending_blocks
+            .entry(key)
+            .or_default()
+            .push(PendingBlock {
+                sequence,
+                transaction_hashes: transaction_hashes.into(),
+                entries: replay_entries,
+            });
+        inner.pending_count += 1;
+        inner.pending_order.push_back((sequence, key));
+        Self::trim_pending_locked(&mut inner);
     }
 
     /// Resolves replay entries for an assembled payload, reusing the entries collected during
@@ -208,24 +250,37 @@ impl ExpiringNonceHistory {
         timestamp: u64,
         transactions: &[TempoTxEnvelope],
     ) -> Result<(Vec<ExpiringNonceEntry>, bool), ExpiringNonceHistoryError> {
-        let key = Self::pending_key(
+        let key = PendingKey {
             parent_hash,
             timestamp,
-            transactions.iter().filter_map(|tx| {
-                tx.as_aa()
-                    .is_some_and(|aa| aa.tx().is_expiring_nonce_tx())
-                    .then_some(*tx.tx_hash())
-            }),
-        );
-        let mut inner = self
+        };
+        let candidates = self
             .inner
-            .write()
-            .expect("expiring nonce history lock poisoned");
-        if let Some(entries) = inner.pending_blocks.remove(&key) {
-            inner.pending_order.retain(|pending| *pending != key);
-            return Ok((entries, true));
+            .read()
+            .expect("expiring nonce history lock poisoned")
+            .pending_blocks
+            .get(&key)
+            .map(|pending| {
+                pending
+                    .iter()
+                    .map(|block| (block.sequence, Arc::clone(&block.transaction_hashes)))
+                    .collect::<SmallVec<[_; 1]>>()
+            })
+            .unwrap_or_default();
+        let matching_sequence = candidates
+            .iter()
+            .find(|(_, transaction_hashes)| Self::pending_matches(transaction_hashes, transactions))
+            .map(|(sequence, _)| *sequence);
+        if let Some(sequence) = matching_sequence {
+            let mut inner = self
+                .inner
+                .write()
+                .expect("expiring nonce history lock poisoned");
+            if let Some(pending) = Self::remove_pending_locked(&mut inner, key, sequence) {
+                Self::trim_pending_locked(&mut inner);
+                return Ok((pending.entries, true));
+            }
         }
-        drop(inner);
 
         let entries = transactions
             .iter()
@@ -234,18 +289,60 @@ impl ExpiringNonceHistory {
         Ok((entries, false))
     }
 
-    fn pending_key(
-        parent_hash: B256,
-        timestamp: u64,
-        transaction_hashes: impl IntoIterator<Item = B256>,
-    ) -> B256 {
-        let mut hasher = Keccak256::new();
-        hasher.update(parent_hash);
-        hasher.update(timestamp.to_be_bytes());
-        for hash in transaction_hashes {
-            hasher.update(hash);
+    fn pending_matches(transaction_hashes: &[B256], transactions: &[TempoTxEnvelope]) -> bool {
+        transactions
+            .iter()
+            .filter_map(|tx| {
+                tx.as_aa()
+                    .is_some_and(|aa| aa.tx().is_expiring_nonce_tx())
+                    .then_some(*tx.tx_hash())
+            })
+            .eq(transaction_hashes.iter().copied())
+    }
+
+    fn remove_pending_locked(
+        inner: &mut HistoryInner,
+        key: PendingKey,
+        sequence: u64,
+    ) -> Option<PendingBlock> {
+        let (pending, remove_key) = {
+            let blocks = inner.pending_blocks.get_mut(&key)?;
+            let position = blocks.iter().position(|block| block.sequence == sequence)?;
+            let pending = blocks.swap_remove(position);
+            (pending, blocks.is_empty())
+        };
+        if remove_key {
+            inner.pending_blocks.remove(&key);
         }
-        hasher.finalize()
+        inner.pending_count -= 1;
+        Some(pending)
+    }
+
+    fn trim_pending_locked(inner: &mut HistoryInner) {
+        while let Some(&(sequence, key)) = inner.pending_order.front() {
+            let is_live = inner
+                .pending_blocks
+                .get(&key)
+                .is_some_and(|pending| pending.iter().any(|block| block.sequence == sequence));
+            if is_live && inner.pending_count <= MAX_PENDING_BLOCKS {
+                break;
+            }
+            inner.pending_order.pop_front();
+            if is_live {
+                Self::remove_pending_locked(inner, key, sequence);
+            }
+        }
+
+        // Out-of-order payload completion can leave tombstones behind a live entry. Compact only
+        // when those tombstones grow large enough, keeping the common in-order path O(1).
+        if inner.pending_order.len() > MAX_PENDING_BLOCKS * 2 {
+            inner.pending_order.retain(|(sequence, key)| {
+                inner
+                    .pending_blocks
+                    .get(key)
+                    .is_some_and(|pending| pending.iter().any(|block| block.sequence == *sequence))
+            });
+        }
     }
 
     /// Records a block and its replay identifiers.
@@ -268,12 +365,9 @@ impl ExpiringNonceHistory {
         let parent_hash = block.parent_hash;
         let timestamp = block.timestamp;
         let entry_count = block.entries.len();
-        let replay_ids = block
-            .entries
-            .iter()
-            .map(|entry| entry.replay_id)
-            .collect::<Vec<_>>();
+        let mut replay_ids = Vec::with_capacity(entry_count);
         for entry in block.entries {
+            replay_ids.push(entry.replay_id);
             inner
                 .inclusions
                 .entry(entry.replay_id)
@@ -283,6 +377,7 @@ impl ExpiringNonceHistory {
                     valid_before: entry.valid_before,
                 });
         }
+        inner.retained_identifiers += entry_count;
         inner.highest_timestamp = inner.highest_timestamp.max(block.timestamp);
         let complete_at = inner
             .anchors
@@ -303,6 +398,17 @@ impl ExpiringNonceHistory {
                 complete_at,
             },
         );
+        inner
+            .blocks_by_timestamp
+            .entry(timestamp)
+            .or_default()
+            .push(block_hash);
+        inner
+            .children
+            .entry(parent_hash)
+            .or_default()
+            .push(block_hash);
+        self.propagate_completeness_locked(&mut inner, block_hash, false);
         let (pruned_blocks, pruned_identifiers) = self.prune_locked(&mut inner);
         let retained_blocks = inner.blocks.len();
         let retained_unique_identifiers = inner.inclusions.len();
@@ -360,10 +466,7 @@ impl ExpiringNonceHistory {
         self.inner
             .read()
             .expect("expiring nonce history lock poisoned")
-            .inclusions
-            .values()
-            .map(SmallVec::len)
-            .sum()
+            .retained_identifiers
     }
 
     /// Returns the number of block overlays retained by the cache.
@@ -449,89 +552,103 @@ impl ExpiringNonceHistory {
             return (0, 0);
         }
 
-        let removed = inner
-            .blocks
-            .iter()
-            .filter_map(|(hash, block)| {
-                (block.timestamp < cutoff).then_some((*hash, block.clone()))
-            })
-            .collect::<HashMap<_, _>>();
-        if removed.is_empty() {
-            return (0, 0);
-        }
-        let removed_identifiers = removed.values().map(|block| block.replay_ids.len()).sum();
-        let removed_blocks = removed.len();
-
-        for (hash, block) in &removed {
-            inner.blocks.remove(hash);
-            for replay_id in &block.replay_ids {
-                if let Some(inclusions) = inner.inclusions.get_mut(replay_id) {
-                    inclusions.retain(|inclusion| inclusion.block_hash != *hash);
-                    if inclusions.is_empty() {
-                        inner.inclusions.remove(replay_id);
+        let mut removed_blocks = 0;
+        let mut removed_identifiers = 0;
+        while inner
+            .blocks_by_timestamp
+            .first_key_value()
+            .is_some_and(|(timestamp, _)| *timestamp < cutoff)
+        {
+            let (_, hashes) = inner
+                .blocks_by_timestamp
+                .pop_first()
+                .expect("an expired timestamp was just observed");
+            for hash in hashes {
+                let Some(block) = inner.blocks.remove(&hash) else {
+                    continue;
+                };
+                removed_blocks += 1;
+                removed_identifiers += block.replay_ids.len();
+                inner.retained_identifiers -= block.replay_ids.len();
+                for replay_id in &block.replay_ids {
+                    if let Some(inclusions) = inner.inclusions.get_mut(replay_id) {
+                        inclusions.retain(|inclusion| inclusion.block_hash != hash);
+                        if inclusions.is_empty() {
+                            inner.inclusions.remove(replay_id);
+                        }
                     }
+                }
+
+                let mut remove_parent_children = false;
+                if let Some(siblings) = inner.children.get_mut(&block.parent_hash) {
+                    siblings.retain(|child| *child != hash);
+                    remove_parent_children = siblings.is_empty();
+                }
+                if remove_parent_children {
+                    inner.children.remove(&block.parent_hash);
+                    if block.parent_hash != B256::ZERO {
+                        inner.anchors.remove(&block.parent_hash);
+                    }
+                }
+
+                let has_retained_child = inner.children.get(&hash).is_some_and(|children| {
+                    children
+                        .iter()
+                        .any(|child| inner.blocks.contains_key(child))
+                });
+                if has_retained_child {
+                    inner.anchors.insert(
+                        hash,
+                        Anchor {
+                            complete_at: block.timestamp.saturating_add(self.max_expiry_secs),
+                        },
+                    );
+                    self.propagate_completeness_locked(inner, hash, true);
+                } else {
+                    inner.children.remove(&hash);
+                    inner.anchors.remove(&hash);
                 }
             }
         }
 
-        let boundary_parents = inner
-            .blocks
-            .values()
-            .filter(|block| !inner.blocks.contains_key(&block.parent_hash))
-            .map(|block| block.parent_hash)
-            .collect::<HashSet<_>>();
-        inner
-            .anchors
-            .retain(|hash, _| *hash == B256::ZERO || boundary_parents.contains(hash));
-        for parent_hash in boundary_parents {
-            if let Some(block) = removed.get(&parent_hash) {
-                inner.anchors.insert(
-                    parent_hash,
-                    Anchor {
-                        complete_at: block.timestamp.saturating_add(self.max_expiry_secs),
-                    },
-                );
-            }
-        }
-        self.recompute_completeness_locked(inner);
         (removed_blocks, removed_identifiers)
     }
 
-    fn recompute_completeness_locked(&self, inner: &mut HistoryInner) {
-        for block in inner.blocks.values_mut() {
-            block.complete_at = None;
-        }
-
-        loop {
-            let updates = inner
-                .blocks
-                .iter()
-                .filter_map(|(hash, block)| {
-                    if block.complete_at.is_some() {
-                        return None;
-                    }
-                    inner
-                        .anchors
-                        .get(&block.parent_hash)
-                        .map(|anchor| anchor.complete_at)
-                        .or_else(|| {
-                            inner
-                                .blocks
-                                .get(&block.parent_hash)
-                                .and_then(|parent| parent.complete_at)
-                        })
-                        .map(|complete_at| (*hash, complete_at))
-                })
-                .collect::<Vec<_>>();
-            if updates.is_empty() {
-                break;
-            }
-            for (hash, complete_at) in updates {
+    fn propagate_completeness_locked(
+        &self,
+        inner: &mut HistoryInner,
+        parent_hash: B256,
+        overwrite: bool,
+    ) {
+        let Some(complete_at) = inner
+            .anchors
+            .get(&parent_hash)
+            .map(|anchor| anchor.complete_at)
+            .or_else(|| {
                 inner
                     .blocks
-                    .get_mut(&hash)
-                    .expect("completeness update references a retained block")
-                    .complete_at = Some(complete_at);
+                    .get(&parent_hash)
+                    .and_then(|block| block.complete_at)
+            })
+        else {
+            return;
+        };
+
+        let mut pending = VecDeque::from([parent_hash]);
+        let children = &inner.children;
+        let blocks = &mut inner.blocks;
+        while let Some(parent_hash) = pending.pop_front() {
+            let Some(children) = children.get(&parent_hash) else {
+                continue;
+            };
+            for child_hash in children {
+                let Some(child) = blocks.get_mut(child_hash) else {
+                    continue;
+                };
+                if overwrite || child.complete_at.is_none() {
+                    child.complete_at = Some(complete_at);
+                    pending.push_back(*child_hash);
+                }
             }
         }
     }
@@ -609,6 +726,15 @@ mod tests {
     }
 
     #[test]
+    fn late_parent_completes_already_recorded_descendants() {
+        let history = ExpiringNonceHistory::new(300);
+        history.record_block(block(2, 1, 101, Vec::new()));
+        history.record_block(block(1, 0, 100, Vec::new()));
+
+        assert!(!history.contains(hash(2), hash(9), 102).unwrap());
+    }
+
+    #[test]
     fn rebuilt_anchor_is_complete_at_head_timestamp() {
         let history = ExpiringNonceHistory::from_blocks(
             300,
@@ -655,6 +781,7 @@ mod tests {
             })
         );
         assert!(!history.contains(hash(2), hash(9), 11).unwrap());
+        assert_eq!(history.retained_identifiers(), 0);
     }
 
     #[test]
