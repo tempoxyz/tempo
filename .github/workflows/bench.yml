@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
       issues: write
       pull-requests: write
     outputs:
@@ -89,11 +90,18 @@ jobs:
             core.setOutput('is-bench-command', String(isBenchCommand));
             core.setOutput('is-clear-command', String(isClearCommand));
 
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        if: steps.command.outputs.is-bench-command == 'true' || steps.command.outputs.is-clear-command == 'true'
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
+        with:
+          policy: bench-ack
+
       - name: Check org membership
         if: steps.command.outputs.is-bench-command == 'true' || steps.command.outputs.is-clear-command == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_ACK_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const org = 'tempoxyz';
             const checkMembership = async (username) => {
@@ -125,7 +133,7 @@ jobs:
         if: steps.command.outputs.is-clear-command == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
@@ -171,7 +179,7 @@ jobs:
         env:
           INPUT_REF_NAME: ${{ github.ref_name }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             let pr, actor, mode, preset, duration, bloat, tokenCount, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, baselineFeatures, featureFeatures, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, valscope, skipStateRoot, baselineArgs, featureArgs, gasLimit, generalGasLimit, runType, forceBloat, noCache, noSlack, metrics, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs, runSide;
             let explicitWarmup = false;
@@ -188,7 +196,7 @@ jobs:
             const stringArgs = new Set(['mode', 'preset', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork', 'run-side']);
             const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root']);
             const bloatValues = new Set(['1', '10', '100']);
-            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '5000', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
+            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -546,7 +554,7 @@ jobs:
           ACK_RUN_SIDE: ${{ steps.args.outputs.run-side }}
           ACK_NO_CACHE: ${{ steps.args.outputs.no-cache }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             if (context.eventName === 'issue_comment') {
               await github.rest.reactions.createForIssueComment({

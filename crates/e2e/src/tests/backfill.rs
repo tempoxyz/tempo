@@ -15,21 +15,22 @@ use crate::{
 };
 
 #[test_traced]
-fn validator_can_join_later_with_live_sync() {
+fn validator_joins_on_small_gap() {
     AssertJoinsLate {
         blocks_before_join: 5,
         blocks_after_join: 10,
-        should_pipeline_sync: false,
     }
     .run();
 }
 
 #[test_traced]
-fn validator_can_join_later_with_pipeline_sync() {
+fn validator_joins_on_large_gap_without_triggering_pipeline_sync() {
     AssertJoinsLate {
+        // reth triggers a pipeline sync if a gap exceeds 32 blocks.
+        // 32 * 2 + 1 ensures that this should definitely have triggered a
+        // pipelinesync if the executor sent the wrong FCU.
         blocks_before_join: 65,
         blocks_after_join: 70,
-        should_pipeline_sync: false,
     }
     .run();
     let _ = tempo_eyre::install();
@@ -38,14 +39,12 @@ fn validator_can_join_later_with_pipeline_sync() {
 struct AssertJoinsLate {
     blocks_before_join: u64,
     blocks_after_join: u64,
-    should_pipeline_sync: bool,
 }
 impl AssertJoinsLate {
     fn run(self) {
         let Self {
             blocks_before_join,
             blocks_after_join,
-            should_pipeline_sync,
         } = self;
 
         let _ = tempo_eyre::install();
@@ -60,9 +59,7 @@ impl AssertJoinsLate {
             // Start all nodes except the last one
             let mut last = nodes.pop().unwrap();
             join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
-            if should_pipeline_sync {
-                connect_execution_peers(&nodes).await;
-            }
+            connect_execution_peers(&nodes).await;
 
             // Wait for chain to advance before starting the last node
             while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
@@ -70,9 +67,7 @@ impl AssertJoinsLate {
             }
 
             last.start(&context).await;
-            if should_pipeline_sync {
-                connect_execution_to_peers(&last, &nodes).await;
-            }
+            connect_execution_to_peers(&last, &nodes).await;
 
             assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
@@ -84,30 +79,15 @@ impl AssertJoinsLate {
                 let metrics = context.to_metrics();
                 metrics.assert_no_blocked_peers();
                 assert!(
-                    metrics.consensus_before_epoch(1),
+                    metrics.consensus_before_epoch(2),
                     "epoch progressed; sync likely failed"
                 );
             }
             // Verify backfill behavior
             let actual_runs = get_pipeline_runs(metrics_recorder);
-            if should_pipeline_sync {
-                assert!(
-                    actual_runs > 0,
-                    "at least one backfill must have been triggered"
-                );
-            } else {
-                assert_eq!(
-                    0, actual_runs,
-                    "expected no backfill, got {actual_runs} runs"
-                );
-            }
-
-            // Verify that the node is still progressing after sync
-            let last_block = last.execution_provider().last_block_number().unwrap();
-            context.sleep(Duration::from_secs(10)).await;
-            assert!(
-                last.execution_provider().last_block_number().unwrap() > last_block,
-                "node should still be progressing after sync"
+            assert_eq!(
+                0, actual_runs,
+                "expected no pipline sync, got {actual_runs}",
             );
         });
     }

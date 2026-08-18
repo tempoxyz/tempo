@@ -18,7 +18,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 1;
-    let epoch_length = 5;
+    let epoch_length = 10;
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
         .epoch_length(epoch_length);
