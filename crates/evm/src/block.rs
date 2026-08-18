@@ -14,7 +14,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256, map::B256HashSet};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::{DecodeExt, ReadExt};
@@ -201,8 +201,10 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     incentive_gas_used: u64,
 
     expiring_nonce_history: ExpiringNonceHistory,
-    block_expiring_nonce_entries: Vec<(B256, ExpiringNonceEntry)>,
-    block_expiring_nonce_ids: HashSet<B256>,
+    block_expiring_nonce_entries: Vec<ExpiringNonceEntry>,
+    /// Transaction hashes are only needed to match a locally built payload during assembly.
+    block_expiring_nonce_hashes: Option<Vec<B256>>,
+    block_expiring_nonce_ids: B256HashSet,
     parent_hash: B256,
     block_hash: Option<B256>,
     block_timestamp: u64,
@@ -222,6 +224,7 @@ where
         let parent_hash = ctx.inner.parent_hash;
         let block_hash = ctx.block_hash;
         let block_timestamp = evm.block().timestamp.to::<u64>();
+        let block_expiring_nonce_hashes = block_hash.is_none().then(Vec::new);
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
@@ -241,7 +244,8 @@ where
             replay_state: StorageActionReplayState::default(),
             expiring_nonce_history,
             block_expiring_nonce_entries: Vec::new(),
-            block_expiring_nonce_ids: HashSet::new(),
+            block_expiring_nonce_hashes,
+            block_expiring_nonce_ids: B256HashSet::default(),
             parent_hash,
             block_hash,
             block_timestamp,
@@ -833,7 +837,10 @@ where
 
         self.replay_state.commit_tx_changes();
         if let Some(entry) = expiring_nonce_entry {
-            self.block_expiring_nonce_entries.push((tx_hash, entry));
+            self.block_expiring_nonce_entries.push(entry);
+            if let Some(transaction_hashes) = &mut self.block_expiring_nonce_hashes {
+                transaction_hashes.push(tx_hash);
+            }
         }
 
         gas_output
@@ -867,16 +874,14 @@ where
                     hash: block_hash,
                     parent_hash: self.parent_hash,
                     timestamp: self.block_timestamp,
-                    entries: self
-                        .block_expiring_nonce_entries
-                        .into_iter()
-                        .map(|(_, entry)| entry)
-                        .collect(),
+                    entries: self.block_expiring_nonce_entries,
                 });
         } else {
             self.expiring_nonce_history.cache_pending_block(
                 self.parent_hash,
                 self.block_timestamp,
+                self.block_expiring_nonce_hashes
+                    .expect("locally built blocks retain expiring transaction hashes"),
                 self.block_expiring_nonce_entries,
             );
         }

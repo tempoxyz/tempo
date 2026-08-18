@@ -1,7 +1,7 @@
 use alloy_consensus::transaction::{SignerRecoverable, TxHashRef};
 use alloy_primitives::{
     B256,
-    map::{B256Map, HashMap},
+    map::{B256Map, Entry, HashMap},
 };
 use smallvec::SmallVec;
 use std::{
@@ -64,6 +64,10 @@ struct BlockRecord {
     parent_hash: B256,
     timestamp: u64,
     replay_ids: Vec<B256>,
+    /// Distance from this cache segment's anchor, when the parent lineage is known.
+    height: Option<u64>,
+    /// Ancestors at distances 1, 2, 4, ... for logarithmic branch membership checks.
+    jumps: SmallVec<[B256; 8]>,
     /// Earliest candidate timestamp at which all ancestry missing before this block is expired.
     complete_at: Option<u64>,
 }
@@ -147,6 +151,31 @@ impl ExpiringNonceHistory {
         }
     }
 
+    /// Benchmark-only access to the pending payload cache.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    pub fn bench_cache_pending_block(
+        &self,
+        parent_hash: B256,
+        timestamp: u64,
+        transaction_hashes: Vec<B256>,
+        entries: Vec<ExpiringNonceEntry>,
+    ) {
+        self.cache_pending_block(parent_hash, timestamp, transaction_hashes, entries);
+    }
+
+    /// Benchmark-only access to pending payload resolution.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    pub fn bench_entries_for_block(
+        &self,
+        parent_hash: B256,
+        timestamp: u64,
+        transactions: &[TempoTxEnvelope],
+    ) -> Result<(Vec<ExpiringNonceEntry>, bool), ExpiringNonceHistoryError> {
+        self.entries_for_block(parent_hash, timestamp, transactions)
+    }
+
     /// Builds a cache from an oldest-to-newest contiguous block sequence.
     ///
     /// `complete_at` is the earliest timestamp at which history before the first block cannot
@@ -158,8 +187,8 @@ impl ExpiringNonceHistory {
         blocks: impl IntoIterator<Item = ExpiringNonceBlock>,
     ) -> Self {
         let history = Self::new(max_expiry_secs);
-        let blocks = blocks.into_iter().collect::<Vec<_>>();
-        if let Some(first) = blocks.first() {
+        let mut blocks = blocks.into_iter().peekable();
+        if let Some(first) = blocks.peek() {
             history
                 .inner
                 .write()
@@ -203,18 +232,14 @@ impl ExpiringNonceHistory {
         &self,
         parent_hash: B256,
         timestamp: u64,
-        entries: Vec<(B256, ExpiringNonceEntry)>,
+        transaction_hashes: Vec<B256>,
+        entries: Vec<ExpiringNonceEntry>,
     ) {
         let key = PendingKey {
             parent_hash,
             timestamp,
         };
-        let mut transaction_hashes = Vec::with_capacity(entries.len());
-        let mut replay_entries = Vec::with_capacity(entries.len());
-        for (transaction_hash, entry) in entries {
-            transaction_hashes.push(transaction_hash);
-            replay_entries.push(entry);
-        }
+        debug_assert_eq!(transaction_hashes.len(), entries.len());
         let mut inner = self
             .inner
             .write()
@@ -235,7 +260,7 @@ impl ExpiringNonceHistory {
             .push(PendingBlock {
                 sequence,
                 transaction_hashes: transaction_hashes.into(),
-                entries: replay_entries,
+                entries,
             });
         inner.pending_count += 1;
         inner.pending_order.push_back((sequence, key));
@@ -389,12 +414,15 @@ impl ExpiringNonceHistory {
                     .get(&block.parent_hash)
                     .and_then(|parent| parent.complete_at)
             });
+        let (height, jumps) = Self::lineage_for_parent(&inner, block.parent_hash);
         inner.blocks.insert(
             block.hash,
             BlockRecord {
                 parent_hash: block.parent_hash,
                 timestamp: block.timestamp,
                 replay_ids,
+                height,
+                jumps,
                 complete_at,
             },
         );
@@ -510,7 +538,79 @@ impl ExpiringNonceHistory {
         }
     }
 
+    fn lineage_for_parent(
+        inner: &HistoryInner,
+        parent_hash: B256,
+    ) -> (Option<u64>, SmallVec<[B256; 8]>) {
+        let mut jumps = SmallVec::new();
+        jumps.push(parent_hash);
+
+        if inner.anchors.contains_key(&parent_hash) {
+            return (Some(0), jumps);
+        }
+        let Some(parent) = inner.blocks.get(&parent_hash) else {
+            return (None, SmallVec::new());
+        };
+        let Some(height) = parent.height else {
+            return (None, SmallVec::new());
+        };
+
+        let mut level = 1;
+        while let Some(ancestor) = jumps
+            .get(level - 1)
+            .and_then(|ancestor| inner.blocks.get(ancestor))
+            .and_then(|ancestor| ancestor.jumps.get(level - 1))
+            .copied()
+        {
+            jumps.push(ancestor);
+            level += 1;
+        }
+        (Some(height + 1), jumps)
+    }
+
     fn is_ancestor_locked(
+        &self,
+        inner: &HistoryInner,
+        ancestor_hash: B256,
+        descendant_hash: B256,
+        candidate_timestamp: u64,
+    ) -> Result<bool, ExpiringNonceHistoryError> {
+        if let (Some(ancestor), Some(descendant)) = (
+            inner.blocks.get(&ancestor_hash),
+            inner.blocks.get(&descendant_hash),
+        ) && let (Some(ancestor_height), Some(descendant_height)) =
+            (ancestor.height, descendant.height)
+        {
+            if ancestor_height > descendant_height {
+                return Ok(false);
+            }
+
+            let mut cursor = descendant_hash;
+            let mut distance = descendant_height - ancestor_height;
+            while distance != 0 {
+                let level = (u64::BITS - 1 - distance.leading_zeros()) as usize;
+                let Some(next) = inner
+                    .blocks
+                    .get(&cursor)
+                    .and_then(|block| block.jumps.get(level))
+                else {
+                    return self.is_ancestor_linear_locked(
+                        inner,
+                        ancestor_hash,
+                        descendant_hash,
+                        candidate_timestamp,
+                    );
+                };
+                cursor = *next;
+                distance -= 1 << level;
+            }
+            return Ok(cursor == ancestor_hash);
+        }
+
+        self.is_ancestor_linear_locked(inner, ancestor_hash, descendant_hash, candidate_timestamp)
+    }
+
+    fn is_ancestor_linear_locked(
         &self,
         inner: &HistoryInner,
         ancestor_hash: B256,
@@ -571,10 +671,11 @@ impl ExpiringNonceHistory {
                 removed_identifiers += block.replay_ids.len();
                 inner.retained_identifiers -= block.replay_ids.len();
                 for replay_id in &block.replay_ids {
-                    if let Some(inclusions) = inner.inclusions.get_mut(replay_id) {
+                    if let Entry::Occupied(mut entry) = inner.inclusions.entry(*replay_id) {
+                        let inclusions = entry.get_mut();
                         inclusions.retain(|inclusion| inclusion.block_hash != hash);
                         if inclusions.is_empty() {
-                            inner.inclusions.remove(replay_id);
+                            entry.remove();
                         }
                     }
                 }
@@ -633,6 +734,10 @@ impl ExpiringNonceHistory {
         else {
             return;
         };
+
+        if !inner.children.contains_key(&parent_hash) {
+            return;
+        }
 
         let mut pending = VecDeque::from([parent_hash]);
         let children = &inner.children;
@@ -785,9 +890,26 @@ mod tests {
     }
 
     #[test]
+    fn candidate_timestamp_does_not_mutate_parent_history() {
+        let history = ExpiringNonceHistory::new(300);
+        history.record_block(block(
+            1,
+            0,
+            100,
+            vec![ExpiringNonceEntry {
+                replay_id: hash(9),
+                valid_before: 350,
+            }],
+        ));
+
+        assert!(!history.contains(hash(1), hash(9), 350).unwrap());
+        assert!(history.contains(hash(1), hash(9), 200).unwrap());
+    }
+
+    #[test]
     fn consumes_pending_local_block_entries() {
         let history = ExpiringNonceHistory::new(300);
-        history.cache_pending_block(hash(1), 100, Vec::new());
+        history.cache_pending_block(hash(1), 100, Vec::new(), Vec::new());
 
         let (entries, pending_cache_hit) = history
             .entries_for_block(hash(1), 100, &[])
