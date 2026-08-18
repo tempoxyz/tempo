@@ -37,7 +37,10 @@ jobs:
       general-gas-limit: "1000000000000"
       run-pairs: "2"
       run-side: "comparison"
-      samply: "true"
+      # samply off for 30-min windows: 1ms sampling across thousands of
+      # threads for 6x the duration ballooned profiler memory; run 32110973807
+      # took the runner offline mid-bench. Re-enable for short profile runs.
+      samply: "false"
       otlp: "true"
       feature-flatmpt: "true"
     secrets: inherit
