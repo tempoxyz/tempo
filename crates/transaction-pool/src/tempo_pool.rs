@@ -128,6 +128,7 @@ where
     ///    liquidity in the new (user_token, validator_token) AMM pool
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
     ///    balance in the resolved fee token after a TIP20 transfer
+    /// 5. **Fee token pauses**: Transactions using a token paused in the committed block
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times
     /// per block.
@@ -236,6 +237,7 @@ where
         let mut blacklisted_count = 0;
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
+        let mut paused_token_count = 0;
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
@@ -244,6 +246,15 @@ where
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
                 to_remove.push(*tx.hash());
+                continue;
+            }
+
+            if updates
+                .paused_tokens
+                .contains(&tx.transaction.effective_fee_token())
+            {
+                to_remove.push(*tx.hash());
+                paused_token_count += 1;
                 continue;
             }
 
@@ -512,6 +523,7 @@ where
             blacklisted_count,
             unwhitelisted_count,
             insolvent_fee_payer_count,
+            paused_token_count,
             "Evicting invalidated or expired transactions"
         );
         self.remove_transactions(to_remove)
@@ -625,7 +637,6 @@ impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConf
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
-            .field("paused_fee_token_pool", &"PausedFeeTokenPool<...>")
             .finish_non_exhaustive()
     }
 }
