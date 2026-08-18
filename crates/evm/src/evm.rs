@@ -73,8 +73,8 @@ mod tests {
     use crate::{TempoBlockEnv, TempoEvmExt, TempoEvmTypes, tempo_tx_registry};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_eips::eip7702::Authorization;
-    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
-    use alloy_sol_types::{SolCall, SolError};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex, keccak256};
+    use alloy_sol_types::{SolCall, SolError, SolValue};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use evm2::{
         Evm, EvmFeatures, ExecutionConfig, Inspector, SpecId,
@@ -94,9 +94,12 @@ mod tests {
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-    use tempo_contracts::precompiles::{
-        IStorageCredits::{self, Mode},
-        IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+    use tempo_contracts::{
+        precompiles::{
+            IStorageCredits::{self, Mode},
+            IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
     use tempo_precompiles::{
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
@@ -136,6 +139,85 @@ mod tests {
     use crate::{
         ProtocolFeeManager, TempoEvm, TempoFeeManager, TempoInvalidTransaction, TempoTxEnv,
     };
+
+    alloy_sol_types::sol! {
+        enum TestZonePortalRole {
+            None,
+            Sequencer,
+            Account,
+            CallbackGateway,
+            PauseGuardian
+        }
+
+        enum TestZonePortalCapability {
+            PausePortal,
+            AccessPolicy
+        }
+
+        struct TestBlockTransition {
+            bytes32 prevBlockHash;
+            bytes32 nextBlockHash;
+        }
+
+        struct TestDepositQueueTransition {
+            bytes32 prevProcessedHash;
+            bytes32 nextProcessedHash;
+            uint64 prevDepositNumber;
+            uint64 nextDepositNumber;
+        }
+
+        interface TestZonePortal {
+            error InvalidProof();
+
+            function enableToken(address token) external;
+            function tokenEnablementHash() external view returns (bytes32);
+            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
+            function isSequencer(address account) external view returns (bool);
+            function setAllowedAccount(address account, bool allowed) external;
+            function paused() external view returns (bool);
+            function pauseExpiry() external view returns (uint64);
+            function abdicationEffectiveAt(TestZonePortalCapability capability)
+                external
+                view
+                returns (uint64);
+            function pause() external;
+            function resume() external;
+            function submitBatch(
+                uint64 tempoBlockNumber,
+                uint64 recentTempoBlockNumber,
+                TestBlockTransition calldata blockTransition,
+                TestDepositQueueTransition calldata depositQueueTransition,
+                bytes32 withdrawalQueueHash,
+                bytes calldata verifierConfig,
+                bytes calldata proof,
+                uint256 nextZoneHeight,
+                bytes[] calldata signatures
+            ) external;
+        }
+
+        interface TestZoneMessenger {
+            function relayMessage(
+                uint32 zoneId,
+                address token,
+                bytes32 senderTag,
+                address target,
+                uint128 amount,
+                uint64 gasLimit,
+                bytes calldata data
+            ) external;
+        }
+
+        interface TestWithdrawalReceiver {
+            function onWithdrawalReceived(
+                uint32 zoneId,
+                address portal,
+                bytes32 senderTag,
+                address token,
+                uint128 amount,
+                bytes calldata data
+            ) external returns (bytes4);
+        }
+    }
 
     // ==================== Test Constants ====================
 
@@ -305,6 +387,26 @@ mod tests {
     }
 
     // ==================== Test Utility Functions ====================
+
+    fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
+        const SELECTOR_SHIFT_BITS: u8 = 224;
+        const ABI_WORD_BYTES: u8 = 32;
+
+        let mut code = vec![opcode::PUSH4];
+        code.extend_from_slice(&selector);
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            SELECTOR_SHIFT_BITS,
+            opcode::SHL,
+            opcode::PUSH0,
+            opcode::MSTORE,
+            opcode::PUSH1,
+            ABI_WORD_BYTES,
+            opcode::PUSH0,
+            opcode::RETURN,
+        ]);
+        Bytecode::new_raw(code.into())
+    }
 
     /// Create an empty EVM instance with default settings and no inspector.
     fn configured_evm(
@@ -1088,7 +1190,7 @@ mod tests {
                 actions.clone(),
                 ext.non_creditable_slots.clone(),
             );
-            let mut version = evm2::Version::new(SpecId::OSAKA);
+            let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, *hardfork, false);
             version.chain_id = 1;
             if hardfork.is_t7() {
                 version.gas_params[evm2::version::GasId::MaxRefundQuotient] = 1;
@@ -5367,7 +5469,7 @@ mod tests {
             .commit();
         assert!(result.is_success(), "createZone failed: {result:?}");
         assert!(result.tx_gas_used() >= ZONE_CREATION_GAS);
-        assert!(result.regular_gas_spent() >= ZONE_CREATION_GAS);
+        assert!(result.execution_gas_spent() >= ZONE_CREATION_GAS);
         let created = IZoneFactory::createZoneCall::abi_decode_returns(&result.output).unwrap();
 
         let result = evm
@@ -5376,6 +5478,342 @@ mod tests {
             .discard();
         assert!(result.is_success(), "portal call failed: {result:?}");
         assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
+    }
+
+    #[test]
+    fn zone_portal_runtime_commits_subsequent_token_enablements() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let portal_runtime = Bytecode::new_raw(ZONE_PORTAL_RUNTIME);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo::default().with_code(portal_runtime),
+        );
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
+
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        let second_token =
+            StorageCtx::enter(&mut storage, || -> Result<_, TempoPrecompileError> {
+                TIP20Setup::path_usd(admin).apply()?;
+                Ok(TIP20Setup::create("Second Token", "SECOND", admin)
+                    .apply()?
+                    .address())
+            })
+            .unwrap();
+        drop(storage);
+
+        let create = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_FACTORY_ADDRESS,
+                    IZoneFactory::createZoneCall {
+                        params: IZoneFactory::CreateZoneParams {
+                            initialToken: PATH_USD_ADDRESS,
+                            accessMode: true,
+                            gatewayMode: true,
+                            allowedAccounts: vec![],
+                            zoneGateways: vec![],
+                            admin,
+                            sequencers: vec![sequencer],
+                            threshold: 1,
+                            rpcUrl: "https://zone.example".to_string(),
+                        },
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(owner),
+            )
+            .unwrap()
+            .commit();
+        assert!(create.is_success(), "createZone failed: {create:?}");
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create.output).unwrap();
+
+        let sequencer_status = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::isSequencerCall { account: sequencer }
+                        .abi_encode()
+                        .into(),
+                )
+                .with_caller(Address::ZERO),
+            )
+            .unwrap()
+            .discard();
+        assert!(
+            sequencer_status.is_success(),
+            "isSequencer failed: {sequencer_status:?}"
+        );
+        assert!(
+            TestZonePortal::isSequencerCall::abi_decode_returns(&sequencer_status.output).unwrap()
+        );
+
+        let account = Address::repeat_byte(0x55);
+        let set_account = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::setAllowedAccountCall {
+                        account,
+                        allowed: true,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(
+            set_account.is_success(),
+            "setAllowedAccount failed: {set_account:?}"
+        );
+
+        let account_role = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::hasRoleCall {
+                        account,
+                        role: TestZonePortalRole::Account,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(Address::ZERO),
+            )
+            .unwrap()
+            .discard();
+        assert!(
+            account_role.is_success(),
+            "hasRole failed: {account_role:?}"
+        );
+        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&account_role.output).unwrap());
+
+        for call in [
+            TestZonePortal::pausedCall {}.abi_encode(),
+            TestZonePortal::pauseExpiryCall {}.abi_encode(),
+            TestZonePortal::abdicationEffectiveAtCall {
+                capability: TestZonePortalCapability::PausePortal,
+            }
+            .abi_encode(),
+        ] {
+            let result = evm
+                .system_call(SystemTx::new(created.portal, call.into()).with_caller(Address::ZERO))
+                .unwrap()
+                .discard();
+            assert!(result.is_success(), "pause ABI call failed: {result:?}");
+            assert_eq!(U256::from_be_slice(&result.output), U256::ZERO);
+        }
+
+        let pause = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::pauseCall {}.abi_encode().into(),
+                )
+                .with_caller(sequencer),
+            )
+            .unwrap()
+            .commit();
+        assert!(pause.is_success(), "pause failed: {pause:?}");
+
+        let submit = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::submitBatchCall {
+                        tempoBlockNumber: 0,
+                        recentTempoBlockNumber: 0,
+                        blockTransition: TestBlockTransition {
+                            prevBlockHash: B256::repeat_byte(1),
+                            nextBlockHash: B256::ZERO,
+                        },
+                        depositQueueTransition: TestDepositQueueTransition {
+                            prevProcessedHash: B256::ZERO,
+                            nextProcessedHash: B256::ZERO,
+                            prevDepositNumber: 0,
+                            nextDepositNumber: 0,
+                        },
+                        withdrawalQueueHash: B256::ZERO,
+                        verifierConfig: Bytes::new(),
+                        proof: Bytes::new(),
+                        nextZoneHeight: U256::ZERO,
+                        signatures: Vec::new(),
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(sequencer),
+            )
+            .unwrap()
+            .discard();
+        assert_eq!(submit.stop, InstrStop::Revert);
+        assert_eq!(
+            submit.output.as_ref(),
+            TestZonePortal::InvalidProof::SELECTOR
+        );
+
+        let resume = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::resumeCall {}.abi_encode().into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(resume.is_success(), "resume failed: {resume:?}");
+
+        let paused = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::pausedCall {}.abi_encode().into(),
+                )
+                .with_caller(Address::ZERO),
+            )
+            .unwrap()
+            .discard();
+        assert!(
+            paused.is_success(),
+            "paused failed after resume: {paused:?}"
+        );
+        assert_eq!(U256::from_be_slice(&paused.output), U256::ZERO);
+
+        let enable = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::enableTokenCall {
+                        token: second_token,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(enable.is_success(), "enableToken failed: {enable:?}");
+
+        let commitment = evm
+            .system_call(
+                SystemTx::new(
+                    created.portal,
+                    TestZonePortal::tokenEnablementHashCall {}
+                        .abi_encode()
+                        .into(),
+                )
+                .with_caller(Address::ZERO),
+            )
+            .unwrap()
+            .discard();
+        assert!(
+            commitment.is_success(),
+            "tokenEnablementHash failed: {commitment:?}"
+        );
+        let actual =
+            TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&commitment.output)
+                .unwrap();
+        let initial = keccak256(
+            (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
+        );
+        let expected =
+            keccak256((initial, second_token, "Second Token", "SECOND", "USD").abi_encode_params());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn zone_messenger_runtime_authorizes_registered_callback_gateway() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let gateway = Address::repeat_byte(0x44);
+        let mut db = InMemoryDB::default();
+        for (address, runtime) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+        ] {
+            db.insert_account_info(
+                &address,
+                AccountInfo::default().with_code(Bytecode::new_raw(runtime)),
+            );
+        }
+        let callback_runtime =
+            runtime_returning_selector(TestWithdrawalReceiver::onWithdrawalReceivedCall::SELECTOR);
+        db.insert_account_info(&gateway, AccountInfo::default().with_code(callback_runtime));
+        initialize_zone_factory(&mut db, owner);
+        let mut evm = configured_evm(TempoHardfork::T10, 0, false, db);
+
+        let spec = evm.config_spec_id();
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(ZONE_MESSENGER_ADDRESS, U256::from(100))
+                .apply()
+        })
+        .unwrap();
+        drop(storage);
+
+        let create = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_FACTORY_ADDRESS,
+                    IZoneFactory::createZoneCall {
+                        params: IZoneFactory::CreateZoneParams {
+                            initialToken: PATH_USD_ADDRESS,
+                            accessMode: false,
+                            gatewayMode: true,
+                            allowedAccounts: vec![],
+                            zoneGateways: vec![gateway],
+                            admin,
+                            sequencers: vec![sequencer],
+                            threshold: 1,
+                            rpcUrl: "https://zone.example".to_string(),
+                        },
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(owner),
+            )
+            .unwrap()
+            .commit();
+        assert!(create.is_success(), "createZone failed: {create:?}");
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&create.output).unwrap();
+
+        let relay = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_MESSENGER_ADDRESS,
+                    TestZoneMessenger::relayMessageCall {
+                        zoneId: created.zoneId,
+                        token: PATH_USD_ADDRESS,
+                        senderTag: B256::ZERO,
+                        target: gateway,
+                        amount: 1,
+                        gasLimit: 100_000,
+                        data: Bytes::new(),
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(created.portal),
+            )
+            .unwrap()
+            .discard();
+        assert!(
+            relay.is_success(),
+            "registered gateway callback failed: {relay:?}"
+        );
     }
 
     #[test]
