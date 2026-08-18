@@ -14,14 +14,14 @@ use evm2::{
     Evm, EvmFeatures, TxResult,
     env::TxEnv,
     ethereum::{
-        access_list_counts, initial_gas_and_reservoir, initial_message, validate_block_gas_limit,
-        validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-        validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-        validate_regular_gas_limit_cap, validate_tx_gas_limit_cap, warm_access_list,
-        warm_base_accounts,
+        access_list_counts, execute_initial_frame, initial_gas_and_reservoir,
+        prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
+        validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
+        validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
-    interpreter::{GasTracker, Host, InstrStop, MessageResult},
+    interpreter::{GasTracker, InstrStop, MessageResult},
     precompiles::PrecompileError,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::{GasId, GasParams},
@@ -409,8 +409,6 @@ fn intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> HandlerResult
             regular = regular
                 .saturating_add(u64::from(params.get(GasId::Create)))
                 .saturating_add(params.initcode_cost(call.input.len()));
-            // TIP-1016: Track predictable state gas for CREATE calls
-            state = state.saturating_add(params.create_state_gas());
         }
     }
     regular =
@@ -1337,17 +1335,18 @@ fn execute_batch(
         if let TxKind::Call(address) = call.to {
             host.state_mut().prewarm(&address);
         }
-        let (bytecode, mut message) = initial_message(
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir);
+        let frame = prepare_initial_frame(
             host,
             caller,
             create_nonce,
             call.to,
             &call.input,
             call.value,
-            remaining,
-            reservoir,
+            &mut gas,
         )?;
-        let mut result = host.execute_message(&tx_env, bytecode, &mut message);
+        let mut result =
+            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir);
         // Check if call succeeded
         if !result.is_success() {
             // Revert checkpoint - rolls back ALL state changes from all executed calls.
@@ -1545,7 +1544,7 @@ fn handle(
         intrinsic = intrinsic.saturating_add(nonce_gas);
         initial_state_gas = initial_state_gas.saturating_add(nonce_state_gas);
     }
-    validate_regular_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+    validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     warm_base_accounts(request.host, caller, tx.calls[0].to);
     warm_access_list(request.host, &tx.access_list);
@@ -1612,7 +1611,6 @@ fn handle(
                 floor_gas,
                 initial_state_gas,
                 state_refund: 0,
-                is_create: tx.calls[0].to.is_create(),
                 result,
             },
         );
@@ -1620,13 +1618,13 @@ fn handle(
     intrinsic = intrinsic.saturating_add(key_auth_gas);
     let (state_refund, regular_refund) =
         apply_authorization_list(request.host, &tx.tempo_authorization_list, spec)?;
-    let (execution_gas, reservoir) = initial_gas_and_reservoir(
+    let (execution_gas, mut reservoir) = initial_gas_and_reservoir(
         request.host.version(),
         tx.gas_limit,
         intrinsic,
         initial_state_gas,
-        state_refund,
     );
+    reservoir += state_refund;
     let mut result = execute_batch(
         request.host,
         caller,
@@ -1651,7 +1649,6 @@ fn handle(
             floor_gas,
             initial_state_gas,
             state_refund,
-            is_create: tx.calls[0].to.is_create(),
             result,
         },
     )

@@ -135,10 +135,9 @@ fn calculate_initial_tx_gas(
         + access_list_accounts * u64::from(params[GasId::TxAccessListAddressCost])
         + access_list_storage * u64::from(params[GasId::TxAccessListStorageKeyCost])
         + authorization_list * u64::from(params[GasId::TxEip7702PerEmptyAccountCost]);
-    let mut initial_state_gas = 0;
+    let initial_state_gas = 0;
     if is_create {
         initial_gas += u64::from(params[GasId::Create]) + params.initcode_cost(input.len());
-        initial_state_gas += params.create_state_gas();
     }
     let floor_gas = if spec.enables(SpecId::PRAGUE) {
         u64::from(params[GasId::TxFloorCostBase])
@@ -179,10 +178,9 @@ impl TestGasParamsExt for GasParams {
             + access_list_accounts * u64::from(self[GasId::TxAccessListAddressCost])
             + access_list_storage * u64::from(self[GasId::TxAccessListStorageKeyCost])
             + authorization_list * u64::from(self[GasId::TxEip7702PerEmptyAccountCost]);
-        let mut initial_state_gas = 0;
+        let initial_state_gas = 0;
         if is_create {
             initial_gas += u64::from(self[GasId::Create]) + self.initcode_cost(input.len());
-            initial_state_gas += self.create_state_gas();
         }
         InitialAndFloorGas {
             initial_gas,
@@ -2659,8 +2657,8 @@ fn test_2d_nonce_gas_limit_validation() {
     }
 }
 
-/// TIP-1016: Standard CREATE tx should populate initial_state_gas with
-/// create_state_gas when state gas is enabled (T4+).
+/// TIP-1016: Standard CREATE state gas is charged at runtime rather than
+/// populated in initial_state_gas when state gas is enabled (T4+).
 /// Note: new_account_state_gas for the caller (nonce==0) is added later
 /// during state validation, not in the initial CREATE state gas.
 #[test]
@@ -2674,17 +2672,9 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
         0, 0, 0,
     );
 
-    let expected_state_gas = gas_params.create_state_gas();
-
-    assert!(
-        expected_state_gas > 0,
-        "State gas constants should be non-zero"
-    );
     assert_eq!(
-        init_gas.initial_state_gas,
-        expected_state_gas,
-        "CREATE tx should have initial_state_gas = create_state_gas ({})",
-        gas_params.create_state_gas()
+        init_gas.initial_state_gas, 0,
+        "CREATE tx should charge create_state_gas at runtime"
     );
 }
 
@@ -2710,17 +2700,15 @@ fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
 #[test]
 fn test_state_gas_validate_initial_tx_gas_create_t4() {
     let evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
-    let initial_state_gas = evm2::ethereum::create_initial_state_gas(evm.version(), true)
-        + evm.version().gas_params.new_account_state_gas();
+    let initial_state_gas = evm.version().gas_params.new_account_state_gas();
 
-    // create_state_gas (from the CREATE intrinsic) + new_account_state_gas
-    // (from Tempo's nonce==0 check for the caller)
-    let expected_state_gas = evm.version().gas_params.create_state_gas()
-        + evm.version().gas_params.new_account_state_gas();
+    // CREATE state gas is now charged at runtime. Only new_account_state_gas
+    // (from Tempo's nonce==0 check for the caller) is charged upfront.
+    let expected_state_gas = evm.version().gas_params.new_account_state_gas();
 
     assert_eq!(
         initial_state_gas, expected_state_gas,
-        "T4 CREATE tx with nonce==0 should have create_state_gas + new_account_state_gas"
+        "T4 CREATE tx with nonce==0 should have upfront new_account_state_gas"
     );
 }
 
@@ -2855,10 +2843,7 @@ fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
     );
 
     // CALL tx - no state gas in either case
-    assert_eq!(
-        evm2::ethereum::create_initial_state_gas(evm.version(), false),
-        0
-    );
+    assert_eq!(evm.version().gas_params.new_account_state_gas(), 0);
 }
 
 /// TIP-1016: Standard tx with nonce==0 should track state gas on T4 only.
@@ -3006,9 +2991,9 @@ fn test_multicall_gas_refund_accounting() {
     );
 }
 
-/// TIP-1016: CREATE state gas is charged upfront and must be spent even if a later AA step reverts.
+/// TIP-1016: CREATE state gas charged at runtime is refunded if a later AA step reverts the batch.
 #[test]
-fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
+fn test_state_gas_failed_batch_refunds_runtime_create_state_gas() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TX_GAS_LIMIT: u64 = 1_000_000;
@@ -3042,13 +3027,12 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
     evm.set_interpreter_runner(Runner {
         call_idx: AtomicUsize::new(0),
     });
-    let initial_state_gas = evm.version().gas_params.create_state_gas();
+    let initial_state_gas = 0;
     let (gas_limit, reservoir) = initial_gas_and_reservoir(
         evm.version(),
         TX_GAS_LIMIT,
         INTRINSIC_GAS,
         initial_state_gas,
-        0,
     );
     let calls = vec![
         Call {
@@ -3076,24 +3060,26 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
     )
     .expect("execute_batch should return a failed message result");
 
-    let expected_spent = INTRINSIC_GAS
-        + initial_state_gas
-        + CALL_RESULTS.iter().map(|(_, spent)| spent).sum::<u64>();
+    let create_state_gas = evm.version().gas_params.create_state_gas();
+    let expected_spent = INTRINSIC_GAS + CALL_RESULTS.iter().map(|(_, spent)| spent).sum::<u64>();
 
-    // Pays CREATE state gas + both call costs. CREATE is charged upfront via intrinsic gas, and NOT refunded.
+    // The whole batch is rolled back, so CREATE state gas is returned to the reservoir.
     assert_eq!(result.stop, InstrStop::Revert);
     assert_eq!(
         TX_GAS_LIMIT - result.gas.remaining() - result.gas.reservoir(),
         expected_spent
     );
-    assert_eq!(result.gas.remaining(), TX_GAS_LIMIT - expected_spent);
+    assert_eq!(
+        result.gas.remaining(),
+        TX_GAS_LIMIT - expected_spent - create_state_gas
+    );
     assert_eq!(result.gas.state_gas_spent(), 0);
-    assert_eq!(result.gas.reservoir(), 0);
+    assert_eq!(result.gas.reservoir(), create_state_gas);
 }
 
-/// TIP-1016: AA CREATE tx should populate initial_state_gas.
+/// TIP-1016: AA CREATE state gas is charged at runtime rather than populated in initial_state_gas.
 #[test]
-fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
+fn test_state_gas_aa_create_tx_zero_initial_state_gas() {
     let gas_params = tempo_gas_params(TempoHardfork::T4);
     let initcode = Bytes::from(vec![0x60, 0x80]);
 
@@ -3121,11 +3107,9 @@ fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
     )
     .unwrap();
 
-    let expected_state_gas = gas_params.create_state_gas();
-
     assert_eq!(
-        gas.initial_state_gas, expected_state_gas,
-        "AA CREATE tx should have initial_state_gas = create_state_gas"
+        gas.initial_state_gas, 0,
+        "AA CREATE tx should charge create_state_gas at runtime"
     );
 }
 
@@ -3165,8 +3149,7 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     );
 }
 
-/// TIP-1016: AA batch with multiple calls including CREATE should track
-/// state gas for the CREATE call only.
+/// TIP-1016: AA batch CREATE state gas is charged per frame at runtime.
 #[test]
 fn test_state_gas_aa_mixed_batch_create_and_call() {
     let gas_params = tempo_gas_params(TempoHardfork::T4);
@@ -3204,16 +3187,13 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     )
     .unwrap();
 
-    // Only the CREATE call contributes state gas
-    let expected_state_gas = gas_params.create_state_gas();
-
     assert_eq!(
-        gas.initial_state_gas, expected_state_gas,
-        "Mixed batch should have state gas only from CREATE call"
+        gas.initial_state_gas, 0,
+        "Mixed batch should charge CREATE state gas at runtime"
     );
 }
 
-/// TIP-1016: AA batch with multiple CREATE calls accumulates state gas.
+/// TIP-1016: AA batch CREATE state gas is charged per frame at runtime.
 #[test]
 fn test_state_gas_aa_multiple_create_calls() {
     let gas_params = tempo_gas_params(TempoHardfork::T4);
@@ -3250,26 +3230,21 @@ fn test_state_gas_aa_multiple_create_calls() {
     )
     .unwrap();
 
-    // Two CREATE calls should accumulate state gas
-    let per_create_state_gas = gas_params.create_state_gas();
-
     assert_eq!(
-        gas.initial_state_gas,
-        per_create_state_gas * 2,
-        "Multiple CREATE calls should accumulate initial_state_gas"
+        gas.initial_state_gas, 0,
+        "Multiple CREATE calls should charge state gas at runtime"
     );
 }
 
-/// TIP-1016: In multi-call execution, per-call gas starts with no state gas
-/// charged, so state gas is only deducted once upfront by the AA intrinsic
-/// calculation, not per call.
+/// TIP-1016: In multi-call execution, initial state gas starts at zero and
+/// CREATE state gas is charged by each initial frame at runtime.
 #[test]
 fn test_state_gas_multi_call_per_call_init_has_zero_state_gas() {
     let zero_init_gas = InitialAndFloorGas::new(0, 0);
     assert_eq!(
         zero_init_gas.initial_state_gas, 0,
         "Per-call init gas in multi-call must have zero initial_state_gas; \
-             state gas is deducted once upfront, not per call"
+             CREATE state gas is charged at runtime"
     );
 }
 

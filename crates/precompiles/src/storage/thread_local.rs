@@ -97,7 +97,7 @@ impl StorageCtx {
         T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
         T::EvmExt: EvmStorageExt,
     {
-        let mut gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, true, f);
         (result, gas)
     }
@@ -113,7 +113,7 @@ impl StorageCtx {
         T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
         T::EvmExt: EvmStorageExt,
     {
-        let mut gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let result = Self::enter_evm_with_gas_tracker(evm, &mut gas, false, f);
         (result, gas)
     }
@@ -131,7 +131,7 @@ impl StorageCtx {
         T: EvmTypes<BlockEnvExt = TempoBlockExt, SpecId = TempoHardfork>,
         T::EvmExt: EvmStorageExt,
     {
-        let mut gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let actions = evm.ext().storage_actions();
         let non_creditable_slots = evm.ext().non_creditable_slots();
         let spec = evm.config_spec_id();

@@ -58,7 +58,7 @@ impl TempoBlockExecutor<'_> {
         let cfg = self.evm().version();
         let gas = &result;
         let block_gas_used = if cfg.feature(evm2::EvmFeatures::EIP8037) {
-            gas.regular_gas_spent()
+            gas.execution_gas_spent()
         } else {
             gas.tx_gas_used()
         };

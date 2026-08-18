@@ -752,7 +752,8 @@ mod tests {
             gas_limit: u64,
             reservoir: u64,
         ) -> EvmPrecompileStorageProvider<'_, '_, 'static> {
-            self.gas_tracker = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+            self.gas_tracker =
+                GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
             EvmPrecompileStorageProvider::with_gas_tracker(
                 &mut self.state,
                 self.version,

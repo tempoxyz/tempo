@@ -114,7 +114,7 @@ impl<DB: Database> Database for StateCacheDb<'_, DB> {
         Ok(value)
     }
 
-    fn get_block_hash(&mut self, number: &U256) -> Result<Option<B256>, Self::Error> {
+    fn get_block_hash(&mut self, number: &U256) -> Result<B256, Self::Error> {
         self.db.get_block_hash(number)
     }
 }
@@ -150,8 +150,8 @@ mod tests {
             Ok(U256::from(42))
         }
 
-        fn get_block_hash(&mut self, _number: &U256) -> Result<Option<B256>, Self::Error> {
-            Ok(Some(B256::ZERO))
+        fn get_block_hash(&mut self, _number: &U256) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 

@@ -699,7 +699,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
         let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            inner.result().result.regular_gas_spent()
+            inner.result().result.execution_gas_spent()
         } else {
             inner.result().result.tx_gas_used()
         };
