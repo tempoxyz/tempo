@@ -254,29 +254,6 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
         + RECIPIENT_SCOPE_GAS.saturating_mul(num_recipients)
 }
 
-fn translate_allowed_calls_for_precompile(
-    key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-) -> Vec<PrecompileCallScope> {
-    let Some(scopes) = key_auth.allowed_calls.as_ref() else {
-        return Vec::new();
-    };
-
-    scopes
-        .iter()
-        .map(|scope| PrecompileCallScope {
-            target: scope.target,
-            selectorRules: scope
-                .selector_rules
-                .iter()
-                .map(|rule| PrecompileSelectorRule {
-                    selector: rule.selector.into(),
-                    recipients: rule.recipients.clone(),
-                })
-                .collect(),
-        })
-        .collect()
-}
-
 /// Rewrites a failed batch step's gas to the whole-transaction result it is
 /// surfaced as.
 ///
@@ -310,6 +287,29 @@ fn normalize_failed_batch_result_gas(frame_result: &mut FrameResult, batch_gas: 
         tracker.erase_cost(batch_gas.state_gas_spilled());
     }
     tracker.set_limit(batch_gas.limit());
+}
+
+fn translate_allowed_calls_for_precompile(
+    key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
+) -> Vec<PrecompileCallScope> {
+    let Some(scopes) = key_auth.allowed_calls.as_ref() else {
+        return Vec::new();
+    };
+
+    scopes
+        .iter()
+        .map(|scope| PrecompileCallScope {
+            target: scope.target,
+            selectorRules: scope
+                .selector_rules
+                .iter()
+                .map(|rule| PrecompileSelectorRule {
+                    selector: rule.selector.into(),
+                    recipients: rule.recipients.clone(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
