@@ -38,10 +38,10 @@ struct DexGasOutcome {
 }
 
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
-        .unwrap()
-        .bytes
+    let output = TempoPrecompileError::under_overflow()
+        .into_precompile_result()
+        .unwrap();
+    Bytes::copy_from_slice(output.bytes())
 }
 
 fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
