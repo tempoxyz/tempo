@@ -11,6 +11,12 @@ use core::{
 };
 use tempo_contracts::{TempoHardfork, precompiles::INativeMultisig};
 
+#[cfg(feature = "serde")]
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeSeed, Error as _, SeqAccess, Visitor},
+};
+
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
 #[cfg(feature = "std")]
@@ -244,7 +250,7 @@ impl From<MultisigOwner> for INativeMultisig::MultisigOwner {
 
 /// Initial native multisig config carried by the first transaction.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -255,6 +261,95 @@ pub struct InitMultisig {
     pub threshold: u8,
     /// Sorted weighted owner list.
     pub owners: Vec<MultisigOwner>,
+}
+
+#[cfg(feature = "serde")]
+struct BoundedMultisigOwners(Vec<MultisigOwner>);
+
+#[cfg(feature = "serde")]
+struct RejectExtraElement(&'static str);
+
+#[cfg(feature = "serde")]
+impl<'de> DeserializeSeed<'de> for RejectExtraElement {
+    type Value = ();
+
+    fn deserialize<D>(self, _deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(D::Error::custom(self.0))
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for BoundedMultisigOwners {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OwnersVisitor;
+
+        impl<'de> Visitor<'de> for OwnersVisitor {
+            type Value = BoundedMultisigOwners;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(formatter, "at most {MAX_MULTISIG_OWNERS} multisig owners")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                if seq
+                    .size_hint()
+                    .is_some_and(|size| size > MAX_MULTISIG_OWNERS)
+                {
+                    return Err(A::Error::custom("too many multisig owners"));
+                }
+
+                let mut owners = Vec::with_capacity(
+                    seq.size_hint().unwrap_or_default().min(MAX_MULTISIG_OWNERS),
+                );
+                while owners.len() < MAX_MULTISIG_OWNERS {
+                    let Some(owner) = seq.next_element()? else {
+                        return Ok(BoundedMultisigOwners(owners));
+                    };
+                    owners.push(owner);
+                }
+
+                match seq.next_element_seed(RejectExtraElement("too many multisig owners"))? {
+                    None => Ok(BoundedMultisigOwners(owners)),
+                    Some(()) => unreachable!("reject seed never returns a value"),
+                }
+            }
+        }
+
+        deserializer.deserialize_seq(OwnersVisitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitMultisigDeserializeWire {
+    salt: B256,
+    threshold: u8,
+    owners: BoundedMultisigOwners,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for InitMultisig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = InitMultisigDeserializeWire::deserialize(deserializer)?;
+        Ok(Self {
+            salt: wire.salt,
+            threshold: wire.threshold,
+            owners: wire.owners.0,
+        })
+    }
 }
 
 impl alloy_rlp::Decodable for InitMultisig {
@@ -442,11 +537,8 @@ impl MultisigAddress {
 
 /// Native multisig transaction signature.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "serde",
-    serde(try_from = "MultisigSignatureSerde", into = "MultisigSignatureSerde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(into = "MultisigSignatureSerde"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigSignature {
     /// Native multisig account source.
@@ -711,6 +803,26 @@ struct InitMultisigSignatureWire {
 enum MultisigSignatureSerde {
     Initialized(InitializedMultisigSignatureWire),
     Init(InitMultisigSignatureWire),
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for MultisigSignature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            match TempoSignature::deserialize(deserializer)? {
+                TempoSignature::Multisig(signature) => Ok(signature),
+                TempoSignature::Primitive(_) | TempoSignature::Keychain(_) => {
+                    Err(D::Error::custom("expected a multisig signature"))
+                }
+            }
+        } else {
+            let wire = MultisigSignatureSerde::deserialize(deserializer)?;
+            Self::try_from(wire).map_err(D::Error::custom)
+        }
+    }
 }
 
 impl MultisigSignature {
@@ -1691,6 +1803,85 @@ mod tests {
             "init": config,
         });
         assert!(serde_json::from_value::<MultisigSignature>(legacy_combined_shape).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn multisig_signature_json_bounds_nesting_during_deserialization() {
+        fn nested_json(depth: usize, account_json: &str, leaf_json: &str) -> String {
+            let prefix = format!(r#"{{"account":{account_json},"signatures":["#);
+            let mut json = String::with_capacity(depth * (prefix.len() + 2) + leaf_json.len());
+            for _ in 0..depth {
+                json.push_str(&prefix);
+            }
+            json.push_str(leaf_json);
+            for _ in 0..depth {
+                json.push_str("]}");
+            }
+            json
+        }
+
+        let account_json = serde_json::to_string(&Address::repeat_byte(0x11)).unwrap();
+        let primitive_json = serde_json::to_string(&TempoSignature::Primitive(
+            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        ))
+        .unwrap();
+
+        let allowed = nested_json(MAX_MULTISIG_NESTING_DEPTH, &account_json, &primitive_json);
+        assert!(serde_json::from_str::<TempoSignature>(&allowed).is_ok());
+
+        let pathological = nested_json(4_096, &account_json, &primitive_json);
+        let error = serde_json::from_str::<TempoSignature>(&pathological)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("native multisig nesting depth exceeded"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn multisig_signature_json_rejects_excess_approvals_before_decoding_them() {
+        let account_json = serde_json::to_string(&Address::repeat_byte(0x11)).unwrap();
+        let primitive_json = serde_json::to_string(&TempoSignature::Primitive(
+            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        ))
+        .unwrap();
+        let mut approvals = vec![primitive_json; MAX_MULTISIG_SIGNATURES];
+        approvals.push(r#""not-a-signature""#.to_string());
+        let json = format!(
+            r#"{{"account":{account_json},"signatures":[{}]}}"#,
+            approvals.join(",")
+        );
+
+        let error = serde_json::from_str::<TempoSignature>(&json)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too many multisig signatures"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn init_multisig_json_rejects_excess_owners_before_decoding_them() {
+        let mut owners = (1..=MAX_MULTISIG_OWNERS as u16)
+            .map(|index| {
+                serde_json::to_value(MultisigOwner {
+                    owner: indexed_owner(index),
+                    weight: 1,
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        owners.push(serde_json::json!("not-an-owner"));
+        let json = serde_json::json!({
+            "salt": B256::ZERO,
+            "threshold": MAX_MULTISIG_THRESHOLD,
+            "owners": owners,
+        })
+        .to_string();
+
+        let error = serde_json::from_str::<InitMultisig>(&json)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too many multisig owners"));
     }
 
     proptest! {

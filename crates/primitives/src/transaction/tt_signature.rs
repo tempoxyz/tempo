@@ -1,3 +1,5 @@
+#[cfg(feature = "serde")]
+use super::multisig::{InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_SIGNATURES};
 use super::{
     multisig::{MultisigSignature, SIGNATURE_TYPE_MULTISIG},
     tempo_transaction::{
@@ -5,11 +7,19 @@ use super::{
         SignatureType,
     },
 };
+#[cfg(feature = "serde")]
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use alloy_rlp::Encodable;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
+
+#[cfg(feature = "serde")]
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor},
+};
 
 // Always mark `p256` as used to avoid `unused_crate_dependencies` warnings in `std` builds.
 use p256 as _;
@@ -567,7 +577,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 ///
 /// Note: Uses custom Compact implementation that delegates to `to_bytes()` / `from_bytes()`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
@@ -583,6 +593,242 @@ pub enum TempoSignature {
 
     /// Native multisig signature.
     Multisig(MultisigSignature),
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NonMultisigSignatureSerde {
+    Primitive(PrimitiveSignature),
+    Keychain(KeychainSignature),
+}
+
+#[cfg(feature = "serde")]
+impl From<NonMultisigSignatureSerde> for TempoSignature {
+    fn from(signature: NonMultisigSignatureSerde) -> Self {
+        match signature {
+            NonMultisigSignatureSerde::Primitive(signature) => Self::Primitive(signature),
+            NonMultisigSignatureSerde::Keychain(signature) => Self::Keychain(signature),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TempoSignatureDeserializeWire {
+    Primitive(PrimitiveSignature),
+    Keychain(KeychainSignature),
+    Multisig(MultisigSignature),
+}
+
+#[cfg(feature = "serde")]
+struct TempoSignatureSeed {
+    depth: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> DeserializeSeed<'de> for TempoSignatureSeed {
+    type Value = TempoSignature;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_map(TempoSignatureVisitor { depth: self.depth })
+        } else {
+            Ok(
+                match TempoSignatureDeserializeWire::deserialize(deserializer)? {
+                    TempoSignatureDeserializeWire::Primitive(signature) => {
+                        TempoSignature::Primitive(signature)
+                    }
+                    TempoSignatureDeserializeWire::Keychain(signature) => {
+                        TempoSignature::Keychain(signature)
+                    }
+                    TempoSignatureDeserializeWire::Multisig(signature) => {
+                        TempoSignature::Multisig(signature)
+                    }
+                },
+            )
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+struct RejectExtraSignature;
+
+#[cfg(feature = "serde")]
+impl<'de> DeserializeSeed<'de> for RejectExtraSignature {
+    type Value = ();
+
+    fn deserialize<D>(self, _deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(D::Error::custom("too many multisig signatures"))
+    }
+}
+
+#[cfg(feature = "serde")]
+struct MultisigSignaturesSeed {
+    depth: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> DeserializeSeed<'de> for MultisigSignaturesSeed {
+    type Value = Vec<TempoSignature>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SignaturesVisitor {
+            depth: usize,
+        }
+
+        impl<'de> Visitor<'de> for SignaturesVisitor {
+            type Value = Vec<TempoSignature>;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(
+                    formatter,
+                    "at most {MAX_MULTISIG_SIGNATURES} multisig owner signatures"
+                )
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                if seq
+                    .size_hint()
+                    .is_some_and(|size| size > MAX_MULTISIG_SIGNATURES)
+                {
+                    return Err(A::Error::custom("too many multisig signatures"));
+                }
+
+                let mut signatures = Vec::with_capacity(
+                    seq.size_hint()
+                        .unwrap_or_default()
+                        .min(MAX_MULTISIG_SIGNATURES),
+                );
+                while signatures.len() < MAX_MULTISIG_SIGNATURES {
+                    let Some(signature) =
+                        seq.next_element_seed(TempoSignatureSeed { depth: self.depth })?
+                    else {
+                        return Ok(signatures);
+                    };
+                    signatures.push(signature);
+                }
+
+                match seq.next_element_seed(RejectExtraSignature)? {
+                    None => Ok(signatures),
+                    Some(()) => unreachable!("reject seed never returns a value"),
+                }
+            }
+        }
+
+        deserializer.deserialize_seq(SignaturesVisitor { depth: self.depth })
+    }
+}
+
+#[cfg(feature = "serde")]
+struct TempoSignatureVisitor {
+    depth: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for TempoSignatureVisitor {
+    type Value = TempoSignature;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a Tempo signature object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut non_multisig_fields = serde_json::Map::new();
+        let mut account = None;
+        let mut init = None;
+        let mut signatures = None;
+
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "account" => {
+                    if self.depth > MAX_MULTISIG_NESTING_DEPTH {
+                        return Err(M::Error::custom("native multisig nesting depth exceeded"));
+                    }
+                    if account.is_some() {
+                        return Err(M::Error::duplicate_field("account"));
+                    }
+                    account = Some(map.next_value()?);
+                }
+                "init" => {
+                    if self.depth > MAX_MULTISIG_NESTING_DEPTH {
+                        return Err(M::Error::custom("native multisig nesting depth exceeded"));
+                    }
+                    if init.is_some() {
+                        return Err(M::Error::duplicate_field("init"));
+                    }
+                    init = Some(map.next_value::<InitMultisig>()?);
+                }
+                "signatures" => {
+                    if self.depth > MAX_MULTISIG_NESTING_DEPTH {
+                        return Err(M::Error::custom("native multisig nesting depth exceeded"));
+                    }
+                    if signatures.is_some() {
+                        return Err(M::Error::duplicate_field("signatures"));
+                    }
+                    signatures = Some(map.next_value_seed(MultisigSignaturesSeed {
+                        depth: self.depth + 1,
+                    })?);
+                }
+                _ => {
+                    let value = map.next_value()?;
+                    if non_multisig_fields.insert(field, value).is_some() {
+                        return Err(M::Error::custom("duplicate Tempo signature field"));
+                    }
+                }
+            }
+        }
+
+        let has_multisig_fields = account.is_some() || init.is_some() || signatures.is_some();
+        if !has_multisig_fields {
+            return serde_json::from_value::<NonMultisigSignatureSerde>(serde_json::Value::Object(
+                non_multisig_fields,
+            ))
+            .map(TempoSignature::from)
+            .map_err(M::Error::custom);
+        }
+        if !non_multisig_fields.is_empty() {
+            return Err(M::Error::custom("mixed Tempo signature fields"));
+        }
+
+        let signatures = signatures.ok_or_else(|| M::Error::missing_field("signatures"))?;
+        match (account, init) {
+            (Some(account), None) => MultisigSignature::from_decoded(account, signatures, None),
+            (None, Some(init)) => {
+                let account = init.account().map_err(M::Error::custom)?;
+                MultisigSignature::from_decoded(account, signatures, Some(init))
+            }
+            _ => Err("multisig signature requires exactly one of account or init"),
+        }
+        .map(TempoSignature::Multisig)
+        .map_err(M::Error::custom)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for TempoSignature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        TempoSignatureSeed { depth: 1 }.deserialize(deserializer)
+    }
 }
 
 impl TempoSignature {

@@ -970,6 +970,34 @@ mod tests {
         assert!(decoded.signature.is_multisig());
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn signed_key_authorization_json_bounds_multisig_nesting() {
+        let signed = make_auth(None, None).into_signed(PrimitiveSignature::default());
+        let primitive_json = serde_json::to_string(&signed.signature).unwrap();
+        let account_json = serde_json::to_string(&Address::repeat_byte(0x44)).unwrap();
+        let prefix = format!(r#"{{"account":{account_json},"signatures":["#);
+        let depth = 4_096;
+        let mut nested_json =
+            String::with_capacity(depth * (prefix.len() + 2) + primitive_json.len());
+        for _ in 0..depth {
+            nested_json.push_str(&prefix);
+        }
+        nested_json.push_str(&primitive_json);
+        for _ in 0..depth {
+            nested_json.push_str("]}");
+        }
+
+        let json =
+            serde_json::to_string(&signed)
+                .unwrap()
+                .replacen(&primitive_json, &nested_json, 1);
+        let error = serde_json::from_str::<SignedKeyAuthorization>(&json)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("native multisig nesting depth exceeded"));
+    }
+
     #[test]
     fn test_spending_expiry_and_size() {
         // has_unlimited_spending: None = true, Some = false
