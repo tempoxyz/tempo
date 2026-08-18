@@ -60,7 +60,15 @@ use tokio_stream::wrappers::WatchStream;
 
 use super::wire;
 
+/// Allow two connections per peer.
+///
+/// This is the maximum number of connections allowed for a single peer. Reth devp2p API suffers
+/// from race conditions around reconnections and it's technically possible that more than
+/// a single connection can be observed. However, having three connections is something that
+/// seems to be exceptionally rare and it looks more like somebody is pulling shenanigans rather
+/// than a legitimate situation.
 const MAX_CONNECTIONS_PER_PEER: usize = 2;
+
 const REGISTERING_DRAIN_BUDGET: usize = 16;
 
 /// Events for the consensus-facing logical peer.
