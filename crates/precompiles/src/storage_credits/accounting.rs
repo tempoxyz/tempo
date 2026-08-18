@@ -95,6 +95,10 @@ pub trait StorageCreditsBackend {
     fn tip1060_storage_credit_minting_enabled(&self) -> bool {
         true
     }
+
+    /// Returns whether EIP-8037 (TIP-1016) is active, i.e. whether the creditable portion of
+    /// a storage creation is charged as state gas instead of regular execution gas.
+    fn amsterdam_eip8037_enabled(&self) -> bool;
 }
 
 #[inline]
@@ -112,7 +116,8 @@ fn store_credit_state<B: StorageCreditsBackend>(
 /// When provided, `key` lets the hook skip minting a credit for the single transaction-local slot
 /// whose clear must not mint a credit for the storage-owning account.
 ///
-/// When `tip1016` is set, gas charged by this hook is accounted as TIP-1016 state gas
+/// When [`amsterdam_eip8037_enabled`](StorageCreditsBackend::amsterdam_eip8037_enabled), gas
+/// charged by this hook is accounted as TIP-1016 state gas
 /// ([`charge_state_gas`](StorageCreditsBackend::charge_state_gas)) instead of regular
 /// execution gas ([`charge_execution_gas`](StorageCreditsBackend::charge_execution_gas)).
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
@@ -120,11 +125,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     owner: Address,
     key: Option<U256>,
     caller_state_load: &StateLoad<SStoreResult>,
-    tip1016: bool,
 ) -> Result<(), B::Error> {
     let charge_creation = |backend: &mut B| {
         let cost = backend.gas_params().get(GasId::sstore_set_state_gas());
-        if tip1016 {
+        if backend.amsterdam_eip8037_enabled() {
             backend.charge_state_gas(cost)
         } else {
             backend.charge_execution_gas(cost)

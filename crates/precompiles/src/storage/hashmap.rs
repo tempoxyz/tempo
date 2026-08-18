@@ -162,8 +162,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
                 },
                 false,
             );
-            let tip1016 = self.amsterdam_eip8037_enabled;
-            sstore_storage_credits(self, address, Some(key), &state_load, tip1016)?;
+            sstore_storage_credits(self, address, Some(key), &state_load)?;
         }
 
         Ok(())
@@ -349,6 +348,10 @@ impl StorageCreditsBackend for HashMapStorageProvider {
 
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
         self.non_creditable_slots.is_non_creditable_slot(owner, key)
+    }
+
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
     }
 }
 

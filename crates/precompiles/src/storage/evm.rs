@@ -215,8 +215,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         if self.tip1060_storage_credits_enabled {
-            let tip1016 = self.amsterdam_eip8037_enabled;
-            sstore_storage_credits(self, address, Some(key), &result, tip1016)?
+            sstore_storage_credits(self, address, Some(key), &result)?
         }
 
         // dynamic gas
@@ -322,6 +321,11 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.internals.tstore(address, key, value);
+    }
+
+    #[inline]
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
     }
 
     #[inline]

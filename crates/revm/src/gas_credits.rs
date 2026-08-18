@@ -157,6 +157,11 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.context.tstore(address, key, value);
     }
+
+    #[inline]
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.context.cfg.enable_amsterdam_eip8037
+    }
 }
 
 /// Tempo SSTORE instruction with TIP-1060 storage-credit accounting.
@@ -166,7 +171,6 @@ pub(crate) fn sstore<DB: Database>(
     sstore_with_gas_accounting(context, |context, owner, state_load| {
         {
             let InstructionContext { interpreter, host } = context;
-            let tip1016 = host.cfg.enable_amsterdam_eip8037;
             sstore_storage_credits(
                 &mut StorageCreditsContext {
                     context: host,
@@ -175,7 +179,6 @@ pub(crate) fn sstore<DB: Database>(
                 owner,
                 None,
                 state_load,
-                tip1016,
             )?;
         }
 
