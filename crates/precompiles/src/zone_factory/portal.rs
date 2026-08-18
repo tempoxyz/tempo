@@ -6,12 +6,13 @@
 
 use crate::{
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot},
 };
 use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256, hex};
 use revm::state::Bytecode;
 use tempo_contracts::precompiles::{
-    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError, ZonePortalRole,
+    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
+    ZonePortalCapability, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -75,13 +76,14 @@ pub struct ZonePortalStorage {
     sequencer_threshold: u8,
     zone_height: U256,
     sequencers: Vec<Address>,
-    is_sequencer: Mapping<Address, bool>,
+    /// Reserved slot 19, available for future use.
+    _reserved_slot_19: U256,
     role: Mapping<Address, u8>,
     is_access_enforced: bool,
     is_gateway_enforced: bool,
     /// Reserved remainder of the enforcement modes slot.
     _reserved: FixedBytes<30>,
-    /// Maximum Tempo gas rate, stored in `PORTAL_MAX_TEMPO_GAS_RATE_SLOT`.
+    /// Maximum Tempo gas rate, stored in slot 22.
     max_tempo_gas_rate: u128,
     /// Active block-producing leader, stored in slot 23.
     leader: Address,
@@ -89,6 +91,17 @@ pub struct ZonePortalStorage {
     leader_epoch: u64,
     /// Tempo block at which the current leader became active, stored in slot 24.
     leader_activation_tempo_block: u64,
+    /// Per-block deposit and token-enablement counters occupying slots 24 and 25.
+    deposit_count_block: u64,
+    deposits_in_current_block: u64,
+    token_enable_count_block: u64,
+    tokens_enabled_in_current_block: u64,
+    /// End of the bounded portal pause, packed in slot 25 after the token enablement counter.
+    pause_expiry: u64,
+    /// Append-only commitment to the enabled token sequence and metadata, stored in slot 26.
+    token_enablement_hash: B256,
+    /// Capability-keyed abdication timestamps, stored as a Solidity mapping in slot 27.
+    abdication_effective_at: Mapping<u8, u64>,
 }
 
 impl ZonePortalStorage {
@@ -96,10 +109,21 @@ impl ZonePortalStorage {
         Self::__new(address)
     }
 
+    /// Returns the storage handler for the current pause expiry timestamp.
+    pub fn pause_expiry(&self) -> &Slot<u64> {
+        &self.pause_expiry
+    }
+
+    /// Returns the storage handler for a capability's abdication timestamp.
+    pub fn abdication_effective_at(&self, capability: ZonePortalCapability) -> &Slot<u64> {
+        &self.abdication_effective_at[u8::from(capability)]
+    }
+
     pub(super) fn initialize(
         &mut self,
         zone_id: u32,
         params: &IZoneFactory::CreateZoneParams,
+        token_enablement_hash: B256,
     ) -> Result<()> {
         if self.initialized.read()? {
             return Err(ZoneFactoryError::already_initialized().into());
@@ -124,7 +148,7 @@ impl ZonePortalStorage {
         self.sequencer_threshold.write(params.threshold)?;
         self.sequencers.write(params.sequencers.clone())?;
         for sequencer in &params.sequencers {
-            self.is_sequencer[*sequencer].write(true)?;
+            self.role[*sequencer].write(u8::from(ZonePortalRole::Sequencer))?;
         }
         self.is_access_enforced.write(params.accessMode)?;
         self.is_gateway_enforced.write(params.gatewayMode)?;
@@ -134,13 +158,16 @@ impl ZonePortalStorage {
             .ok_or_else(ZoneFactoryError::invalid_sequencer_set)?;
         self.leader.write(leader)?;
         self.leader_epoch.write(1)?;
-        self.leader_activation_tempo_block
-            .write(self.storage.block_number())?;
+        let creation_block = self.storage.block_number();
+        self.leader_activation_tempo_block.write(creation_block)?;
+        self.token_enable_count_block.write(creation_block)?;
+        self.tokens_enabled_in_current_block.write(1)?;
+        self.token_enablement_hash.write(token_enablement_hash)?;
         for gateway in &params.zoneGateways {
-            self.role[*gateway].write(ZonePortalRole::CallbackGateway as u8)?;
+            self.role[*gateway].write(u8::from(ZonePortalRole::CallbackGateway))?;
         }
         for account in &params.allowedAccounts {
-            self.role[*account].write(ZonePortalRole::Account as u8)?;
+            self.role[*account].write(u8::from(ZonePortalRole::Account))?;
         }
         Ok(())
     }

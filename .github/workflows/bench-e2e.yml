@@ -63,7 +63,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "5000"
+        default: "100"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -179,7 +179,7 @@ on:
       max-concurrent-requests:
         type: string
         required: false
-        default: "5000"
+        default: "100"
       baseline:
         type: string
         required: false
@@ -370,7 +370,7 @@ jobs:
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '5000' }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '500' }}
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}

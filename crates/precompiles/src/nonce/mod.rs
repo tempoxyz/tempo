@@ -183,11 +183,13 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
-    fn test_expiring_nonce_parameters_activate_at_t10() {
+    fn test_expiring_nonce_parameters_activate_at_t11() {
         assert_eq!(TempoHardfork::T9.expiring_nonce_max_expiry_secs(), 30);
         assert_eq!(TempoHardfork::T9.expiring_nonce_set_capacity(), 300_000);
-        assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 300);
-        assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 3_000_000);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 30);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 300_000);
+        assert_eq!(TempoHardfork::T11.expiring_nonce_max_expiry_secs(), 300);
+        assert_eq!(TempoHardfork::T11.expiring_nonce_set_capacity(), 3_000_000);
     }
 
     #[test]
@@ -342,14 +344,14 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before too far in future should fail before T10.
+            // valid_before too far in future should fail before T11.
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before at exactly the pre-T10 maximum should succeed
+            // valid_before at exactly the pre-T11 maximum should succeed
             mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
 
             Ok(())
@@ -357,8 +359,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t10_expiring_nonce_expiry_validation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+    fn test_t11_expiring_nonce_expiry_validation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
@@ -448,13 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ring_buffer_pointer_wraps_at_pre_t10_capacity() -> eyre::Result<()> {
-        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T9)
+    fn test_ring_buffer_pointer_wraps_at_pre_t11_capacity() -> eyre::Result<()> {
+        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T10)
     }
 
     #[test]
-    fn test_ring_buffer_pointer_wraps_at_t10_capacity() -> eyre::Result<()> {
-        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T10)
+    fn test_ring_buffer_pointer_wraps_at_t11_capacity() -> eyre::Result<()> {
+        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T11)
     }
 
     #[test]

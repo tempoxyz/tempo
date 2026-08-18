@@ -11,7 +11,7 @@ pub async fn write_consensus_snapshot(
     source: &TestingNode<deterministic::Context>,
     execution_provider: BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
     target_partition_prefix: &str,
-) {
+) -> tempo_consensus::storage::snapshot::State {
     let source_partition_prefix = source.consensus_config.partition_prefix.clone();
     let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
 
@@ -34,4 +34,6 @@ pub async fn write_consensus_snapshot(
 
     assert!(state.anchor_finalization_height > 0);
     assert!(state.tip_finalization_height >= state.anchor_finalization_height);
+
+    state
 }
