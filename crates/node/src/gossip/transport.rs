@@ -54,7 +54,7 @@ use reth_ethereum::{
     tasks::TaskExecutor,
 };
 use reth_metrics::{Metrics, metrics::Counter};
-use reth_tracing::tracing::warn;
+use reth_tracing::tracing::{warn, warn_span};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::WatchStream;
 
@@ -301,7 +301,9 @@ impl TransportCoordinator {
                 else => {
                     // Critical tasks report panics, not normal completion. Keep
                     // this unexpected teardown visible until executor shutdown.
-                    warn!("Gossip transport coordinator inputs closed; waiting for shutdown");
+                    warn_span!("gossip_transport").in_scope(|| {
+                        warn!("Gossip transport coordinator inputs closed; waiting for shutdown");
+                    });
                     std::future::pending::<()>().await;
                 }
             }
