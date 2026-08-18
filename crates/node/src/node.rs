@@ -165,7 +165,7 @@ pub struct TempoNetworkBuilder {
 
 impl TempoNetworkBuilder {
     /// Announces `tempo/1` on every session this node establishes.
-    pub fn with_gossip(gossip: GossipProtocol) -> Self {
+    pub fn with_finalization_cert_gossip(gossip: GossipProtocol) -> Self {
         Self {
             gossip: Some(gossip),
         }
@@ -234,8 +234,8 @@ impl TempoNode {
     /// Call this before the node starts. `RLPx` capabilities are negotiated
     /// during the handshake, so existing sessions do not learn about protocols
     /// added later.
-    pub fn with_gossip(mut self, gossip: crate::gossip::GossipProtocol) -> Self {
-        self.network_builder = TempoNetworkBuilder::with_gossip(gossip);
+    pub fn with_finalization_cert_gossip(mut self, gossip: crate::gossip::GossipProtocol) -> Self {
+        self.network_builder = TempoNetworkBuilder::with_finalization_cert_gossip(gossip);
         self
     }
 
