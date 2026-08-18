@@ -1386,9 +1386,8 @@ mod tests {
         let code_len = 45usize; // 2 words, e.g. the zone portal proxy runtime
         let code = Bytecode::new_raw(vec![0x00; code_len].into());
         let expected_hash_cost = 6 * code_len.div_ceil(32) as u64;
-        let expected_regular_gas = gas_params.create_cost()
-            + gas_params.code_deposit_cost(code_len)
-            + expected_hash_cost;
+        let expected_regular_gas =
+            gas_params.create_cost() + gas_params.code_deposit_cost(code_len) + expected_hash_cost;
         let expected_state_gas =
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code_len);
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
