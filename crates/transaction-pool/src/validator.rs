@@ -27,9 +27,12 @@ use revm::{
     DatabaseRef,
     context::result::{EVMError, InvalidTransaction},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Instant,
 };
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{ExpiringNonceBlock, ExpiringNonceHistory, TempoEvmConfig, TempoPoolValidationEvm};
@@ -772,6 +775,8 @@ where
             .expiring_nonce_history
             .contains_block(new_tip_block.hash())
         {
+            let indexing_started = Instant::now();
+            let recovery_started = Instant::now();
             let entries = new_tip_block
                 .body()
                 .transactions
@@ -779,6 +784,9 @@ where
                 .filter_map(|tx| ExpiringNonceHistory::entry_from_transaction(tx).transpose())
                 .collect::<Result<Vec<_>, _>>()
                 .expect("canonical expiring nonce transactions must have recoverable senders");
+            let recovery_elapsed = recovery_started.elapsed();
+            let entry_count = entries.len();
+            let record_started = Instant::now();
             self.expiring_nonce_history
                 .record_block(ExpiringNonceBlock {
                     hash: new_tip_block.hash(),
@@ -786,6 +794,18 @@ where
                     timestamp: new_tip_block.timestamp(),
                     entries,
                 });
+            let record_elapsed = record_started.elapsed();
+            tracing::info!(
+                target: "tempo::expiring_nonce_history",
+                block_hash = %new_tip_block.hash(),
+                block_number = new_tip_block.number(),
+                transaction_count = new_tip_block.body().transactions.len(),
+                entry_count,
+                ?recovery_elapsed,
+                ?record_elapsed,
+                elapsed = ?indexing_started.elapsed(),
+                "indexed canonical block into expiring nonce history"
+            );
         }
 
         // Cache the EVM environment for the new tip block.

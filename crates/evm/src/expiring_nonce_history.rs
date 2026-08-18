@@ -4,8 +4,10 @@ use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
+    time::Instant,
 };
 use tempo_primitives::TempoTxEnvelope;
+use tracing::info;
 
 /// An expiring nonce identifier and its consensus expiry timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,14 +170,21 @@ impl ExpiringNonceHistory {
     /// Recording is idempotent. Completeness is checked when a descendant performs a lookup, so
     /// sequential sync can record intermediate blocks before their older history is available.
     pub fn record_block(&self, block: ExpiringNonceBlock) {
+        let started = Instant::now();
+        let lock_started = Instant::now();
         let mut inner = self
             .inner
             .write()
             .expect("expiring nonce history lock poisoned");
+        let lock_wait = lock_started.elapsed();
         if inner.blocks.contains_key(&block.hash) {
             return;
         }
 
+        let block_hash = block.hash;
+        let parent_hash = block.parent_hash;
+        let timestamp = block.timestamp;
+        let entry_count = block.entries.len();
         let replay_ids = block
             .entries
             .iter()
@@ -211,7 +220,25 @@ impl ExpiringNonceHistory {
                 complete_at,
             },
         );
-        self.prune_locked(&mut inner);
+        let (pruned_blocks, pruned_identifiers) = self.prune_locked(&mut inner);
+        let retained_blocks = inner.blocks.len();
+        let retained_unique_identifiers = inner.inclusions.len();
+        drop(inner);
+
+        info!(
+            target: "tempo::expiring_nonce_history",
+            %block_hash,
+            %parent_hash,
+            timestamp,
+            entry_count,
+            retained_blocks,
+            retained_unique_identifiers,
+            pruned_blocks,
+            pruned_identifiers,
+            ?lock_wait,
+            elapsed = ?started.elapsed(),
+            "recorded expiring nonce history overlay"
+        );
     }
 
     /// Returns whether `replay_id` was consumed by a live ancestor of `parent_hash`.
@@ -330,13 +357,13 @@ impl ExpiringNonceHistory {
         }
     }
 
-    fn prune_locked(&self, inner: &mut HistoryInner) {
+    fn prune_locked(&self, inner: &mut HistoryInner) -> (usize, usize) {
         // Keep two validity windows so ordinary reorganizations can reuse their existing branch
         // overlays. Older branch requests fail closed and can be rebuilt from persisted bodies.
         let retention = self.max_expiry_secs.saturating_mul(2);
         let cutoff = inner.highest_timestamp.saturating_sub(retention);
         if cutoff == 0 {
-            return;
+            return (0, 0);
         }
 
         let removed = inner
@@ -347,8 +374,10 @@ impl ExpiringNonceHistory {
             })
             .collect::<HashMap<_, _>>();
         if removed.is_empty() {
-            return;
+            return (0, 0);
         }
+        let removed_identifiers = removed.values().map(|block| block.replay_ids.len()).sum();
+        let removed_blocks = removed.len();
 
         for (hash, block) in &removed {
             inner.blocks.remove(hash);
@@ -382,6 +411,7 @@ impl ExpiringNonceHistory {
             }
         }
         self.recompute_completeness_locked(inner);
+        (removed_blocks, removed_identifiers)
     }
 
     fn recompute_completeness_locked(&self, inner: &mut HistoryInner) {
