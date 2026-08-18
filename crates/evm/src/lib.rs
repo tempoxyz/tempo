@@ -100,10 +100,12 @@ impl TempoEvmConfig {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         let inner =
             EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
+        let expiring_nonce_history = ExpiringNonceHistory::default();
         Self {
             inner,
-            block_assembler: TempoBlockAssembler::new(chain_spec),
-            expiring_nonce_history: ExpiringNonceHistory::default(),
+            block_assembler: TempoBlockAssembler::new(chain_spec)
+                .with_expiring_nonce_history(expiring_nonce_history.clone()),
+            expiring_nonce_history,
         }
     }
 
@@ -115,6 +117,9 @@ impl TempoEvmConfig {
 
     /// Uses the provided history-derived expiring nonce cache.
     pub fn with_expiring_nonce_history(mut self, history: ExpiringNonceHistory) -> Self {
+        self.block_assembler = self
+            .block_assembler
+            .with_expiring_nonce_history(history.clone());
         self.expiring_nonce_history = history;
         self
     }

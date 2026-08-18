@@ -1,13 +1,15 @@
-use alloy_consensus::transaction::SignerRecoverable;
-use alloy_primitives::{B256, map::B256Map};
+use alloy_consensus::transaction::{SignerRecoverable, TxHashRef};
+use alloy_primitives::{B256, Keccak256, map::B256Map};
 use smallvec::SmallVec;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, RwLock},
     time::Instant,
 };
 use tempo_primitives::TempoTxEnvelope;
 use tracing::info;
+
+const MAX_PENDING_BLOCKS: usize = 256;
 
 /// An expiring nonce identifier and its consensus expiry timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +76,8 @@ struct HistoryInner {
     blocks: B256Map<BlockRecord>,
     inclusions: B256Map<SmallVec<[Inclusion; 1]>>,
     anchors: B256Map<Anchor>,
+    pending_blocks: B256Map<Vec<ExpiringNonceEntry>>,
+    pending_order: VecDeque<B256>,
     highest_timestamp: u64,
 }
 
@@ -85,6 +89,8 @@ impl Default for HistoryInner {
             blocks: B256Map::default(),
             inclusions: B256Map::default(),
             anchors,
+            pending_blocks: B256Map::default(),
+            pending_order: VecDeque::new(),
             highest_timestamp: 0,
         }
     }
@@ -163,6 +169,83 @@ impl ExpiringNonceHistory {
             replay_id: aa.expiring_nonce_hash(sender),
             valid_before,
         }))
+    }
+
+    /// Caches the replay entries collected while building a local payload until its final block
+    /// hash is available to the assembler.
+    pub(crate) fn cache_pending_block(
+        &self,
+        parent_hash: B256,
+        timestamp: u64,
+        entries: Vec<(B256, ExpiringNonceEntry)>,
+    ) {
+        let key = Self::pending_key(
+            parent_hash,
+            timestamp,
+            entries.iter().map(|(hash, _)| *hash),
+        );
+        let entries = entries.into_iter().map(|(_, entry)| entry).collect();
+        let mut inner = self
+            .inner
+            .write()
+            .expect("expiring nonce history lock poisoned");
+        if inner.pending_blocks.insert(key, entries).is_some() {
+            return;
+        }
+        inner.pending_order.push_back(key);
+        while inner.pending_order.len() > MAX_PENDING_BLOCKS {
+            if let Some(oldest) = inner.pending_order.pop_front() {
+                inner.pending_blocks.remove(&oldest);
+            }
+        }
+    }
+
+    /// Resolves replay entries for an assembled payload, reusing the entries collected during
+    /// execution and falling back to sender recovery when the bounded pending cache missed.
+    pub(crate) fn entries_for_block(
+        &self,
+        parent_hash: B256,
+        timestamp: u64,
+        transactions: &[TempoTxEnvelope],
+    ) -> Result<(Vec<ExpiringNonceEntry>, bool), ExpiringNonceHistoryError> {
+        let key = Self::pending_key(
+            parent_hash,
+            timestamp,
+            transactions.iter().filter_map(|tx| {
+                tx.as_aa()
+                    .is_some_and(|aa| aa.tx().is_expiring_nonce_tx())
+                    .then_some(*tx.tx_hash())
+            }),
+        );
+        let mut inner = self
+            .inner
+            .write()
+            .expect("expiring nonce history lock poisoned");
+        if let Some(entries) = inner.pending_blocks.remove(&key) {
+            inner.pending_order.retain(|pending| *pending != key);
+            return Ok((entries, true));
+        }
+        drop(inner);
+
+        let entries = transactions
+            .iter()
+            .filter_map(|tx| Self::entry_from_transaction(tx).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((entries, false))
+    }
+
+    fn pending_key(
+        parent_hash: B256,
+        timestamp: u64,
+        transaction_hashes: impl IntoIterator<Item = B256>,
+    ) -> B256 {
+        let mut hasher = Keccak256::new();
+        hasher.update(parent_hash);
+        hasher.update(timestamp.to_be_bytes());
+        for hash in transaction_hashes {
+            hasher.update(hash);
+        }
+        hasher.finalize()
     }
 
     /// Records a block and its replay identifiers.
@@ -572,5 +655,22 @@ mod tests {
             })
         );
         assert!(!history.contains(hash(2), hash(9), 11).unwrap());
+    }
+
+    #[test]
+    fn consumes_pending_local_block_entries() {
+        let history = ExpiringNonceHistory::new(300);
+        history.cache_pending_block(hash(1), 100, Vec::new());
+
+        let (entries, pending_cache_hit) = history
+            .entries_for_block(hash(1), 100, &[])
+            .expect("pending entries should resolve");
+        assert!(pending_cache_hit);
+        assert!(entries.is_empty());
+
+        let (_, pending_cache_hit) = history
+            .entries_for_block(hash(1), 100, &[])
+            .expect("empty blocks can be reconstructed without recovery");
+        assert!(!pending_cache_hit);
     }
 }
