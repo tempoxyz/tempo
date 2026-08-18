@@ -10,7 +10,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_OWNERS, MAX_MULTISIG_THRESHOLD, MultisigConfigError, MultisigOwner,
+    InitMultisig, MAX_MULTISIG_OWNERS, MultisigConfigError, MultisigOwner,
     is_valid_multisig_account,
 };
 
@@ -438,7 +438,7 @@ fn parse_multisig_header(header: StoredMultisigHeader) -> Result<ParsedMultisigH
         (0, _, _) | (_, 0, _) => Err(NativeMultisigError::invalid_config().into()),
         (threshold, owner_count, version) => {
             let owner_count = usize::from(owner_count);
-            if owner_count > MAX_MULTISIG_OWNERS || threshold > MAX_MULTISIG_THRESHOLD {
+            if owner_count > MAX_MULTISIG_OWNERS {
                 return Err(NativeMultisigError::invalid_config().into());
             }
             Ok(ParsedMultisigHeader::Initialized {
@@ -523,6 +523,7 @@ mod tests {
     };
     use alloy::primitives::address;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_primitives::transaction::{MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD};
 
     fn init_config() -> InitMultisig {
         InitMultisig {
@@ -781,7 +782,7 @@ mod tests {
         let owners = max_abi_owners();
         let config = InitMultisig {
             salt: B256::ZERO,
-            threshold: MAX_MULTISIG_THRESHOLD,
+            threshold: MAX_MULTISIG_SIGNATURES as u8,
             owners: owners
                 .iter()
                 .map(|owner| MultisigOwner {
@@ -799,7 +800,7 @@ mod tests {
 
             let stored = multisig.get_multisig_config(account)?;
             assert_eq!(stored.version, 0);
-            assert_eq!(stored.threshold, MAX_MULTISIG_THRESHOLD);
+            assert_eq!(stored.threshold, MAX_MULTISIG_SIGNATURES as u8);
             assert_eq!(stored.owners, owners);
             for owner in &owners {
                 assert_eq!(
@@ -808,6 +809,34 @@ mod tests {
                 );
             }
 
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn store_and_read_max_threshold_config() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let owner = INativeMultisig::MultisigOwner {
+            owner: address!("0000000000000000000000000000000000000011"),
+            weight: MAX_MULTISIG_THRESHOLD,
+        };
+        let config = InitMultisig {
+            salt: B256::ZERO,
+            threshold: MAX_MULTISIG_THRESHOLD,
+            owners: vec![owner.clone().into()],
+        };
+        let account = config.account().unwrap();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, &config)?;
+
+            let stored = multisig.get_multisig_config(account)?;
+            assert_eq!(stored.threshold, MAX_MULTISIG_THRESHOLD);
+            assert_eq!(stored.owners, vec![owner]);
             Ok::<_, TempoPrecompileError>(())
         })?;
 

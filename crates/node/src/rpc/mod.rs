@@ -33,8 +33,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::transaction::{
     InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES,
-    MAX_MULTISIG_THRESHOLD, MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner, SignatureType,
-    TEMPO_EXPIRING_NONCE_KEY,
+    MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
 };
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -463,11 +462,7 @@ fn load_native_multisig_simulation_hint(
     if threshold == 0 && owner_count == 0 {
         return Ok(None);
     }
-    if threshold == 0
-        || threshold > MAX_MULTISIG_THRESHOLD
-        || owner_count == 0
-        || owner_count > MAX_MULTISIG_OWNERS
-    {
+    if threshold == 0 || owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
         return Err(EthApiError::InvalidParams(
             "native multisig config has an invalid header".to_string(),
         ));
@@ -1208,6 +1203,19 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn populate_supports_threshold_above_signature_cap() {
+        let account = Address::from([0xaa; 20]);
+        let mut db = SlotDb::default();
+        db.insert_config(account, u8::MAX, &[(Address::from([0x11; 20]), u8::MAX)]);
+
+        let hint = load_native_multisig_simulation_hints(account, None, &mut db)
+            .unwrap()
+            .expect("registered account hint");
+
+        assert_eq!(hint.approvals.len(), 1);
     }
 
     #[test]

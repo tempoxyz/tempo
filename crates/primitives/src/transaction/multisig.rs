@@ -32,13 +32,10 @@ pub const MULTISIG_SIGNATURE_DOMAIN: &[u8] = b"tempo:multisig:signature";
 pub const MAX_MULTISIG_OWNERS: usize = 48;
 
 /// Maximum threshold accepted by a native multisig config.
-///
-/// Owner weights are nonzero, so this also bounds the number of owner approvals required to
-/// satisfy one multisig authorization node.
-pub const MAX_MULTISIG_THRESHOLD: u8 = 8;
+pub const MAX_MULTISIG_THRESHOLD: u8 = u8::MAX;
 
 /// Maximum number of owner approvals allowed in one native multisig signature.
-pub const MAX_MULTISIG_SIGNATURES: usize = MAX_MULTISIG_THRESHOLD as usize;
+pub const MAX_MULTISIG_SIGNATURES: usize = 8;
 
 /// Maximum number of native multisig signatures in one nested authorization path, including the
 /// top-level transaction signature.
@@ -74,7 +71,7 @@ pub enum MultisigConfigError {
     WeightOverflow,
     /// Total owner weight exceeds `u8::MAX`.
     TotalWeightExceedsMax,
-    /// The threshold exceeds total owner weight.
+    /// The threshold exceeds the weight reachable within the approval limit.
     ThresholdExceedsWeight,
     /// The derived multisig account address is zero.
     DerivedAccountZero,
@@ -94,7 +91,9 @@ impl MultisigConfigError {
             Self::OwnersNotAscending => "multisig owners must be strictly ascending",
             Self::WeightOverflow => "multisig owner weight overflow",
             Self::TotalWeightExceedsMax => "multisig total owner weight exceeds u8::MAX",
-            Self::ThresholdExceedsWeight => "multisig threshold exceeds total owner weight",
+            Self::ThresholdExceedsWeight => {
+                "multisig threshold cannot be reached within the owner approval limit"
+            }
             Self::DerivedAccountZero => "multisig account cannot be zero",
         }
     }
@@ -411,11 +410,8 @@ impl InitMultisig {
         if self.threshold == 0 {
             return Err(MultisigConfigError::ZeroThreshold);
         }
-        if self.threshold > MAX_MULTISIG_THRESHOLD {
-            return Err(MultisigConfigError::ThresholdTooHigh);
-        }
-
         let mut total_weight = 0u16;
+        let mut approval_weights = [0u8; MAX_MULTISIG_SIGNATURES];
         let mut prev_owner = None;
         for owner in &self.owners {
             if owner.owner.is_zero() {
@@ -437,12 +433,17 @@ impl InitMultisig {
             total_weight = total_weight
                 .checked_add(u16::from(owner.weight))
                 .ok_or(MultisigConfigError::WeightOverflow)?;
+            if owner.weight > approval_weights[0] {
+                approval_weights[0] = owner.weight;
+                approval_weights.sort_unstable();
+            }
         }
 
         if total_weight > u16::from(u8::MAX) {
             return Err(MultisigConfigError::TotalWeightExceedsMax);
         }
-        if u16::from(self.threshold) > total_weight {
+        let reachable_weight = approval_weights.into_iter().map(u16::from).sum::<u16>();
+        if u16::from(self.threshold) > reachable_weight {
             return Err(MultisigConfigError::ThresholdExceedsWeight);
         }
 
@@ -1266,7 +1267,7 @@ mod tests {
         let owners = (1..=MAX_MULTISIG_OWNERS as u16)
             .map(|index| (indexed_owner(index), 1))
             .collect::<Vec<_>>();
-        let config = sorted_secp_config(&owners, MAX_MULTISIG_THRESHOLD);
+        let config = sorted_secp_config(&owners, MAX_MULTISIG_SIGNATURES as u8);
 
         assert_eq!(config.validate(), Ok(MAX_MULTISIG_OWNERS as u8));
         assert!(config.account().is_ok());
@@ -1277,7 +1278,7 @@ mod tests {
         let owners = (1..=MAX_MULTISIG_OWNERS as u16 + 1)
             .map(|index| (indexed_owner(index), 1))
             .collect::<Vec<_>>();
-        let config = sorted_secp_config(&owners, MAX_MULTISIG_THRESHOLD);
+        let config = sorted_secp_config(&owners, 1);
 
         assert_eq!(config.validate(), Err(MultisigConfigError::TooManyOwners));
     }
@@ -1286,7 +1287,7 @@ mod tests {
     fn config_total_weight_is_capped_at_u8_max() {
         let owner_a = Address::from([0x11; 20]);
         let owner_b = Address::from([0x22; 20]);
-        let config = sorted_secp_config(&[(owner_a, 128), (owner_b, 128)], MAX_MULTISIG_THRESHOLD);
+        let config = sorted_secp_config(&[(owner_a, 128), (owner_b, 128)], 1);
 
         assert_eq!(
             config.validate(),
@@ -1295,14 +1296,28 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_threshold_above_protocol_cap() {
+    fn config_accepts_threshold_above_signature_cap() {
         let owner = Address::from([0x11; 20]);
-        let threshold = MAX_MULTISIG_THRESHOLD + 1;
+        let threshold = MAX_MULTISIG_THRESHOLD;
         let config = sorted_secp_config(&[(owner, threshold)], threshold);
+
+        assert_eq!(config.validate(), Ok(threshold));
+        assert_eq!(
+            multisig_signature_count_for_threshold([threshold], threshold),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn config_rejects_threshold_requiring_too_many_approvals() {
+        let owners = (1..=MAX_MULTISIG_SIGNATURES as u16 + 1)
+            .map(|index| (indexed_owner(index), 1))
+            .collect::<Vec<_>>();
+        let config = sorted_secp_config(&owners, owners.len() as u8);
 
         assert_eq!(
             config.validate(),
-            Err(MultisigConfigError::ThresholdTooHigh)
+            Err(MultisigConfigError::ThresholdExceedsWeight)
         );
     }
 
