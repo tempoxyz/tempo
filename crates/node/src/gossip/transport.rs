@@ -26,13 +26,13 @@ use std::{
     fmt,
     future::Future,
     net::SocketAddr,
+    num::NonZeroU32,
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll, ready},
-    time::Instant,
 };
 
 use alloy_primitives::{
@@ -40,6 +40,7 @@ use alloy_primitives::{
     bytes::{BufMut as _, BytesMut},
 };
 use futures::{Stream, StreamExt as _};
+use governor::{DefaultDirectRateLimiter, Quota};
 use reth_ethereum::{
     network::{
         api::{Direction, PeerId},
@@ -144,7 +145,7 @@ pub struct Config {
     /// permissionless network would add risk and unnecessary consensus work.
     pub ingest: bool,
     /// Frames per second accepted from a single connection.
-    pub peer_frame_rate: u32,
+    pub peer_frame_rate: NonZeroU32,
     /// Depth of the shared inbound queue to the consensus layer.
     pub frame_queue: usize,
     /// Depth of the outbound queue to the transport coordinator.
@@ -262,7 +263,9 @@ impl Shared {
             peer,
             id,
             state: ConnectionState::Registering(registration_rx),
-            admission: Admission::new(self.config.peer_frame_rate, Instant::now()),
+            admission: DefaultDirectRateLimiter::direct(Quota::per_second(
+                self.config.peer_frame_rate,
+            )),
             shared: Arc::clone(self),
             conn,
             outbound: None,
@@ -494,7 +497,7 @@ pub struct Connection<S = ProtocolConnection> {
     conn: S,
     // Dropping the sender closes every physical connection for the logical peer.
     outbound: Option<WatchStream<Option<Bytes>>>,
-    admission: Admission,
+    admission: DefaultDirectRateLimiter,
 }
 
 impl<S> Connection<S> {
@@ -557,7 +560,7 @@ impl<S> Connection<S> {
             return InboundAction::Close;
         }
 
-        if !self.admission.allow(Instant::now()) {
+        if self.admission.check().is_err() {
             self.shared.metrics.dropped_admission.increment(1);
             return InboundAction::Continue;
         }
@@ -648,44 +651,6 @@ impl<S> Drop for Connection<S> {
     }
 }
 
-/// Per-connection token bucket.
-///
-/// This protects the channel to consensus from floods. It does not enforce
-/// fairness across peers. Consensus does that by keeping one pending frame per
-/// peer and using a deterministic clock.
-#[derive(Debug)]
-struct Admission {
-    tokens: f64,
-    capacity: f64,
-    per_second: f64,
-    updated: Instant,
-}
-
-impl Admission {
-    fn new(per_second: u32, now: Instant) -> Self {
-        let capacity = f64::from(per_second.max(1));
-        Self {
-            tokens: capacity,
-            capacity,
-            per_second: capacity,
-            updated: now,
-        }
-    }
-
-    fn allow(&mut self, now: Instant) -> bool {
-        let elapsed = now.saturating_duration_since(self.updated).as_secs_f64();
-        self.updated = now;
-        self.tokens = (self.tokens + elapsed * self.per_second).min(self.capacity);
-
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
-}
-
 #[derive(Metrics)]
 #[metrics(scope = "tempo_gossip")]
 struct GossipMetrics {
@@ -714,6 +679,7 @@ mod tests {
     };
 
     use futures::{future::poll_fn, stream};
+    use governor::{RateLimiter, clock::FakeRelativeClock};
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::*;
@@ -721,10 +687,14 @@ mod tests {
     fn test_config() -> Config {
         Config {
             ingest: true,
-            peer_frame_rate: 8,
+            peer_frame_rate: NonZeroU32::new(8).expect("rate is non-zero"),
             frame_queue: 8,
             route_queue: 8,
         }
+    }
+
+    fn admission_quota(per_second: u32) -> Quota {
+        Quota::per_second(NonZeroU32::new(per_second).expect("rate is non-zero"))
     }
 
     fn build_protocol(
@@ -1025,43 +995,51 @@ mod tests {
 
     #[test]
     fn admission_allows_a_burst_then_throttles() {
-        let start = Instant::now();
-        let mut admission = Admission::new(4, start);
+        let admission =
+            RateLimiter::direct_with_clock(admission_quota(4), FakeRelativeClock::default());
 
         for _ in 0..4 {
-            assert!(admission.allow(start));
+            assert!(admission.check().is_ok());
         }
-        assert!(!admission.allow(start));
+        assert!(admission.check().is_err());
     }
 
     #[test]
     fn admission_refills_over_time() {
-        let start = Instant::now();
-        let mut admission = Admission::new(4, start);
+        let clock = FakeRelativeClock::default();
+        let admission = RateLimiter::direct_with_clock(admission_quota(4), clock.clone());
         for _ in 0..4 {
-            assert!(admission.allow(start));
+            assert!(admission.check().is_ok());
         }
 
-        let later = start + Duration::from_millis(250);
-        assert!(admission.allow(later));
-        assert!(!admission.allow(later));
+        clock.advance(Duration::from_millis(250));
+        assert!(admission.check().is_ok());
+        assert!(admission.check().is_err());
+    }
+
+    #[test]
+    fn admission_accumulates_fractional_refills() {
+        let clock = FakeRelativeClock::default();
+        let admission = RateLimiter::direct_with_clock(admission_quota(2), clock.clone());
+        assert!(admission.check().is_ok());
+        assert!(admission.check().is_ok());
+
+        for _ in 0..4 {
+            clock.advance(Duration::from_millis(100));
+            assert!(admission.check().is_err());
+        }
+        clock.advance(Duration::from_millis(100));
+        assert!(admission.check().is_ok());
     }
 
     #[test]
     fn admission_does_not_accumulate_beyond_capacity() {
-        let start = Instant::now();
-        let mut admission = Admission::new(2, start);
+        let clock = FakeRelativeClock::default();
+        let admission = RateLimiter::direct_with_clock(admission_quota(2), clock.clone());
 
-        let much_later = start + Duration::from_secs(60);
-        assert!(admission.allow(much_later));
-        assert!(admission.allow(much_later));
-        assert!(!admission.allow(much_later));
-    }
-
-    #[test]
-    fn admission_rate_of_zero_still_permits_progress() {
-        let start = Instant::now();
-        let mut admission = Admission::new(0, start);
-        assert!(admission.allow(start));
+        clock.advance(Duration::from_secs(60));
+        assert!(admission.check().is_ok());
+        assert!(admission.check().is_ok());
+        assert!(admission.check().is_err());
     }
 }

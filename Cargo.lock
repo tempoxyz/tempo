@@ -13715,6 +13715,7 @@ dependencies = [
  "commonware-runtime",
  "eyre",
  "futures",
+ "governor",
  "indexmap 2.14.0",
  "insta",
  "jiff",
