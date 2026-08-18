@@ -549,7 +549,10 @@ where
         let updates = TempoPoolUpdates::from_chain(tip);
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
-        let mut removed_this_iteration = B256Set::default();
+        // Reth's canonical-update handling may not have pruned mined transactions yet.
+        // Exclude them from every snapshot-based maintenance phase so they follow the
+        // normal mined path rather than being discarded from the pool.
+        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
         // 4. Handle fee token pause/unpause events
         let pause_start = Instant::now();
