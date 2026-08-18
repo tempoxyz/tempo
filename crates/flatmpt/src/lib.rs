@@ -164,7 +164,10 @@ fn window() -> usize {
         std::env::var("TEMPO_FLATMPT_WINDOW")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(32)
+            // 32 let the builder outrun the follower ~30s into a 100G bench
+            // (one anchor miss then killed the chain — see unwind_to). 128
+            // buys ~4x the lag budget for ~1.4 GB worst-case inverse heap.
+            .unwrap_or(128)
     })
 }
 /// Persist the flat file every this many applied blocks.
@@ -610,6 +613,23 @@ impl FlatShadow {
                 "genesis header carries the pre-dump root; anchoring on the post-dump state"
             );
             return Ok(());
+        }
+        // Reachability check BEFORE touching state: the pop loop below applies
+        // inverse diffs as it walks, so probing for an unknown parent must not
+        // wreck the live state. Without this, a request anchored AHEAD of the
+        // applied height (builder outrunning the follower) unwound the whole
+        // window to its base and then errored — leaving the flat state behind
+        // every future anchor, so one transient overrun killed the chain
+        // permanently. Failing clean instead makes the overrun transient: the
+        // follower catches up and the next anchor lands.
+        if self.db.root() != parent_root.0
+            && !self.entries.iter().any(|e| e.parent_root == parent_root.0)
+        {
+            anyhow::bail!(
+                "unknown parent: root {} not in retained window (live root {})",
+                parent_root,
+                hex(self.db.root()),
+            );
         }
         while self.db.root() != parent_root.0 {
             let e = self.entries.pop().ok_or_else(|| {

@@ -20,7 +20,10 @@ jobs:
       actor: "dankrad"
       mode: "e2e"
       preset: "default"
-      duration: "300"
+      # 30-minute measured windows: 5-minute runs are dominated by warmup and
+      # sample too few blocks for stable percentiles (flat only showed its
+      # steady-state advantage at the 30-minute horizon in the 1B suite).
+      duration: "1800"
       bloat: "100"
       token-count: "4"
       tps: "50000"
