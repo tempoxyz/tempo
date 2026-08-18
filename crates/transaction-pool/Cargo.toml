@@ -59,7 +59,8 @@ test-utils = [
 	"reth-primitives-traits/test-utils",
 	"reth-provider/test-utils",
 	"reth-transaction-pool/test-utils",
-	"tempo-precompiles/test-utils"
+	"tempo-precompiles/test-utils",
+	"tempo-primitives/test-utils"
 ]
 
 [dev-dependencies]

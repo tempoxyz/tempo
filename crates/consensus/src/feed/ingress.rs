@@ -1,5 +1,6 @@
 //! Mailbox for sending marshal updates to the feed actor.
 
+use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
     marshal::Update,
@@ -37,7 +38,7 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, update: Self::Activity) {
+    fn report(&mut self, update: Self::Activity) -> Feedback {
         let tip = match update {
             Update::Tip(round, height, digest) => FinalizedTip {
                 round,
@@ -46,13 +47,15 @@ impl Reporter for Mailbox {
             },
             Update::Block(_, ack) => {
                 ack.acknowledge();
-                return;
+                return Feedback::Ok;
             }
         };
 
         if self.sender.unbounded_send(tip).is_err() {
             error!("failed sending finalized tip to feed because it is no longer running");
+            return Feedback::Closed;
         }
+        Feedback::Ok
     }
 }
 
@@ -92,13 +95,11 @@ mod tests {
             )
             .expect("test block should not contain BAL side data");
 
-            mailbox
-                .report(Update::Tip(
-                    Round::new(Epoch::zero(), View::new(1)),
-                    block.height(),
-                    block.digest(),
-                ))
-                .await;
+            let _ = mailbox.report(Update::Tip(
+                Round::new(Epoch::zero(), View::new(1)),
+                block.height(),
+                block.digest(),
+            ));
 
             let tip = receiver.next().await.expect("tip should be forwarded");
             assert_eq!(tip.round, Round::new(Epoch::zero(), View::new(1)));
@@ -106,7 +107,11 @@ mod tests {
             assert_eq!(tip.digest, block.digest());
 
             let (acknowledgement, acknowledged) = Exact::handle();
-            mailbox.report(Update::Block(block, acknowledgement)).await;
+            assert!(
+                mailbox
+                    .report(Update::Block(block.into(), acknowledgement))
+                    .accepted()
+            );
 
             acknowledged
                 .await

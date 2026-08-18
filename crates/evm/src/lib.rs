@@ -36,7 +36,7 @@ pub use handler::{
     build_tempo_evm, tempo_execution_config, tempo_tx_registry,
 };
 pub use pool::{TempoPoolValidationError, TempoPoolValidationEvm};
-pub use transaction::{RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
+pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_eips::eip7840::BlobParams;
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(evm_env.block.ext.timestamp_millis_part, 500);
         assert_eq!(evm_env.block.ext.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xab; 32]);
+        let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
                 consensus_context: Some(TempoConsensusContext {
@@ -672,7 +672,7 @@ mod tests {
         assert_eq!(evm_env.block.ext.timestamp_millis_part, 750);
         assert_eq!(evm_env.block.ext.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xcd; 32]);
+        let proposer = PublicKey::from_seed(0xcd);
         let evm_env = evm_config
             .next_evm_env(
                 &parent,

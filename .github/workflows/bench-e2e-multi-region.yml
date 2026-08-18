@@ -34,7 +34,7 @@ on:
       validator-count:
         type: string
         required: false
-        default: "50"
+        default: "10"
       regions:
         type: string
         required: false
@@ -50,7 +50,7 @@ on:
       max-concurrent-requests:
         type: string
         required: false
-        default: "100"
+        default: "5000"
       general-gas-limit:
         type: string
         required: false
@@ -59,14 +59,26 @@ on:
         type: string
         required: false
         default: "3"
+      clickhouse-run:
+        type: string
+        required: false
+        default: "feature-1"
+      otlp:
+        type: boolean
+        required: false
+        default: true
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
-      BENCH_METRICS_PUSH_URL:
+      BENCH_VICTORIAMETRICS_URL:
         required: false
-      DEREK_BENCH_TOKEN:
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
         required: false
       VICTORIALOGS_URL:
         required: false
@@ -139,7 +151,7 @@ on:
         description: Number of validators.
         type: string
         required: true
-        default: "50"
+        default: "10"
       regions:
         description: Comma-separated cloud regions. Empty uses the selected cloud's five defaults.
         type: string
@@ -159,7 +171,7 @@ on:
         description: Max concurrent sender requests.
         type: string
         required: true
-        default: "100"
+        default: "5000"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -205,11 +217,6 @@ on:
         type: string
         required: true
         default: "5000000000"
-      force-bloat:
-        description: Force regeneration of local benchmark state.
-        type: boolean
-        required: true
-        default: false
       no-cache:
         description: Skip binary cache.
         type: boolean
@@ -225,6 +232,11 @@ on:
         type: string
         required: true
         default: "3"
+      clickhouse-run:
+        description: Benchmark phase that may use the direct ClickHouse reporter.
+        type: string
+        required: false
+        default: "feature-1"
 
 permissions:
   actions: read
@@ -258,13 +270,13 @@ jobs:
       BENCH_INPUT_PRESET: ${{ inputs.preset || 'tip20_existing_recipients' }}
       BENCH_INPUT_DURATION: ${{ inputs.duration || (github.event_name == 'pull_request' && '30') || '90' }}
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
-      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '50' }}
+      BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
       BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'aws') == 'gcp' && 'n2-standard-8' || 'c6id.8xlarge' }}
       BENCH_INPUT_LOCAL_SSD_COUNT: ${{ (inputs.cloud || 'aws') == 'gcp' && ((inputs.bloat || '100') == '100' && '4' || '1') || '4' }}
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '100' }}
+      BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
       BENCH_INPUT_TXGEN_REF: ${{ inputs['txgen-ref'] || '' }}
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
@@ -274,17 +286,27 @@ jobs:
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
       BENCH_INPUT_GENERAL_GAS_LIMIT: ${{ inputs['general-gas-limit'] || '' }}
-      BENCH_INPUT_FORCE_BLOAT: ${{ github.event_name == 'workflow_dispatch' && (inputs['force-bloat'] == true || inputs['force-bloat'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
+      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
 
     steps:
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+
       - name: Check org membership
         if: github.event_name != 'schedule'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          github-token: ${{ steps.github-sts.outputs.token }}
           script: |
             const org = 'tempoxyz';
             const username = context.actor;
@@ -298,6 +320,27 @@ jobs:
 
             core.setFailed(`@${username} is not a member of ${org}`);
 
+      - name: Fetch ClickHouse metric allowlist
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'contrib/bench/clickhouse-metrics.txt';
+            const { data } = await github.rest.repos.getContent({
+              owner: 'tempoxyz',
+              repo: 'tempo',
+              path,
+              ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
+            });
+
+            if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+              core.setFailed(`Expected ${path} to be a file at ${context.sha}`);
+              return;
+            }
+
+            fs.mkdirSync('contrib/bench', { recursive: true });
+            fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
+
       - name: Checkout benchmark repo
         id: checkout_benchmark_repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -305,12 +348,10 @@ jobs:
           repository: tempoxyz/tempo-multi-region-benchmark
           ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
-          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
 
       - name: Validate Tempo commit ancestry
-        env:
-          GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           resolve_tempo_ref() {
             local ref="${1:-main}"
@@ -397,7 +438,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
 
@@ -413,6 +454,21 @@ jobs:
         if: env.BENCH_INPUT_CLOUD == 'aws'
         run: |
           "$BENCH_REPO_DIR/scripts/configure_aws_s3_transfer.sh"
+
+      # gcloud persists credentials and command state in SQLite files below its
+      # config directory.  Keep that state out of the runner image's shared
+      # default directory: benchmark phases run many gcloud commands and IAP
+      # tunnels concurrently, and a stale/corrupt default database causes
+      # gcloud to abort before issuing the requested API call.
+      - name: Isolate Google Cloud CLI state
+        if: env.BENCH_INPUT_CLOUD == 'gcp'
+        run: |
+          gcloud_config_dir="$RUNNER_TEMP/gcloud-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$gcloud_config_dir"
+          {
+            echo "CLOUDSDK_CONFIG=$gcloud_config_dir"
+            echo "CLOUDSDK_CORE_PROJECT=$BENCH_GCP_PROJECT_ID"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
@@ -458,16 +514,17 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -475,10 +532,7 @@ jobs:
       - name: Install txgen
         if: steps.fetch_tempo_binaries.outcome == 'success'
         env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           BENCH_TXGEN_REF: ${{ env.BENCH_INPUT_TXGEN_REF }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           "$BENCH_REPO_DIR/scripts/install_txgen.sh"
 
@@ -514,16 +568,17 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -560,16 +615,17 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
@@ -606,16 +662,17 @@ jobs:
             --feature-args "$BENCH_INPUT_FEATURE_ARGS" \
             --gas-limit "$BENCH_INPUT_GAS_LIMIT" \
             --general-gas-limit "$BENCH_INPUT_GENERAL_GAS_LIMIT" \
-            --force-bloat "$BENCH_INPUT_FORCE_BLOAT" \
             --no-cache "$BENCH_INPUT_NO_CACHE" \
             --no-slack "true" \
             --bench-args "$BENCH_INPUT_BENCH_ARGS" \
             --run-pairs "$BENCH_INPUT_RUN_PAIRS" \
+            --clickhouse-run "$BENCH_INPUT_CLICKHOUSE_RUN" \
+            --clickhouse-metrics-file "$GITHUB_WORKSPACE/contrib/bench/clickhouse-metrics.txt" \
             --nodes "$BENCH_INPUT_VALIDATOR_COUNT" \
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
-            --metrics-push-url "${{ secrets.BENCH_METRICS_PUSH_URL }}" \
+            --metrics-push-url "${{ secrets.BENCH_VICTORIAMETRICS_URL }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"

@@ -1967,7 +1967,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     let current_timestamp = block.header.timestamp();
 
     // Create expiring nonce transaction
-    let valid_before = current_timestamp + 25;
+    let valid_before = current_timestamp + setup.hardfork.expiring_nonce_max_expiry_secs();
 
     let tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
 

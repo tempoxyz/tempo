@@ -11,12 +11,17 @@ pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
+pub mod finalization_verifier;
+pub mod finalized_header_stream;
 pub mod follow;
 pub mod metrics;
+mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub mod storage;
 pub(crate) mod subblocks;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub(crate) mod utils;
 pub(crate) mod validators;
 
@@ -25,7 +30,7 @@ use std::sync::Arc;
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
-use commonware_runtime::Metrics as _;
+use commonware_runtime::Supervisor as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -115,6 +120,7 @@ pub async fn run_consensus_stack(
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
+        max_message_size: config.max_message_size_bytes,
 
         time_to_propose: config.wait_for_proposal.into_duration(),
         time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),
@@ -131,9 +137,8 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
-        strict_startup: config.strict_startup,
     }
-    .try_init(context.with_label("engine"))
+    .try_init(context.child("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
@@ -171,6 +176,7 @@ pub async fn run_follow_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
     upstream_url: String,
+    upstream_request_timeout: std::time::Duration,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
@@ -193,7 +199,7 @@ pub async fn run_follow_stack(
     info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
-        context.with_label("upstream"),
+        context.child("upstream"),
         crate::follow::upstream::Config { upstream_url },
     )
     .wrap_err("failed to initialize client to upstream node")?;
@@ -207,13 +213,13 @@ pub async fn run_follow_stack(
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(epoch_length),
         mailbox_size: config.mailbox_size,
+        upstream_request_timeout,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
-        strict_startup: config.strict_startup,
     };
 
     let ret = config
-        .try_init(context.with_label("engine"))
+        .try_init(context.child("engine"))
         .await
         .wrap_err("failed initializing follow engine")?
         .start()
@@ -264,5 +270,5 @@ async fn instantiate_network(
         .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };
 
-    Ok(lookup::Network::new(context.with_label("network"), cfg))
+    Ok(lookup::Network::new(context.child("network"), cfg))
 }

@@ -248,13 +248,9 @@ impl RecoveredSubBlock {
 
     /// Returns true if this subblock has any expired transactions for the given timestamp.
     pub fn has_expired_transactions(&self, timestamp: u64) -> bool {
-        self.transactions.iter().any(|tx| {
-            tx.as_aa().is_some_and(|tx| {
-                tx.tx()
-                    .valid_before
-                    .is_some_and(|valid| valid.get() <= timestamp)
-            })
-        })
+        self.transactions
+            .iter()
+            .any(|tx| tx.ensure_valid_before(timestamp).is_err())
     }
 
     /// Returns the validator that submitted the subblock.

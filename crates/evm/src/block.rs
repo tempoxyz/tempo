@@ -25,15 +25,10 @@ use std::{
     sync::Arc,
 };
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::{
-    precompiles::{
-        ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
-        INITIAL_FACTORY_OWNER, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-        STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
-        ZONE_VERIFIER_ADDRESS,
-    },
-    zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+use tempo_contracts::precompiles::{
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -274,10 +269,13 @@ impl<'a> TempoBlockExecutor<'a> {
 
     /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
     fn deploy_zone_factory_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [factory, portal, verifier, messenger] =
+            initial_zone_factory_state(INITIAL_FACTORY_OWNER);
+
         let original = match self
             .evm_mut()
             .state_mut()
-            .account_info_untracked(&ZONE_FACTORY_ADDRESS)
+            .account_info_untracked(&factory.address)
         {
             Ok(info) => info,
             Err(code) => {
@@ -286,6 +284,8 @@ impl<'a> TempoBlockExecutor<'a> {
                 ));
             }
         };
+        // Genesis allocations are authoritative, and the marker also records a completed
+        // post-genesis installation.
         if original
             .as_ref()
             .is_some_and(|info| info.code_hash != KECCAK256_EMPTY)
@@ -293,16 +293,11 @@ impl<'a> TempoBlockExecutor<'a> {
             return Ok(());
         }
 
-        let factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
-        self.deploy_precompile_at_boundary(ZONE_FACTORY_ADDRESS, &[(U256::ZERO, factory_config)])?;
+        self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
 
         let mut runtime_state = PendingState::default();
-        for (destination, runtime) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
-        ] {
+        for account in [portal, verifier, messenger] {
+            let destination = account.address;
             let original = match self
                 .evm_mut()
                 .state_mut()
@@ -318,7 +313,7 @@ impl<'a> TempoBlockExecutor<'a> {
             let current = original
                 .clone()
                 .unwrap_or_default()
-                .with_code(Bytecode::new_raw(runtime));
+                .with_code(Bytecode::new_raw(account.code));
             runtime_state.insert_account(destination, original, Some(current));
         }
         self.inner.commit_pending_state(&runtime_state);
@@ -884,20 +879,25 @@ mod tests {
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
-    use commonware_cryptography::{Signer, bls12381::dkg, ed25519::PrivateKey};
+    use commonware_cryptography::{
+        Signer, bls12381::dkg::feldman_desmedt as dkg, ed25519::PrivateKey,
+    };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use evm2::evm::{AccountInfo, InMemoryDB};
-    use rand_08::SeedableRng as _;
+    use rand::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
     use std::{
         iter::repeat_with,
         sync::{Arc, Mutex},
     };
     use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{
-        CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_MESSENGER_ADDRESS,
-        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    use tempo_contracts::{
+        precompiles::{
+            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
+            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
@@ -933,7 +933,7 @@ mod tests {
     }
 
     fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
-        let mut rng = rand_08::rngs::StdRng::seed_from_u64(epoch);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(epoch);
         let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(players)
             .collect::<Vec<_>>();

@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.11.0"
+version = "1.13.0"
 edition = "2024"
 rust-version = "1.95.0"
 authors = ["Tempo Contributors"]
@@ -210,44 +210,45 @@ alloy-json-abi = { version = "1.6.1", default-features = false }
 alloy-primitives = { version = "1.6.1", default-features = false }
 alloy-sol-types = { version = "1.6.1", default-features = false }
 
-alloy = { version = "2.1.1", default-features = false }
-alloy-consensus = { version = "2.1.1", default-features = false }
-alloy-contract = { version = "2.1.1", default-features = false }
+alloy = { version = "2.3.0", default-features = false }
+alloy-consensus = { version = "2.3.0", default-features = false }
+alloy-contract = { version = "2.3.0", default-features = false }
 alloy-eip7928 = { version = "0.4.5", default-features = false }
-alloy-eips = { version = "2.1.1", default-features = false }
+alloy-eips = { version = "2.3.0", default-features = false }
 evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "f63cbd2409c11837432ac58cf7bf633c53f7684c", default-features = false }
 evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "f63cbd2409c11837432ac58cf7bf633c53f7684c" }
-alloy-genesis = { version = "2.1.1", default-features = false }
+alloy-genesis = { version = "2.3.0", default-features = false }
 alloy-hardforks = "0.4.7"
-alloy-json-rpc = "2.1.1"
-alloy-network = { version = "2.1.1", default-features = false }
-alloy-provider = { version = "2.1.1", default-features = false }
+alloy-json-rpc = "2.3.0"
+alloy-network = { version = "2.3.0", default-features = false }
+alloy-provider = { version = "2.3.0", default-features = false }
 alloy-rlp = { version = "0.3.16", default-features = false }
-alloy-rpc-client = { version = "2.1.1", default-features = false }
-alloy-rpc-types-admin = "2.1.1"
-alloy-rpc-types-engine = "2.1.1"
-alloy-rpc-types-eth = { version = "2.1.1" }
-alloy-serde = { version = "2.1.1", default-features = false }
-alloy-signer = "2.1.1"
-alloy-signer-aws = "2.1.1"
-alloy-signer-gcp = "2.1.1"
-alloy-signer-ledger = "2.1.1"
-alloy-signer-local = "2.1.1"
-alloy-signer-trezor = "2.1.1"
-alloy-transport = "2.1.1"
+alloy-rpc-client = { version = "2.3.0", default-features = false }
+alloy-rpc-types-admin = "2.3.0"
+alloy-rpc-types-engine = "2.3.0"
+alloy-rpc-types-eth = { version = "2.3.0" }
+alloy-serde = { version = "2.3.0", default-features = false }
+alloy-signer = "2.3.0"
+alloy-signer-aws = "2.3.0"
+alloy-signer-gcp = "2.3.0"
+alloy-signer-ledger = "2.3.0"
+alloy-signer-local = "2.3.0"
+alloy-signer-trezor = "2.3.0"
+alloy-transport = "2.3.0"
 
-commonware-broadcast = "2026.4.0"
-commonware-codec = "2026.4.0"
-commonware-consensus = "2026.4.0"
-commonware-cryptography = "2026.4.0"
-commonware-macros = "2026.4.0"
-commonware-math = "2026.4.0"
-commonware-p2p = "2026.4.0"
-commonware-parallel = "2026.4.0"
-commonware-resolver = "2026.4.0"
-commonware-runtime = "2026.4.0"
-commonware-storage = "2026.4.0"
-commonware-utils = "2026.4.0"
+commonware-actor = "2026.7.0"
+commonware-broadcast = "2026.7.0"
+commonware-codec = "2026.7.0"
+commonware-consensus = "2026.7.0"
+commonware-cryptography = { version = "2026.7.0", default-features = false }
+commonware-macros = "2026.7.0"
+commonware-math = "2026.7.0"
+commonware-p2p = "2026.7.0"
+commonware-parallel = "2026.7.0"
+commonware-resolver = "2026.7.0"
+commonware-runtime = "2026.7.0"
+commonware-storage = "2026.7.0"
+commonware-utils = "2026.7.0"
 
 arbitrary = { version = "1.4", features = ["derive"] }
 async-lock = "3.4.2"
@@ -265,7 +266,6 @@ dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
 
-ed25519-consensus = { version = "2.1.0", default-features = false }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 either = "1"
 eyre = "0.6.12"
@@ -288,14 +288,15 @@ prometheus-client = "0.24.0"
 sysinfo = { version = "0.38.4", default-features = false, features = ["disk", "system"] }
 proptest = "1.9"
 proptest-arbitrary-interop = "0.1.0"
-rand = "0.9"
+rand = "0.10"
+rand_09 = { package = "rand", version = "0.9" }
 rand_08 = { package = "rand", version = "0.8.5" }
-rand_core = "0.6.4"
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+rand_core = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
 serde = { version = "1.0.228", features = ["derive"], default-features = false }
-serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
+serde_json = { version = "1.0.149", features = ["alloc", "raw_value"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
 tar = "0.4.46"
@@ -327,21 +328,95 @@ bitflags = "2.11.1"
 vergen = { version = "10.0.1", features = ["build", "cargo", "emit_and_set"] }
 vergen-git2 = "10.0.1"
 
+# [patch."https://github.com/paradigmxyz/reth"]
+# reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
+# reth-chain-state = { path = "../reth/crates/chain-state" }
+# reth-chainspec = { path = "../reth/crates/chainspec" }
+# reth-cli = { path = "../reth/crates/cli/cli" }
+# reth-cli-commands = { path = "../reth/crates/cli/commands" }
+# reth-cli-runner = { path = "../reth/crates/cli/runner" }
+# reth-cli-util = { path = "../reth/crates/cli/util" }
+# reth-config = { path = "../reth/crates/config" }
+# reth-consensus = { path = "../reth/crates/consensus/consensus" }
+# reth-consensus-common = { path = "../reth/crates/consensus/common" }
+# reth-db = { path = "../reth/crates/storage/db" }
+# reth-db-api = { path = "../reth/crates/storage/db-api" }
+# reth-discv5 = { path = "../reth/crates/net/discv5" }
+# reth-e2e-test-utils = { path = "../reth/crates/e2e-test-utils" }
+# reth-engine-local = { path = "../reth/crates/engine/local" }
+# reth-engine-primitives = { path = "../reth/crates/engine/primitives" }
+# reth-engine-tree = { path = "../reth/crates/engine/tree" }
+# reth-errors = { path = "../reth/crates/errors" }
+# reth-eth-wire-types = { path = "../reth/crates/net/eth-wire-types" }
+# reth-ethereum = { path = "../reth/crates/ethereum/reth" }
+# reth-ethereum-cli = { path = "../reth/crates/ethereum/cli" }
+# reth-ethereum-consensus = { path = "../reth/crates/ethereum/consensus" }
+# reth-ethereum-engine-primitives = { path = "../reth/crates/ethereum/engine-primitives" }
+# reth-ethereum-forks = { path = "../reth/crates/ethereum/hardforks" }
+# reth-ethereum-primitives = { path = "../reth/crates/ethereum/primitives" }
+# reth-etl = { path = "../reth/crates/etl" }
+# reth-evm = { path = "../reth/crates/evm/evm" }
+# reth-evm-ethereum = { path = "../reth/crates/ethereum/evm" }
+# reth-execution-errors = { path = "../reth/crates/evm/execution-errors" }
+# reth-execution-types = { path = "../reth/crates/evm/execution-types" }
+# reth-exex-types = { path = "../reth/crates/exex/types" }
+# reth-metrics = { path = "../reth/crates/metrics" }
+# reth-net-banlist = { path = "../reth/crates/net/banlist" }
+# reth-network = { path = "../reth/crates/net/network" }
+# reth-network-api = { path = "../reth/crates/net/network-api" }
+# reth-network-p2p = { path = "../reth/crates/net/p2p" }
+# reth-network-peers = { path = "../reth/crates/net/peers" }
+# reth-network-types = { path = "../reth/crates/net/network-types" }
+# reth-node-api = { path = "../reth/crates/node/api" }
+# reth-node-builder = { path = "../reth/crates/node/builder" }
+# reth-node-core = { path = "../reth/crates/node/core" }
+# reth-node-ethereum = { path = "../reth/crates/ethereum/node" }
+# reth-node-metrics = { path = "../reth/crates/node/metrics" }
+# reth-payload-builder = { path = "../reth/crates/payload/builder" }
+# reth-payload-primitives = { path = "../reth/crates/payload/primitives" }
+# reth-provider = { path = "../reth/crates/storage/provider" }
+# reth-prune = { path = "../reth/crates/prune/prune" }
+# reth-prune-types = { path = "../reth/crates/prune/types" }
+# reth-revm = { path = "../reth/crates/revm" }
+# reth-rpc = { path = "../reth/crates/rpc/rpc" }
+# reth-rpc-api = { path = "../reth/crates/rpc/rpc-api" }
+# reth-rpc-builder = { path = "../reth/crates/rpc/rpc-builder" }
+# reth-rpc-convert = { path = "../reth/crates/rpc/rpc-convert" }
+# reth-rpc-eth-api = { path = "../reth/crates/rpc/rpc-eth-api" }
+# reth-rpc-eth-types = { path = "../reth/crates/rpc/rpc-eth-types" }
+# reth-rpc-server-types = { path = "../reth/crates/rpc/rpc-server-types" }
+# reth-stages-api = { path = "../reth/crates/stages/api" }
+# reth-stages-types = { path = "../reth/crates/stages/types" }
+# reth-static-file = { path = "../reth/crates/static-file/static-file" }
+# reth-static-file-types = { path = "../reth/crates/static-file/types" }
+# reth-storage-api = { path = "../reth/crates/storage/storage-api" }
+# reth-storage-errors = { path = "../reth/crates/storage/errors" }
+# reth-tasks = { path = "../reth/crates/tasks" }
+# reth-tokio-util = { path = "../reth/crates/tokio-util" }
+# reth-tracing = { path = "../reth/crates/tracing" }
+# reth-transaction-pool = { path = "../reth/crates/transaction-pool" }
+# reth-trie = { path = "../reth/crates/trie/trie" }
+# reth-trie-common = { path = "../reth/crates/trie/common" }
+# reth-trie-db = { path = "../reth/crates/trie/db" }
+# reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
+# reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
+
 [patch."https://github.com/alloy-rs/evm2"]
 evm2 = { git = "https://github.com/alloy-rs/evm2?branch=main", rev = "f63cbd2409c11837432ac58cf7bf633c53f7684c" }
 
 [patch.crates-io]
 
-# Commonware at HEAD after PR #3588 was merged
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
+# Commonware v2026.7.0
+# commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }
+# commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "5950bf7179bb0650a57ed58b9e0478822944b335" }

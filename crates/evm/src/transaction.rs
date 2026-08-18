@@ -11,6 +11,18 @@ use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
 use std::{borrow::Borrow, boxed::Box, ops::Deref};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
+/// Identifies the kind of execution represented by a transaction environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionContext {
+    /// Execution or validation of a signed transaction.
+    Transaction {
+        /// Canonical hash of the signed transaction.
+        tx_hash: B256,
+    },
+    /// Non-committing execution of an RPC transaction request.
+    Simulation,
+}
+
 /// Recovered Tempo AA transaction and block-local execution metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TempoAaTx {
@@ -262,6 +274,7 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
 pub struct TempoTxEnv {
     evm_tx: TempoEvmTx,
     recovered: Recovered<TempoTxEnvelope>,
+    execution_context: ExecutionContext,
     unique_tx_identifier_override: Option<B256>,
     fee_payer_override: Option<Address>,
 }
@@ -343,6 +356,7 @@ impl TempoTxEnv {
         Some(Self {
             evm_tx,
             recovered,
+            execution_context: ExecutionContext::Simulation,
             unique_tx_identifier_override: None,
             fee_payer_override: None,
         })
@@ -405,6 +419,11 @@ impl TempoTxEnv {
         *self.recovered.inner().tx_hash()
     }
 
+    /// Returns whether this environment represents a signed transaction or an RPC simulation.
+    pub const fn execution_context(&self) -> ExecutionContext {
+        self.execution_context
+    }
+
     /// Returns the sender-scoped identifier used by replay-sensitive protocol features.
     pub fn unique_tx_identifier(&self) -> B256 {
         self.unique_tx_identifier_override.unwrap_or_else(|| {
@@ -433,6 +452,7 @@ impl TempoTxEnv {
         fee_payer: Option<Address>,
         key_id: Option<Address>,
     ) -> Self {
+        self.execution_context = ExecutionContext::Simulation;
         self.unique_tx_identifier_override = Some(unique_tx_identifier);
         self.fee_payer_override = fee_payer;
         if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
@@ -542,9 +562,11 @@ impl From<TempoTxEnvelope> for TempoTxEnv {
 
 impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     fn from(recovered: Recovered<TempoTxEnvelope>) -> Self {
+        let tx_hash = *recovered.inner().tx_hash();
         Self {
             evm_tx: recovered.clone().into(),
             recovered,
+            execution_context: ExecutionContext::Transaction { tx_hash },
             unique_tx_identifier_override: None,
             fee_payer_override: None,
         }
@@ -690,6 +712,12 @@ mod tests {
         let expiring_env: TempoTxEnv =
             Recovered::new_unchecked(TempoTxEnvelope::AA(expiring_signed.clone()), caller).into();
         let expected_identifier = expiring_signed.expiring_nonce_hash(caller);
+        assert_eq!(
+            expiring_env.execution_context(),
+            ExecutionContext::Transaction {
+                tx_hash: *expiring_signed.hash(),
+            }
+        );
         assert_eq!(
             expiring_env.channel_open_context_hash(),
             expected_identifier,

@@ -1,5 +1,17 @@
 //! Test utilities for precompile dispatch testing
 
+pub mod abi_conformance;
+pub mod storage_conformance;
+
+/// Resolves a contract artifact within a Foundry output directory.
+pub fn foundry_artifact_path(
+    artifacts: &std::path::Path,
+    source: &str,
+    contract: &str,
+) -> std::path::PathBuf {
+    artifacts.join(source).join(format!("{contract}.json"))
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 use crate::error::TempoPrecompileError;
 use crate::{

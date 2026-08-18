@@ -418,6 +418,10 @@ mod tests {
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert_eq!(
+            tx_env.execution_context(),
+            tempo_evm::ExecutionContext::Simulation
+        );
+        assert_eq!(
             tx_env.channel_open_context_hash(),
             RPC_SIMULATION_UNIQUE_TX_IDENTIFIER
         );

@@ -21,6 +21,7 @@ pub use tempo_transaction_pool::{
 };
 
 pub mod engine;
+pub mod gossip;
 pub mod node;
 pub mod rpc;
 pub mod telemetry;

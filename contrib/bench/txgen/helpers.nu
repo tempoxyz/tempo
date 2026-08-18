@@ -22,8 +22,9 @@ const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
 const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
+const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.txt"
 
-def txgen-tip20-default-scenario [] {
+def txgen-tip20-base-scenario [] {
     {
         workload: "tip20"
         recipient: "users"
@@ -48,34 +49,37 @@ def txgen-tip20-scenario-alias [name: string] {
         return (txgen-tip20-public-scenario)
     }
 
-    if $name in ["default" "tip20"] {
-        return (txgen-tip20-default-scenario)
+    if $name == "default" {
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
     }
 
     # Legacy preset names remain accepted, but active workflows should use scenario strings.
+    if $name == "tip20" {
+        return (txgen-tip20-base-scenario)
+    }
     if $name == "tip20_random_recipients" {
-        return ((txgen-tip20-default-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
     }
     if $name == "tip20_existing_recipients" {
-        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
     }
     if $name == "tip20_keychain" {
-        return ((txgen-tip20-default-scenario) | merge { auth: "keychain", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { auth: "keychain", fee_token: "any_tip20" })
     }
     if $name == "tip20_keychain_random_recipients" {
-        return ((txgen-tip20-default-scenario) | merge { recipient: "random", auth: "keychain", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { recipient: "random", auth: "keychain", fee_token: "any_tip20" })
     }
     if $name == "tip20_keychain_existing_recipients" {
-        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", auth: "keychain", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", auth: "keychain", fee_token: "any_tip20" })
     }
     if $name == "tip20_key_authorization" {
-        return ((txgen-tip20-default-scenario) | merge { auth: "key_authorization", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { auth: "key_authorization", fee_token: "any_tip20" })
     }
     if $name == "tip20_protocol_nonces" {
-        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", nonce: "protocol", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", nonce: "protocol", fee_token: "any_tip20" })
     }
     if $name == "tip20_2d_nonces" {
-        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", nonce: "2d", fee_token: "any_tip20" })
+        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", nonce: "2d", fee_token: "any_tip20" })
     }
 
     null
@@ -97,7 +101,7 @@ def txgen-parse-tip20-scenario [preset: string] {
     }
 
     let body = ($preset_name | str replace --regex '^tip20:' '')
-    mut scenario = (txgen-tip20-default-scenario)
+    mut scenario = (txgen-tip20-base-scenario)
     if ($body | str trim) != "" {
         for raw_part in ($body | split row "," | each { |part| $part | str trim } | where { |part| $part != "" }) {
             let kv = ($raw_part | split row "=")
@@ -687,7 +691,9 @@ def txgen-run-preset-pipeline [
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
-        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
+        | append (if $clickhouse_url != "" {
+            ["--report" $"clickhouse:($clickhouse_url)" "--clickhouse-metrics-file" ([ (txgen-repo-root) $TXGEN_HELPER_CLICKHOUSE_METRICS_FILE ] | path join)]
+        } else { [] })
     let pr_number = ($env | get --optional BENCH_PR | default "")
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
