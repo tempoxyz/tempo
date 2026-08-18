@@ -49,6 +49,7 @@ alloy-rpc-types-eth = { workspace = true, optional = true }
 derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true
@@ -78,6 +79,7 @@ tikv-jemallocator = "0.6.1"
 default = ["rpc", "engine"]
 rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
+bench = []
 
 [[bench]]
 name = "tip20_execution"
@@ -86,3 +88,8 @@ harness = false
 [[bench]]
 name = "dex_execution"
 harness = false
+
+[[bench]]
+name = "expiring_nonce_history"
+harness = false
+required-features = ["bench"]

@@ -10,7 +10,7 @@ use crate::{
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, AddressSet, Entry, HashMap},
@@ -42,7 +42,7 @@ use tempo_precompiles::{
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
-use tempo_primitives::{Block, TempoHeader};
+use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
 use tempo_revm::TempoStateAccess;
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -112,6 +112,23 @@ where
             .inner()
             .notify_on_transaction_updates(promoted, discarded);
         mined
+    }
+
+    /// Removes expiring nonce transactions included in canonical block bodies.
+    ///
+    /// T11+ replay protection no longer writes Nonce-precompile storage, so mined expiring nonce
+    /// transactions must be detected from block contents instead of state updates.
+    pub(crate) fn notify_aa_pool_on_mined_expiring<'a>(
+        &self,
+        transactions: impl Iterator<Item = &'a TempoTxEnvelope>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let hashes = transactions
+            .filter(|tx| tx.is_expiring_nonce())
+            .map(|tx| *tx.tx_hash())
+            .collect::<Vec<_>>();
+        self.aa_2d_pool
+            .write()
+            .remove_transactions_and_descendants(hashes.iter())
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.

@@ -8,7 +8,7 @@ use crate::{
         TempoToken, TempoTokenApiServer,
     },
 };
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Sealable};
 use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
@@ -26,28 +26,30 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::ProviderFactoryBuilder;
+use reth_primitives_traits::{AlloyBlockHeader, SealedHeader};
+use reth_provider::{BlockReader, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
+use reth_storage_api::{AccountInfoReader, BlockNumReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
     TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
     error::InvalidPoolTransactionError,
 };
-use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use std::{sync::Arc, time::Instant};
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
+use tempo_evm::{
+    ExpiringNonceBlock, ExpiringNonceHistory, TempoEvmConfig, consensus::TempoConsensus,
+};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
 use tempo_payload_types::TempoPayloadAttributes;
-use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
@@ -435,16 +437,80 @@ pub struct TempoExecutorBuilder;
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
+    Node::Provider: BlockReader<Block = Block> + BlockNumReader,
 {
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        let rebuild_started = Instant::now();
+        let history = rebuild_expiring_nonce_history(ctx.provider())?;
+        info!(
+            target: "tempo::expiring_nonce_history",
+            blocks = history.retained_blocks(),
+            identifiers = history.retained_identifiers(),
+            elapsed = ?rebuild_started.elapsed(),
+            "rebuilt expiring nonce history from canonical block bodies"
+        );
+        let mut evm_config =
+            TempoEvmConfig::new(ctx.chain_spec()).with_expiring_nonce_history(history);
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }
         Ok(evm_config)
     }
+}
+
+fn rebuild_expiring_nonce_history<P>(provider: &P) -> eyre::Result<ExpiringNonceHistory>
+where
+    P: BlockReader<Block = Block> + BlockNumReader,
+{
+    let max_expiry_secs = TempoHardfork::T11.expiring_nonce_max_expiry_secs();
+    let best_number = provider.best_block_number()?;
+    let head = provider
+        .block_by_number(best_number)?
+        .ok_or_else(|| eyre::eyre!("best block {best_number} is unavailable"))?;
+    let head_timestamp = head.header.timestamp();
+
+    let mut blocks = Vec::new();
+    let mut complete_at = 0;
+    let retention_secs = max_expiry_secs.saturating_mul(2);
+    let mut number = best_number;
+    loop {
+        let block = provider
+            .block_by_number(number)?
+            .ok_or_else(|| eyre::eyre!("block {number} is unavailable during replay rebuild"))?;
+        if block.header.timestamp().saturating_add(retention_secs) <= head_timestamp {
+            // This excluded block is the parent of the oldest retained block. Its own entries and
+            // all earlier entries are provably expired from this timestamp onward.
+            complete_at = block.header.timestamp().saturating_add(max_expiry_secs);
+            break;
+        }
+
+        let entries = block
+            .body
+            .transactions
+            .iter()
+            .filter_map(|tx| ExpiringNonceHistory::entry_from_transaction(tx).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        blocks.push(ExpiringNonceBlock {
+            hash: block.header.hash_slow(),
+            parent_hash: block.header.parent_hash(),
+            timestamp: block.header.timestamp(),
+            entries,
+        });
+
+        if number == 0 {
+            break;
+        }
+        number -= 1;
+    }
+    blocks.reverse();
+
+    Ok(ExpiringNonceHistory::from_blocks(
+        max_expiry_secs,
+        complete_at,
+        blocks,
+    ))
 }
 
 /// Builder for [`TempoConsensus`].

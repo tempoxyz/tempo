@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::{ConfigureEvm, EvmEnvFor, EvmFactory, EvmFor, block::BlockExecutorFactory};
 use reth_primitives_traits::{
-    Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
+    Account, AlloyBlockHeader, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
 use reth_provider::BlockReaderIdExt;
 use reth_revm::database::StateProviderDatabase;
@@ -27,12 +27,15 @@ use revm::{
     DatabaseRef,
     context::result::{EVMError, InvalidTransaction},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Instant,
 };
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
+use tempo_evm::{ExpiringNonceBlock, ExpiringNonceHistory, TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
     storage::StorageActions,
@@ -108,6 +111,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    /// Shared history-derived replay cache used by block execution.
+    expiring_nonce_history: ExpiringNonceHistory,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -135,6 +140,7 @@ where
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
         let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
+        let expiring_nonce_history = inner.evm_config().expiring_nonce_history().clone();
         Self {
             inner,
             aa_valid_after_max_secs,
@@ -144,6 +150,7 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            expiring_nonce_history,
         }
     }
 
@@ -445,11 +452,42 @@ where
         // authorization, and balance checks.
         //
         // Returns resolved fee token and key expiry for pool caching.
-        let result = if let Some(tx_env) = transaction.cached_tx_env() {
-            let (result, _) = evm.validate_pool_transaction(tx_env.clone());
+        let mut tx_env = transaction
+            .cached_tx_env()
+            .cloned()
+            .unwrap_or_else(|| transaction.tx_env_slow());
+        if spec.is_t11() && transaction.is_expiring_nonce() {
+            let replay_id = transaction.precomputed_expiring_nonce_hash();
+            let (tip_hash, _) = &*self.cached_state.read();
+            let tip_timestamp = self.cached_evm_env.read().block_env.timestamp.to::<u64>();
+            match self
+                .expiring_nonce_history
+                .contains(*tip_hash, replay_id, tip_timestamp)
+            {
+                Ok(false) => {}
+                Ok(true) => {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                            TempoInvalidTransaction::NonceManagerError(
+                                "expiring nonce replay".to_string(),
+                            ),
+                        )),
+                    );
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            }
+            tx_env.expiring_nonce_history_verified = true;
+        }
+
+        let was_cached = transaction.cached_tx_env().is_some();
+        let result = if was_cached {
+            let (result, _) = evm.validate_pool_transaction(tx_env);
             result
         } else {
-            let (result, tx_env) = evm.validate_pool_transaction(transaction.tx_env_slow());
+            let (result, tx_env) = evm.validate_pool_transaction(tx_env);
             transaction.cache_tx_env(tx_env);
             result
         };
@@ -730,6 +768,46 @@ where
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
         self.inner.on_new_head_block(new_tip_block);
 
+        // Locally built blocks reuse their payload execution result and are not executed again on
+        // import, so canonical notification is the authoritative fallback for attaching their
+        // history overlay. Remotely imported blocks are already present and this path is a no-op.
+        if !self
+            .expiring_nonce_history
+            .contains_block(new_tip_block.hash())
+        {
+            let indexing_started = Instant::now();
+            let recovery_started = Instant::now();
+            let entries = new_tip_block
+                .body()
+                .transactions
+                .iter()
+                .filter_map(|tx| ExpiringNonceHistory::entry_from_transaction(tx).transpose())
+                .collect::<Result<Vec<_>, _>>()
+                .expect("canonical expiring nonce transactions must have recoverable senders");
+            let recovery_elapsed = recovery_started.elapsed();
+            let entry_count = entries.len();
+            let record_started = Instant::now();
+            self.expiring_nonce_history
+                .record_block(ExpiringNonceBlock {
+                    hash: new_tip_block.hash(),
+                    parent_hash: new_tip_block.parent_hash(),
+                    timestamp: new_tip_block.timestamp(),
+                    entries,
+                });
+            let record_elapsed = record_started.elapsed();
+            tracing::info!(
+                target: "tempo::expiring_nonce_history",
+                block_hash = %new_tip_block.hash(),
+                block_number = new_tip_block.number(),
+                transaction_count = new_tip_block.body().transactions.len(),
+                entry_count,
+                ?recovery_elapsed,
+                ?record_elapsed,
+                elapsed = ?indexing_started.elapsed(),
+                "indexed canonical block into expiring nonce history"
+            );
+        }
+
         // Cache the EVM environment for the new tip block.
         let evm_env = self
             .inner
@@ -791,6 +869,9 @@ pub trait ConfigureTempoPoolEvm:
         >,
     > + 'static
 {
+    /// Returns the shared history-derived expiring nonce cache.
+    fn expiring_nonce_history(&self) -> &ExpiringNonceHistory;
+
     fn pool_evm<'a>(
         &self,
         db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
@@ -808,9 +889,14 @@ where
                 EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
             >,
         > + 'static,
+    T: ExpiringNonceHistoryProvider,
     for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
         TempoPoolValidationEvm,
 {
+    fn expiring_nonce_history(&self) -> &ExpiringNonceHistory {
+        ExpiringNonceHistoryProvider::expiring_nonce_history(self)
+    }
+
     fn pool_evm<'a>(
         &self,
         db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
@@ -821,6 +907,18 @@ where
         let mut evm = self.evm_with_env(db, evm_env);
         evm.configure_for_pool();
         evm
+    }
+}
+
+/// EVM configurations that carry the node's history-derived expiring nonce cache.
+pub trait ExpiringNonceHistoryProvider {
+    /// Returns the shared cache.
+    fn expiring_nonce_history(&self) -> &ExpiringNonceHistory;
+}
+
+impl ExpiringNonceHistoryProvider for TempoEvmConfig {
+    fn expiring_nonce_history(&self) -> &ExpiringNonceHistory {
+        Self::expiring_nonce_history(self)
     }
 }
 

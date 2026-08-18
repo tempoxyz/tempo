@@ -1,12 +1,14 @@
 use crate::{
-    TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
+    ExpiringNonceBlock, ExpiringNonceHistory, TempoEvmConfig, TempoEvmFactory,
+    block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
+use alloy_consensus::Sealable as _;
 use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
 use alloy_primitives::{B256, Bloom};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 use tempo_primitives::TempoHeader;
 
@@ -14,13 +16,21 @@ use tempo_primitives::TempoHeader;
 #[derive(Debug, Clone)]
 pub struct TempoBlockAssembler {
     pub(crate) inner: EthBlockAssembler<TempoChainSpec>,
+    expiring_nonce_history: ExpiringNonceHistory,
 }
 
 impl TempoBlockAssembler {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
             inner: EthBlockAssembler::new(chain_spec),
+            expiring_nonce_history: ExpiringNonceHistory::default(),
         }
+    }
+
+    /// Uses the provided history-derived expiring nonce cache.
+    pub fn with_expiring_nonce_history(mut self, history: ExpiringNonceHistory) -> Self {
+        self.expiring_nonce_history = history;
+        self
     }
 
     pub fn assemble_block(
@@ -40,6 +50,7 @@ impl TempoBlockAssembler {
                     validator_set: _,
                     consensus_context,
                     subblock_fee_recipients: _,
+                    block_hash: _,
                 },
             parent,
             transactions,
@@ -50,6 +61,15 @@ impl TempoBlockAssembler {
             block_access_list_hash,
             ..
         } = input;
+
+        let parent_hash = inner.parent_hash;
+        let block_timestamp = evm_env.block_env.inner.timestamp.to::<u64>();
+        let entry_resolution_started = Instant::now();
+        let (expiring_nonce_entries, pending_cache_hit) = self
+            .expiring_nonce_history
+            .entries_for_block(parent_hash, block_timestamp, &transactions)
+            .map_err(|err| BlockExecutionError::msg(err.to_string()))?;
+        let entry_resolution_elapsed = entry_resolution_started.elapsed();
 
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
 
@@ -75,13 +95,37 @@ impl TempoBlockAssembler {
             receipts_bloom,
         )?;
 
-        Ok(block.map_header(|inner| TempoHeader {
+        let block = block.map_header(|inner| TempoHeader {
             inner,
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
             consensus_context,
-        }))
+        });
+        let block_hash = block.header.hash_slow();
+        let entry_count = expiring_nonce_entries.len();
+        let record_started = Instant::now();
+        self.expiring_nonce_history
+            .record_block(ExpiringNonceBlock {
+                hash: block_hash,
+                parent_hash,
+                timestamp: block_timestamp,
+                entries: expiring_nonce_entries,
+            });
+        tracing::info!(
+            target: "tempo::expiring_nonce_history",
+            %block_hash,
+            %parent_hash,
+            block_timestamp,
+            transaction_count = block.body.transactions.len(),
+            entry_count,
+            pending_cache_hit,
+            ?entry_resolution_elapsed,
+            record_elapsed = ?record_started.elapsed(),
+            "indexed assembled block into expiring nonce history"
+        );
+
+        Ok(block)
     }
 }
 
@@ -193,6 +237,7 @@ mod tests {
             validator_set: None,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
+            block_hash: None,
         };
 
         let tx = create_legacy_tx();
@@ -244,6 +289,12 @@ mod tests {
 
         // Verify consensus context is None when not provided
         assert!(block.header.consensus_context.is_none());
+        assert!(
+            assembler
+                .expiring_nonce_history
+                .contains_block(block.header.hash_slow()),
+            "assembled blocks must be available to child payload execution immediately"
+        );
     }
 
     #[test]
@@ -304,6 +355,7 @@ mod tests {
             validator_set: None,
             consensus_context: Some(ctx),
             subblock_fee_recipients: HashMap::new(),
+            block_hash: None,
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -386,6 +438,7 @@ mod tests {
             validator_set: None,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
+            block_hash: None,
         };
 
         let transactions = vec![create_legacy_tx()];

@@ -13631,6 +13631,7 @@ dependencies = [
  "reth-trie",
  "revm",
  "serde_json",
+ "smallvec",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",

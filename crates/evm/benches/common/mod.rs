@@ -399,6 +399,7 @@ where
         validator_set: None,
         consensus_context: None,
         subblock_fee_recipients: Default::default(),
+        block_hash: None,
     };
     let mut executor = config.create_executor(evm, ctx);
     executor
