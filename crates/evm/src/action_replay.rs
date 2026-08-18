@@ -38,7 +38,7 @@ where
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
-        let (tx_env, recovered) = tx.into_parts();
+        let (mut tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {
             result,
@@ -46,6 +46,10 @@ where
             expiring_nonce,
             validator_fee,
         } = replay;
+        let expiring_nonce_entry = self.prepare_expiring_nonce(&mut tx_env, recovered.tx())?;
+        let history_protected = self.evm().cfg.spec.is_t11();
+        let skip_expiring_nonce_actions =
+            expiring_nonce.is_some() || (history_protected && expiring_nonce_entry.is_some());
         self.replay_state.reset_tx_changes();
 
         // TODO: handle reverted transactions
@@ -58,7 +62,12 @@ where
                 tx_env.caller(),
                 actions.drain(..),
                 commit_reads,
-                expiring_nonce,
+                if history_protected {
+                    None
+                } else {
+                    expiring_nonce
+                },
+                skip_expiring_nonce_actions,
             )
             .inspect_err(|_| {
                 self.replay_state.reset_tx_changes();
@@ -83,7 +92,8 @@ where
             self.is_payment(recovered.tx()),
             block_gas_used,
             validator_fee,
-        );
+        )
+        .with_expiring_nonce_entry(expiring_nonce_entry);
         result_closure(&result);
 
         self.commit_transaction(result);
@@ -97,9 +107,9 @@ where
         actions: impl IntoIterator<Item = StorageAction>,
         commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
+        skip_expiring_nonce_actions: bool,
     ) -> Result<EvmState, BlockExecutionError> {
         let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
-        let is_expiring_nonce = expiring_nonce.is_some();
 
         if let Some(expiring_nonce) = expiring_nonce {
             self.apply_expiring_nonce_replay(expiring_nonce, block_timestamp)?;
@@ -108,7 +118,7 @@ where
         let db = self.inner.evm.db_mut();
         for action in actions {
             // Expiring nonces are handled above
-            if is_expiring_nonce && action.address() == NONCE_PRECOMPILE_ADDRESS {
+            if skip_expiring_nonce_actions && action.address() == NONCE_PRECOMPILE_ADDRESS {
                 continue;
             }
 

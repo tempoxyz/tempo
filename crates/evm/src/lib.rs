@@ -25,6 +25,10 @@ mod engine;
 use rayon as _;
 mod error;
 pub use error::TempoEvmError;
+mod expiring_nonce_history;
+pub use expiring_nonce_history::{
+    ExpiringNonceBlock, ExpiringNonceEntry, ExpiringNonceHistory, ExpiringNonceHistoryError,
+};
 pub mod evm;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
@@ -70,6 +74,9 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+
+    /// Fork-aware replay history for expiring nonce transactions.
+    expiring_nonce_history: ExpiringNonceHistory,
 }
 
 impl FeeTokenResolver for TempoEvmConfig {
@@ -96,6 +103,7 @@ impl TempoEvmConfig {
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
+            expiring_nonce_history: ExpiringNonceHistory::default(),
         }
     }
 
@@ -103,6 +111,17 @@ impl TempoEvmConfig {
     pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
         self.inner = self.inner.with_sender_recovery_cache(cache);
         self
+    }
+
+    /// Uses the provided history-derived expiring nonce cache.
+    pub fn with_expiring_nonce_history(mut self, history: ExpiringNonceHistory) -> Self {
+        self.expiring_nonce_history = history;
+        self
+    }
+
+    /// Returns the shared history-derived expiring nonce cache.
+    pub const fn expiring_nonce_history(&self) -> &ExpiringNonceHistory {
+        &self.expiring_nonce_history
     }
 
     /// Returns the chain spec
@@ -147,7 +166,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        TempoBlockExecutor::new(
+            evm,
+            ctx,
+            self.chain_spec(),
+            self.expiring_nonce_history.clone(),
+        )
     }
 }
 
@@ -308,6 +332,7 @@ impl ConfigureEvm for TempoEvmConfig {
             validator_set: None,
             consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
+            block_hash: Some(block.hash()),
         })
     }
 
@@ -335,6 +360,7 @@ impl ConfigureEvm for TempoEvmConfig {
             validator_set: None,
             consensus_context: attributes.consensus_context,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
+            block_hash: None,
         })
     }
 }

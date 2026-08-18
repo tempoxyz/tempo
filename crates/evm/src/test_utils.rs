@@ -196,9 +196,11 @@ impl TestExecutorBuilder {
             validator_set: self.validator_set,
             consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
+            block_hash: None,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let mut executor =
+            TempoBlockExecutor::new(evm, ctx, chainspec, crate::ExpiringNonceHistory::default());
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

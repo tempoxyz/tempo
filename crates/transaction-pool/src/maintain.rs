@@ -649,6 +649,10 @@ where
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
                 removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+                removed_txs.push(pool.notify_aa_pool_on_mined_expiring(
+                    tip.blocks_iter()
+                        .flat_map(|block| block.body().transactions.iter()),
+                ));
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.

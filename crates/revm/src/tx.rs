@@ -103,6 +103,12 @@ pub struct TempoTxEnv {
     /// Synthetic transaction environments used by tests and simulations may leave this unset.
     pub unique_tx_identifier: Option<B256>,
 
+    /// Whether this transaction was verified against recent expiring nonce history.
+    ///
+    /// T11+ block execution sets this flag before entering the EVM. RPC simulations that disable
+    /// nonce checks may leave it unset.
+    pub expiring_nonce_history_verified: bool,
+
     /// Optional fee payer specified for the transaction.
     ///
     /// - Some(Some(address)) corresponds to a successfully recovered fee payer
@@ -372,6 +378,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 tx_hash: *aa_signed.hash(),
             },
             unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
+            expiring_nonce_history_verified: false,
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
@@ -411,6 +418,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                     tx_hash: *tx.tx_hash(),
                 },
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                expiring_nonce_history_verified: false,
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
             },

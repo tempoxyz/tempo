@@ -28,6 +28,11 @@ pub struct TempoBlockExecutionCtx<'a> {
     ///
     /// Used to provide EVM with the fee recipient context when executing subblock transactions.
     pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    /// Hash of the block being executed, when it is already sealed.
+    ///
+    /// Payload construction leaves this unset and records replay history when the built block is
+    /// later imported.
+    pub block_hash: Option<B256>,
 }
 
 /// Context required for next block environment.

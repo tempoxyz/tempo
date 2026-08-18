@@ -49,6 +49,7 @@ alloy-rpc-types-eth = { workspace = true, optional = true }
 derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true

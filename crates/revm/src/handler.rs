@@ -1145,42 +1145,62 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm_without_tip1060_accounting(
-                journal,
-                block,
-                cfg,
-                tx,
-                actions.clone(),
-                || {
-                    let mut nonce_manager = NonceManager::new();
+            let max_allowed = block_timestamp.saturating_add(max_expiry_secs);
+            if valid_before <= block_timestamp || valid_before > max_allowed {
+                return Err(TempoInvalidTransaction::NonceManagerError(if valid_before <= block_timestamp {
+                    format!(
+                        "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                    )
+                } else {
+                    format!(
+                        "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                    )
+                })
+                .into());
+            }
 
-                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
-                    {
-                        let ptr = nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .read()
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+            // T11+ block execution checks replay membership against recent block history before
+            // entering the EVM. Simulations with nonce checks disabled intentionally skip replay
+            // validation. Neither path mutates legacy Nonce-precompile storage.
+            let history_verified = spec.is_t11()
+                && (tx.expiring_nonce_history_verified || cfg.is_nonce_check_disabled());
 
-                        let next = (ptr + expiring_nonce_idx as u32) % capacity;
+            if !history_verified {
+                StorageCtx::enter_evm_without_tip1060_accounting(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    actions.clone(),
+                    || {
+                        let mut nonce_manager = NonceManager::new();
+
+                        let prev_ptr =
+                            if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
+                                let ptr = nonce_manager
+                                    .expiring_nonce_ring_ptr
+                                    .read()
+                                    .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                                let next = (ptr + expiring_nonce_idx as u32) % capacity;
+
+                                nonce_manager
+                                    .expiring_nonce_ring_ptr
+                                    .write(next)
+                                    .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                                Some(ptr)
+                            } else {
+                                None
+                            };
 
                         nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .write(next)
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                        Some(ptr)
-                    } else {
-                        None
-                    };
-
-                    nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(
                             tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
                         ) => {
-                            let max_allowed = block_timestamp.saturating_add(max_expiry_secs);
                             if valid_before <= block_timestamp {
                                 TempoInvalidTransaction::NonceManagerError(format!(
                                     "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
@@ -1196,16 +1216,17 @@ where
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 
-                    if let Some(prev_ptr) = prev_ptr {
-                        nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .write(prev_ptr)
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-                    }
+                        if let Some(prev_ptr) = prev_ptr {
+                            nonce_manager
+                                .expiring_nonce_ring_ptr
+                                .write(prev_ptr)
+                                .map_err(|err| EVMError::Custom(err.to_string()))?;
+                        }
 
-                    Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-                },
-            )?;
+                        Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                    },
+                )?;
+            }
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm_without_tip1060_accounting(

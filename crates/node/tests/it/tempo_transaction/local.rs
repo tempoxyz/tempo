@@ -33,7 +33,8 @@ use tempo_contracts::precompiles::{
     },
 };
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    nonce::NonceManager,
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
@@ -1973,6 +1974,11 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
 
     let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
     let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let replay_id = envelope
+        .as_aa()
+        .expect("expiring nonce transaction")
+        .expiring_nonce_hash(alice_signer.address());
+    let legacy_seen_slot = NonceManager::new().expiring_nonce_seen[replay_id].slot();
     let tx_hash = *envelope.tx_hash();
     let encoded = envelope.encoded_2718();
 
@@ -1985,13 +1991,23 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     assert_receipt_status(&provider, tx_hash, true).await?;
     println!("✓ First submission succeeded");
 
+    if setup.hardfork.is_t11() {
+        assert_eq!(
+            provider
+                .get_storage_at(NONCE_PRECOMPILE_ADDRESS, legacy_seen_slot)
+                .await?,
+            U256::ZERO,
+            "T11 expiring nonce execution must not write legacy Nonce-precompile state"
+        );
+    }
+
     // Second submission with SAME encoded tx (same hash) should fail
     println!("\nSecond submission - attempting replay with same tx hash...");
 
     // Try to inject the same transaction again - should be rejected at pool level
     let replay_result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
 
-    // The replay MUST be rejected at pool validation (we check seen[tx_hash] in validator)
+    // The replay MUST be rejected from the canonical history-derived replay set.
     assert!(
         replay_result.is_err(),
         "Replay should be rejected at transaction pool level"

@@ -1,4 +1,7 @@
-use crate::{StorageActionReplayState, TempoBlockExecutionCtx, evm::TempoEvm};
+use crate::{
+    ExpiringNonceBlock, ExpiringNonceEntry, ExpiringNonceHistory, StorageActionReplayState,
+    TempoBlockExecutionCtx, evm::TempoEvm,
+};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
@@ -36,7 +39,7 @@ use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, TempoTxEnv, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -105,6 +108,8 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+    /// Expiring nonce consumed by this transaction, if any.
+    expiring_nonce_entry: Option<ExpiringNonceEntry>,
 }
 
 impl TempoTxResult {
@@ -129,7 +134,17 @@ impl TempoTxResult {
             tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
             block_gas_used,
             validator_fee,
+            expiring_nonce_entry: None,
         }
+    }
+
+    /// Attaches the expiring nonce entry derived before replay.
+    pub(crate) const fn with_expiring_nonce_entry(
+        mut self,
+        entry: Option<ExpiringNonceEntry>,
+    ) -> Self {
+        self.expiring_nonce_entry = entry;
+        self
     }
 
     /// Returns the block gas consumed by this transaction.
@@ -181,6 +196,13 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+
+    expiring_nonce_history: ExpiringNonceHistory,
+    block_expiring_nonce_entries: Vec<ExpiringNonceEntry>,
+    block_expiring_nonce_ids: HashSet<B256>,
+    parent_hash: B256,
+    block_hash: Option<B256>,
+    block_timestamp: u64,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -192,7 +214,11 @@ where
         evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
+        expiring_nonce_history: ExpiringNonceHistory,
     ) -> Self {
+        let parent_hash = ctx.inner.parent_hash;
+        let block_hash = ctx.block_hash;
+        let block_timestamp = evm.block().timestamp.to::<u64>();
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
@@ -210,7 +236,61 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
             replay_state: StorageActionReplayState::default(),
+            expiring_nonce_history,
+            block_expiring_nonce_entries: Vec::new(),
+            block_expiring_nonce_ids: HashSet::new(),
+            parent_hash,
+            block_hash,
+            block_timestamp,
         }
+    }
+
+    /// Validates an expiring nonce against recent block history and prepares the EVM to skip the
+    /// legacy Nonce-precompile state transition.
+    pub(crate) fn prepare_expiring_nonce(
+        &mut self,
+        tx_env: &mut TempoTxEnv,
+        tx: &TempoTxEnvelope,
+    ) -> Result<Option<ExpiringNonceEntry>, BlockExecutionError> {
+        if !tx.is_expiring_nonce() {
+            return Ok(None);
+        }
+
+        let valid_before = tx
+            .valid_before()
+            .ok_or_else(|| BlockValidationError::msg("expiring nonce missing validBefore"))?;
+        let replay_id = tx_env
+            .unique_tx_identifier()
+            .ok_or_else(|| BlockValidationError::msg("expiring nonce missing replay identifier"))?;
+        let entry = ExpiringNonceEntry {
+            replay_id,
+            valid_before,
+        };
+
+        if !self.evm().cfg.spec.is_t11() {
+            return Ok(Some(entry));
+        }
+
+        if !self.block_expiring_nonce_ids.insert(replay_id) {
+            return Err(BlockValidationError::msg("duplicate expiring nonce in block").into());
+        }
+        match self.expiring_nonce_history.contains(
+            self.parent_hash,
+            replay_id,
+            self.block_timestamp,
+        ) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(BlockValidationError::msg("expiring nonce replay").into());
+            }
+            Err(err) => return Err(BlockValidationError::msg(err.to_string()).into()),
+        }
+
+        if tx_env.tempo_tx_env.is_none() {
+            return Err(BlockValidationError::msg("expiring nonce missing Tempo tx env").into());
+        }
+        tx_env.expiring_nonce_history_verified = true;
+        Ok(Some(entry))
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
@@ -648,6 +728,7 @@ where
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
         }
+        let expiring_nonce_entry = self.prepare_expiring_nonce(&mut tx_env, recovered.tx())?;
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
@@ -692,6 +773,7 @@ where
                 .then(|| recovered.tx().clone()),
             block_gas_used,
             validator_fee,
+            expiring_nonce_entry,
         })
     }
 
@@ -703,6 +785,7 @@ where
             tx,
             block_gas_used,
             validator_fee: _,
+            expiring_nonce_entry,
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner);
@@ -744,6 +827,9 @@ where
         }
 
         self.replay_state.commit_tx_changes();
+        if let Some(entry) = expiring_nonce_entry {
+            self.block_expiring_nonce_entries.push(entry);
+        }
 
         gas_output
     }
@@ -769,6 +855,16 @@ where
 
         let regular_gas_used = self.inner.block_regular_gas_used;
         let (evm, mut result) = self.inner.finish()?;
+
+        if let Some(block_hash) = self.block_hash {
+            self.expiring_nonce_history
+                .record_block(ExpiringNonceBlock {
+                    hash: block_hash,
+                    parent_hash: self.parent_hash,
+                    timestamp: self.block_timestamp,
+                    entries: self.block_expiring_nonce_entries,
+                });
+        }
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
@@ -830,8 +926,8 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{Signed, TxLegacy};
-    use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
+    use alloy_consensus::{Signed, TxLegacy, transaction::SignerRecoverable};
+    use alloy_evm::{FromRecoveredTx, block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
@@ -864,7 +960,7 @@ mod tests {
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
-        transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
+        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use tempo_revm::TempoHaltReason;
 
@@ -892,6 +988,52 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    fn create_expiring_nonce_tx(valid_before: u64) -> TempoTxEnvelope {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            calls: vec![Call {
+                to: Address::ZERO.into(),
+                input: Default::default(),
+                value: Default::default(),
+            }],
+            gas_limit: 100_000,
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 1,
+            valid_before: core::num::NonZeroU64::new(valid_before),
+            ..Default::default()
+        };
+        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::from(Signature::test_signature())))
+    }
+
+    #[test]
+    fn test_t11_rejects_same_block_expiring_nonce_duplicate() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T11)
+            .build(&mut db, &chainspec);
+        let tx = create_expiring_nonce_tx(300);
+        let sender = tx.recover_signer().unwrap();
+        let mut first_env = TempoTxEnv::from_recovered_tx(&tx, sender);
+        let mut duplicate_env = first_env.clone();
+
+        assert!(
+            executor
+                .prepare_expiring_nonce(&mut first_env, &tx)
+                .unwrap()
+                .is_some()
+        );
+        assert!(first_env.expiring_nonce_history_verified);
+        assert_eq!(
+            executor
+                .prepare_expiring_nonce(&mut duplicate_env, &tx)
+                .unwrap_err()
+                .to_string(),
+            "duplicate expiring nonce in block"
+        );
     }
 
     fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
@@ -1530,6 +1672,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1681,6 +1824,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1721,6 +1865,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
         executor.commit_transaction(output1);
 
@@ -1745,6 +1890,7 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
         executor.commit_transaction(output2);
 
@@ -1808,6 +1954,7 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
         executor.commit_transaction(output);
 
@@ -1854,6 +2001,7 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
         executor.commit_transaction(output);
 
@@ -1903,6 +2051,7 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            expiring_nonce_entry: None,
         };
         executor.commit_transaction(output);
 

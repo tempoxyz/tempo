@@ -40,6 +40,7 @@ impl TempoBlockAssembler {
                     validator_set: _,
                     consensus_context,
                     subblock_fee_recipients: _,
+                    block_hash: _,
                 },
             parent,
             transactions,
@@ -193,6 +194,7 @@ mod tests {
             validator_set: None,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
+            block_hash: None,
         };
 
         let tx = create_legacy_tx();
@@ -304,6 +306,7 @@ mod tests {
             validator_set: None,
             consensus_context: Some(ctx),
             subblock_fee_recipients: HashMap::new(),
+            block_hash: None,
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -386,6 +389,7 @@ mod tests {
             validator_set: None,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
+            block_hash: None,
         };
 
         let transactions = vec![create_legacy_tx()];
