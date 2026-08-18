@@ -1,0 +1,74 @@
+name: Benchmark gate
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- only calls the GitHub API; PR code is never checked out
+    types: [opened, reopened, synchronize]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: benchmark-gate-${{ github.repository }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  require-benchmark:
+    if: github.event_name == 'pull_request_target'
+    name: Benchmark run
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write # maintains the benchmark label on the PR
+      pull-requests: read # reads the PR head SHA and exemption details
+      statuses: write # creates the required status on the PR head SHA
+    steps:
+      - name: Require a benchmark for the current revision
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pull = context.payload.pull_request;
+            const fork = pull.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`;
+            const dependabot = pull.user.login === 'dependabot[bot]';
+            const exempt = fork || dependabot;
+            if (!exempt) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pull.number,
+                labels: ['benchmark'],
+              });
+            }
+            const description = fork
+              ? 'External fork PR is exempt from benchmarks'
+              : dependabot
+                ? 'Dependabot PR is exempt from benchmarks'
+                : 'Waiting for the automatic benchmark';
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pull.head.sha,
+              state: exempt ? 'success' : 'pending',
+              context: 'Benchmark run',
+              description,
+              target_url: pull.html_url,
+            });
+
+  pass-merge-group:
+    if: github.event_name == 'merge_group'
+    name: Benchmark run
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write # passes the gate after PR-level enforcement
+    steps:
+      - name: Pass merge group
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.merge_group.head_sha,
+              state: 'success',
+              context: 'Benchmark run',
+              description: 'Benchmark enforced before entering the merge queue',
+            });

@@ -1,0 +1,42 @@
+name: Automatic benchmark
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- only trusted same-repository PRs reach the reusable benchmark workflow
+    types: [labeled, reopened, synchronize]
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write # allows the reusable workflow to report benchmark progress
+  pull-requests: write # allows the reusable workflow to report benchmark progress
+  statuses: write # zizmor: ignore[excessive-permissions] -- allows the reusable workflow to complete the benchmark gate
+
+concurrency:
+  group: automatic-benchmark-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
+      contains(github.event.pull_request.labels.*.name, 'benchmark') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'benchmark')
+    uses: ./.github/workflows/bench-e2e.yml
+    with:
+      pr: ${{ github.event.pull_request.number }}
+      actor: ${{ github.actor }}
+      pr-head-sha: ${{ github.event.pull_request.head.sha }}
+      pr-head-ref: ${{ github.event.pull_request.head.ref }}
+    secrets:
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
