@@ -57,7 +57,9 @@ use crate::{
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
 
+mod ignore_revealed;
 mod state;
+use ignore_revealed::IgnoreRevealed;
 use state::State;
 
 use super::{
@@ -804,6 +806,7 @@ where
         let onchain_outcome =
             tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
                 .expect("the last block of an epoch must contain the DKG outcome");
+        let onchain_output = IgnoreRevealed::from(onchain_outcome.output);
 
         info!("reading validator from contract");
 
@@ -854,7 +857,7 @@ where
                 match observe::<_, _, N3f1, ed25519::Batch>(ctx_mut, logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
-                        (output, state::ShareState::Plaintext(None))
+                        (output.into(), state::ShareState::Plaintext(None))
                     }
                     Err(error) => {
                         warn!(
@@ -867,7 +870,7 @@ where
             }
         };
 
-        if local_output != onchain_outcome.output {
+        if local_output != onchain_output {
             let am_player = onchain_outcome
                 .next_players
                 .position(&self.config.me.public_key())
@@ -886,7 +889,7 @@ where
         // Because we use cached data, we need to check for DKG success here:
         // if the on-chain output is the same as the input into the loop (which
         // is just state.output), then we know the DKG failed.
-        if onchain_outcome.output == state.output {
+        if onchain_output == state.output {
             self.metrics.failures.metric().inc();
         } else {
             self.metrics.successes.metric().inc();
@@ -895,7 +898,7 @@ where
         Ok(Some(state::State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(self.context.as_present_mut()),
-            output: onchain_outcome.output.clone(),
+            output: onchain_output,
             share,
             players: onchain_outcome.next_players,
             is_full_dkg: onchain_outcome.is_next_full_dkg,
@@ -1190,7 +1193,7 @@ where
                     ) {
                         Ok(output) => {
                             info!("local DKG ceremony was a success");
-                            (output, state::ShareState::Plaintext(None))
+                            (output.into(), state::ShareState::Plaintext(None))
                         }
                         Err(error) => {
                             warn!(
@@ -1226,7 +1229,7 @@ where
             .response
             .send(OnchainDkgOutcome {
                 epoch: next_epoch,
-                output,
+                output: output.into_inner(),
                 next_players,
                 is_next_full_dkg: will_be_re_dkg,
             })
@@ -1305,7 +1308,7 @@ where
     Ok(State {
         epoch: onchain_outcome.epoch,
         seed: Summary::random(context),
-        output: onchain_outcome.output.clone(),
+        output: onchain_outcome.output.into(),
         share,
         players: onchain_outcome.next_players,
         is_full_dkg: onchain_outcome.is_next_full_dkg,

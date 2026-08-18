@@ -13,7 +13,7 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{
-            self as dkg, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog,
+            self as dkg, DealerPrivMsg, DealerPubMsg, Info, PlayerAck, SignedDealerLog,
         },
         primitives::{
             group::Share,
@@ -34,6 +34,8 @@ use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
+
+use super::IgnoreRevealed;
 
 const PAGE_SIZE: NonZeroU16 = NZU16!(1 << 12);
 const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 13);
@@ -313,7 +315,7 @@ where
         &mut self,
         epoch: Epoch,
         digest: Digest,
-        output: Output<MinSig, PublicKey>,
+        output: IgnoreRevealed,
         share: ShareState,
     ) {
         self.cache
@@ -327,7 +329,7 @@ where
         &self,
         epoch: &Epoch,
         digest: &Digest,
-    ) -> Option<&(Output<MinSig, PublicKey>, ShareState)> {
+    ) -> Option<&(IgnoreRevealed, ShareState)> {
         self.cache
             .get(epoch)
             .and_then(|events| events.dkg_outcomes.get(digest))
@@ -648,7 +650,7 @@ impl Read for ShareState {
 pub(super) struct State {
     pub(super) epoch: Epoch,
     pub(super) seed: Summary,
-    pub(super) output: Output<MinSig, PublicKey>,
+    pub(super) output: IgnoreRevealed,
     pub(super) share: ShareState,
     pub(super) players: ordered::Set<PublicKey>,
     pub(super) is_full_dkg: bool,
@@ -708,7 +710,7 @@ impl Read for State {
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;
         let seed = ReadExt::read(buf)?;
-        let output = Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?;
+        let output: IgnoreRevealed = Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?;
         let share = ReadExt::read(buf)?;
         let players = Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
 
@@ -748,7 +750,7 @@ struct Events {
     finalized: BTreeMap<Height, FinalizedBlockInfo>,
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
-    dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, ShareState)>,
+    dkg_outcomes: HashMap<Digest, (IgnoreRevealed, ShareState)>,
 }
 
 impl Events {
@@ -1028,7 +1030,7 @@ impl Round {
         let previous_output = if state.is_full_dkg {
             None
         } else {
-            Some(state.output.clone())
+            Some(state.output.clone().into_inner())
         };
 
         let dealers = state.dealers().clone();
@@ -1146,9 +1148,10 @@ impl Player {
         rng: &mut impl rand_core::CryptoRng,
         logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
-    ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
+    ) -> Result<(IgnoreRevealed, Share), dkg::Error> {
         self.player
             .finalize::<N3f1, commonware_cryptography::ed25519::Batch>(rng, logs, strategy)
+            .map(|(outcome, share)| (outcome.into(), share))
     }
 }
 
@@ -1238,7 +1241,7 @@ mod tests {
         State {
             epoch: Epoch::new(epoch),
             seed: Summary::random(rng),
-            output,
+            output: output.into(),
             share: ShareState::Plaintext(None),
             players: pubkeys,
             is_full_dkg: false,
