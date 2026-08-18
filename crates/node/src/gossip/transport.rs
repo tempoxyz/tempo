@@ -244,7 +244,12 @@ impl GossipProtocol {
 }
 
 impl Shared {
-    fn connection<S>(self: &Arc<Self>, peer: PeerId, conn: S) -> Connection<S> {
+    /// Called when reth receives a new connection from a peer.
+    ///
+    /// `conn` is the reth side connection and is represented by a stream.
+    ///
+    /// This method registers the connection with the coordinator.
+    fn on_connection<S>(self: &Arc<Self>, peer: PeerId, conn: S) -> Connection<S> {
         let id = self.next_connection_id();
         let (registration_tx, registration_rx) = oneshot::channel();
         let _ = self.commands.send(ConnectionCommand::Register {
@@ -470,7 +475,7 @@ impl ConnectionHandler for GossipProtocolHandler {
         peer_id: PeerId,
         conn: ProtocolConnection,
     ) -> Self::Connection {
-        self.shared.connection(peer_id, conn)
+        self.shared.on_connection(peer_id, conn)
     }
 }
 
@@ -732,7 +737,7 @@ mod tests {
     }
 
     fn connection<S>(handler: &GossipProtocolHandler, peer: PeerId, conn: S) -> Connection<S> {
-        handler.shared.connection(peer, conn)
+        handler.shared.on_connection(peer, conn)
     }
 
     async fn register<S>(connection: &mut Connection<S>) -> bool
