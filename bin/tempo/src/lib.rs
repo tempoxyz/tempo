@@ -517,7 +517,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .node(overrides.apply_tempo_node({
                 let node = TempoNode::new(&args.node_args, validator_key);
                 match gossip_protocol_handler {
-                    Some(protocol_handler) => node.with_gossip(protocol_handler),
+                    Some(protocol_handler) => {
+                        node.with_finalization_cert_gossip(protocol_handler)
+                    }
                     None => node,
                 }
             }))

@@ -330,8 +330,8 @@ pub struct Args {
     pub gossip_verify_rate: u32,
 
     /// Frames accepted per second from a single connection.
-    #[arg(long = "consensus.gossip.peer-frame-rate", default_value_t = 8)]
-    pub gossip_peer_frame_rate: u32,
+    #[arg(long = "consensus.gossip.peer-frame-rate", default_value = "8")]
+    pub gossip_peer_frame_rate: NonZeroU32,
 
     /// Frames remembered as already settled or published.
     #[arg(long = "consensus.gossip.recent-frames", default_value_t = 4_096)]
