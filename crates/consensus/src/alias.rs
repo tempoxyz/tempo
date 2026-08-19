@@ -4,11 +4,11 @@
 pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
-    use alloy_consensus::BlockHeader as _;
+    use alloy_consensus::{BlockHeader as _, Sealable as _};
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
+        marshal::{self, core, standard::Standard, store::Blocks as _},
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -23,12 +23,11 @@ pub(crate) mod marshal {
     use rand_core::{CryptoRng, Rng};
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
-    use reth_provider::{
-        BlockHashReader as _, BlockReader as _, HeaderProvider as _, providers::BlockchainProvider,
-    };
+    use reth_provider::{BlockReader as _, HeaderProvider as _, providers::BlockchainProvider};
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
-    use tracing::{info, instrument};
+    use tempo_primitives::TempoHeader;
+    use tracing::{info, instrument, warn};
 
     use crate::{
         consensus::{Digest, block::Block},
@@ -152,16 +151,6 @@ pub(crate) mod marshal {
             start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
                 .await?;
 
-        if let marshal::Start::Floor(finalization) = &start {
-            register_scheme(
-                &mut context,
-                &config.epoch_strategy,
-                &config.scheme_provider,
-                &execution_node,
-                (finalized_floor.0, finalization),
-            )?;
-        }
-
         let finalized_blocks = storage::init_finalized_blocks(
             &context,
             &config.partition_prefix,
@@ -171,6 +160,18 @@ pub(crate) mod marshal {
         )
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
+
+        if let marshal::Start::Floor(finalization) = &start {
+            register_scheme(
+                &mut context,
+                &config.epoch_strategy,
+                &config.scheme_provider,
+                &finalized_blocks,
+                &execution_node,
+                (finalized_floor.0, finalization),
+            )
+            .await?;
+        }
 
         let (actor, mailbox, marshal_stored_height) = core::Actor::init(
             context,
@@ -333,35 +334,40 @@ pub(crate) mod marshal {
         ))
     }
 
-    fn register_scheme<R: CryptoRng>(
-        rng: &mut R,
+    #[instrument(skip_all, fields(%height), err)]
+    async fn register_scheme<TContext>(
+        context: &mut TContext,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
+        finalized_blocks: &Hybrid<
+            TContext,
+            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
+        >,
         execution_node: &TempoFullNode,
         (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
-    ) -> eyre::Result<()> {
-        let digest = execution_node
-            .provider
-            .block_hash(height.get())
-            .map_err(eyre::Report::new)
-            .wrap_err("failed reading finalized floor block hash")?
-            .ok_or_eyre("missing finalized floor block hash")?;
+    ) -> eyre::Result<()>
+    where
+        TContext: Clock + Metrics + Storage + BufferPooler + CryptoRng + Send + Sync + 'static,
+    {
+        let finalized_header = read_header(execution_node, finalized_blocks, height).await?;
 
         ensure!(
-            digest == finalization.proposal.payload.0,
+            Digest(finalized_header.hash_slow()) == finalization.proposal.payload,
             "finalization digest does not match execution state"
         );
 
         let epoch = finalization.epoch();
         let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
-        let header = execution_node
-            .provider
-            .header_by_number(boundary.get())
-            .map_err(eyre::Report::new)
-            .wrap_err("failed reading block header")?
-            .ok_or_eyre("missing boundary header")?;
+        let header = read_header(execution_node, finalized_blocks, boundary).await?;
+
         let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("failed to read DKG outcome from boundary header")?;
+        ensure!(
+            onchain_outcome.epoch == epoch,
+            "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
+            onchain_outcome.epoch,
+        );
+
         let scheme = Scheme::verifier(
             crate::config::NAMESPACE,
             onchain_outcome.players().clone(),
@@ -369,12 +375,55 @@ pub(crate) mod marshal {
         );
 
         ensure!(
-            finalization.verify(rng, &scheme, &Sequential),
+            finalization.verify(context, &scheme, &Sequential),
             "finalized floor failed verification"
         );
 
         scheme_provider.register(epoch, scheme);
         Ok(())
+    }
+
+    /// Reads the header at `height` from the execution layer, falling back to
+    /// the hybrid store (and therefore its finalized-block archive cache) when
+    /// unavailable.
+    #[instrument(skip_all, fields(%height), err)]
+    async fn read_header<TContext>(
+        execution_node: &TempoFullNode,
+        finalized_blocks: &Hybrid<
+            TContext,
+            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
+        >,
+        height: Height,
+    ) -> eyre::Result<TempoHeader>
+    where
+        TContext: Clock + Metrics + Storage + BufferPooler + Send + Sync + 'static,
+    {
+        match execution_node.provider.header_by_number(height.get()) {
+            Ok(Some(header)) => return Ok(header),
+            Ok(None) => {
+                warn!(%height, "execution layer did not contain finalized header; falling back to hybrid store");
+            }
+            Err(error) => {
+                warn!(
+                    error = %eyre::Report::new(error),
+                    %height,
+                    "failed reading finalized header from execution layer; falling back to hybrid store"
+                );
+            }
+        }
+
+        finalized_blocks
+            .get(Identifier::Index(height.get()))
+            .await
+            .wrap_err_with(|| {
+                format!("failed reading finalized header at height `{height}` from hybrid store")
+            })?
+            .map(|block| block.block().header().clone())
+            .ok_or_else(|| {
+                eyre!(
+                    "missing finalized header at height `{height}` in execution layer and hybrid store"
+                )
+            })
     }
 
     fn boundary_for_epoch(epoch_strategy: &FixedEpocher, epoch: Epoch) -> eyre::Result<Height> {
