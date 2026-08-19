@@ -253,11 +253,6 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
 
 permissions:
   actions: read
@@ -312,7 +307,7 @@ jobs:
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
-      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
+      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || (inputs['rpc-path-comparison'] && 'baseline-1') || 'feature-1' }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
