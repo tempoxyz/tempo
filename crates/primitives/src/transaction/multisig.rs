@@ -4,6 +4,7 @@ use alloc::{
     vec::Vec,
 };
 use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_rlp::Encodable as _;
 use core::{
     hash::{Hash, Hasher},
     mem::size_of,
@@ -54,8 +55,6 @@ pub enum MultisigConfigError {
     TooManyOwners,
     /// The threshold is zero.
     ZeroThreshold,
-    /// The threshold exceeds [`MAX_MULTISIG_THRESHOLD`].
-    ThresholdTooHigh,
     /// An owner address is zero.
     ZeroOwner,
     /// An owner weight is zero.
@@ -64,8 +63,6 @@ pub enum MultisigConfigError {
     DuplicateOwner,
     /// The owner list is not strictly ascending.
     OwnersNotAscending,
-    /// Owner weight accumulation overflowed.
-    WeightOverflow,
     /// Total owner weight exceeds `u8::MAX`.
     TotalWeightExceedsMax,
     /// The threshold exceeds the weight reachable within the approval limit.
@@ -81,12 +78,10 @@ impl MultisigConfigError {
             Self::EmptyOwners => "multisig owners cannot be empty",
             Self::TooManyOwners => "too many multisig owners",
             Self::ZeroThreshold => "multisig threshold cannot be zero",
-            Self::ThresholdTooHigh => "multisig threshold exceeds max threshold",
             Self::ZeroOwner => "multisig owner cannot be zero",
             Self::ZeroWeight => "multisig owner weight cannot be zero",
             Self::DuplicateOwner => "multisig owners cannot contain duplicates",
             Self::OwnersNotAscending => "multisig owners must be strictly ascending",
-            Self::WeightOverflow => "multisig owner weight overflow",
             Self::TotalWeightExceedsMax => "multisig total owner weight exceeds u8::MAX",
             Self::ThresholdExceedsWeight => {
                 "multisig threshold cannot be reached within the owner approval limit"
@@ -174,7 +169,7 @@ impl MultisigWeightAccumulator {
     }
 
     /// Records one recovered owner address and its configured weight.
-    pub fn record_owner(&mut self, owner: Address, weight: u8) -> Result<u8, MultisigQuorumError> {
+    pub fn record_owner(&mut self, owner: Address, weight: u8) -> Result<(), MultisigQuorumError> {
         self.signer_count = self
             .signer_count
             .checked_add(1)
@@ -188,11 +183,8 @@ impl MultisigWeightAccumulator {
         }
         self.prev_owner = Some(owner);
 
-        self.recovered_weight = self
-            .recovered_weight
-            .checked_add(u16::from(weight))
-            .ok_or(MultisigQuorumError::WeightOverflow)?;
-        Ok(weight)
+        self.recovered_weight += u16::from(weight);
+        Ok(())
     }
 
     /// Returns whether the accumulated weight satisfies the configured threshold.
@@ -427,9 +419,7 @@ impl InitMultisig {
             }
 
             prev_owner = Some(owner.owner);
-            total_weight = total_weight
-                .checked_add(u16::from(owner.weight))
-                .ok_or(MultisigConfigError::WeightOverflow)?;
+            total_weight += u16::from(owner.weight);
             if owner.weight > approval_weights[0] {
                 approval_weights[0] = owner.weight;
                 approval_weights.sort_unstable();
@@ -607,7 +597,7 @@ impl MultisigSignature {
         init: Option<InitMultisig>,
     ) -> Result<Self, &'static str> {
         let address = MultisigAddress::from_parts(account, init)?;
-        Self::from_decoded_address(address, signatures)
+        Self::from_validated_address(address, signatures)
     }
 
     fn from_decoded_address(
@@ -620,6 +610,13 @@ impl MultisigSignature {
         if let MultisigAddress::Init(init) = &address {
             init.account().map_err(MultisigConfigError::as_str)?;
         }
+        Self::from_validated_address(address, signatures)
+    }
+
+    fn from_validated_address(
+        address: MultisigAddress,
+        signatures: Vec<TempoSignature>,
+    ) -> Result<Self, &'static str> {
         let signature = Self {
             address,
             signatures,
@@ -730,6 +727,13 @@ impl MultisigSignature {
                 .iter()
                 .map(TempoSignature::size)
                 .sum::<usize>()
+    }
+
+    fn rlp_payload_length(&self) -> usize {
+        (match &self.address {
+            MultisigAddress::Initialized(account) => account.length(),
+            MultisigAddress::Init(init) => init.length(),
+        }) + self.signatures.length()
     }
 }
 
@@ -872,33 +876,27 @@ impl alloy_rlp::Decodable for MultisigSignature {
 
 impl alloy_rlp::Encodable for MultisigSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        match &self.address {
-            MultisigAddress::Initialized(account) => InitializedMultisigSignatureWire {
-                account: *account,
-                signatures: self.signatures.clone(),
-            }
-            .encode(out),
-            MultisigAddress::Init(init) => InitMultisigSignatureWire {
-                init: init.clone(),
-                signatures: self.signatures.clone(),
-            }
-            .encode(out),
+        let payload_length = self.rlp_payload_length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
         }
+        .encode(out);
+        match &self.address {
+            MultisigAddress::Initialized(account) => account.encode(out),
+            MultisigAddress::Init(init) => init.encode(out),
+        }
+        self.signatures.encode(out);
     }
 
     fn length(&self) -> usize {
-        match &self.address {
-            MultisigAddress::Initialized(account) => InitializedMultisigSignatureWire {
-                account: *account,
-                signatures: self.signatures.clone(),
-            }
-            .length(),
-            MultisigAddress::Init(init) => InitMultisigSignatureWire {
-                init: init.clone(),
-                signatures: self.signatures.clone(),
-            }
-            .length(),
+        let payload_length = self.rlp_payload_length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
         }
+        .length()
+            + payload_length
     }
 }
 
