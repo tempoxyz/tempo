@@ -59,6 +59,7 @@ use reth_provider::{
 use reth_stages_types::{StageCheckpoint, StageId};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_telemetry_util::display_option;
 use tokio::select;
 use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn};
 
@@ -496,6 +497,8 @@ where
                 .provider
                 .get_stage_checkpoint(StageId::Finish)
                 .wrap_err("failed reading reth Finish stage checkpoint")?;
+            let headers_height = headers.map(|checkpoint| checkpoint.block_number);
+            let finish_height = finish.map(|checkpoint| checkpoint.block_number);
 
             if let Some(checkpoint) = rebuilt_index_checkpoint(headers, finish) {
                 attempt_span.in_scope(|| info!(checkpoint, "execution indices are rebuilt"));
@@ -504,8 +507,8 @@ where
 
             attempt_span.in_scope(|| {
                 info!(
-                    headers = ?headers.map(|checkpoint| checkpoint.block_number),
-                    finish = ?finish.map(|checkpoint| checkpoint.block_number),
+                    headers = %display_option(&headers_height),
+                    finish = %display_option(&finish_height),
                     "waiting for execution indices to rebuild"
                 );
             });
