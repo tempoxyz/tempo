@@ -5323,13 +5323,9 @@ fn test_t11_outer_bootstrap_config_can_authorize_companion_key_auth() {
             .sign_hash_sync(&authorization_digest)
             .expect("owner signing succeeds"),
     );
-    let signed_key_authorization = key_authorization
-        .clone()
-        .into_signed(TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            vec![authorization_signature.to_bytes()],
-            None,
-        )));
+    let signed_key_authorization = key_authorization.into_signed(TempoSignature::Multisig(
+        MultisigSignature::new(account, vec![authorization_signature.to_bytes()], None),
+    ));
     let signature_hash = B256::repeat_byte(0x42);
     let aa_env = TempoBatchCallEnv {
         signature: sign_native_multisig(&config, signature_hash, &owner, true),
