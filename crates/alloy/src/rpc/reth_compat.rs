@@ -129,9 +129,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::revm_compat::{
-        RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, create_mock_primitive_signature,
-    };
+    use crate::rpc::revm_compat::create_mock_primitive_signature;
     use alloy_primitives::{Address, B256, Bytes, TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
@@ -141,6 +139,7 @@ mod tests {
         SignatureType, TempoTransaction,
         transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
     };
+    use tempo_revm::RPC_SIMULATION_UNIQUE_TX_IDENTIFIER;
 
     fn call_request(target: Address) -> TransactionRequest {
         TransactionRequest {
