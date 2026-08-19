@@ -718,7 +718,7 @@ where
                     removed_this_iteration.insert(*tx.hash());
                 }
 
-                metrics.multisig_config_revalidated.increment(count as u64);
+                metrics.multisig_revalidated.increment(count as u64);
 
                 let pool_clone = pool.clone();
                 tokio::spawn(async move {
@@ -732,7 +732,7 @@ where
                         target: "txpool",
                         total = count,
                         success,
-                        reason = "native multisig config update",
+                        reason = "native multisig state update",
                         "Re-validated transactions"
                     );
                 });
