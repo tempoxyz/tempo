@@ -138,7 +138,7 @@ impl NativeMultisig {
         inner_digest: B256,
         signature: &MultisigSignature,
         config: NativeMultisigAuthConfig<'_>,
-        mut load_threshold_and_version: impl FnMut(
+        mut load_registered_config: impl FnMut(
             Address,
         ) -> Result<
             (u8, u64, Vec<MultisigOwner>),
@@ -151,9 +151,8 @@ impl NativeMultisig {
             signature,
             config,
             &mut account_path,
-            &mut load_threshold_and_version,
+            &mut load_registered_config,
         )
-        .map(|_| ())
     }
 
     fn verify_authorization_inner(
@@ -162,13 +161,13 @@ impl NativeMultisig {
         signature: &MultisigSignature,
         config: NativeMultisigAuthConfig<'_>,
         account_path: &mut Vec<Address>,
-        load_threshold_and_version: &mut impl FnMut(
+        load_registered_config: &mut impl FnMut(
             Address,
         ) -> Result<
             (u8, u64, Vec<MultisigOwner>),
             NativeMultisigAuthError,
         >,
-    ) -> Result<u8, NativeMultisigAuthError> {
+    ) -> Result<(), NativeMultisigAuthError> {
         if !config.matches_signature(signature) {
             return Err(NativeMultisigAuthError::invalid_transaction(
                 "multisig authorization config does not match signature",
@@ -224,7 +223,7 @@ impl NativeMultisig {
                     ));
                 }
 
-                let (threshold, version, owners) = load_threshold_and_version(owner)?;
+                let (threshold, version, owners) = load_registered_config(owner)?;
                 account_path.push(owner);
                 self.verify_authorization_inner(
                     digest,
@@ -235,7 +234,7 @@ impl NativeMultisig {
                         owners,
                     },
                     account_path,
-                    load_threshold_and_version,
+                    load_registered_config,
                 )?;
                 account_path.pop();
             }
@@ -246,12 +245,14 @@ impl NativeMultisig {
                 }
                 return weight_accumulator
                     .finish()
+                    .map(|_| ())
                     .map_err(|err| config.quorum_error(err));
             }
         }
 
         weight_accumulator
             .finish()
+            .map(|_| ())
             .map_err(|err| config.quorum_error(err))
     }
 }
