@@ -5840,7 +5840,6 @@ fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction(
         &signature,
         NativeMultisigAuthConfig::Inline(&config),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
-        |_, _| unreachable!("inline owner approvals should not load owner weights"),
     );
 
     assert!(
@@ -5882,7 +5881,6 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
         &signature,
         NativeMultisigAuthConfig::Inline(&config),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
-        |_, _| unreachable!("inline owner approvals should not load owner weights"),
     );
 
     assert!(
@@ -5892,6 +5890,25 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
                 if reason.contains("not an owner")
         ),
         "owner membership depends on current stored config and should remain revalidatable"
+    );
+
+    let result = NativeMultisig::new().verify_authorization(
+        signature_hash,
+        &signature,
+        NativeMultisigAuthConfig::Registered {
+            threshold: config.threshold,
+            version: 0,
+            owners: config.owners.clone(),
+        },
+        |_| unreachable!("primitive owner approvals should not load nested configs"),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(NativeMultisigAuthError::ValidationFailed(reason))
+                if reason.contains("not an owner")
+        ),
+        "registered authorization must bind membership to the canonical owner list"
     );
 }
 
@@ -5921,15 +5938,11 @@ fn native_multisig_authorization_binds_registered_config_version() {
             signature_hash,
             signature,
             NativeMultisigAuthConfig::Registered {
-                account,
                 threshold: 1,
                 version: 1,
+                owners: config.owners.clone(),
             },
             |_| unreachable!("primitive owner approvals should not load nested configs"),
-            |stored_account, owner| {
-                assert_eq!(stored_account, account);
-                Ok(u8::from(owner == signer.address()))
-            },
         )
     };
 
@@ -5985,15 +5998,11 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
             signature_hash,
             signature,
             NativeMultisigAuthConfig::Registered {
-                account,
                 threshold: 1,
                 version: 1,
+                owners: config.owners.clone(),
             },
             |_| unreachable!("primitive owner approvals should not load nested configs"),
-            |stored_account, stored_owner| {
-                assert_eq!(stored_account, account);
-                Ok(u8::from(stored_owner == owner))
-            },
         )
     };
 
@@ -6004,7 +6013,6 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
             &stale_signature,
             NativeMultisigAuthConfig::Inline(&config),
             |_| unreachable!("primitive owner approvals should not load nested configs"),
-            |_, _| unreachable!("inline owner approvals should not load owner weights"),
         )
         .expect("version-zero approval should authorize bootstrap");
     assert!(matches!(
@@ -6021,7 +6029,6 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
             &current_signature,
             NativeMultisigAuthConfig::Inline(&config),
             |_| unreachable!("primitive owner approvals should not load nested configs"),
-            |_, _| unreachable!("inline owner approvals should not load owner weights"),
         ),
         Err(NativeMultisigAuthError::InvalidTransaction(reason))
             if reason == "invalid multisig owner signature"
@@ -6072,7 +6079,6 @@ fn native_multisig_authorization_rejects_trailing_owner_approvals() {
         &signature,
         NativeMultisigAuthConfig::Inline(&config),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
-        |_, _| unreachable!("inline owner approvals should not load owner weights"),
     );
 
     assert!(
