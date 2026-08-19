@@ -31,7 +31,7 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
-use commonware_runtime::{Clock as _, Handle, Supervisor as _, deterministic};
+use commonware_runtime::{Clock, Handle, Metrics, Pacer, Spawner, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _};
 use parking_lot::Mutex;
@@ -152,10 +152,32 @@ struct FakeExecutionInner {
     payload_senders: Mutex<HashMap<PayloadId, oneshot::Sender<TempoBuiltPayload>>>,
     /// Receiver halves handed out on `resolve_payload`.
     payload_receivers: Mutex<HashMap<PayloadId, oneshot::Receiver<TempoBuiltPayload>>>,
+    /// Payload resolutions dropped before the builder returned a result.
+    canceled_payload_jobs: Mutex<Vec<PayloadId>>,
     /// Payloads to auto-deliver to the next registered build jobs.
     scripted_builds: Mutex<VecDeque<TempoBuiltPayload>>,
     /// Blocks servable through `block_by_digest`.
     bodies: Mutex<HashMap<B256, Block>>,
+}
+
+/// Records cancellation when an unresolved fake payload future is dropped.
+struct PayloadResolutionGuard {
+    inner: Arc<FakeExecutionInner>,
+    payload_id: PayloadId,
+    completed: bool,
+}
+
+impl Drop for PayloadResolutionGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.inner.payload_senders.lock().remove(&self.payload_id);
+        self.inner
+            .canceled_payload_jobs
+            .lock()
+            .push(self.payload_id);
+    }
 }
 
 /// A stateful fake of the execution layer.
@@ -190,6 +212,7 @@ impl FakeExecution {
                 next_payload_id: AtomicU64::new(1),
                 payload_senders: Mutex::new(HashMap::new()),
                 payload_receivers: Mutex::new(HashMap::new()),
+                canceled_payload_jobs: Mutex::new(Vec::new()),
                 scripted_builds: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(HashMap::new()),
             }),
@@ -316,6 +339,10 @@ impl FakeExecution {
     /// The IDs of registered builds that have not been delivered or aborted.
     pub(super) fn pending_payload_jobs(&self) -> Vec<PayloadId> {
         self.inner.payload_senders.lock().keys().copied().collect()
+    }
+
+    pub(super) fn canceled_payload_jobs(&self) -> Vec<PayloadId> {
+        self.inner.canceled_payload_jobs.lock().clone()
     }
 
     /// Delivers `payload` for the build registered under `payload_id`.
@@ -592,13 +619,23 @@ impl ExecutionLayer for FakeExecution {
     ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send + 'static {
         self.record(ElCall::Resolve(payload_id));
         let receiver = self.inner.payload_receivers.lock().remove(&payload_id);
+        let mut guard = receiver.as_ref().map(|_| PayloadResolutionGuard {
+            inner: self.inner.clone(),
+            payload_id,
+            completed: false,
+        });
         async move {
             match receiver {
-                Some(receiver) => Some(
-                    receiver
+                Some(receiver) => {
+                    let result = receiver
                         .await
-                        .map_err(|_| Report::msg("payload build was aborted")),
-                ),
+                        .map_err(|_| Report::msg("payload build was aborted"));
+                    guard
+                        .as_mut()
+                        .expect("guard exists with receiver")
+                        .completed = true;
+                    Some(result)
+                }
                 None => None,
             }
         }
@@ -745,33 +782,49 @@ impl Default for HarnessOptions {
     }
 }
 
-/// The actor under test together with its fakes and mailbox.
-pub(super) struct Harness {
-    pub(super) context: deterministic::Context,
-    pub(super) execution: FakeExecution,
-    pub(super) marshal: FakeMarshal,
-    pub(super) mailbox: Mailbox,
-    pub(super) actor: Handle<()>,
+/// Builder for an executor actor harness with default execution and marshal
+/// fakes.
+pub(super) struct HarnessBuilder {
+    execution: FakeExecution,
+    marshal: FakeMarshal,
+    options: HarnessOptions,
 }
 
-impl Harness {
-    /// Starts the actor on a genesis-only chain: empty fakes, floor and tip
-    /// at genesis.
-    pub(super) fn start_at_genesis(context: &deterministic::Context) -> Self {
-        Self::start(
-            context,
-            FakeExecution::new(),
-            FakeMarshal::new(),
-            HarnessOptions::default(),
-        )
+impl Default for HarnessBuilder {
+    fn default() -> Self {
+        Self {
+            execution: FakeExecution::new(),
+            marshal: FakeMarshal::new(),
+            options: HarnessOptions::default(),
+        }
+    }
+}
+
+impl HarnessBuilder {
+    pub(super) fn execution(mut self, execution: FakeExecution) -> Self {
+        self.execution = execution;
+        self
     }
 
-    pub(super) fn start(
-        context: &deterministic::Context,
-        execution: FakeExecution,
-        marshal: FakeMarshal,
-        options: HarnessOptions,
-    ) -> Self {
+    pub(super) fn marshal(mut self, marshal: FakeMarshal) -> Self {
+        self.marshal = marshal;
+        self
+    }
+
+    pub(super) fn harness_options(mut self, options: HarnessOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    pub(super) fn start<TContext>(self, context: &TContext) -> Harness<TContext>
+    where
+        TContext: Clock + Metrics + Pacer + Spawner,
+    {
+        let Self {
+            execution,
+            marshal,
+            options,
+        } = self;
         let (actor, mailbox) = init(
             context.child("executor"),
             Config {
@@ -789,13 +842,39 @@ impl Harness {
         )
         .expect("executor actor should initialize");
         let actor = actor.start();
-        Self {
+        Harness {
             context: context.child("harness"),
             execution,
             marshal,
             mailbox,
             actor,
         }
+    }
+}
+
+/// The actor under test together with its fakes and mailbox.
+pub(super) struct Harness<TContext = deterministic::Context> {
+    pub(super) context: TContext,
+    pub(super) execution: FakeExecution,
+    pub(super) marshal: FakeMarshal,
+    pub(super) mailbox: Mailbox,
+    pub(super) actor: Handle<()>,
+}
+
+impl Harness {
+    pub(super) fn builder() -> HarnessBuilder {
+        HarnessBuilder::default()
+    }
+}
+
+impl<TContext> Harness<TContext>
+where
+    TContext: Clock + Metrics + Pacer + Spawner,
+{
+    /// Starts the actor on a genesis-only chain: empty fakes, floor and tip
+    /// at genesis.
+    pub(super) fn start_at_genesis(context: &TContext) -> Self {
+        Harness::builder().start(context)
     }
 
     /// Polls `cond` (sleeping 1ms of virtual time between attempts) until it
@@ -811,7 +890,7 @@ impl Harness {
     }
 
     /// Lets the actor run for `duration` of virtual time.
-    pub(super) fn run_for(&self, duration: Duration) -> impl Future<Output = ()> + use<> {
+    pub(super) fn run_for(&self, duration: Duration) -> impl Future<Output = ()> + use<TContext> {
         let context = self.context.child("run_for");
         async move { context.sleep(duration).await }
     }
@@ -833,7 +912,8 @@ impl Harness {
     pub(super) fn deliver_finalized(
         &mut self,
         block: Block,
-    ) -> impl Future<Output = Result<(), commonware_utils::acknowledgement::Canceled>> + use<> {
+    ) -> impl Future<Output = Result<(), commonware_utils::acknowledgement::Canceled>> + use<TContext>
+    {
         let (ack, waiter) = Exact::handle();
         assert!(
             self.mailbox
@@ -861,7 +941,7 @@ impl Harness {
         &self,
         round: Round,
         block: Block,
-    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<> {
+    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
         self.verify_with_validator_set(round, block, None)
     }
 
@@ -870,7 +950,7 @@ impl Harness {
         round: Round,
         block: Block,
         validator_set: Option<Vec<B256>>,
-    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<> {
+    ) -> impl Future<Output = eyre::Result<Option<Duration>>> + use<TContext> {
         let mailbox = self.mailbox.clone();
         async move { mailbox.verify_block(round, block, validator_set).await }
     }

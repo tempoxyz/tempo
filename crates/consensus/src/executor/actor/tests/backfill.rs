@@ -40,16 +40,14 @@ fn backfills_to_the_floor_from_marshal() {
         marshal.add_block(b1);
         marshal.add_block(b2);
 
-        let h = Harness::start(
-            &context,
-            FakeExecution::new(),
-            marshal,
-            HarnessOptions {
+        let h = Harness::builder()
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
                 finalized_floor: 2,
                 finalized_tip: (round(2), 2, d2),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         h.wait_until(|| h.execution.finalized() == Some((2, d2)))
             .await;
@@ -72,16 +70,15 @@ fn backfill_falls_back_to_the_execution_layer_for_missing_blocks() {
         let execution = FakeExecution::new();
         execution.add_body(b1);
 
-        let h = Harness::start(
-            &context,
-            execution,
-            marshal,
-            HarnessOptions {
+        let h = Harness::builder()
+            .execution(execution)
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
                 finalized_floor: 1,
                 finalized_tip: (round(1), 1, d1),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         h.wait_until(|| h.execution.finalized() == Some((1, d1)))
             .await;
@@ -101,16 +98,15 @@ fn execution_layer_body_lookup_error_fails_startup() {
         let execution = FakeExecution::new();
         execution.script_block_by_digest(d1, Err("database unavailable"));
 
-        let h = Harness::start(
-            &context,
-            execution,
-            marshal,
-            HarnessOptions {
+        let h = Harness::builder()
+            .execution(execution)
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
                 finalized_floor: 1,
                 finalized_tip: (round(1), 1, d1),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         h.actor
             .await
@@ -125,16 +121,13 @@ fn unsourceable_backfill_block_fails_startup() {
     deterministic::Runner::default().start(|context| async move {
         // Neither marshal nor the execution layer can produce the block at
         // the floor: the executor must refuse to start.
-        let h = Harness::start(
-            &context,
-            FakeExecution::new(),
-            FakeMarshal::new(),
-            HarnessOptions {
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
                 finalized_floor: 1,
                 finalized_tip: (round(1), 1, make_block(1, 1, GENESIS).digest()),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         h.actor
             .await
@@ -160,16 +153,14 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
         execution.seed_canonical_block(&b2);
         execution.set_finalized(2, d2);
 
-        let mut h = Harness::start(
-            &context,
-            execution,
-            FakeMarshal::new(),
-            HarnessOptions {
+        let mut h = Harness::builder()
+            .execution(execution)
+            .harness_options(HarnessOptions {
                 finalized_floor: 1,
                 finalized_tip: (round(2), 2, d2),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         // Re-delivery of the block at the floor: acknowledged, but no
         // forkchoice update is submitted for the stale state.
@@ -206,16 +197,15 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
         // The execution layer is not ready once (e.g. rebuilding indices).
         execution.script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
 
-        let h = Harness::start(
-            &context,
-            execution,
-            marshal,
-            HarnessOptions {
+        let h = Harness::builder()
+            .execution(execution)
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
                 finalized_floor: 1,
                 finalized_tip: (round(1), 1, d1),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         h.wait_until(|| h.execution.finalized() == Some((1, d1)))
             .await;
@@ -238,16 +228,15 @@ fn new_payload_transport_error_fails_startup() {
         let execution = FakeExecution::new();
         execution.script_new_payload(d1, Err("connection closed"));
 
-        let h = Harness::start(
-            &context,
-            execution,
-            marshal,
-            HarnessOptions {
+        let h = Harness::builder()
+            .execution(execution)
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
                 finalized_floor: 1,
                 finalized_tip: (round(1), 1, d1),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         h.actor
             .await

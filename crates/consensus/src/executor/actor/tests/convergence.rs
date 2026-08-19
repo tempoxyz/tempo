@@ -9,9 +9,7 @@ use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
-use super::harness::{
-    FakeExecution, FakeMarshal, GENESIS, Harness, HarnessOptions, make_block, round,
-};
+use super::harness::{GENESIS, Harness, HarnessOptions, make_block, round};
 
 #[test_traced]
 fn pending_head_with_known_body_is_forwarded() {
@@ -142,15 +140,12 @@ fn rejected_notarized_block_is_withheld_then_retried() {
         // Retries of rejected notarized blocks are driven by later events;
         // with nothing else going on, the FCU heartbeat is what re-runs the
         // scheduler, so the test gives it a short interval.
-        let h = Harness::start(
-            &context,
-            FakeExecution::new(),
-            FakeMarshal::new(),
-            HarnessOptions {
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
                 fcu_heartbeat_interval: Duration::from_millis(200),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
@@ -186,15 +181,12 @@ fn rejected_notarized_block_is_withheld_then_retried() {
 #[test_traced]
 fn new_payload_transport_error_is_withheld_then_retried() {
     deterministic::Runner::default().start(|context| async move {
-        let h = Harness::start(
-            &context,
-            FakeExecution::new(),
-            FakeMarshal::new(),
-            HarnessOptions {
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
                 fcu_heartbeat_interval: Duration::from_millis(200),
                 ..Default::default()
-            },
-        );
+            })
+            .start(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();

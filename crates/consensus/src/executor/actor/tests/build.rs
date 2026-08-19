@@ -25,9 +25,7 @@ fn build_on_the_local_head_delivers_the_payload() {
         assert_eq!(Digest(block.hash()), digest);
 
         assert!(
-            h.execution
-                .fcus()
-                .contains(&(GENESIS, GENESIS, true)),
+            h.execution.fcus().contains(&(GENESIS, GENESIS, true)),
             "the build must be registered via an attribute-carrying FCU on the parent",
         );
 
@@ -108,8 +106,15 @@ fn build_canceled_while_queued_still_reaffirms_the_head() {
         h.deliver_finalized(b1)
             .await
             .expect("finalized block should be acknowledged");
-        h.wait_until(|| h.execution.fcus().iter().filter(|(head, ..)| *head == d1).count() >= 2)
-            .await;
+        h.wait_until(|| {
+            h.execution
+                .fcus()
+                .iter()
+                .filter(|(head, ..)| *head == d1)
+                .count()
+                >= 2
+        })
+        .await;
 
         assert!(
             !h.execution.fcus().iter().any(|(.., attrs)| *attrs),
@@ -177,8 +182,15 @@ fn canceling_the_subscription_kills_the_payload_job() {
         let rx = h.build(round(1), 0, GENESIS);
         h.wait_until(|| !h.execution.pending_payload_jobs().is_empty())
             .await;
+        let payload_id = h.execution.pending_payload_jobs()[0];
         drop(rx);
-        h.run_for(Duration::from_millis(100)).await;
+        h.wait_until(|| h.execution.canceled_payload_jobs() == vec![payload_id])
+            .await;
+
+        assert!(
+            h.execution.pending_payload_jobs().is_empty(),
+            "dropping the subscriber must remove the underlying payload job",
+        );
 
         // The actor survives and keeps serving; the killed job never
         // delivers anything.
@@ -225,8 +237,7 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
             validation_error: "rejected".into(),
         }));
         let rx = h.build(round(1), 0, GENESIS);
-        rx.await
-            .expect_err("the failed FCU must fail the build");
+        rx.await.expect_err("the failed FCU must fail the build");
 
         // Build failures are not fatal for the executor.
         let b1 = make_block(1, 1, GENESIS);
