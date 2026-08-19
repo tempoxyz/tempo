@@ -388,6 +388,11 @@ pub(crate) mod marshal {
 
         let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("failed to read DKG outcome from boundary header")?;
+        ensure!(
+            onchain_outcome.epoch == epoch,
+            "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
+            onchain_outcome.epoch,
+        );
 
         let scheme = Scheme::verifier(
             crate::config::NAMESPACE,
