@@ -382,6 +382,7 @@ pub(crate) mod marshal {
         Ok(())
     }
 
+    #[instrument(skip_all, fields(%height), err)]
     async fn read_header<TContext>(
         execution_node: &TempoFullNode,
         finalized_blocks: &Hybrid<
