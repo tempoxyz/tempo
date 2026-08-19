@@ -941,7 +941,7 @@ impl TIP20Token {
         to.validate()?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.storage.spec().is_t6() && to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
             return Err(ReceivePolicyGuardError::address_reserved().into());
         }
         self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
@@ -1213,10 +1213,9 @@ impl TIP20Token {
         sender: Address,
         receiver: Address,
     ) -> Result<()> {
-        if self.storage.spec().is_t6()
-            && TIP403Registry::new()
-                .validate_receive_policy(self.address, sender, receiver)?
-                .is_some()
+        if TIP403Registry::new()
+            .validate_receive_policy(self.address, sender, receiver)?
+            .is_some()
         {
             return Err(TIP20Error::policy_forbids().into());
         }
