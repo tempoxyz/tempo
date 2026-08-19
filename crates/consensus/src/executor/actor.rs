@@ -77,10 +77,10 @@ mod tests;
 mod notarized_tree;
 use notarized_tree::{LocalState, NextToForward, NotarizedTree};
 
-/// How often to check whether reth's pipeline has finished syncing.
-const PIPELINE_CHECKPOINT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often to check whether reth has rebuilt its indices up to the headers checkpoint.
+const INDEX_REBUILD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-fn synced_pipeline_checkpoint(
+fn rebuilt_index_checkpoint(
     headers: Option<StageCheckpoint>,
     finish: Option<StageCheckpoint>,
 ) -> Option<u64> {
@@ -322,11 +322,11 @@ where
     }
 
     async fn run(mut self) {
-        if let Err(error) = self.wait_for_pipeline_sync().await {
+        if let Err(error) = self.wait_for_index_rebuild().await {
             error_span!("shutdown").in_scope(|| {
                 error!(
                     %error,
-                    "executor failed waiting for execution pipeline sync",
+                    "executor failed waiting for execution index rebuild",
                 )
             });
             return;
@@ -482,7 +482,8 @@ where
         Ok(())
     }
 
-    async fn wait_for_pipeline_sync(&mut self) -> eyre::Result<()> {
+    /// Waits for reth's startup index rebuild to catch the Finish stage up to Headers.
+    async fn wait_for_index_rebuild(&mut self) -> eyre::Result<()> {
         loop {
             let headers = self
                 .execution_node
@@ -495,17 +496,17 @@ where
                 .get_stage_checkpoint(StageId::Finish)
                 .wrap_err("failed reading reth Finish stage checkpoint")?;
 
-            if let Some(checkpoint) = synced_pipeline_checkpoint(headers, finish) {
-                info!(checkpoint, "execution pipeline stage checkpoints match");
+            if let Some(checkpoint) = rebuilt_index_checkpoint(headers, finish) {
+                info!(checkpoint, "execution indices are rebuilt");
                 return Ok(());
             }
 
             info!(
                 headers = ?headers.map(|checkpoint| checkpoint.block_number),
                 finish = ?finish.map(|checkpoint| checkpoint.block_number),
-                "waiting for execution pipeline to finish syncing"
+                "waiting for execution indices to rebuild"
             );
-            self.context.sleep(PIPELINE_CHECKPOINT_POLL_INTERVAL).await;
+            self.context.sleep(INDEX_REBUILD_POLL_INTERVAL).await;
         }
     }
 

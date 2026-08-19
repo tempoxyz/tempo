@@ -9,7 +9,7 @@ use commonware_consensus::Heightable as _;
 
 use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
-    notarized_tree::LocalState, queue_consensus_request, synced_pipeline_checkpoint,
+    notarized_tree::LocalState, queue_consensus_request, rebuilt_index_checkpoint,
 };
 use crate::consensus::{Digest, block::Block};
 
@@ -18,26 +18,26 @@ fn round(view: u64) -> Round {
 }
 
 #[test]
-fn pipeline_checkpoints_only_sync_at_the_same_height() {
+fn indices_are_only_rebuilt_when_finish_reaches_headers() {
     assert_eq!(
-        synced_pipeline_checkpoint(
+        rebuilt_index_checkpoint(
             Some(StageCheckpoint::new(10)),
             Some(StageCheckpoint::new(10)),
         ),
         Some(10)
     );
     assert_eq!(
-        synced_pipeline_checkpoint(
+        rebuilt_index_checkpoint(
             Some(StageCheckpoint::new(11)),
             Some(StageCheckpoint::new(10)),
         ),
         None
     );
     assert_eq!(
-        synced_pipeline_checkpoint(Some(StageCheckpoint::new(10)), None),
+        rebuilt_index_checkpoint(Some(StageCheckpoint::new(10)), None),
         None
     );
-    assert_eq!(synced_pipeline_checkpoint(None, None), None);
+    assert_eq!(rebuilt_index_checkpoint(None, None), None);
 }
 
 /// Builds a block constructed in `view` at `height`.
