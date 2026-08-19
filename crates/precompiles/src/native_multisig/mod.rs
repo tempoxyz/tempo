@@ -199,19 +199,16 @@ impl NativeMultisig {
     }
 
     #[cfg(test)]
-    fn load_registered_config(&self, account: Address) -> Result<InitMultisig> {
+    fn load_registered_init(&self, account: Address) -> Result<InitMultisig> {
         self.load_stored_config(account).map(|stored| stored.config)
     }
 
-    pub fn load_registered_config_summary(
-        &self,
-        account: Address,
-    ) -> Result<RegisteredMultisigConfig> {
-        self.load_registered_config_summary_if_present(account)?
+    pub fn load_registered_config(&self, account: Address) -> Result<RegisteredMultisigConfig> {
+        self.load_registered_config_if_present(account)?
             .ok_or_else(|| NativeMultisigError::not_multisig_account().into())
     }
 
-    pub fn load_registered_config_summary_if_present(
+    pub fn load_registered_config_if_present(
         &self,
         account: Address,
     ) -> Result<Option<RegisteredMultisigConfig>> {
@@ -1017,7 +1014,7 @@ mod tests {
             for account in [missing_owner_account, mismatched_weight_account] {
                 assert!(multisig.is_multisig_account(account)?);
                 assert!(matches!(
-                    multisig.load_registered_config(account),
+                    multisig.load_registered_init(account),
                     Err(TempoPrecompileError::NativeMultisigError(
                         NativeMultisigError::InvalidConfig(_)
                     ))
@@ -1067,7 +1064,7 @@ mod tests {
                 } else {
                     assert!(multisig.is_multisig_account(account)?);
                     assert!(matches!(
-                        multisig.load_registered_config(account),
+                        multisig.load_registered_init(account),
                         Err(TempoPrecompileError::NativeMultisigError(
                             NativeMultisigError::InvalidConfig(_)
                         ))
