@@ -1,7 +1,11 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
+    evm::TempoEvm,
+    gas_params::tempo_gas_params,
+    signature_gas::{
+        P256_VERIFY_GAS, primitive_signature_verification_gas, tempo_signature_verification_gas,
+    },
     tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -24,8 +28,8 @@ use tempo_precompiles::{
     tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    Call, InitMultisig, MultisigOwner, MultisigSignature, PrimitiveSignature,
-    RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
+    Call, InitMultisig, KeyAuthorization, MultisigOwner, MultisigSignature, PrimitiveSignature,
+    RecoveredTempoAuthorization, SignatureType, TempoSignature, TempoSignedAuthorization,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -1269,7 +1273,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -1291,7 +1295,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         ));
 
     let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
@@ -4495,6 +4499,38 @@ fn native_multisig_execution_remains_inactive() {
             vec![Bytes::from_static(&[0xaa; 65])],
             Some(config),
         )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigNotActive
+        ))
+    ));
+}
+
+#[test]
+fn native_multisig_key_authorization_remains_inactive() {
+    let account = Address::repeat_byte(0x44);
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x55))
+            .with_account(account)
+            .into_signed(TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![PrimitiveSignature::default().to_bytes()],
+                None,
+            )));
+    let aa_env = TempoBatchCallEnv {
+        key_authorization: Some(key_authorization),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
