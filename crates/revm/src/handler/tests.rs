@@ -4794,6 +4794,47 @@ fn test_t10_rejects_native_multisig_key_authorization_signature() {
 }
 
 #[test]
+fn test_t11_unfunded_multisig_rejects_before_owner_verification() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            Some(config),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.gas_limit = 100_000;
+        tx_env.inner.gas_price = 1;
+        tx_env.inner.gas_priority_fee = Some(1);
+    });
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        TIP20Setup::path_usd(account)
+            .with_issuer(account)
+            .apply()
+            .map(|_| ())
+    })
+    .expect("pathUSD setup succeeds");
+
+    assert!(matches!(
+        test.validate_against_state_and_deduct_caller(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::LackOfFundForMaxFee { .. }
+            )
+        ))
+    ));
+}
+
+#[test]
 fn test_t11_rejects_keychain_key_authorization_signature() {
     let caller = Address::repeat_byte(0x11);
     let key_authorization =

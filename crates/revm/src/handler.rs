@@ -1049,6 +1049,19 @@ where
         let key_authorization_multisig_signature = tempo_tx_env
             .and_then(|aa| aa.key_authorization.as_ref())
             .and_then(|key_auth| key_auth.signature.as_multisig());
+        // Multisig accounts name their caller directly, so an unfunded bootstrap can otherwise
+        // supply a fully valid worst-case quorum before the ordinary fee check runs. Reject it
+        // before owner verification, then reuse the result at the normal fee-deduction point.
+        // Subblock fee failures must remain after nonce consumption and use the normal path below.
+        let early_multisig_balance = if spec.is_t11()
+            && !tx.is_subblock_transaction()
+            && (outer_multisig_signature.is_some()
+                || key_authorization_multisig_signature.is_some())
+        {
+            Some(calculate_caller_fee(account_balance, tx, block, cfg)?)
+        } else {
+            None
+        };
         let key_authorization_key_id = tempo_tx_env
             .and_then(|aa| aa.key_authorization.as_ref())
             .map(|key_auth| key_auth.key_id);
@@ -1662,7 +1675,10 @@ where
         }
 
         // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
+        let new_balance = match early_multisig_balance {
+            Some(balance) => balance,
+            None => calculate_caller_fee(account_balance, tx, block, cfg)?,
+        };
         // doing max to avoid underflow as new_balance can be more than account
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
