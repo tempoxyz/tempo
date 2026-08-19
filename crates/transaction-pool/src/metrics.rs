@@ -101,4 +101,7 @@ pub struct TempoPoolMaintenanceMetrics {
 
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
+
+    /// Number of transactions re-validated due to native multisig configuration changes.
+    pub multisig_config_revalidated: Counter,
 }

@@ -288,7 +288,14 @@ impl TempoPoolUpdates {
             || !self.paused_tokens.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
-            || !self.multisig_config_changes.is_empty()
+    }
+
+    fn affects_multisig_transaction(&self, transaction: &TempoPooledTransaction) -> bool {
+        !self.multisig_config_changes.is_empty()
+            && transaction
+                .multisig_accounts()
+                .iter()
+                .any(|account| self.multisig_config_changes.contains(account))
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -676,6 +683,45 @@ where
             }
         }
 
+        if !updates.multisig_config_changes.is_empty() {
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| updates.affects_multisig_transaction(&tx.transaction))
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let removed_txs = pool.remove_transactions(hashes);
+                let count = removed_txs.len();
+
+                for tx in &removed_txs {
+                    removed_this_iteration.insert(*tx.hash());
+                }
+
+                metrics.multisig_config_revalidated.increment(count as u64);
+
+                let pool_clone = pool.clone();
+                tokio::spawn(async move {
+                    let txs = removed_txs
+                        .into_iter()
+                        .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                        .collect();
+                    let results = pool_clone.add_transactions_with_origins(txs).await;
+                    let success = results.iter().filter(|result| result.is_ok()).count();
+                    debug!(
+                        target: "txpool",
+                        total = count,
+                        success,
+                        reason = "native multisig config update",
+                        "Re-validated transactions"
+                    );
+                });
+            }
+        }
+
         // 5. Evict expired and invalidated transactions in one pool traversal.
         let invalidation_start = Instant::now();
         debug!(
@@ -689,6 +735,7 @@ where
             user_token_changes = updates.user_token_changes.len(),
             blacklist_additions = updates.blacklist_additions.len(),
             whitelist_removals = updates.whitelist_removals.len(),
+            multisig_config_changes = updates.multisig_config_changes.len(),
             "Processing transaction invalidation events"
         );
         let evicted = {
@@ -753,6 +800,28 @@ mod tests {
     use reth_primitives_traits::RecoveredBlock;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
+
+    #[test]
+    fn multisig_config_changes_select_outer_and_nested_authorizations() {
+        let parent = Address::random();
+        let child = Address::random();
+        let direct = TxBuilder::aa(parent).build_multisig(parent);
+        let nested = TxBuilder::aa(parent).build_multisig_nested(parent, child);
+
+        let mut updates = TempoPoolUpdates::new();
+        assert!(!updates.affects_multisig_transaction(&direct));
+
+        updates.multisig_config_changes.insert(parent);
+        assert!(updates.affects_multisig_transaction(&direct));
+
+        updates.multisig_config_changes.clear();
+        updates.multisig_config_changes.insert(child);
+        assert!(updates.affects_multisig_transaction(&nested));
+
+        updates.multisig_config_changes.clear();
+        updates.multisig_config_changes.insert(Address::random());
+        assert!(!updates.affects_multisig_transaction(&nested));
+    }
 
     mod pending_staleness_tracker_tests {
         use super::*;
