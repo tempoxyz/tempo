@@ -9,7 +9,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Map, B256Set},
+    map::{AddressMap, AddressSet, B256Set},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -18,11 +18,8 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, PoolTransaction, TransactionPool};
-use std::{
-    collections::{BTreeMap, btree_map::Entry},
-    time::Instant,
-};
+use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{
     IAccountKeychain, IFeeManager, INativeMultisig, ITIP20, ITIP403Registry,
@@ -37,11 +34,6 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
-
-/// Maximum number of new-transaction events to receive in a single maintenance wakeup
-/// before yielding back to the event loop. Bounds the per-wakeup work so a sustained
-/// burst of new transactions cannot starve block-commit processing.
-const NEW_TX_DRAIN_LIMIT: usize = 4096;
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -461,102 +453,12 @@ fn decode_event<T: SolEvent>(log: &Log) -> Option<T> {
 }
 
 /// Tracking state for pool maintenance operations.
-///
-/// Tracks AA transaction expiry (`valid_before` timestamps) for eviction.
-///
-/// Note: Stale entries (transactions no longer in the pool) are cleaned up lazily
-/// when we check `pool.contains()` before eviction. This avoids the overhead of
-/// subscribing to all transaction lifecycle events.
 #[derive(Default)]
 struct TempoPoolState {
-    /// Maps timestamp to transactions that are going to be invalidated at that time (due to `valid_after` or keychain-related expiry).
-    expiry_map: BTreeMap<u64, B256Set>,
-    /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
-    tx_to_expiry: B256Map<u64>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
     /// Tracks pending transaction staleness for DoS mitigation.
     pending_staleness: PendingStalenessTracker,
-}
-
-impl TempoPoolState {
-    /// Tracks an AA transaction with a `valid_before` timestamp.
-    fn track(&mut self, tx: &TempoPooledTransaction) {
-        let valid_before = tx.inner().valid_before();
-        let key_expiry = tx.key_expiry();
-
-        let expiry = [valid_before, key_expiry].into_iter().flatten().min();
-
-        if let Some(expiry) = expiry {
-            self.expiry_map
-                .entry(expiry)
-                .or_default()
-                .insert(*tx.hash());
-            self.tx_to_expiry.insert(*tx.hash(), expiry);
-        }
-    }
-
-    /// Removes expiry and key-expiry tracking for a single transaction.
-    fn untrack(&mut self, hash: &TxHash) {
-        if let Some(expiry) = self.tx_to_expiry.remove(hash)
-            && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
-        {
-            entry.get_mut().remove(hash);
-            if entry.get().is_empty() {
-                entry.remove();
-            }
-        }
-    }
-
-    /// Removes expiry and key-expiry tracking for a batch of transactions.
-    ///
-    /// Mined transactions often share the same expiry timestamp, so first group
-    /// hashes by their recorded expiry and then touch each expiry bucket once.
-    /// This avoids repeating the `expiry_map` lookup for every mined hash while
-    /// preserving O(1)-ish removal from each `B256Set` bucket.
-    fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
-        // Skip iterating the mined hashes if nothing is tracked for expiry.
-        if self.tx_to_expiry.is_empty() {
-            return;
-        }
-
-        let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
-
-        for hash in hashes {
-            if let Some(expiry) = self.tx_to_expiry.remove(hash) {
-                hashes_by_expiry.entry(expiry).or_default().insert(*hash);
-            }
-        }
-
-        for (expiry, hashes) in hashes_by_expiry {
-            if let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry) {
-                let bucket = entry.get_mut();
-                for hash in hashes {
-                    bucket.remove(&hash);
-                }
-                if bucket.is_empty() {
-                    entry.remove();
-                }
-            }
-        }
-    }
-
-    /// Collects and removes all expired transactions up to the given timestamp.
-    /// Returns the list of expired transaction hashes.
-    fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
-        let mut expired = Vec::new();
-        while let Some(entry) = self.expiry_map.first_entry()
-            && *entry.key() <= tip_timestamp
-        {
-            let expired_hashes = entry.remove();
-            expired.reserve(expired_hashes.len());
-            for tx_hash in expired_hashes {
-                self.tx_to_expiry.remove(&tx_hash);
-                expired.push(tx_hash);
-            }
-        }
-        expired
-    }
 }
 
 /// Default interval for pending transaction staleness checks (30 minutes).
@@ -653,388 +555,342 @@ where
     let mut state = TempoPoolState::default();
     let metrics = TempoPoolMaintenanceMetrics::default();
 
-    // Subscribe to new transactions and chain events
-    let mut new_txs = pool.new_transactions_listener();
+    // Subscribe to canonical chain events.
     let mut chain_events = pool.client().canonical_state_stream();
 
-    // Populate expiry tracking with existing transactions to prevent race conditions at start-up
-    let all_txs = pool.all_transactions();
-    for tx in all_txs.iter() {
-        state.track(&tx.transaction);
-    }
-
     let amm_cache = pool.amm_liquidity_cache();
-    let mut new_tx_events = Vec::with_capacity(NEW_TX_DRAIN_LIMIT);
 
-    loop {
-        tokio::select! {
-            // Track new transactions for expiry (valid_before and key expiry)
-            n = new_txs.recv_many(&mut new_tx_events, NEW_TX_DRAIN_LIMIT) => {
-                if n == 0 {
-                    break;
+    // Process all maintenance operations on new block commit or reorg.
+    while let Some(event) = chain_events.next().await {
+        let (new, reverted) = match event {
+            CanonStateNotification::Reorg { old, new } => {
+                // Repopulate AMM liquidity cache from the new canonical chain
+                // to invalidate stale entries from orphaned blocks.
+                if let Err(err) = amm_cache.repopulate(pool.client()) {
+                    error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                // Batch already-buffered events to amortize select/poll overhead while bounding
-                // per-wakeup work so block processing can still make progress.
-                for tx_event in new_tx_events.drain(..) {
-                    state.track(&tx_event.transaction.transaction);
-                }
+                (new, Some(old))
             }
+            CanonStateNotification::Commit { new } => (new, None),
+        };
 
-            // Process all maintenance operations on new block commit or reorg
-            Some(event) = chain_events.next() => {
-                let (new, reverted) = match event {
-                    CanonStateNotification::Reorg { old, new } => {
-                        // Repopulate AMM liquidity cache from the new canonical chain
-                        // to invalidate stale entries from orphaned blocks.
-                        if let Err(err) = amm_cache.repopulate(pool.client()) {
-                            error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
-                        }
+        let block_update_start = Instant::now();
 
-                        (new, Some(old))
-                    }
-                    CanonStateNotification::Commit { new } => (new, None),
+        let tip = &new;
+        let bundle_state = tip.execution_outcome().state().state();
+        let tip_timestamp = tip.tip().header().timestamp();
+
+        // Removed transactions are collected here and dropped at the end of the
+        // iteration: deallocating them (input data, signatures, allocator work) is
+        // expensive and there is a block time of slack after the updates are done.
+        let mut removed_txs: Vec<Vec<_>> = Vec::with_capacity(1);
+
+        // 1. Update 2D nonce pool before scan-based maintenance.
+        // This removes mined 2D nonce transactions and promotes newly
+        // unblocked transactions before later pool scans.
+        let nonce_pool_start = Instant::now();
+        removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+        metrics
+            .nonce_pool_update_duration_seconds
+            .record(nonce_pool_start.elapsed());
+
+        // 2. Update AMM liquidity cache before revalidation/invalidation scans.
+        let amm_start = Instant::now();
+        amm_cache.on_new_state(tip.execution_outcome());
+        if let Err(err) = amm_cache.on_new_blocks(
+            tip.blocks_iter().map(|block| block.sealed_header()),
+            pool.client(),
+        ) {
+            error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+        }
+        metrics
+            .amm_cache_update_duration_seconds
+            .record(amm_start.elapsed());
+
+        // 3. Collect all block-level invalidation events
+        let mut updates = TempoPoolUpdates::from_chain(tip);
+        if let Some(reverted) = reverted {
+            updates.extend_reverted_multisig_config_changes(&reverted);
+        }
+
+        let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
+        // Reth's canonical-update handling may not have pruned mined transactions yet.
+        // Exclude them from every snapshot-based maintenance phase so they follow the
+        // normal mined path rather than being discarded from the pool.
+        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
+
+        // 4. Handle fee token pause/unpause events
+        let pause_start = Instant::now();
+
+        // Collect pause tokens that need pool scanning.
+        // For pause events, we need to scan the pool. For unpause events, we
+        // only need to check the paused_pool (O(1) lookup by token).
+        let pause_tokens: Vec<Address> = updates
+            .pause_events
+            .iter()
+            .filter_map(|(token, is_paused)| is_paused.then_some(*token))
+            .collect();
+
+        // Process pause events: fetch pool transactions once for all pause tokens.
+        // This avoids the O(pause_events * pool_size) cost of fetching per event.
+        if !pause_tokens.is_empty() {
+            // Group transactions by effective fee token for efficient batch processing.
+            // This single pass over all transactions handles all pause events.
+            let mut by_token = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .fold(AddressMap::<Vec<TxHash>>::default(), |mut by_token, tx| {
+                        by_token
+                            .entry(tx.transaction.effective_fee_token())
+                            .or_default()
+                            .push(*tx.hash());
+                        by_token
+                    })
+            };
+
+            // Process each pause token
+            for token in pause_tokens {
+                let Some(hashes_to_pause) = by_token.remove(&token) else {
+                    // No transactions use this fee token - skip
+                    continue;
                 };
 
-                let block_update_start = Instant::now();
+                let removed_txs = pool.remove_transactions(hashes_to_pause);
+                let count = removed_txs.len();
 
-                let tip = &new;
-                let bundle_state = tip.execution_outcome().state().state();
-                let tip_timestamp = tip.tip().header().timestamp();
-
-                // Removed transactions are collected here and dropped at the end of the
-                // iteration: deallocating them (input data, signatures, allocator work) is
-                // expensive and there is a block time of slack after the updates are done.
-                let mut removed_txs: Vec<Vec<_>> = Vec::with_capacity(1);
-
-                // 1. Update 2D nonce pool before scan-based maintenance.
-                // This removes mined 2D nonce transactions and promotes newly
-                // unblocked transactions before later pool scans.
-                let nonce_pool_start = Instant::now();
-                removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
-                metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
-
-                // 2. Update AMM liquidity cache before revalidation/invalidation scans.
-                let amm_start = Instant::now();
-                amm_cache.on_new_state(tip.execution_outcome());
-                if let Err(err) = amm_cache
-                    .on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client())
-                {
-                    error!(target: "txpool", ?err, "AMM liquidity cache update failed");
-                }
-                metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
-
-                // 3. Collect all block-level invalidation events
-                let mut updates = TempoPoolUpdates::from_chain(tip);
-                if let Some(reverted) = reverted {
-                    updates.extend_reverted_multisig_config_changes(&reverted);
-                }
-
-                // Remove expiry tracking for mined transactions.
-                state.untrack_many(tip.transaction_hashes());
-
-                // Evict transactions slightly before they expire to prevent
-                // broadcasting near-expiry txs that peers would reject.
-                let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
-
-                // Collect expired transactions from local tracking state. Mined transactions
-                // were untracked above so they cannot be drained here, and hashes that have
-                // since left the pool are no-ops for `remove_transactions`.
-                let expired_txs = state.drain_expired(max_expiry);
-
-                // 4. Evict expired AA transactions
-                let expired_start = Instant::now();
-                if !expired_txs.is_empty() {
-                    let evicted = pool.remove_transactions(expired_txs);
-                    debug!(
-                        target: "txpool",
-                        count = evicted.len(),
-                        tip_timestamp,
-                        "Evicting expired AA transactions (valid_before)"
-                    );
-                    metrics.expired_transactions_evicted.increment(evicted.len() as u64);
-                    removed_txs.push(evicted);
-                }
-                metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
-
-                let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
-                let mut removed_this_iteration = B256Set::default();
-
-                // 5. Handle fee token pause/unpause events
-                let pause_start = Instant::now();
-
-                // Collect pause tokens that need pool scanning.
-                // For pause events, we need to scan the pool. For unpause events, we
-                // only need to check the paused_pool (O(1) lookup by token).
-                let pause_tokens: Vec<Address> = updates
-                    .pause_events
-                    .iter()
-                    .filter_map(|(token, is_paused)| is_paused.then_some(*token))
-                    .collect();
-
-                // Process pause events: fetch pool transactions once for all pause tokens.
-                // This avoids the O(pause_events * pool_size) cost of fetching per event.
-                if !pause_tokens.is_empty() {
-                    // Group transactions by effective fee token for efficient batch processing.
-                    // This single pass over all transactions handles all pause events.
-                    let mut by_token = {
-                        let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                        all_txs.iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                            .fold(
-                                AddressMap::<Vec<TxHash>>::default(),
-                                |mut by_token, tx| {
-                                    by_token
-                                        .entry(tx.transaction.effective_fee_token())
-                                        .or_default()
-                                        .push(*tx.hash());
-                                    by_token
-                                },
-                            )
-                    };
-
-                    // Process each pause token
-                    for token in pause_tokens {
-                        let Some(hashes_to_pause) = by_token.remove(&token) else {
-                            // No transactions use this fee token - skip
-                            continue;
-                        };
-
-                        let removed_txs = pool.remove_transactions(hashes_to_pause);
-                        let count = removed_txs.len();
-
-                        if count > 0 {
-                            // Clean up expiry tracking for paused txs
-                            for tx in &removed_txs {
-                                state.untrack(tx.hash());
-                                removed_this_iteration.insert(*tx.hash());
-                            }
-
-                            let entries: Vec<_> = removed_txs
-                                .into_iter()
-                                .map(|tx| {
-                                    let valid_before = tx.transaction.inner().valid_before();
-                                    PausedEntry { tx, valid_before }
-                                })
-                                .collect();
-
-                            let cap_evicted = state.paused_pool.insert_batch(token, entries);
-                            metrics.transactions_paused.increment(count as u64);
-                            if cap_evicted > 0 {
-                                metrics.paused_pool_cap_evicted.increment(cap_evicted as u64);
-                                debug!(
-                                    target: "txpool",
-                                    cap_evicted,
-                                    "Evicted oldest paused transactions due to global cap"
-                                );
-                            }
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                count,
-                                "Moved transactions to paused pool (fee token paused)"
-                            );
-                        }
-                    }
-                }
-
-                // Process unpause events: O(1) lookup per token in paused_pool
-                for (token, is_paused) in &updates.pause_events {
-                    if *is_paused {
-                        continue; // Already handled above
+                if count > 0 {
+                    for tx in &removed_txs {
+                        removed_this_iteration.insert(*tx.hash());
                     }
 
-                    // Unpause: drain from paused pool and re-add to main pool
-                    let paused_entries = state.paused_pool.drain_token(token);
-                    if !paused_entries.is_empty() {
-                        let count = paused_entries.len();
-                        metrics.transactions_unpaused.increment(count as u64);
-                        let pool_clone = pool.clone();
-                        let token = *token;
-                        tokio::spawn(async move {
-                            let txs: Vec<_> = paused_entries
-                                .into_iter()
-                                .map(|e| e.tx.transaction.clone())
-                                .collect();
+                    let entries: Vec<_> = removed_txs
+                        .into_iter()
+                        .map(|tx| {
+                            let valid_before = tx.transaction.inner().valid_before();
+                            PausedEntry { tx, valid_before }
+                        })
+                        .collect();
 
-                            let results = pool_clone
-                                .add_external_transactions(txs)
-                                .await;
-
-                            let success = results.iter().filter(|r| r.is_ok()).count();
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                total = count,
-                                success,
-                                "Restored transactions from paused pool (fee token unpaused)"
-                            );
-                        });
-                    }
-                }
-
-                // 6. Evict expired transactions from the paused pool
-                let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
-                let paused_timed_out = state.paused_pool.evict_timed_out();
-                let total_paused_evicted = paused_expired + paused_timed_out;
-                if total_paused_evicted > 0 {
-                    debug!(
-                        target: "txpool",
-                        count = total_paused_evicted,
-                        tip_timestamp,
-                        "Evicted expired transactions from paused pool"
-                    );
-                }
-
-                // 7. Evict hard keychain invalidations from paused pool
-                // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
-                if !updates.revoked_keys.is_empty()
-                    || !updates.key_authorization_target_changes.is_empty()
-                    || !updates.spending_limit_changes.is_empty()
-                    || !updates.key_authorization_witness_burns.is_empty()
-                {
-                    state.paused_pool.evict_invalidated(
-                        &updates.revoked_keys,
-                        &updates.key_authorization_target_changes,
-                        &updates.spending_limit_changes,
-                        &updates.key_authorization_witness_burns,
-                    );
-                }
-                metrics.pause_events_duration_seconds.record(pause_start.elapsed());
-
-                // 8. Handle potentially invalidating updates
-                // When a cached value changes of a token (transfer policy, or quote token) changes,
-                // pending transactions using that token may become invalid. We need to remove them
-                // and re-add so they go through full validation against the updated state.
-                for (updated, counter, reason) in [
-                    (
-                        &updates.transfer_policy_updates,
-                        &metrics.transfer_policy_revalidated,
-                        "transfer policy update",
-                    ),
-                    (
-                        &updates.quote_token_updates,
-                        &metrics.quote_token_revalidated,
-                        "quote token update",
-                    ),
-                ] {
-                    if updated.is_empty() {
-                        continue;
-                    }
-
-                    let hashes: Vec<TxHash> = {
-                        let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                        all_txs
-                            .iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                            .filter(|tx| {
-                                tx.transaction
-                                    .resolved_fee_token()
-                                    .is_some_and(|t| updated.contains(&t))
-                            })
-                            .map(|tx| *tx.hash())
-                            .collect()
-                    };
-                    if !hashes.is_empty() {
-                        let removed_txs = pool.remove_transactions(hashes);
-                        let count = removed_txs.len();
-
-                        for tx in &removed_txs {
-                            state.untrack(tx.hash());
-                            removed_this_iteration.insert(*tx.hash());
-                        }
-
-                        counter.increment(count as u64);
-
-                        let pool_clone = pool.clone();
-                        tokio::spawn(async move {
-                            let txs: Vec<_> = removed_txs
-                                .into_iter()
-                                .map(|tx| (tx.origin, tx.transaction.clone()))
-                                .collect();
-
-                            let results = pool_clone.add_transactions_with_origins(txs).await;
-                            let success = results.iter().filter(|r| r.is_ok()).count();
-                            debug!(
-                                target: "txpool",
-                                total = count,
-                                success,
-                                reason,
-                                "Re-validated transactions"
-                            );
-                        });
-                    }
-                }
-
-                // 9. Evict invalidated transactions in a single pool scan
-                // This checks revoked keys, spending limit changes, validator token changes,
-                // blacklist additions, and whitelist removals together to avoid scanning
-                // all transactions multiple times per block.
-                if updates.has_invalidation_events() {
-                    let invalidation_start = Instant::now();
-                    debug!(
-                        target: "txpool",
-                        revoked_keys = updates.revoked_keys.len(),
-                        key_authorization_target_changes =
-                            updates.key_authorization_target_changes.len(),
-                        spending_limit_changes = updates.spending_limit_changes.len(),
-                        spending_limit_spends = updates.spending_limit_spends.len(),
-                        validator_token_changes = updates.validator_token_changes.len(),
-                        user_token_changes = updates.user_token_changes.len(),
-                        blacklist_additions = updates.blacklist_additions.len(),
-                        whitelist_removals = updates.whitelist_removals.len(),
-                        "Processing transaction invalidation events"
-                    );
-                    let evicted = {
-                        let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                        pool.evict_invalidated_transactions_from(
-                            &updates,
-                            all_txs
-                                .iter()
-                                .filter(|tx| !removed_this_iteration.contains(tx.hash())),
-                        )
-                    };
-                    for tx in &evicted {
-                        state.untrack(tx.hash());
-                    }
-                    metrics.transactions_invalidated.increment(evicted.len() as u64);
-                    removed_txs.push(evicted);
-                    metrics
-                        .invalidation_eviction_duration_seconds
-                        .record(invalidation_start.elapsed());
-                }
-
-                // 10. Evict stale pending transactions (must happen after AA pool promotions in step 1)
-                // Only runs once per interval (~30 min) to avoid overhead on every block.
-                // Transactions pending across two consecutive snapshots are considered stale.
-                if state.pending_staleness.should_check(tip_timestamp) {
-                    let current_pending: B256Set =
-                        pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
-                    let stale_to_evict =
-                        state.pending_staleness.check_and_update(current_pending, tip_timestamp);
-
-                    if !stale_to_evict.is_empty() {
+                    let cap_evicted = state.paused_pool.insert_batch(token, entries);
+                    metrics.transactions_paused.increment(count as u64);
+                    if cap_evicted > 0 {
+                        metrics
+                            .paused_pool_cap_evicted
+                            .increment(cap_evicted as u64);
                         debug!(
                             target: "txpool",
-                            count = stale_to_evict.len(),
-                            tip_timestamp,
-                            "Evicting stale pending transactions"
+                            cap_evicted,
+                            "Evicted oldest paused transactions due to global cap"
                         );
-                        // Clean up expiry tracking for stale txs to prevent orphaned entries
-                        for hash in &stale_to_evict {
-                            state.untrack(hash);
-                        }
-                        removed_txs.push(pool.remove_transactions(stale_to_evict));
                     }
+                    debug!(
+                        target: "txpool",
+                        %token,
+                        count,
+                        "Moved transactions to paused pool (fee token paused)"
+                    );
                 }
-
-                // Record total block update duration
-                metrics.block_update_duration_seconds.record(block_update_start.elapsed());
-
-                // Deallocating removed transactions is expensive, so do it after all updates are done.
-                drop(removed_txs);
             }
         }
+
+        // Process unpause events: O(1) lookup per token in paused_pool
+        for (token, is_paused) in &updates.pause_events {
+            if *is_paused {
+                continue; // Already handled above
+            }
+
+            // Unpause: drain from paused pool and re-add to main pool
+            let paused_entries = state.paused_pool.drain_token(token);
+            if !paused_entries.is_empty() {
+                let count = paused_entries.len();
+                metrics.transactions_unpaused.increment(count as u64);
+                let pool_clone = pool.clone();
+                let token = *token;
+                tokio::spawn(async move {
+                    let txs: Vec<_> = paused_entries
+                        .into_iter()
+                        .map(|e| e.tx.transaction.clone())
+                        .collect();
+
+                    let results = pool_clone.add_external_transactions(txs).await;
+
+                    let success = results.iter().filter(|r| r.is_ok()).count();
+                    debug!(
+                        target: "txpool",
+                        %token,
+                        total = count,
+                        success,
+                        "Restored transactions from paused pool (fee token unpaused)"
+                    );
+                });
+            }
+        }
+
+        // 5. Evict expired transactions from the paused pool
+        let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
+        let paused_timed_out = state.paused_pool.evict_timed_out();
+        let total_paused_evicted = paused_expired + paused_timed_out;
+        if total_paused_evicted > 0 {
+            debug!(
+                target: "txpool",
+                count = total_paused_evicted,
+                tip_timestamp,
+                "Evicted expired transactions from paused pool"
+            );
+        }
+
+        // 6. Evict hard keychain invalidations from paused pool
+        // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
+        if !updates.revoked_keys.is_empty()
+            || !updates.key_authorization_target_changes.is_empty()
+            || !updates.spending_limit_changes.is_empty()
+            || !updates.key_authorization_witness_burns.is_empty()
+        {
+            state.paused_pool.evict_invalidated(
+                &updates.revoked_keys,
+                &updates.key_authorization_target_changes,
+                &updates.spending_limit_changes,
+                &updates.key_authorization_witness_burns,
+            );
+        }
+        metrics
+            .pause_events_duration_seconds
+            .record(pause_start.elapsed());
+
+        // 7. Handle potentially invalidating updates
+        // When a cached value changes of a token (transfer policy, or quote token) changes,
+        // pending transactions using that token may become invalid. We need to remove them
+        // and re-add so they go through full validation against the updated state.
+        for (updated, counter, reason) in [
+            (
+                &updates.transfer_policy_updates,
+                &metrics.transfer_policy_revalidated,
+                "transfer policy update",
+            ),
+            (
+                &updates.quote_token_updates,
+                &metrics.quote_token_revalidated,
+                "quote token update",
+            ),
+        ] {
+            if updated.is_empty() {
+                continue;
+            }
+
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| {
+                        tx.transaction
+                            .resolved_fee_token()
+                            .is_some_and(|t| updated.contains(&t))
+                    })
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let removed_txs = pool.remove_transactions(hashes);
+                let count = removed_txs.len();
+
+                for tx in &removed_txs {
+                    removed_this_iteration.insert(*tx.hash());
+                }
+
+                counter.increment(count as u64);
+
+                let pool_clone = pool.clone();
+                tokio::spawn(async move {
+                    let txs: Vec<_> = removed_txs
+                        .into_iter()
+                        .map(|tx| (tx.origin, tx.transaction.clone()))
+                        .collect();
+
+                    let results = pool_clone.add_transactions_with_origins(txs).await;
+                    let success = results.iter().filter(|r| r.is_ok()).count();
+                    debug!(
+                        target: "txpool",
+                        total = count,
+                        success,
+                        reason,
+                        "Re-validated transactions"
+                    );
+                });
+            }
+        }
+
+        // 8. Evict expired and invalidated transactions in one pool traversal.
+        let invalidation_start = Instant::now();
+        debug!(
+            target: "txpool",
+            revoked_keys = updates.revoked_keys.len(),
+            key_authorization_target_changes =
+                updates.key_authorization_target_changes.len(),
+            spending_limit_changes = updates.spending_limit_changes.len(),
+            spending_limit_spends = updates.spending_limit_spends.len(),
+            validator_token_changes = updates.validator_token_changes.len(),
+            user_token_changes = updates.user_token_changes.len(),
+            blacklist_additions = updates.blacklist_additions.len(),
+            whitelist_removals = updates.whitelist_removals.len(),
+            "Processing transaction invalidation events"
+        );
+        let evicted = {
+            let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+            pool.evict_invalidated_transactions_from(
+                &updates,
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
+            )
+        };
+        metrics
+            .transactions_invalidated
+            .increment(evicted.len() as u64);
+        removed_txs.push(evicted);
+        metrics
+            .invalidation_eviction_duration_seconds
+            .record(invalidation_start.elapsed());
+
+        metrics
+            .expired_eviction_duration_seconds
+            .record(invalidation_start.elapsed());
+
+        // 9. Evict stale pending transactions (must happen after AA pool promotions in step 1)
+        // Only runs once per interval (~30 min) to avoid overhead on every block.
+        // Transactions pending across two consecutive snapshots are considered stale.
+        if state.pending_staleness.should_check(tip_timestamp) {
+            let current_pending: B256Set = pool
+                .pending_transactions()
+                .iter()
+                .map(|tx| *tx.hash())
+                .collect();
+            let stale_to_evict = state
+                .pending_staleness
+                .check_and_update(current_pending, tip_timestamp);
+
+            if !stale_to_evict.is_empty() {
+                debug!(
+                    target: "txpool",
+                    count = stale_to_evict.len(),
+                    tip_timestamp,
+                    "Evicting stale pending transactions"
+                );
+                removed_txs.push(pool.remove_transactions(stale_to_evict));
+            }
+        }
+
+        // Record total block update duration
+        metrics
+            .block_update_duration_seconds
+            .record(block_update_start.elapsed());
+
+        // Deallocating removed transactions is expensive, so do it after all updates are done.
+        drop(removed_txs);
     }
 }
 
@@ -1044,7 +900,7 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_primitives::{Address, B256, TxHash};
     use reth_primitives_traits::RecoveredBlock;
-    use std::{collections::HashSet, sync::Arc};
+    use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
     mod pending_staleness_tracker_tests {
@@ -1119,121 +975,6 @@ mod tests {
             // Neither should be in the snapshot now
             assert!(tracker.previous_pending.is_empty());
         }
-    }
-
-    #[test]
-    fn track_groups_duplicate_expiries() {
-        let mut state = TempoPoolState::default();
-        let tx_a = TxBuilder::aa(Address::random())
-            .nonce(1)
-            .valid_before(1000)
-            .build();
-        let tx_b = TxBuilder::aa(Address::random())
-            .nonce(2)
-            .valid_before(1000)
-            .build();
-
-        state.track(&tx_a);
-        state.track(&tx_b);
-        state.track(&tx_a);
-
-        let bucket = state.expiry_map.get(&1000).unwrap();
-        assert_eq!(bucket.len(), 2);
-        assert!(bucket.contains(tx_a.hash()));
-        assert!(bucket.contains(tx_b.hash()));
-        assert_eq!(state.tx_to_expiry.get(tx_a.hash()), Some(&1000));
-        assert_eq!(state.tx_to_expiry.get(tx_b.hash()), Some(&1000));
-    }
-
-    #[test]
-    fn untrack_removes_hash_and_empty_bucket() {
-        let mut state = TempoPoolState::default();
-        let hash_a = TxHash::random();
-        let hash_b = TxHash::random();
-        let hash_unknown = TxHash::random();
-
-        // Track two txs at the same valid_before
-        insert_tracked_hash(&mut state, hash_a, 1000);
-        insert_tracked_hash(&mut state, hash_b, 1000);
-
-        // Mine hash_a and an unknown hash
-        state.untrack(&hash_a);
-        state.untrack(&hash_unknown);
-
-        // hash_a removed from both maps
-        assert!(!state.tx_to_expiry.contains_key(&hash_a));
-        let bucket = state.expiry_map.get(&1000).unwrap();
-        assert_eq!(bucket.len(), 1);
-        assert!(bucket.contains(&hash_b));
-
-        // Mine hash_b should remove the expiry_map entry entirely
-        state.untrack(&hash_b);
-        assert!(!state.tx_to_expiry.contains_key(&hash_b));
-        assert!(!state.expiry_map.contains_key(&1000));
-    }
-
-    #[test]
-    fn untrack_many_removes_hashes_by_expiry_bucket() {
-        let mut state = TempoPoolState::default();
-        let hash_a = TxHash::random();
-        let hash_b = TxHash::random();
-        let hash_c = TxHash::random();
-        let hash_d = TxHash::random();
-        let hash_unknown = TxHash::random();
-
-        insert_tracked_hash(&mut state, hash_a, 1000);
-        insert_tracked_hash(&mut state, hash_b, 1000);
-        insert_tracked_hash(&mut state, hash_c, 1000);
-        insert_tracked_hash(&mut state, hash_d, 2000);
-
-        state.untrack_many([&hash_a, &hash_b, &hash_unknown, &hash_d]);
-
-        assert!(!state.tx_to_expiry.contains_key(&hash_a));
-        assert!(!state.tx_to_expiry.contains_key(&hash_b));
-        assert!(!state.tx_to_expiry.contains_key(&hash_d));
-        assert_eq!(state.tx_to_expiry.get(&hash_c), Some(&1000));
-
-        let bucket = state.expiry_map.get(&1000).unwrap();
-        assert_eq!(bucket.len(), 1);
-        assert!(bucket.contains(&hash_c));
-        assert!(!state.expiry_map.contains_key(&2000));
-    }
-
-    #[test]
-    fn drain_expired_removes_expired_buckets_and_returns_hashes() {
-        let mut state = TempoPoolState::default();
-        let hash_a = TxHash::random();
-        let hash_b = TxHash::random();
-        let hash_c = TxHash::random();
-        let hash_d = TxHash::random();
-
-        insert_tracked_hash(&mut state, hash_a, 1000);
-        insert_tracked_hash(&mut state, hash_b, 1000);
-        insert_tracked_hash(&mut state, hash_c, 2000);
-        insert_tracked_hash(&mut state, hash_d, 3000);
-
-        let expired = state.drain_expired(2000);
-
-        assert_hashes_eq(expired, &[hash_a, hash_b, hash_c]);
-        assert!(!state.expiry_map.contains_key(&1000));
-        assert!(!state.expiry_map.contains_key(&2000));
-        assert!(state.expiry_map[&3000].contains(&hash_d));
-        assert!(!state.tx_to_expiry.contains_key(&hash_a));
-        assert!(!state.tx_to_expiry.contains_key(&hash_b));
-        assert!(!state.tx_to_expiry.contains_key(&hash_c));
-        assert_eq!(state.tx_to_expiry.get(&hash_d), Some(&3000));
-    }
-
-    fn insert_tracked_hash(state: &mut TempoPoolState, hash: TxHash, expiry: u64) {
-        state.expiry_map.entry(expiry).or_default().insert(hash);
-        state.tx_to_expiry.insert(hash, expiry);
-    }
-
-    fn assert_hashes_eq(actual: Vec<TxHash>, expected: &[TxHash]) {
-        assert_eq!(actual.len(), expected.len());
-        let actual: HashSet<TxHash> = actual.into_iter().collect();
-        let expected: HashSet<TxHash> = expected.iter().copied().collect();
-        assert_eq!(actual, expected);
     }
 
     mod narrow_event_decoding {

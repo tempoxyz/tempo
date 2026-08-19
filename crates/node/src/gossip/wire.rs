@@ -1,11 +1,11 @@
 //! Frame format for the `tempo/1` subprotocol.
 //!
-//! The protocol has one message, `NewFinalization`. Its payload is an opaque
-//! consensus certificate. Certificate decoding needs the consensus codec, so
-//! it stays in the consensus crate. This keeps the node crate independent of
-//! the consensus crate.
+//! The protocol has one message, `NewFinalization`.
 
 use alloy_primitives::bytes::{BufMut as _, BytesMut};
+use commonware_codec::{DecodeExt as _, Encode as _, Read};
+use commonware_consensus::simplex::types::Finalization;
+use commonware_cryptography::{Digest, certificate::Scheme};
 use reth_ethereum::network::eth_wire::{Capability, protocol::Protocol};
 
 /// Name used during the `RLPx` handshake.
@@ -41,8 +41,8 @@ pub const fn protocol() -> Protocol {
     Protocol::new(capability(), MESSAGE_COUNT)
 }
 
-/// An error found before the certificate payload is decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+/// An error found while decoding a frame.
+#[derive(Debug, thiserror::Error)]
 pub enum FrameError {
     /// The frame has no message ID.
     #[error("frame was empty")]
@@ -56,21 +56,27 @@ pub enum FrameError {
     /// The protocol does not define this message ID.
     #[error("unknown message id `{0:#04x}`")]
     UnknownMessage(u8),
+    /// The message payload is not a finalization certificate.
+    #[error("invalid finalization certificate")]
+    InvalidFinalization(#[source] commonware_codec::Error),
 }
 
 /// Encodes a certificate as a `NewFinalization` frame.
-pub fn encode(certificate: &[u8]) -> BytesMut {
+pub fn encode<S: Scheme, D: Digest>(finalization: &Finalization<S, D>) -> BytesMut {
+    let certificate = finalization.encode();
     let mut frame = BytesMut::with_capacity(1 + certificate.len());
     frame.put_u8(NEW_FINALIZATION);
-    frame.put_slice(certificate);
+    frame.put_slice(&certificate);
     frame
 }
 
-/// Validates a frame and returns its certificate payload.
-///
-/// The returned payload borrows from the frame. A caller can inspect the
-/// certificate and relay the original frame without copying it.
-pub fn decode(frame: &[u8]) -> Result<&[u8], FrameError> {
+/// Decodes a `NewFinalization` frame.
+pub fn decode<S, D>(frame: &[u8]) -> Result<Finalization<S, D>, FrameError>
+where
+    S: Scheme,
+    D: Digest,
+    S::Certificate: Read<Cfg = ()>,
+{
     if frame.len() > MAX_FRAME_BYTES {
         return Err(FrameError::Oversized { size: frame.len() });
     }
@@ -80,12 +86,27 @@ pub fn decode(frame: &[u8]) -> Result<&[u8], FrameError> {
         return Err(FrameError::UnknownMessage(id));
     }
 
-    Ok(payload)
+    Finalization::decode(payload).map_err(FrameError::InvalidFinalization)
 }
 
 #[cfg(test)]
 mod tests {
+    use commonware_consensus::simplex::scheme::bls12381_threshold::vrf::Scheme;
+    use commonware_cryptography::{
+        bls12381::primitives::variant::MinSig, ed25519::PublicKey, sha256::Digest,
+    };
+
     use super::*;
+
+    type TestFinalization = Finalization<Scheme<PublicKey, MinSig>, Digest>;
+
+    const GOLDEN_FRAME: &[u8] = &alloy_primitives::hex!(
+        "000001000000000000000000000000000000000000000000000000000000000000000001893a6fba4f0630edd4f1f610258f9b3a1e1fbf9c1abefaea77a62bfd27b0dea1d448c4b4b992fa094bf96c8789b49cfa8565f0bc98152e274fd6d0e3b85955736432cdca1a52201ff244bf69a65b566ffbcf642a53a23e66b4d9bd6819dd95cc"
+    );
+
+    fn decode_frame(frame: &[u8]) -> Result<TestFinalization, FrameError> {
+        decode(frame)
+    }
 
     // Peers use the version to identify the frame layout. An incompatible
     // layout must use a new version.
@@ -95,48 +116,54 @@ mod tests {
         assert_eq!(capability().version, 1);
         assert_eq!(protocol(), Protocol::new(capability(), 1));
 
-        let frame = encode(&[0xde, 0xad, 0xbe, 0xef]);
-        assert_eq!(&frame[..], &[0x00, 0xde, 0xad, 0xbe, 0xef]);
+        let finalization = decode_frame(GOLDEN_FRAME).unwrap();
+        assert_eq!(encode(&finalization).as_ref(), GOLDEN_FRAME);
     }
 
     #[test]
     fn encode_decode_round_trips() {
-        let certificate = [0x01, 0x02, 0x03];
-        let frame = encode(&certificate);
-        assert_eq!(decode(&frame).unwrap(), &certificate);
+        let finalization = decode_frame(GOLDEN_FRAME).unwrap();
+        let frame = encode(&finalization);
+        assert_eq!(decode_frame(&frame).unwrap(), finalization);
     }
 
     #[test]
-    fn empty_payload_round_trips() {
-        let frame = encode(&[]);
-        assert_eq!(decode(&frame).unwrap(), &[] as &[u8]);
+    fn empty_payload_is_rejected() {
+        assert!(matches!(
+            decode_frame(&[NEW_FINALIZATION]),
+            Err(FrameError::InvalidFinalization(_))
+        ));
     }
 
     #[test]
     fn oversized_frame_is_rejected() {
-        let frame = encode(&vec![0u8; MAX_FRAME_BYTES]);
-        assert_eq!(
-            decode(&frame),
-            Err(FrameError::Oversized {
-                size: MAX_FRAME_BYTES + 1
-            })
-        );
+        let frame = vec![0u8; MAX_FRAME_BYTES + 1];
+        assert!(matches!(
+            decode_frame(&frame),
+            Err(FrameError::Oversized { size }) if size == MAX_FRAME_BYTES + 1
+        ));
     }
 
     #[test]
-    fn frame_at_the_limit_is_accepted() {
-        let frame = encode(&vec![0u8; MAX_FRAME_BYTES - 1]);
+    fn frame_at_the_limit_is_not_oversized() {
+        let frame = vec![0u8; MAX_FRAME_BYTES];
         assert_eq!(frame.len(), MAX_FRAME_BYTES);
-        assert!(decode(&frame).is_ok());
+        assert!(matches!(
+            decode_frame(&frame),
+            Err(FrameError::InvalidFinalization(_))
+        ));
     }
 
     #[test]
     fn empty_frame_is_rejected() {
-        assert_eq!(decode(&[]), Err(FrameError::Empty));
+        assert!(matches!(decode_frame(&[]), Err(FrameError::Empty)));
     }
 
     #[test]
     fn unknown_message_id_is_rejected() {
-        assert_eq!(decode(&[0x01, 0xff]), Err(FrameError::UnknownMessage(1)));
+        assert!(matches!(
+            decode_frame(&[0x01, 0xff]),
+            Err(FrameError::UnknownMessage(1))
+        ));
     }
 }
