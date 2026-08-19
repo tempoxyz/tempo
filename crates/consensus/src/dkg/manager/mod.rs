@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::{bls12381::primitives::group::Share, ed25519::PrivateKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -23,7 +23,7 @@ pub(crate) async fn init<TContext>(
     config: Config,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
 where
-    TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Spawner + Storage,
+    TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -45,7 +45,7 @@ pub(crate) struct Config {
 
     pub(crate) me: PrivateKey,
 
-    pub(crate) mailbox_size: usize,
+    pub(crate) mailbox_size: NonZeroUsize,
 
     /// The mailbox to the marshal actor. Used to determine if an epoch
     /// can be started at startup.

@@ -193,11 +193,11 @@ pub(in crate::storage) async fn fresh_prunable_with_section_size<TContext>(
     items_per_section: std::num::NonZeroU64,
 ) -> Prunable<TContext>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let cache = fresh_page_cache(context);
     prunable::Archive::init(
-        context.with_label("finalized_blocks_prunable"),
+        context.child("finalized_blocks_prunable"),
         prunable::Config {
             translator: TwoCap,
             key_partition: format!("{TEST_PARTITION_PREFIX}-prunable-key"),

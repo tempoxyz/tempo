@@ -1,4 +1,4 @@
-use commonware_runtime::{Metrics as _, deterministic};
+use commonware_runtime::{Supervisor as _, deterministic};
 use reth_db::DatabaseEnv;
 use reth_ethereum::provider::providers::BlockchainProvider;
 use reth_node_builder::NodeTypesWithDBAdapter;
@@ -11,12 +11,12 @@ pub async fn write_consensus_snapshot(
     source: &TestingNode<deterministic::Context>,
     execution_provider: BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
     target_partition_prefix: &str,
-) {
+) -> tempo_consensus::storage::snapshot::State {
     let source_partition_prefix = source.consensus_config.partition_prefix.clone();
     let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
 
     let state = tempo_consensus::storage::snapshot::prepare(
-        &context.with_label("snapshot_prepare"),
+        &context.child("snapshot_prepare"),
         &source_partition_prefix,
         execution_provider,
         archive_entries_tx,
@@ -25,7 +25,7 @@ pub async fn write_consensus_snapshot(
     .expect("snapshot must prepare");
 
     tempo_consensus::storage::snapshot::write_archive(
-        &context.with_label("snapshot_write"),
+        &context.child("snapshot_write"),
         target_partition_prefix,
         archive_entries_rx,
     )
@@ -34,4 +34,6 @@ pub async fn write_consensus_snapshot(
 
     assert!(state.anchor_finalization_height > 0);
     assert!(state.tip_finalization_height >= state.anchor_finalization_height);
+
+    state
 }

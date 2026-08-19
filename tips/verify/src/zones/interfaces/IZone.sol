@@ -71,6 +71,8 @@ interface IZoneFactory {
     error NotOwner();
     error InvalidAdmin();
     error InvalidSequencerSet();
+    error TokenMetadataTooLong();
+
     function owner() external view returns (address);
 
     function transferOwnership(address newOwner) external;

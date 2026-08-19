@@ -656,7 +656,7 @@ where
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
-                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
+                .ok_or_else(|| BlockValidationError::msg("invalid subblock transaction"))?;
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
@@ -830,16 +830,18 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_consensus::types::Epoch;
-    use commonware_cryptography::{Signer, bls12381::dkg, ed25519::PrivateKey};
+    use commonware_cryptography::{
+        Signer, bls12381::dkg::feldman_desmedt as dkg, ed25519::PrivateKey,
+    };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-    use rand_08::SeedableRng as _;
+    use rand::SeedableRng as _;
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
@@ -893,7 +895,7 @@ mod tests {
     }
 
     fn create_dkg_outcome(epoch: u64, players: usize) -> OnchainDkgOutcome {
-        let mut rng = rand_08::rngs::StdRng::seed_from_u64(epoch);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(epoch);
         let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(players)
             .collect::<Vec<_>>();
@@ -1405,6 +1407,26 @@ mod tests {
 
         let signature = TempoSignature::from(Signature::test_signature());
         TempoTxEnvelope::AA(tx.into_signed(signature))
+    }
+
+    #[test]
+    fn test_execute_transaction_t4_subblock_nonce_returns_validation_error() {
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T11)
+            .build(&mut db, &chainspec);
+
+        let proposer = PartialValidatorKey::from_slice(&[0xff; 15]);
+        let subblock_tx = create_subblock_tx(&proposer);
+        let recovered = Recovered::new_unchecked(subblock_tx, Address::ZERO);
+
+        let err = executor.execute_transaction(&recovered).unwrap_err();
+        assert!(
+            matches!(&err, BlockExecutionError::Validation(_)),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(err.to_string(), "invalid subblock transaction");
     }
 
     #[test]
