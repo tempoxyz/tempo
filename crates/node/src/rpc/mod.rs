@@ -76,7 +76,7 @@ use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::TempoTxEnv;
+use tempo_revm::{NATIVE_MULTISIG_NESTED_ACCOUNT_GAS, TempoTxEnv};
 use tokio::sync::{Mutex, broadcast};
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
@@ -450,7 +450,9 @@ fn load_native_multisig_simulation_hint(
         NativeMultisig::account_threshold_storage_slot(account);
     let (owner_count_slot, owner_count_offset) =
         NativeMultisig::account_owners_len_storage_slot(account);
+    let (version_slot, version_offset) = NativeMultisig::account_version_storage_slot(account);
     debug_assert_eq!(threshold_slot, owner_count_slot);
+    debug_assert_eq!(threshold_slot, version_slot);
     let header = db
         .storage(NATIVE_MULTISIG_ADDRESS, threshold_slot)
         .map_err(Into::into)?;
@@ -459,10 +461,12 @@ fn load_native_multisig_simulation_hint(
         .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
     let owner_count = extract_from_word::<u8>(header, owner_count_offset.unwrap_or_default(), 1)
         .map_err(|err| EthApiError::InvalidParams(err.to_string()))? as usize;
-    if threshold == 0 && owner_count == 0 {
+    let version = extract_from_word::<u64>(header, version_offset.unwrap_or_default(), 8)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    if threshold == 0 && owner_count == 0 && version == 0 {
         return Ok(None);
     }
-    if threshold == 0 || owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
+    if threshold == 0 || owner_count == 0 || version == 0 || owner_count > MAX_MULTISIG_OWNERS {
         return Err(EthApiError::InvalidParams(
             "native multisig config has an invalid header".to_string(),
         ));
@@ -609,7 +613,8 @@ fn native_multisig_simulation_approval_gas(approval: &MultisigSimulationApproval
             SignatureType::WebAuthn => MAX_WEBAUTHN_GAS,
         },
         MultisigSimulationApproval::UnknownPrimitive => MAX_WEBAUTHN_GAS,
-        MultisigSimulationApproval::Multisig(hint) => NODE_HEADER_GAS
+        MultisigSimulationApproval::Multisig(hint) => NATIVE_MULTISIG_NESTED_ACCOUNT_GAS
+            .saturating_add(NODE_HEADER_GAS)
             .saturating_add(CONFIG_OWNER_GAS.saturating_mul(hint.owner_count as u64))
             .saturating_add(
                 hint.approvals
@@ -981,6 +986,10 @@ mod tests {
                 NativeMultisig::account_owners_len_storage_slot(account),
                 owners.len() as u8,
             );
+            let (version_slot, version_offset) =
+                NativeMultisig::account_version_storage_slot(account);
+            *self.0.entry(version_slot).or_default() |=
+                U256::from(1) << (version_offset.unwrap_or_default() * 8);
             for (index, &(owner, weight)) in owners.iter().enumerate() {
                 self.insert_address(
                     NativeMultisig::config_owner_address_storage_slot(account, index),
@@ -1252,6 +1261,36 @@ mod tests {
         };
         assert_eq!(nested.account, nested_account);
         assert_eq!(nested.approvals.len(), 8);
+    }
+
+    #[test]
+    fn nested_simulation_approval_includes_account_access_gas() {
+        let approval = MultisigSimulationApproval::Multisig(Box::new(MultisigSimulationHint {
+            account: Address::from([0x22; 20]),
+            owner_count: 1,
+            approvals: vec![MultisigSimulationApproval::Primitive {
+                key_type: SignatureType::Secp256k1,
+                key_data: None,
+            }],
+        }));
+
+        assert_eq!(
+            native_multisig_simulation_approval_gas(&approval),
+            2_100 + NATIVE_MULTISIG_NESTED_ACCOUNT_GAS + 2_100 + 4_200 + 2_100 + 3_000
+        );
+    }
+
+    #[test]
+    fn simulation_hints_reject_zero_config_version() {
+        let account = Address::from([0xaa; 20]);
+        let mut db = SlotDb::default();
+        db.insert_u8(NativeMultisig::account_threshold_storage_slot(account), 1);
+        db.insert_u8(NativeMultisig::account_owners_len_storage_slot(account), 1);
+
+        assert!(matches!(
+            load_native_multisig_simulation_hints(account, None, &mut db),
+            Err(EthApiError::InvalidParams(reason)) if reason.contains("invalid header")
+        ));
     }
 
     #[test]
