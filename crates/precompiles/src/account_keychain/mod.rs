@@ -29,6 +29,7 @@ use tempo_primitives::{TempoAddressExt, transaction::CallScope as RlpCallScope};
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
+    native_multisig::NativeMultisig,
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -283,6 +284,13 @@ impl AccountKeychain {
         // Validate inputs
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
+        }
+        if self.storage.spec().is_t12()
+            && !NativeMultisig::new()
+                .get_config_commitment(key_id)?
+                .is_zero()
+        {
+            return Err(AccountKeychainError::invalid_key_id().into());
         }
         // Admin keys are explicit access-key rows; the root key remains implicit.
         if is_admin && key_id == msg_sender {
@@ -1634,6 +1642,7 @@ mod tests {
         DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType,
         legacySetAllowedCallsCall as setAllowedCallsCall,
     };
+    use tempo_primitives::transaction::{MultisigConfig, MultisigOwner};
 
     #[test]
     fn test_rlp_input_cost() {
@@ -1791,6 +1800,42 @@ mod tests {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
     }
 
+    fn native_multisig_config() -> MultisigConfig {
+        MultisigConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![
+                MultisigOwner {
+                    owner: Address::from([0x11; 20]),
+                    weight: 1,
+                },
+                MultisigOwner {
+                    owner: Address::from([0x22; 20]),
+                    weight: 1,
+                },
+            ],
+        }
+    }
+
+    fn store_native_multisig_commitment(config: &MultisigConfig) -> Result<Address> {
+        let account = config.derive_account().map_err(|error| {
+            TempoPrecompileError::Fatal(format!("invalid test multisig config: {error}"))
+        })?;
+        let mut current = config.clone();
+        current.version = 1;
+        let commitment = current.commitment().map_err(|error| {
+            TempoPrecompileError::Fatal(format!("invalid test multisig config: {error}"))
+        })?;
+        let mut storage = StorageCtx;
+        storage.sstore(
+            tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS,
+            NativeMultisig::config_commitment_storage_slot(account),
+            U256::from_be_slice(commitment.as_slice()),
+        )?;
+        Ok(account)
+    }
+
     #[test]
     fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -1812,6 +1857,65 @@ mod tests {
             assert!(key.is_admin);
             assert!(keychain.is_admin_key(account, account)?);
             assert!(keychain.is_admin_key(account, admin_key)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t12_native_multisig_account_can_authorize_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let config = native_multisig_config();
+        let key_id = Address::from([0x33; 20]);
+
+        StorageCtx::enter(&mut storage, || {
+            let account = store_native_multisig_commitment(&config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )?;
+
+            assert!(keychain.is_active_key(account, key_id)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t12_native_multisig_account_cannot_be_authorized_as_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let config = native_multisig_config();
+        let account = Address::from([0x44; 20]);
+
+        StorageCtx::enter(&mut storage, || {
+            let multisig_account = store_native_multisig_commitment(&config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            assert_invalid_key_id(
+                keychain
+                    .authorize_key(
+                        account,
+                        multisig_account,
+                        SignatureType::Secp256k1,
+                        unrestricted_restrictions(),
+                        None,
+                    )
+                    .expect_err("native multisig account must not become an access key"),
+            );
+            assert!(!keychain.is_active_key(account, multisig_account)?);
 
             Ok(())
         })

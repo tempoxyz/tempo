@@ -3,6 +3,9 @@
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
+use tempo_precompiles::native_multisig::{
+    NativeMultisigAuthorizationError, NativeMultisigStateError,
+};
 use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
 
 /// Tempo-specific invalid transaction errors.
@@ -241,9 +244,22 @@ pub enum TempoInvalidTransaction {
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
 
-    /// Native multisig transactions are not active.
+    /// Native multisig transactions are not active on this hardfork.
     #[error("native multisig transactions are not active")]
     NativeMultisigNotActive,
+
+    /// Native multisig transaction shape or stateless policy is invalid.
+    ///
+    /// This is deterministic for the transaction payload and is treated as a bad transaction.
+    #[error("native multisig invalid transaction: {0}")]
+    NativeMultisigInvalidTransaction(NativeMultisigInvalidReason),
+
+    /// Native multisig state or configuration validation failed.
+    ///
+    /// This can depend on the account's current native multisig storage and is not treated as a
+    /// bad transaction.
+    #[error("native multisig validation failed: {0}")]
+    NativeMultisigValidationFailed(NativeMultisigValidationReason),
 
     /// Fee payment error.
     #[error(transparent)]
@@ -254,6 +270,43 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+}
+
+/// Deterministic native multisig failures derived from the transaction payload.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum NativeMultisigInvalidReason {
+    /// Native multisig authorization validation failed.
+    #[error(transparent)]
+    Authorization(#[from] NativeMultisigAuthorizationError),
+    /// A signature names a different account than its authorization target.
+    #[error("multisig signature account mismatch: expected {expected}, actual {actual}")]
+    SignatureAccountMismatch { expected: Address, actual: Address },
+    /// Multisig key-authorization metadata omits its target account.
+    #[error("multisig authorization account mismatch: expected {expected}, actual none")]
+    MissingAuthorizationAccount { expected: Address },
+    /// Multisig key-authorization metadata names a different target account.
+    #[error("multisig authorization account mismatch: expected {expected}, actual {actual}")]
+    AuthorizationAccountMismatch { expected: Address, actual: Address },
+    /// Native multisig authorization is unsupported in subblock transactions.
+    #[error("native multisig signatures are not allowed in subblock transactions")]
+    SubblockTransaction,
+    /// Native multisig authorization is unsupported in EIP-7702 authorization lists.
+    #[error("native multisig signatures are not allowed in authorization lists")]
+    AuthorizationList,
+}
+
+/// Native multisig failures that depend on current account or precompile state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum NativeMultisigValidationReason {
+    /// Native multisig authorization state validation failed.
+    #[error(transparent)]
+    AuthorizationState(#[from] NativeMultisigStateError),
+    /// A native multisig account has code or an EIP-7702 delegation.
+    #[error("native multisig account {account} cannot have code or EIP-7702 delegation")]
+    AccountHasCodeOrDelegation { account: Address },
+    /// A native multisig account was proposed as a keychain access key.
+    #[error("native multisig account {account} cannot be used as an access key")]
+    AccountCannotBeAccessKey { account: Address },
 }
 
 impl TempoInvalidTransaction {
@@ -322,6 +375,7 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceNonceNotZero
             | Self::SubblockTransactionMustHaveZeroFee
             | Self::KeychainOpInSubblockTransaction
+            | Self::NativeMultisigInvalidTransaction(_)
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
@@ -336,6 +390,7 @@ impl TempoInvalidTransaction {
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
             | Self::NativeMultisigNotActive
+            | Self::NativeMultisigValidationFailed(_)
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
@@ -470,6 +525,7 @@ impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::B256;
 
     #[test]
     fn test_error_display() {
@@ -531,6 +587,35 @@ mod tests {
         for err in cases {
             assert!(!err.is_bad_transaction(), "{err} should not be bad");
         }
+    }
+
+    #[test]
+    fn test_native_multisig_bad_transaction_classification() {
+        let invalid_shape = TempoInvalidTransaction::NativeMultisigInvalidTransaction(
+            NativeMultisigInvalidReason::AuthorizationList,
+        );
+        assert!(
+            invalid_shape.is_bad_transaction(),
+            "stateless native multisig shape/policy failures should be bad transactions"
+        );
+
+        let validation_failed = TempoInvalidTransaction::NativeMultisigValidationFailed(
+            NativeMultisigValidationReason::AuthorizationState(
+                NativeMultisigStateError::ConfigurationCommitmentMismatch {
+                    expected: B256::ZERO,
+                    actual: B256::repeat_byte(0x11),
+                },
+            ),
+        );
+        assert!(
+            !validation_failed.is_bad_transaction(),
+            "config/quorum validation can depend on native multisig account state"
+        );
+
+        assert!(
+            !TempoInvalidTransaction::NativeMultisigNotActive.is_bad_transaction(),
+            "native multisig transactions can become valid after fork activation"
+        );
     }
 
     #[test]

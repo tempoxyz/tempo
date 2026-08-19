@@ -17,10 +17,14 @@ pub mod gas_credits;
 pub mod gas_params;
 pub mod handler;
 mod instructions;
+mod native_multisig;
 mod signature_gas;
 mod tx;
 
-pub use error::{TempoHaltReason, TempoInvalidTransaction};
+pub use error::{
+    NativeMultisigInvalidReason, NativeMultisigValidationReason, TempoHaltReason,
+    TempoInvalidTransaction,
+};
 pub use evm::TempoEvm;
 pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};

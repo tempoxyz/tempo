@@ -52,6 +52,7 @@ crossbeam-channel.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alloy-sol-types.workspace = true
 proptest.workspace = true
 
 [features]
