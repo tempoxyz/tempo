@@ -69,7 +69,7 @@ fn slow_marshal_fetch_does_not_block_building() {
         let proposal = make_block(3, 1, GENESIS);
         let proposal_digest = proposal.digest();
         h.execution.script_built_payload(built_payload(&proposal));
-        let build = h.build(round(3), 0, GENESIS);
+        let build = h.build(round(3), GENESIS);
         futures::pin_mut!(build);
         let deadline = h.run_for(Duration::from_millis(100));
         futures::pin_mut!(deadline);
@@ -105,7 +105,7 @@ fn payload_resolution_does_not_occupy_the_execution_task_slot() {
         // resolution pending after the attribute-carrying FCU completes.
         let proposal = make_block(1, 1, GENESIS);
         let proposal_digest = proposal.digest();
-        let build = h.build(round(1), 0, GENESIS);
+        let build = h.build(round(1), GENESIS);
         h.wait_until(|| {
             h.execution
                 .calls()
@@ -155,7 +155,7 @@ fn multiple_payload_jobs_can_complete_out_of_order() {
 
         let first_proposal = make_block(1, 1, GENESIS);
         let first_digest = first_proposal.digest();
-        let mut first = h.build(round(1), 0, GENESIS);
+        let mut first = h.build(round(1), GENESIS);
         h.wait_until(|| {
             h.execution
                 .calls()
@@ -168,7 +168,7 @@ fn multiple_payload_jobs_can_complete_out_of_order() {
 
         let second_proposal = make_block(2, 1, GENESIS);
         let second_digest = second_proposal.digest();
-        let second = h.build(round(2), 0, GENESIS);
+        let second = h.build(round(2), GENESIS);
         h.wait_until(|| {
             h.execution
                 .calls()
@@ -631,7 +631,7 @@ fn actor_exits_when_its_mailbox_closes_while_a_payload_job_is_active() {
         // Keep the build subscriber alive while its payload remains unresolved.
         // Closing the actor's mailbox must independently tear down both sides
         // of the in-flight build.
-        let build = h.build(round(1), 0, GENESIS);
+        let build = h.build(round(1), GENESIS);
         h.wait_until(|| {
             h.execution
                 .calls()

@@ -134,6 +134,8 @@ struct FakeExecutionInner {
     payload_overrides: Mutex<HashMap<B256, VecDeque<Result<PayloadStatusEnum, &'static str>>>>,
     /// Validator sets received with new-payload requests, keyed by block hash.
     payload_validator_sets: Mutex<Vec<(Digest, Option<Vec<B256>>)>>,
+    /// Payload attributes received with forkchoice-update requests.
+    payload_attributes: Mutex<Vec<TempoPayloadAttributes>>,
     /// Scripted FCU outcomes consumed in order before default behavior.
     fcu_overrides: Mutex<VecDeque<Result<PayloadStatusEnum, &'static str>>>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
@@ -203,6 +205,7 @@ impl FakeExecution {
                 calls: Mutex::new(Vec::new()),
                 payload_overrides: Mutex::new(HashMap::new()),
                 payload_validator_sets: Mutex::new(Vec::new()),
+                payload_attributes: Mutex::new(Vec::new()),
                 fcu_overrides: Mutex::new(VecDeque::new()),
                 canonical_hash_overrides: Mutex::new(HashMap::new()),
                 block_overrides: Mutex::new(HashMap::new()),
@@ -382,6 +385,10 @@ impl FakeExecution {
         self.inner.payload_validator_sets.lock().clone()
     }
 
+    pub(super) fn payload_attributes(&self) -> Vec<TempoPayloadAttributes> {
+        self.inner.payload_attributes.lock().clone()
+    }
+
     pub(super) fn fcus(&self) -> Vec<(Digest, Digest, bool)> {
         self.calls()
             .into_iter()
@@ -557,6 +564,12 @@ impl ExecutionLayer for FakeExecution {
             finalized: Digest(state.finalized_block_hash),
             with_attrs: attributes.is_some(),
         });
+        if let Some(attributes) = attributes.as_ref() {
+            self.inner
+                .payload_attributes
+                .lock()
+                .push(attributes.clone());
+        }
 
         let scripted = self.inner.fcu_overrides.lock().pop_front();
         let outcome = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
@@ -960,11 +973,19 @@ where
     pub(super) fn build(
         &self,
         round: Round,
-        height: u64,
         parent: Digest,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
+        self.build_with_attributes(round, parent, attributes())
+    }
+
+    pub(super) fn build_with_attributes(
+        &self,
+        round: Round,
+        parent: Digest,
+        attributes: TempoPayloadAttributes,
+    ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
         self.mailbox
-            .build_proposal(round, Height::new(height), parent, attributes())
+            .build_proposal(round, parent, attributes)
             .expect("actor should accept the build request")
     }
 }

@@ -1148,15 +1148,12 @@ where
 /// the forkchoice update re-affirms the head instead of moving it; the
 /// Engine API requires the update regardless, because builds can only be
 /// registered through forkchoice updates. The update is still submitted
-/// when the build is dropped as canceled or stale below - a no-op
-/// re-affirmation, doubling as a head refresh.
+/// when the build is dropped as canceled below - a no-op re-affirmation,
+/// doubling as a head refresh.
 #[instrument(
     skip_all,
     parent = &cause,
-    fields(
-        %height,
-        %digest,
-    ),
+    fields(%digest),
 )]
 async fn execute_build<TContext>(
     context: TContext,
@@ -1165,7 +1162,6 @@ async fn execute_build<TContext>(
     cause: Span,
     Build {
         round: _,
-        height,
         digest,
         attributes,
         response,
@@ -1174,25 +1170,12 @@ async fn execute_build<TContext>(
 where
     TContext: Pacer,
 {
-    let new_canonicalized = canonicalized.update_head(height, digest);
-
     let mut build_attributes = Some((*attributes, response));
     if build_attributes
         .as_ref()
         .is_some_and(|(_, response)| response.is_canceled())
     {
         info!("dropping payload build request: the subscriber went away while it was queued");
-        build_attributes.take();
-    }
-
-    // Only build on top of the most recent head. If the requested parent
-    // could not be made the head (because a block above it was already
-    // finalized), the build is stale, and submitting its attributes anyway
-    // would register a build on top of the wrong block. Taking the
-    // attributes drops the response channel, which signals the failure to
-    // the subscriber.
-    if build_attributes.is_some() && new_canonicalized.head.1 != digest {
-        info!("dropping payload build request: its parent cannot be made the head");
         build_attributes.take();
     }
 
@@ -1205,7 +1188,7 @@ where
         &execution_node,
         &context,
         cause.clone(),
-        new_canonicalized,
+        canonicalized,
         attributes,
         ForkchoiceUpdateKind::Canonicalize {
             head_or_finalized: HeadOrFinalized::Head,
@@ -1227,7 +1210,7 @@ where
                 (None, _) => None,
             };
             ExecutionTaskOutcome::Completed {
-                canonicalized: Some(new_canonicalized),
+                canonicalized: Some(canonicalized),
                 payload_job,
             }
         }
