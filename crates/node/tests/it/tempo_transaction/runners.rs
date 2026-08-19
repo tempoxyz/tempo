@@ -608,11 +608,11 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                 auth.authorization = auth
                     .authorization
                     .with_witness(B256::with_last_byte((i + 1) as u8));
-                auth.signature = PrimitiveSignature::Secp256k1(
+                auth.signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                     signer
                         .sign_hash_sync(&auth.authorization.signature_hash())
                         .expect("signing should succeed"),
-                );
+                ));
                 request.key_authorization = Some(auth);
             }
         }
