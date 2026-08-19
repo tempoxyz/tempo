@@ -1044,6 +1044,42 @@ mod tests {
     }
 
     #[test]
+    fn unknown_parent_probe_is_non_destructive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nd.flat");
+        let path = path.to_str().unwrap();
+
+        let genesis = vec![acct(1, 1)];
+        let mut db =
+            FlatMpt::create(format!("{path}.oracle"), mpt_flat_poc::Config::default()).unwrap();
+        let (genesis_root, _) = db.apply_block(genesis.clone()).unwrap();
+
+        let mut s = FlatShadow::init(path, genesis, B256::from(genesis_root)).unwrap();
+        let r1 = s
+            .root_for(0, B256::from(genesis_root), vec![acct(2, 1)])
+            .unwrap();
+        let r2 = s.root_for(1, r1, vec![acct(3, 1)]).unwrap();
+
+        // An anchor AHEAD of the applied state (builder outrunning the
+        // follower) must fail WITHOUT touching the live state. The old
+        // unwind_to popped window entries and applied their inverses while
+        // probing, so one such miss left the live root at the window base and
+        // every later (valid) anchor failed too — the permanent chain halt
+        // observed on the 100G bench.
+        assert!(
+            s.root_for(9, B256::from([7u8; 32]), vec![acct(9, 1)])
+                .is_err()
+        );
+
+        // Valid anchors still work after the miss: rebuild on block 1's root…
+        let r2alt = s.root_for(1, r1, vec![acct(4, 7)]).unwrap();
+        assert_ne!(r2, r2alt);
+        // …and extend on the rebuilt block 2.
+        let r3 = s.root_for(2, r2alt, vec![acct(5, 1)]).unwrap();
+        assert_ne!(r2alt, r3);
+    }
+
+    #[test]
     fn checkpoint_parent_alias_accepts_block_zero_header_root() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("checkpoint.flat");
