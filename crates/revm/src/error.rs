@@ -151,6 +151,10 @@ pub enum TempoInvalidTransaction {
     #[error("failed to recover signer from KeyAuthorization signature")]
     KeyAuthorizationSignatureRecoveryFailed,
 
+    /// Keychain encoding is not valid for a key authorization signature.
+    #[error("key authorization signatures cannot use keychain encoding")]
+    InvalidKeyAuthorizationSignature,
+
     /// KeyAuthorization not signed by root account.
     ///
     /// The KeyAuthorization must be signed by the root account (transaction caller),
@@ -307,6 +311,7 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyRecoveryFailed
             | Self::AccessKeyCannotAuthorizeOtherKeys
             | Self::KeyAuthorizationSignatureRecoveryFailed
+            | Self::InvalidKeyAuthorizationSignature
             | Self::KeyAuthorizationNotSignedByRoot { .. }
             | Self::KeychainUserAddressMismatch { .. }
             | Self::KeyAuthorizationChainIdMismatch { .. }
