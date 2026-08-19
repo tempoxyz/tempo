@@ -26,7 +26,10 @@ jobs:
       duration: "1800"
       bloat: "100"
       token-count: "4"
-      tps: "50000"
+      # 15k offered: 50k against ~10-13k absorbed grew the feature txpool by
+      # ~37k txs/s for the whole measured window — at duration=1800 that OOMed
+      # the runner ~5min into the feature phase (3/3 kills at that point).
+      tps: "15000"
       accounts: "1000"
       max-concurrent-requests: "5000"
       baseline: "centaur/bench-flatmpt-e2e-1786443703"
