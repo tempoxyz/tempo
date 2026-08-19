@@ -833,6 +833,14 @@ impl HarnessBuilder {
     where
         TContext: Clock + Metrics + Pacer + Spawner,
     {
+        self.try_start(context)
+            .expect("executor actor should initialize")
+    }
+
+    pub(super) fn try_start<TContext>(self, context: &TContext) -> eyre::Result<Harness<TContext>>
+    where
+        TContext: Clock + Metrics + Pacer + Spawner,
+    {
         let Self {
             execution,
             marshal,
@@ -852,16 +860,15 @@ impl HarnessBuilder {
                 fcu_heartbeat_interval: options.fcu_heartbeat_interval,
                 public_key: options.public_key,
             },
-        )
-        .expect("executor actor should initialize");
+        )?;
         let actor = actor.start();
-        Harness {
+        Ok(Harness {
             context: context.child("harness"),
             execution,
             marshal,
             mailbox,
             actor,
-        }
+        })
     }
 }
 

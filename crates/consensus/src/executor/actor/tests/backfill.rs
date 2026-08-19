@@ -117,6 +117,35 @@ fn execution_layer_body_lookup_error_fails_startup() {
 }
 
 #[test_traced]
+fn execution_layer_missing_body_from_finalization_info_fails_startup() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        // Marshal knows which block was finalized but no longer has its body,
+        // and the execution layer cannot supply the body either.
+        let marshal = FakeMarshal::new();
+        marshal.add_info(1, d1);
+
+        let h = Harness::builder()
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, d1),
+                ..Default::default()
+            })
+            .start(&context);
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly when no block body is available");
+        assert_eq!(h.marshal.get_block_log(), vec![1]);
+        assert!(h.execution.new_payloads().is_empty());
+        assert!(h.execution.fcus().is_empty());
+    });
+}
+
+#[test_traced]
 fn unsourceable_backfill_block_fails_startup() {
     deterministic::Runner::default().start(|context| async move {
         // Neither marshal nor the execution layer can produce the block at
@@ -133,6 +162,47 @@ fn unsourceable_backfill_block_fails_startup() {
             .await
             .expect("actor should shut down cleanly when the backfill fails");
         assert!(h.execution.fcus().is_empty());
+    });
+}
+
+#[test_traced]
+fn canonical_hash_read_error_fails_initialization() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let d2 = b2.digest();
+
+        // A snapshot floor below execution finality requires a canonical-hash
+        // read so the actor can reconstruct its starting finalized state.
+        let execution = FakeExecution::new();
+        execution.seed_canonical_block(&b1);
+        execution.seed_canonical_block(&b2);
+        execution.set_finalized(2, d2);
+        execution.script_canonical_block_hash(1, Err("database unavailable"));
+
+        let result = Harness::builder()
+            .execution(execution)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(2), 2, d2),
+                ..Default::default()
+            })
+            .try_start(&context);
+
+        let Err(error) = result else {
+            panic!("actor initialization should fail");
+        };
+        let error = format!("{error:#}");
+        assert!(
+            error.contains(
+                "failed reading canonical execution block hash at the finalized floor height `1`"
+            ),
+            "unexpected error: {error}",
+        );
+        assert!(
+            error.contains("database unavailable"),
+            "unexpected error: {error}",
+        );
     });
 }
 
@@ -182,6 +252,73 @@ fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates(
             .expect("the block at the execution finality should be acknowledged");
         assert_eq!(h.execution.fcus(), vec![(d2, d2, false)]);
         assert_eq!(h.execution.finalized(), Some((2, d2)));
+    });
+}
+
+#[test_traced]
+fn invalid_payload_fails_startup_backfill() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        let execution = FakeExecution::new();
+        execution.script_new_payload(
+            d1,
+            Ok(PayloadStatusEnum::Invalid {
+                validation_error: "bad backfill block".into(),
+            }),
+        );
+
+        let h = Harness::builder()
+            .execution(execution)
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, d1),
+                ..Default::default()
+            })
+            .start(&context);
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly when a backfill payload is invalid");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert!(h.execution.fcus().is_empty());
+    });
+}
+
+#[test_traced]
+fn rejected_forkchoice_update_fails_startup_backfill() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        let execution = FakeExecution::new();
+        execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
+            validation_error: "rejected backfill forkchoice".into(),
+        }));
+
+        let h = Harness::builder()
+            .execution(execution)
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(1), 1, d1),
+                ..Default::default()
+            })
+            .start(&context);
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly when the backfill FCU is rejected");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert_eq!(h.execution.fcus(), vec![(d1, d1, false)]);
+        assert_eq!(h.execution.head(), GENESIS);
+        assert_eq!(h.execution.finalized(), None);
     });
 }
 
