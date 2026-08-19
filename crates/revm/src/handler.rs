@@ -60,8 +60,9 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        InitMultisig, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, validate_calls,
+        InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, SignatureType,
+        TEMPO_EXPIRING_NONCE_KEY, TempoSignature, calc_gas_balance_spending,
+        is_valid_multisig_account, validate_calls,
     },
 };
 
@@ -1043,7 +1044,6 @@ where
 
         let spec = cfg.spec();
         let mut native_multisig_bootstrap: Option<(Address, InitMultisig)> = None;
-        let mut native_multisig_config_validation_gas = 0u64;
         let tempo_tx_env = tx.tempo_tx_env.as_deref();
         let outer_multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
         let key_authorization_multisig_signature = tempo_tx_env
@@ -1190,6 +1190,69 @@ where
                 gas_used
             };
 
+            let native_multisig_config_validation_gas = StorageCtx::enter_precompile(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions.clone(),
+                |multisig_precompile: NativeMultisig| -> Result<
+                    u64,
+                    EVMError<DB::Error, TempoInvalidTransaction>,
+                > {
+                    let root_owner_count = if validates_caller_multisig {
+                        multisig_precompile
+                            .load_registered_header_if_present(tx.caller())
+                            .map_err(NativeMultisigAuthError::from)
+                            .map_err(map_native_multisig_error::<DB>)?
+                            .map(|header| header.owner_count)
+                    } else {
+                        None
+                    };
+                    let mut gas = 0u64;
+                    for signature in [
+                        outer_multisig_signature,
+                        key_authorization_multisig_signature,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        gas = gas.saturating_add(
+                            native_multisig_config_validation_gas_for_signature::<DB>(
+                                &multisig_precompile,
+                                signature,
+                                root_owner_count,
+                                1,
+                            )?,
+                        );
+                    }
+                    Ok(gas)
+                },
+            )?;
+
+            init_gas.initial_regular_gas = init_gas
+                .initial_regular_gas
+                .saturating_add(native_multisig_registry_validation_gas)
+                .saturating_add(native_multisig_config_validation_gas);
+
+            if tx.gas_limit() < init_gas.initial_total_gas() {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    gas_limit: tx.gas_limit(),
+                    initial_gas: init_gas.initial_total_gas(),
+                }
+                .into());
+            }
+
+            if cfg.is_amsterdam_eip8037_enabled()
+                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
+            {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                    gas_floor: init_gas.initial_regular_gas(),
+                    gas_limit: cfg.tx_gas_limit_cap(),
+                }
+                .into());
+            }
+
             for signature in [
                 outer_multisig_signature,
                 key_authorization_multisig_signature,
@@ -1272,12 +1335,6 @@ where
                             let config = caller_multisig_config
                                 .as_ref()
                                 .expect("caller is a registered native multisig account");
-                            native_multisig_config_validation_gas =
-                                native_multisig_config_validation_gas.saturating_add(
-                                    native_multisig_complete_config_validation_gas(
-                                        config.owner_count,
-                                    ),
-                                );
                             if !is_rpc_simulation {
                                 verify_native_multisig_authorization::<DB>(
                                     &multisig_precompile,
@@ -1288,7 +1345,6 @@ where
                                         version: config.version,
                                         owners: config.owners.clone(),
                                     },
-                                    &mut native_multisig_config_validation_gas,
                                 )?;
                             }
                         } else {
@@ -1310,7 +1366,6 @@ where
                                     tempo_tx_env.signature_hash,
                                     signature,
                                     NativeMultisigAuthConfig::Inline(init_config),
-                                    &mut native_multisig_config_validation_gas,
                                 )?;
                             }
                             native_multisig_bootstrap =
@@ -1318,10 +1373,9 @@ where
                         }
 
                         if is_rpc_simulation {
-                            add_rpc_nested_multisig_config_validation_gas::<DB>(
+                            validate_rpc_nested_multisig_configs::<DB>(
                                 &multisig_precompile,
                                 signature,
-                                &mut native_multisig_config_validation_gas,
                             )?;
                         }
                     }
@@ -1376,7 +1430,7 @@ where
                                     reason: reason.to_string(),
                                 }
                             })?;
-                            let (threshold, version, owner_count, owners) =
+                            let (threshold, version, owners) =
                                 if signature.account() == tx.caller() {
                                     let config = caller_multisig_config.as_ref().ok_or_else(
                                         || -> EVMError<DB::Error, TempoInvalidTransaction> {
@@ -1392,7 +1446,6 @@ where
                                     (
                                         config.threshold,
                                         config.version,
-                                        config.owner_count,
                                         config.owners.clone(),
                                     )
                                 } else {
@@ -1403,14 +1456,9 @@ where
                                     (
                                         config.threshold,
                                         config.version,
-                                        config.owner_count,
                                         config.owners,
                                     )
                                 };
-                            native_multisig_config_validation_gas =
-                                native_multisig_config_validation_gas.saturating_add(
-                                    native_multisig_complete_config_validation_gas(owner_count),
-                                );
                             NativeMultisigAuthConfig::Registered {
                                 threshold,
                                 version,
@@ -1419,10 +1467,9 @@ where
                         };
 
                         if is_rpc_simulation {
-                            add_rpc_nested_multisig_config_validation_gas::<DB>(
+                            validate_rpc_nested_multisig_configs::<DB>(
                                 &multisig_precompile,
                                 signature,
-                                &mut native_multisig_config_validation_gas,
                             )?;
                         } else {
                             verify_native_multisig_authorization::<DB>(
@@ -1430,7 +1477,6 @@ where
                                 key_auth.authorization.signature_hash(),
                                 signature,
                                 config.clone(),
-                                &mut native_multisig_config_validation_gas,
                             )?;
                         }
                         if let NativeMultisigAuthConfig::Inline(init_config) = config
@@ -1444,29 +1490,6 @@ where
                     Ok(())
                 },
             )?;
-
-            init_gas.initial_regular_gas = init_gas
-                .initial_regular_gas
-                .saturating_add(native_multisig_registry_validation_gas)
-                .saturating_add(native_multisig_config_validation_gas);
-
-            if tx.gas_limit() < init_gas.initial_total_gas() {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    gas_limit: tx.gas_limit(),
-                    initial_gas: init_gas.initial_total_gas(),
-                }
-                .into());
-            }
-
-            if cfg.is_amsterdam_eip8037_enabled()
-                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
-            {
-                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_floor: init_gas.initial_regular_gas(),
-                    gas_limit: cfg.tx_gas_limit_cap(),
-                }
-                .into());
-            }
         }
 
         // Load caller's account mutably after multisig validation.
@@ -2328,6 +2351,14 @@ where
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
             }
 
+            if aa_env.subblock_transaction && has_native_multisig_fields {
+                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                    reason: "native multisig signatures are not allowed in subblock transactions"
+                        .to_string(),
+                }
+                .into());
+            }
+
             if let Some(multisig_signature) = aa_env.signature.as_multisig() {
                 let account = multisig_signature.recover_account().map_err(|reason| {
                     TempoInvalidTransaction::NativeMultisigInvalidTransaction {
@@ -2338,6 +2369,14 @@ where
                     return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                         reason: "multisig signature account does not match transaction caller"
                             .to_string(),
+                    }
+                    .into());
+                }
+                if multisig_signature.init().is_some()
+                    && !is_valid_multisig_account(account, *cfg.spec())
+                {
+                    return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                        reason: "multisig_init derives a reserved account address".to_string(),
                     }
                     .into());
                 }
@@ -2382,6 +2421,14 @@ where
                         return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                             reason: "multisig key authorization must be signed by the transaction caller"
                                 .to_string(),
+                        }
+                        .into());
+                    }
+                    if signature.init().is_some()
+                        && !is_valid_multisig_account(account, *cfg.spec())
+                    {
+                        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                            reason: "multisig_init derives a reserved account address".to_string(),
                         }
                         .into());
                     }
@@ -3195,25 +3242,71 @@ fn verify_native_multisig_authorization<DB: Database>(
     inner_digest: B256,
     signature: &MultisigSignature,
     config: NativeMultisigAuthConfig<'_>,
-    config_validation_gas: &mut u64,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
     multisig
         .verify_authorization(inner_digest, signature, config, |account| {
             let config = multisig
                 .load_registered_config_summary(account)
                 .map_err(NativeMultisigAuthError::from)?;
-            *config_validation_gas = config_validation_gas.saturating_add(
-                native_multisig_complete_config_validation_gas(config.owner_count),
-            );
             Ok((config.threshold, config.version, config.owners))
         })
         .map_err(map_native_multisig_error::<DB>)
 }
 
-fn add_rpc_nested_multisig_config_validation_gas<DB: Database>(
+fn native_multisig_config_validation_gas_for_signature<DB: Database>(
     multisig: &NativeMultisig,
     signature: &MultisigSignature,
-    config_validation_gas: &mut u64,
+    registered_owner_count: Option<usize>,
+    depth: usize,
+) -> Result<u64, EVMError<DB::Error, TempoInvalidTransaction>> {
+    let mut gas = if signature.simulation_config_owner_count().is_none() {
+        registered_owner_count
+            .map(native_multisig_complete_config_validation_gas)
+            .unwrap_or_default()
+    } else {
+        0
+    };
+
+    for approval in signature.signatures() {
+        let TempoSignature::Multisig(nested) = approval else {
+            continue;
+        };
+        nested.validate_registered_shape().map_err(|reason| {
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                reason: format!("invalid nested multisig owner signature: {reason}"),
+            }
+        })?;
+        if depth >= MAX_MULTISIG_NESTING_DEPTH {
+            return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                reason: "native multisig nesting depth exceeded".to_string(),
+            }
+            .into());
+        }
+        let nested_owner_count = if nested.simulation_config_owner_count().is_none() {
+            Some(
+                multisig
+                    .load_registered_header(nested.account())
+                    .map_err(NativeMultisigAuthError::from)
+                    .map_err(map_native_multisig_error::<DB>)?
+                    .owner_count,
+            )
+        } else {
+            None
+        };
+        gas = gas.saturating_add(native_multisig_config_validation_gas_for_signature::<DB>(
+            multisig,
+            nested,
+            nested_owner_count,
+            depth + 1,
+        )?);
+    }
+
+    Ok(gas)
+}
+
+fn validate_rpc_nested_multisig_configs<DB: Database>(
+    multisig: &NativeMultisig,
+    signature: &MultisigSignature,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
     for approval in signature.signatures() {
         let TempoSignature::Multisig(nested) = approval else {
@@ -3221,20 +3314,13 @@ fn add_rpc_nested_multisig_config_validation_gas<DB: Database>(
         };
 
         if nested.simulation_config_owner_count().is_none() {
-            let config = multisig
+            multisig
                 .load_registered_config_summary(nested.account())
                 .map_err(NativeMultisigAuthError::from)
                 .map_err(map_native_multisig_error::<DB>)?;
-            *config_validation_gas = config_validation_gas.saturating_add(
-                native_multisig_complete_config_validation_gas(config.owner_count),
-            );
         }
 
-        add_rpc_nested_multisig_config_validation_gas::<DB>(
-            multisig,
-            nested,
-            config_validation_gas,
-        )?;
+        validate_rpc_nested_multisig_configs::<DB>(multisig, nested)?;
     }
 
     Ok(())

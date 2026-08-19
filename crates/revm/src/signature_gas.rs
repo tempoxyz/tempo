@@ -29,7 +29,7 @@ pub(crate) const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
 pub(crate) const NATIVE_MULTISIG_OWNER_WEIGHT_GAS: u64 = COLD_SLOAD_COST;
 
 /// Gas for checking that each nested multisig owner account has no code or delegation.
-pub(crate) const NATIVE_MULTISIG_NESTED_ACCOUNT_GAS: u64 = COLD_ACCOUNT_ACCESS_COST;
+pub const NATIVE_MULTISIG_NESTED_ACCOUNT_GAS: u64 = COLD_ACCOUNT_ACCESS_COST;
 
 /// Additional storage reads required to validate every ordered owner row against its direct
 /// weight row before using a registered configuration.

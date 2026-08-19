@@ -75,9 +75,10 @@ fn sign_native_multisig(
     include_init: bool,
 ) -> TempoSignature {
     let account = config.account().unwrap();
+    let config_version = if include_init { 0 } else { 1 };
     let owner_signature = PrimitiveSignature::Secp256k1(
         signer
-            .sign_hash_sync(&multisig_digest(inner_digest, account, 0))
+            .sign_hash_sync(&multisig_digest(inner_digest, account, config_version))
             .expect("owner signing succeeds"),
     )
     .to_bytes();
@@ -5085,6 +5086,40 @@ fn test_t11_multisig_signature_rejects_caller_mismatch_in_env_validation() {
 }
 
 #[test]
+fn test_t11_subblock_rejects_native_multisig_signature() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            Some(config),
+        )),
+        subblock_transaction: true,
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { ref reason }
+            )) if reason.contains("subblock")
+        ),
+        "unexpected validation result: {result:?}"
+    );
+}
+
+#[test]
 fn test_t11_bootstrap_multisig_persists_initial_config() {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -5143,10 +5178,9 @@ fn test_t11_bootstrap_multisig_persists_initial_config() {
     StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
         let multisig = NativeMultisig::new();
         assert!(multisig.is_multisig_account(account)?);
-        assert_eq!(
-            multisig.get_multisig_config(account)?.threshold,
-            config.threshold
-        );
+        let stored = multisig.get_multisig_config(account)?;
+        assert_eq!(stored.version, 1);
+        assert_eq!(stored.threshold, config.threshold);
         Ok::<_, TempoPrecompileError>(())
     })
     .expect("stored native multisig config should be readable");
@@ -5452,6 +5486,47 @@ fn test_t11_rpc_simulation_skips_registered_multisig_owner_verification() {
 }
 
 #[test]
+fn test_t11_registered_multisig_checks_state_gas_before_owner_signatures() {
+    let config = native_multisig_config();
+    let owner_count = config.owners.len();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let mut init_gas = test.validate_initial_tx_gas();
+    let required_gas = init_gas
+        .initial_total_gas()
+        .saturating_add(native_multisig_complete_config_validation_gas(owner_count));
+    test.evm.inner.ctx.tx.inner.gas_limit = required_gas - 1;
+
+    assert!(matches!(
+        test.handler
+            .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+            )
+        ))
+    ));
+}
+
+#[test]
 fn test_t11_rpc_simulation_charges_nested_key_authorization_config() {
     use tempo_primitives::transaction::SignatureType;
 
@@ -5554,8 +5629,8 @@ fn test_t11_registered_native_multisig_accepts_max_depth_nested_multisig_owner()
     let parent_config = single_owner_native_multisig_config(0x43, child_account);
     let parent_account = parent_config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x44);
-    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
-    let child_digest = multisig_digest(parent_digest, child_account, 0);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 1);
+    let child_digest = multisig_digest(parent_digest, child_account, 1);
     let child_owner_signature = PrimitiveSignature::Secp256k1(
         signer
             .sign_hash_sync(&child_digest)
@@ -5607,8 +5682,8 @@ fn test_t11_registered_native_multisig_rejects_code_bearing_nested_owner() {
     let parent_config = single_owner_native_multisig_config(0x43, child_account);
     let parent_account = parent_config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x44);
-    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
-    let child_digest = multisig_digest(parent_digest, child_account, 0);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 1);
+    let child_digest = multisig_digest(parent_digest, child_account, 1);
     let child_owner_signature = PrimitiveSignature::Secp256k1(
         signer
             .sign_hash_sync(&child_digest)
@@ -5680,9 +5755,9 @@ fn test_t11_registered_native_multisig_rejects_excessive_nesting_depth() {
     let parent_account = parent_config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x45);
 
-    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
-    let child_digest = multisig_digest(parent_digest, child_account, 0);
-    let grandchild_digest = multisig_digest(child_digest, grandchild_account, 0);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 1);
+    let child_digest = multisig_digest(parent_digest, child_account, 1);
+    let grandchild_digest = multisig_digest(child_digest, grandchild_account, 1);
     let grandchild_owner_signature = PrimitiveSignature::Secp256k1(
         signer
             .sign_hash_sync(&grandchild_digest)
@@ -5876,7 +5951,7 @@ fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction(
     let signature = MultisigSignature::new(
         account,
         signed.into_iter().map(|(_, signature)| signature).collect(),
-        None,
+        Some(config.clone()),
     );
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
@@ -5893,6 +5968,42 @@ fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction(
         ),
         "recovered owner order is fixed by the transaction and should be bad"
     );
+
+    let digest = multisig_digest(signature_hash, account, 1);
+    let mut signed = signers
+        .iter()
+        .map(|signer| {
+            let signature = PrimitiveSignature::Secp256k1(
+                signer
+                    .sign_hash_sync(&digest)
+                    .expect("owner signing succeeds"),
+            )
+            .to_bytes();
+            (signer.address(), signature)
+        })
+        .collect::<Vec<_>>();
+    signed.sort_by_key(|(owner, _)| *owner);
+    signed.reverse();
+    let signature = MultisigSignature::new(
+        account,
+        signed.into_iter().map(|(_, signature)| signature).collect(),
+        None,
+    );
+    let result = NativeMultisig::new().verify_authorization(
+        signature_hash,
+        &signature,
+        NativeMultisigAuthConfig::Registered {
+            threshold: config.threshold,
+            version: 1,
+            owners: config.owners,
+        },
+        |_| unreachable!("primitive owner approvals should not load nested configs"),
+    );
+    assert!(matches!(
+        result,
+        Err(NativeMultisigAuthError::ValidationFailed(reason))
+            if reason.contains("ascending")
+    ));
 }
 
 #[test]
@@ -5905,23 +6016,26 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
     let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x22));
     let account = config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x43);
-    let digest = multisig_digest(signature_hash, account, 0);
-    let signature = MultisigSignature::new(
-        account,
-        vec![
-            PrimitiveSignature::Secp256k1(
-                signer
-                    .sign_hash_sync(&digest)
-                    .expect("owner signing succeeds"),
-            )
-            .to_bytes(),
-        ],
-        None,
-    );
+    let signature_for_version = |version, init| {
+        let digest = multisig_digest(signature_hash, account, version);
+        MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes(),
+            ],
+            init,
+        )
+    };
+    let inline_signature = signature_for_version(0, Some(config.clone()));
 
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
-        &signature,
+        &inline_signature,
         NativeMultisigAuthConfig::Inline(&config),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
     );
@@ -5935,13 +6049,14 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
         "owner membership depends on current stored config and should remain revalidatable"
     );
 
+    let registered_signature = signature_for_version(1, None);
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
-        &signature,
+        &registered_signature,
         NativeMultisigAuthConfig::Registered {
             threshold: config.threshold,
-            version: 0,
-            owners: config.owners.clone(),
+            version: 1,
+            owners: config.owners,
         },
         |_| unreachable!("primitive owner approvals should not load nested configs"),
     );
@@ -6013,7 +6128,7 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
     let config = single_owner_native_multisig_config(0x42, owner);
     let account = config.account().unwrap();
     let signature_hash = B256::repeat_byte(0x43);
-    let signature_for_version = |version| {
+    let signature_for_version = |version, include_init: bool| {
         let digest = multisig_digest(signature_hash, account, version);
         let prehashed = Sha256::digest(digest);
         let signature: p256::ecdsa::Signature = signing_key
@@ -6033,7 +6148,7 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
                 })
                 .to_bytes(),
             ],
-            None,
+            include_init.then(|| config.clone()),
         )
     };
     let verify_registered = |signature: &MultisigSignature| {
@@ -6049,11 +6164,12 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
         )
     };
 
-    let stale_signature = signature_for_version(0);
+    let stale_signature = signature_for_version(0, false);
+    let bootstrap_signature = signature_for_version(0, true);
     NativeMultisig::new()
         .verify_authorization(
             signature_hash,
-            &stale_signature,
+            &bootstrap_signature,
             NativeMultisigAuthConfig::Inline(&config),
             |_| unreachable!("primitive owner approvals should not load nested configs"),
         )
@@ -6064,12 +6180,13 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
             if reason == "invalid multisig owner signature"
     ));
 
-    let current_signature = signature_for_version(1);
+    let current_signature = signature_for_version(1, false);
+    let current_inline_signature = signature_for_version(1, true);
     verify_registered(&current_signature).expect("current config version should authorize");
     assert!(matches!(
         NativeMultisig::new().verify_authorization(
             signature_hash,
-            &current_signature,
+            &current_inline_signature,
             NativeMultisigAuthConfig::Inline(&config),
             |_| unreachable!("primitive owner approvals should not load nested configs"),
         ),
@@ -6116,7 +6233,7 @@ fn native_multisig_authorization_rejects_trailing_owner_approvals() {
         })
         .collect();
 
-    let signature = MultisigSignature::new(account, signatures, None);
+    let signature = MultisigSignature::new(account, signatures, Some(config.clone()));
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
         &signature,
@@ -6132,6 +6249,35 @@ fn native_multisig_authorization_rejects_trailing_owner_approvals() {
         ),
         "unused trailing approvals should make multisig signatures non-canonical"
     );
+
+    let digest = multisig_digest(signature_hash, account, 1);
+    let signatures = signers
+        .iter()
+        .map(|signer| {
+            PrimitiveSignature::Secp256k1(
+                signer
+                    .sign_hash_sync(&digest)
+                    .expect("owner signing succeeds"),
+            )
+            .to_bytes()
+        })
+        .collect();
+    let signature = MultisigSignature::new(account, signatures, None);
+    let result = NativeMultisig::new().verify_authorization(
+        signature_hash,
+        &signature,
+        NativeMultisigAuthConfig::Registered {
+            threshold: config.threshold,
+            version: 1,
+            owners: config.owners,
+        },
+        |_| unreachable!("primitive owner approvals should not load nested configs"),
+    );
+    assert!(matches!(
+        result,
+        Err(NativeMultisigAuthError::ValidationFailed(reason))
+            if reason.contains("excess")
+    ));
 }
 
 #[test]
