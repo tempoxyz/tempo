@@ -350,7 +350,7 @@ impl Installer {
 
 /// The fallback install directory: `TEMPO_HOME/bin` if set, else `~/.local/bin`.
 pub(crate) fn fallback_bin_dir() -> Option<PathBuf> {
-    if let Some(home) = env::var_os("TEMPO_HOME") {
+    if let Some(home) = env::var_os("TEMPO_HOME").filter(|home| !home.is_empty()) {
         Some(PathBuf::from(home).join("bin"))
     } else {
         default_local_bin().ok()
@@ -460,6 +460,24 @@ fn is_newer(manifest_version: &str, installed_version: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn empty_tempo_home_does_not_use_relative_bin_dir() {
+        let previous = std::env::var_os("TEMPO_HOME");
+        unsafe { std::env::set_var("TEMPO_HOME", "") };
+
+        let installer = super::Installer::from_env(None).unwrap();
+
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("TEMPO_HOME", value) };
+        } else {
+            unsafe { std::env::remove_var("TEMPO_HOME") };
+        }
+
+        assert_ne!(installer.bin_dir, std::path::PathBuf::from("bin"));
+        assert!(installer.bin_dir.is_absolute());
+    }
+
     use super::file_url_to_path;
     use std::path::Path;
 
