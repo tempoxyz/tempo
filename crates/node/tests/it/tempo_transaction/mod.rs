@@ -38,6 +38,7 @@
 //! - Keychain spending limit TOCTOU DoS.
 
 use crate::utils::{ForkSchedule, run_schedule_cases};
+use tempo_chainspec::hardfork::TempoHardfork;
 use test_case::test_case;
 
 pub(crate) mod helpers;
@@ -47,6 +48,7 @@ pub(crate) mod types;
 use types::TestEnv;
 
 mod local;
+mod multisig;
 mod rpc;
 
 /// Run all matrix tests and scenario runners against a single environment.
@@ -78,6 +80,13 @@ async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
         Ok(())
     })
     .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip_1061_examples() -> eyre::Result<()> {
+    let mut env =
+        local::Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T11)).await?;
+    env.run_tip_1061_examples().await
 }
 
 #[tokio::test(flavor = "multi_thread")]
