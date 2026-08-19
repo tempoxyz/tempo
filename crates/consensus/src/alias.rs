@@ -334,6 +334,7 @@ pub(crate) mod marshal {
         ))
     }
 
+    #[instrument(skip_all, fields(%height), err)]
     async fn register_scheme<TContext>(
         context: &mut TContext,
         epoch_strategy: &FixedEpocher,
