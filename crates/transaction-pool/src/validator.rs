@@ -807,6 +807,9 @@ where
                 "indexed canonical block into expiring nonce history"
             );
         }
+        self.expiring_nonce_history
+            .set_canonical_head(new_tip_block.hash())
+            .expect("canonical expiring nonce history must connect to the cached head");
 
         // Cache the EVM environment for the new tip block.
         let evm_env = self

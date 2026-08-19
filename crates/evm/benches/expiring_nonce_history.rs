@@ -72,6 +72,7 @@ fn bench_contains(c: &mut Criterion) {
         history.record_block(block(block_hash, parent, number, entries));
         parent = block_hash;
     }
+    history.set_canonical_head(parent).unwrap();
 
     let mut group = c.benchmark_group("expiring_nonce_history/contains");
     group.bench_function("miss", |b| {

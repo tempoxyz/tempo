@@ -1,8 +1,5 @@
 use alloy_consensus::transaction::SignerRecoverable;
-use alloy_primitives::{
-    B256,
-    map::{B256Map, Entry},
-};
+use alloy_primitives::{B256, map::B256Map};
 use smallvec::SmallVec;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -51,21 +48,11 @@ pub enum ExpiringNonceHistoryError {
     SenderRecovery,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Inclusion {
-    block_hash: B256,
-    valid_before: u64,
-}
-
 #[derive(Debug, Clone)]
 struct BlockRecord {
     parent_hash: B256,
     timestamp: u64,
-    replay_ids: Vec<B256>,
-    /// Distance from this cache segment's anchor, when the parent lineage is known.
-    height: Option<u64>,
-    /// Ancestors at distances 1, 2, 4, ... for logarithmic branch membership checks.
-    jumps: SmallVec<[B256; 8]>,
+    entries: Vec<ExpiringNonceEntry>,
     /// Earliest candidate timestamp at which all ancestry missing before this block is expired.
     complete_at: Option<u64>,
 }
@@ -78,13 +65,18 @@ struct Anchor {
 
 #[derive(Debug)]
 struct HistoryInner {
+    /// Live replay identifiers on the canonical branch.
+    live: B256Map<u64>,
+    /// Expiry buckets for canonical entries. Stale bucket entries are ignored during collection.
+    expirations: BTreeMap<u64, Vec<B256>>,
     blocks: B256Map<BlockRecord>,
     blocks_by_timestamp: BTreeMap<u64, SmallVec<[B256; 2]>>,
     children: B256Map<SmallVec<[B256; 2]>>,
-    inclusions: B256Map<SmallVec<[Inclusion; 1]>>,
     anchors: B256Map<Anchor>,
+    canonical_head: B256,
+    canonical_timestamp: u64,
+    canonical_complete_at: u64,
     retained_identifiers: usize,
-    highest_timestamp: u64,
 }
 
 impl Default for HistoryInner {
@@ -92,13 +84,16 @@ impl Default for HistoryInner {
         let mut anchors = B256Map::default();
         anchors.insert(B256::ZERO, Anchor { complete_at: 0 });
         Self {
+            live: B256Map::default(),
+            expirations: BTreeMap::new(),
             blocks: B256Map::default(),
             blocks_by_timestamp: BTreeMap::new(),
             children: B256Map::default(),
-            inclusions: B256Map::default(),
             anchors,
+            canonical_head: B256::ZERO,
+            canonical_timestamp: 0,
+            canonical_complete_at: 0,
             retained_identifiers: 0,
-            highest_timestamp: 0,
         }
     }
 }
@@ -148,8 +143,15 @@ impl ExpiringNonceHistory {
                 .anchors
                 .insert(first.parent_hash, Anchor { complete_at });
         }
+        let mut head = None;
         for block in blocks {
+            head = Some(block.hash);
             history.record_block(block);
+        }
+        if let Some(head) = head {
+            history
+                .set_canonical_head(head)
+                .expect("contiguous rebuilt expiring nonce history");
         }
         history
     }
@@ -197,21 +199,9 @@ impl ExpiringNonceHistory {
         let block_hash = block.hash;
         let parent_hash = block.parent_hash;
         let timestamp = block.timestamp;
-        let entry_count = block.entries.len();
-        let mut replay_ids = Vec::with_capacity(entry_count);
-        for entry in block.entries {
-            replay_ids.push(entry.replay_id);
-            inner
-                .inclusions
-                .entry(entry.replay_id)
-                .or_default()
-                .push(Inclusion {
-                    block_hash: block.hash,
-                    valid_before: entry.valid_before,
-                });
-        }
+        let entries = block.entries;
+        let entry_count = entries.len();
         inner.retained_identifiers += entry_count;
-        inner.highest_timestamp = inner.highest_timestamp.max(block.timestamp);
         let complete_at = inner
             .anchors
             .get(&block.parent_hash)
@@ -222,15 +212,12 @@ impl ExpiringNonceHistory {
                     .get(&block.parent_hash)
                     .and_then(|parent| parent.complete_at)
             });
-        let (height, jumps) = Self::lineage_for_parent(&inner, block.parent_hash);
         inner.blocks.insert(
             block.hash,
             BlockRecord {
                 parent_hash: block.parent_hash,
                 timestamp: block.timestamp,
-                replay_ids,
-                height,
-                jumps,
+                entries,
                 complete_at,
             },
         );
@@ -245,9 +232,8 @@ impl ExpiringNonceHistory {
             .or_default()
             .push(block_hash);
         self.propagate_completeness_locked(&mut inner, block_hash, false);
-        let (pruned_blocks, pruned_identifiers) = self.prune_locked(&mut inner);
         let retained_blocks = inner.blocks.len();
-        let retained_unique_identifiers = inner.inclusions.len();
+        let retained_unique_identifiers = inner.live.len();
         drop(inner);
 
         info!(
@@ -258,15 +244,16 @@ impl ExpiringNonceHistory {
             entry_count,
             retained_blocks,
             retained_unique_identifiers,
-            pruned_blocks,
-            pruned_identifiers,
             ?lock_wait,
             elapsed = ?started.elapsed(),
-            "recorded expiring nonce history overlay"
+            "cached expiring nonce block overlay"
         );
     }
 
     /// Returns whether `replay_id` was consumed by a live ancestor of `parent_hash`.
+    ///
+    /// The canonical-head path is a single lookup in the live replay map. Cached block overlays are
+    /// consulted only when validating a side branch.
     pub fn contains(
         &self,
         parent_hash: B256,
@@ -277,24 +264,64 @@ impl ExpiringNonceHistory {
             .inner
             .read()
             .expect("expiring nonce history lock poisoned");
-        self.ensure_complete_locked(&inner, parent_hash, candidate_timestamp)?;
-
-        let Some(inclusions) = inner.inclusions.get(&replay_id) else {
-            return Ok(false);
-        };
-        for inclusion in inclusions {
-            if inclusion.valid_before > candidate_timestamp
-                && self.is_ancestor_locked(
-                    &inner,
-                    inclusion.block_hash,
-                    parent_hash,
-                    candidate_timestamp,
-                )?
-            {
-                return Ok(true);
+        if parent_hash == inner.canonical_head {
+            if candidate_timestamp < inner.canonical_complete_at {
+                return Err(ExpiringNonceHistoryError::MissingHistory { parent_hash });
             }
+            return Ok(inner
+                .live
+                .get(&replay_id)
+                .is_some_and(|valid_before| *valid_before > candidate_timestamp));
         }
-        Ok(false)
+
+        self.contains_on_side_branch_locked(&inner, parent_hash, replay_id, candidate_timestamp)
+    }
+
+    /// Moves the live replay map to a cached canonical block.
+    ///
+    /// Extending the current head applies only the new block and expired timing-wheel bucket.
+    /// Reorganizations reconcile the small cached suffix outside the transaction lookup path.
+    pub fn set_canonical_head(&self, block_hash: B256) -> Result<(), ExpiringNonceHistoryError> {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("expiring nonce history lock poisoned");
+        if block_hash == inner.canonical_head {
+            return Ok(());
+        }
+
+        let block =
+            inner
+                .blocks
+                .get(&block_hash)
+                .ok_or(ExpiringNonceHistoryError::MissingHistory {
+                    parent_hash: block_hash,
+                })?;
+        let timestamp = block.timestamp;
+        let complete_at = block
+            .complete_at
+            .ok_or(ExpiringNonceHistoryError::MissingHistory {
+                parent_hash: block_hash,
+            })?;
+
+        if block.parent_hash == inner.canonical_head {
+            Self::expire_live_locked(&mut inner, timestamp);
+            Self::apply_block_locked(&mut inner, block_hash, timestamp);
+        } else {
+            let new_suffix = self.live_suffix_locked(&inner, block_hash, timestamp)?;
+            inner.live.clear();
+            inner.expirations.clear();
+            for hash in new_suffix.into_iter().rev() {
+                Self::apply_block_locked(&mut inner, hash, timestamp);
+            }
+            Self::expire_live_locked(&mut inner, timestamp);
+        }
+
+        inner.canonical_head = block_hash;
+        inner.canonical_timestamp = timestamp;
+        inner.canonical_complete_at = complete_at;
+        self.prune_locked(&mut inner);
+        Ok(())
     }
 
     /// Returns the number of replay identifiers currently retained across all cached branches.
@@ -346,108 +373,102 @@ impl ExpiringNonceHistory {
         }
     }
 
-    fn lineage_for_parent(
+    fn contains_on_side_branch_locked(
+        &self,
         inner: &HistoryInner,
         parent_hash: B256,
-    ) -> (Option<u64>, SmallVec<[B256; 8]>) {
-        let mut jumps = SmallVec::new();
-        jumps.push(parent_hash);
-
-        if inner.anchors.contains_key(&parent_hash) {
-            return (Some(0), jumps);
-        }
-        let Some(parent) = inner.blocks.get(&parent_hash) else {
-            return (None, SmallVec::new());
-        };
-        let Some(height) = parent.height else {
-            return (None, SmallVec::new());
-        };
-
-        let mut level = 1;
-        while let Some(ancestor) = jumps
-            .get(level - 1)
-            .and_then(|ancestor| inner.blocks.get(ancestor))
-            .and_then(|ancestor| ancestor.jumps.get(level - 1))
-            .copied()
-        {
-            jumps.push(ancestor);
-            level += 1;
-        }
-        (Some(height + 1), jumps)
-    }
-
-    fn is_ancestor_locked(
-        &self,
-        inner: &HistoryInner,
-        ancestor_hash: B256,
-        descendant_hash: B256,
+        replay_id: B256,
         candidate_timestamp: u64,
     ) -> Result<bool, ExpiringNonceHistoryError> {
-        if let (Some(ancestor), Some(descendant)) = (
-            inner.blocks.get(&ancestor_hash),
-            inner.blocks.get(&descendant_hash),
-        ) && let (Some(ancestor_height), Some(descendant_height)) =
-            (ancestor.height, descendant.height)
-        {
-            if ancestor_height > descendant_height {
-                return Ok(false);
-            }
-
-            let mut cursor = descendant_hash;
-            let mut distance = descendant_height - ancestor_height;
-            while distance != 0 {
-                let level = (u64::BITS - 1 - distance.leading_zeros()) as usize;
-                let Some(next) = inner
-                    .blocks
-                    .get(&cursor)
-                    .and_then(|block| block.jumps.get(level))
-                else {
-                    return self.is_ancestor_linear_locked(
-                        inner,
-                        ancestor_hash,
-                        descendant_hash,
-                        candidate_timestamp,
-                    );
-                };
-                cursor = *next;
-                distance -= 1 << level;
-            }
-            return Ok(cursor == ancestor_hash);
-        }
-
-        self.is_ancestor_linear_locked(inner, ancestor_hash, descendant_hash, candidate_timestamp)
-    }
-
-    fn is_ancestor_linear_locked(
-        &self,
-        inner: &HistoryInner,
-        ancestor_hash: B256,
-        descendant_hash: B256,
-        candidate_timestamp: u64,
-    ) -> Result<bool, ExpiringNonceHistoryError> {
-        let mut cursor = descendant_hash;
+        self.ensure_complete_locked(inner, parent_hash, candidate_timestamp)?;
+        let mut cursor = parent_hash;
         loop {
-            if cursor == ancestor_hash {
-                return Ok(true);
-            }
             if let Some(anchor) = inner.anchors.get(&cursor) {
                 return if candidate_timestamp >= anchor.complete_at {
                     Ok(false)
                 } else {
-                    Err(ExpiringNonceHistoryError::MissingHistory {
-                        parent_hash: descendant_hash,
-                    })
+                    Err(ExpiringNonceHistoryError::MissingHistory { parent_hash })
                 };
             }
             let Some(block) = inner.blocks.get(&cursor) else {
-                return Err(ExpiringNonceHistoryError::MissingHistory {
-                    parent_hash: descendant_hash,
-                });
+                return Err(ExpiringNonceHistoryError::MissingHistory { parent_hash });
             };
             if block.timestamp.saturating_add(self.max_expiry_secs) <= candidate_timestamp {
                 return Ok(false);
             }
+            if block.entries.iter().any(|entry| {
+                entry.replay_id == replay_id && entry.valid_before > candidate_timestamp
+            }) {
+                return Ok(true);
+            }
             cursor = block.parent_hash;
+        }
+    }
+
+    fn live_suffix_locked(
+        &self,
+        inner: &HistoryInner,
+        head: B256,
+        timestamp: u64,
+    ) -> Result<Vec<B256>, ExpiringNonceHistoryError> {
+        let mut suffix = Vec::new();
+        let mut cursor = head;
+        loop {
+            if inner.anchors.contains_key(&cursor) {
+                return Ok(suffix);
+            }
+            let block = inner
+                .blocks
+                .get(&cursor)
+                .ok_or(ExpiringNonceHistoryError::MissingHistory { parent_hash: head })?;
+            if block.timestamp.saturating_add(self.max_expiry_secs) <= timestamp {
+                return Ok(suffix);
+            }
+            suffix.push(cursor);
+            cursor = block.parent_hash;
+        }
+    }
+
+    fn apply_block_locked(inner: &mut HistoryInner, block_hash: B256, timestamp: u64) {
+        let HistoryInner {
+            live,
+            expirations,
+            blocks,
+            ..
+        } = inner;
+        let block = blocks
+            .get(&block_hash)
+            .expect("canonical block is present in replay cache");
+        for entry in &block.entries {
+            if entry.valid_before > timestamp {
+                live.insert(entry.replay_id, entry.valid_before);
+                expirations
+                    .entry(entry.valid_before)
+                    .or_default()
+                    .push(entry.replay_id);
+            }
+        }
+    }
+
+    fn expire_live_locked(inner: &mut HistoryInner, timestamp: u64) {
+        while inner
+            .expirations
+            .first_key_value()
+            .is_some_and(|(valid_before, _)| *valid_before <= timestamp)
+        {
+            let (_, replay_ids) = inner
+                .expirations
+                .pop_first()
+                .expect("an expired replay bucket was just observed");
+            for replay_id in replay_ids {
+                if inner
+                    .live
+                    .get(&replay_id)
+                    .is_some_and(|valid_before| *valid_before <= timestamp)
+                {
+                    inner.live.remove(&replay_id);
+                }
+            }
         }
     }
 
@@ -455,7 +476,7 @@ impl ExpiringNonceHistory {
         // Keep two validity windows so ordinary reorganizations can reuse their existing branch
         // overlays. Older branch requests fail closed and can be rebuilt from persisted bodies.
         let retention = self.max_expiry_secs.saturating_mul(2);
-        let cutoff = inner.highest_timestamp.saturating_sub(retention);
+        let cutoff = inner.canonical_timestamp.saturating_sub(retention);
         if cutoff == 0 {
             return (0, 0);
         }
@@ -476,17 +497,8 @@ impl ExpiringNonceHistory {
                     continue;
                 };
                 removed_blocks += 1;
-                removed_identifiers += block.replay_ids.len();
-                inner.retained_identifiers -= block.replay_ids.len();
-                for replay_id in &block.replay_ids {
-                    if let Entry::Occupied(mut entry) = inner.inclusions.entry(*replay_id) {
-                        let inclusions = entry.get_mut();
-                        inclusions.retain(|inclusion| inclusion.block_hash != hash);
-                        if inclusions.is_empty() {
-                            entry.remove();
-                        }
-                    }
-                }
+                removed_identifiers += block.entries.len();
+                inner.retained_identifiers -= block.entries.len();
 
                 let mut remove_parent_children = false;
                 if let Some(siblings) = inner.children.get_mut(&block.parent_hash) {
@@ -601,6 +613,7 @@ mod tests {
             valid_before: 350,
         };
         history.record_block(block(1, 0, 100, vec![entry]));
+        history.set_canonical_head(hash(1)).unwrap();
 
         assert!(history.contains(hash(1), hash(9), 200).unwrap());
         assert!(!history.contains(hash(1), hash(9), 350).unwrap());
@@ -620,6 +633,7 @@ mod tests {
             }],
         ));
         history.record_block(block(3, 1, 101, Vec::new()));
+        history.set_canonical_head(hash(2)).unwrap();
 
         assert!(history.contains(hash(2), hash(9), 200).unwrap());
         assert!(!history.contains(hash(3), hash(9), 200).unwrap());
@@ -643,6 +657,7 @@ mod tests {
         let history = ExpiringNonceHistory::new(300);
         history.record_block(block(2, 1, 101, Vec::new()));
         history.record_block(block(1, 0, 100, Vec::new()));
+        history.set_canonical_head(hash(2)).unwrap();
 
         assert!(!history.contains(hash(2), hash(9), 102).unwrap());
     }
@@ -684,8 +699,11 @@ mod tests {
                 valid_before: 11,
             }],
         ));
+        history.set_canonical_head(hash(1)).unwrap();
         history.record_block(block(2, 1, 2, Vec::new()));
+        history.set_canonical_head(hash(2)).unwrap();
         history.record_block(block(3, 2, 22, Vec::new()));
+        history.set_canonical_head(hash(3)).unwrap();
 
         assert_eq!(
             history.contains(hash(2), hash(9), 10),
@@ -709,8 +727,54 @@ mod tests {
                 valid_before: 350,
             }],
         ));
+        history.set_canonical_head(hash(1)).unwrap();
 
         assert!(!history.contains(hash(1), hash(9), 350).unwrap());
         assert!(history.contains(hash(1), hash(9), 200).unwrap());
+    }
+
+    #[test]
+    fn reorg_reconciles_live_replay_map() {
+        let history = ExpiringNonceHistory::new(300);
+        history.record_block(block(1, 0, 100, Vec::new()));
+        history.record_block(block(
+            2,
+            1,
+            101,
+            vec![ExpiringNonceEntry {
+                replay_id: hash(9),
+                valid_before: 350,
+            }],
+        ));
+        history.record_block(block(3, 1, 101, Vec::new()));
+
+        history.set_canonical_head(hash(2)).unwrap();
+        assert!(history.contains(hash(2), hash(9), 200).unwrap());
+
+        history.set_canonical_head(hash(3)).unwrap();
+        assert!(!history.contains(hash(3), hash(9), 200).unwrap());
+        assert!(history.contains(hash(2), hash(9), 200).unwrap());
+    }
+
+    #[test]
+    fn reorg_to_earlier_timestamp_restores_live_entry() {
+        let history = ExpiringNonceHistory::new(10);
+        history.record_block(block(
+            1,
+            0,
+            1,
+            vec![ExpiringNonceEntry {
+                replay_id: hash(9),
+                valid_before: 10,
+            }],
+        ));
+        history.record_block(block(2, 1, 10, Vec::new()));
+        history.record_block(block(3, 1, 9, Vec::new()));
+
+        history.set_canonical_head(hash(2)).unwrap();
+        assert!(!history.contains(hash(2), hash(9), 10).unwrap());
+
+        history.set_canonical_head(hash(3)).unwrap();
+        assert!(history.contains(hash(3), hash(9), 9).unwrap());
     }
 }
