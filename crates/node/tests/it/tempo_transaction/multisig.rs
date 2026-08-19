@@ -266,7 +266,7 @@ async fn bootstrap_and_initialized<E: TestEnv>(
     submit(env, bootstrap, signature).await?;
 
     let stored = stored_config(env, account).await?;
-    assert_eq!(stored.version, 0);
+    assert_eq!(stored.version, 1);
     assert_eq!(stored.threshold, 2);
 
     let initialized =
@@ -555,7 +555,7 @@ async fn bootstrap_and_immediate_access_key_use<E: TestEnv>(
     let signature = sign_aa_tx_with_secp256k1_access_key(&tx, &access_key, account)?;
     submit(env, tx, signature).await?;
 
-    assert_eq!(stored_config(env, account).await?.version, 0);
+    assert_eq!(stored_config(env, account).await?.version, 1);
     assert_active_key(env, account, access_key.address()).await?;
     Ok(())
 }
@@ -657,6 +657,16 @@ async fn configuration_rotation<E: TestEnv>(
     assert_eq!(next_config.threshold, 1);
     assert_eq!(next_config.owners.len(), 1);
     assert_eq!(next_config.owners[0].owner, carol.address());
+
+    let stale_tx = create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
+    let stale_signature = sign_multisig(
+        account,
+        stale_tx.signature_hash(),
+        current_version,
+        &[alice, bob],
+        None,
+    )?;
+    reject(env, stale_tx, stale_signature).await?;
 
     let next_tx = create_basic_aa_tx(env.chain_id(), 2, vec![no_op_call(0x72)], EXAMPLE_GAS_LIMIT);
     let signature = sign_multisig(
