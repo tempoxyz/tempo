@@ -1,18 +1,17 @@
 use super::*;
 use crate::{
     FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm,
-    gas_params::tempo_gas_params,
-    signature_gas::{
-        P256_VERIFY_GAS, primitive_signature_verification_gas, tempo_signature_verification_gas,
-    },
+    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
     tx::TempoBatchCallEnv,
 };
+use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use proptest::prelude::*;
 use revm::{
     Context, Journal, MainContext,
-    context::CfgEnv,
+    context::{CfgEnv, either::Either},
     database::{CacheDB, EmptyDB},
     handler::Handler,
     interpreter::{
@@ -20,16 +19,19 @@ use revm::{
         instructions::utility::IntoU256,
     },
     primitives::hardfork::SpecId,
+    state::AccountInfo,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM, NATIVE_MULTISIG_ADDRESS};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
-    tip_fee_manager::TipFeeManager,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, account_keychain::getTransactionKeyCall,
+    storage::ContractStorage, test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    Call, InitMultisig, KeyAuthorization, MultisigOwner, MultisigSignature, PrimitiveSignature,
-    RecoveredTempoAuthorization, SignatureType, TempoSignature, TempoSignedAuthorization,
+    Call, InitMultisig, KeyAuthorization, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
+    MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner,
+    MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
+    TempoSignedAuthorization, derive_p256_address, multisig_digest,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -41,6 +43,88 @@ fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
 type TestHandlerEvmResult<T> =
     Result<T, EVMError<<CacheDB<EmptyDB> as revm::Database>::Error, TempoInvalidTransaction>>;
 
+fn native_multisig_config() -> InitMultisig {
+    InitMultisig {
+        salt: B256::ZERO,
+        threshold: 1,
+        owners: vec![
+            MultisigOwner {
+                owner: Address::from([0x11; 20]),
+                weight: 1,
+            },
+            MultisigOwner {
+                owner: Address::from([0x22; 20]),
+                weight: 1,
+            },
+        ],
+    }
+}
+
+fn single_owner_native_multisig_config(salt: u8, owner: Address) -> InitMultisig {
+    InitMultisig {
+        salt: B256::repeat_byte(salt),
+        threshold: 1,
+        owners: vec![MultisigOwner { owner, weight: 1 }],
+    }
+}
+
+fn sign_native_multisig(
+    config: &InitMultisig,
+    inner_digest: B256,
+    signer: &PrivateKeySigner,
+    include_init: bool,
+) -> TempoSignature {
+    let account = config.account().unwrap();
+    let owner_signature = PrimitiveSignature::Secp256k1(
+        signer
+            .sign_hash_sync(&multisig_digest(inner_digest, account, 0))
+            .expect("owner signing succeeds"),
+    )
+    .to_bytes();
+    TempoSignature::Multisig(MultisigSignature::new(
+        account,
+        vec![owner_signature],
+        include_init.then(|| config.clone()),
+    ))
+}
+
+fn authorization(_authority: Address) -> Authorization {
+    Authorization {
+        chain_id: U256::ONE,
+        address: Address::random(),
+        nonce: 0,
+    }
+}
+
+fn recovered_authorization(authority: Address) -> RecoveredAuthorization {
+    RecoveredAuthorization::new_unchecked(
+        authorization(authority),
+        RecoveredAuthority::Valid(authority),
+    )
+}
+
+fn tempo_authorization(authority: Address) -> RecoveredTempoAuthorization {
+    RecoveredTempoAuthorization::new_unchecked(
+        TempoSignedAuthorization::new_unchecked(
+            authorization(authority),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+        ),
+        RecoveredAuthority::Valid(authority),
+    )
+}
+
+fn store_native_multisig_account(test: &mut TestHandlerEvm, config: &InitMultisig) {
+    let account = config.account().unwrap();
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        let mut multisig = NativeMultisig::new();
+        multisig.initialize()?;
+        multisig.store_initial_config(account, config)
+    })
+    .expect("native multisig setup succeeds");
+}
+
 struct TestHandlerEvm {
     evm: TempoEvm<CacheDB<EmptyDB>, ()>,
     handler: TempoEvmHandler<CacheDB<EmptyDB>, ()>,
@@ -48,7 +132,12 @@ struct TestHandlerEvm {
 
 impl TestHandlerEvm {
     fn tx(spec: TempoHardfork, configure_tx_env: impl FnOnce(&mut TempoTxEnv)) -> Self {
-        let mut tx_env = TempoTxEnv::default();
+        let mut tx_env = TempoTxEnv {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
+            ..Default::default()
+        };
         configure_tx_env(&mut tx_env);
         Self::new(spec, tx_env)
     }
@@ -59,6 +148,9 @@ impl TestHandlerEvm {
         configure_tx_env: impl FnOnce(&mut TempoTxEnv),
     ) -> Self {
         let mut tx_env = TempoTxEnv {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             tempo_tx_env: Some(Box::new(aa_env)),
             ..Default::default()
         };
@@ -3477,6 +3569,158 @@ mod keychain {
     }
 
     #[test]
+    fn test_t11_registered_multisig_can_use_keychain_signature() {
+        let config = native_multisig_config();
+        let account = config.account().unwrap();
+        let access_key = Address::repeat_byte(0x44);
+        let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T11, None, false);
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, &config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.authorize_key(
+                account,
+                access_key,
+                PrecompileSignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        amount: U256::from(1_000u64),
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .expect("native multisig access-key setup succeeds");
+
+        let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+        assert!(
+            result.is_ok(),
+            "registered multisig keychain transaction should pass, got: {result:?}"
+        );
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            let keychain = AccountKeychain::new();
+            assert_eq!(
+                keychain.get_transaction_key(getTransactionKeyCall {}, account)?,
+                access_key
+            );
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .expect("transaction key read succeeds");
+    }
+
+    #[test]
+    fn test_t11_registered_multisig_with_code_rejects_keychain_signature() {
+        let config = native_multisig_config();
+        let account = config.account().unwrap();
+        let access_key = Address::repeat_byte(0x44);
+        let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T11, None, false);
+
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, &config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.authorize_key(
+                account,
+                access_key,
+                PrecompileSignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        amount: U256::from(1_000u64),
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .expect("native multisig access-key setup succeeds");
+
+        let code = revm::bytecode::Bytecode::new_raw(Bytes::from_static(&[0x00]));
+        evm.inner.ctx.db_mut().insert_account_info(
+            account,
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+
+        let result = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::NativeMultisigValidationFailed { ref reason }
+                )) if reason.contains("cannot have code")
+            ),
+            "multisig access-key transaction must reject code-bearing parent: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_t11_key_authorization_rejects_multisig_access_key() {
+        let (signer, user) = generate_keypair();
+        let config = native_multisig_config();
+        let multisig_account = config.account().unwrap();
+        let signed = sign_key_auth(
+            &signer,
+            KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, multisig_account),
+        );
+        let (mut evm, h) = make_evm(
+            user,
+            multisig_account,
+            Some(signed),
+            TempoHardfork::T11,
+            None,
+            false,
+        );
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(multisig_account, &config)
+        })
+        .expect("native multisig setup succeeds");
+
+        let Err(EVMError::Transaction(err)) =
+            h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
+        else {
+            panic!("native multisig account must not become an access key");
+        };
+        assert!(matches!(
+            &err,
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+                if reason.contains("cannot be used as an access key")
+        ));
+        assert!(!err.is_bad_transaction());
+    }
+
+    #[test]
     fn test_keychain_version_rejection() {
         let caller = Address::random();
 
@@ -4483,15 +4727,292 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
 }
 
 #[test]
-fn native_multisig_execution_remains_inactive() {
-    let config = InitMultisig {
-        salt: B256::ZERO,
-        threshold: 1,
-        owners: vec![MultisigOwner {
-            owner: Address::repeat_byte(0x11),
-            weight: 1,
+fn test_t10_rejects_native_multisig_signature() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            Some(config),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
         }],
+        ..Default::default()
     };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T10, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigNotActive
+            ))
+        ),
+        "native multisig signatures should be rejected before T11"
+    );
+}
+
+#[test]
+fn test_t10_rejects_native_multisig_key_authorization_signature() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x33))
+            .with_account(account)
+            .into_signed(TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![PrimitiveSignature::default().to_bytes()],
+                Some(config),
+            )));
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        key_authorization: Some(key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T10, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigNotActive
+        ))
+    ));
+}
+
+#[test]
+fn test_t11_rejects_keychain_key_authorization_signature() {
+    let caller = Address::repeat_byte(0x11);
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x33))
+            .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                caller,
+                PrimitiveSignature::default(),
+            )));
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        key_authorization: Some(key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = caller;
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+        )) if reason.contains("cannot use keychain encoding")
+    ));
+}
+
+#[test]
+fn test_t11_primitive_transaction_skips_native_multisig_storage() {
+    let caller = Address::repeat_byte(0x11);
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = caller;
+    });
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
+
+    test.validate_against_state_and_deduct_caller()
+        .expect("plain primitive transaction should pass");
+
+    let actions = actions.take().expect("storage actions are enabled");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "plain primitive transaction must not read native multisig storage: {actions:?}"
+    );
+}
+
+#[test]
+fn test_t11_fee_payer_multisig_registry_read_is_metered() {
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+        tx_env.fee_payer = Some(Some(Address::repeat_byte(0x22)));
+    });
+
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("ordinary fee payer should pass");
+
+    assert_eq!(
+        init_gas.initial_regular_gas, cold_storage_read_gas,
+        "fee payer should charge one cold multisig registry read"
+    );
+}
+
+#[test]
+fn test_t11_auth_list_multisig_registry_reads_are_metered() {
+    let authorities = [Address::repeat_byte(0x22), Address::repeat_byte(0x33)];
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: authorities.map(tempo_authorization).to_vec(),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+    });
+
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("ordinary authorization-list authorities should pass");
+
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        authorities.len() as u64 * cold_storage_read_gas,
+        "each distinct authority should charge one cold multisig registry read"
+    );
+}
+
+#[test]
+fn test_t11_aa_auth_list_rejects_native_multisig_authority() {
+    let config = native_multisig_config();
+    let authority = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![tempo_authorization(authority)],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::random();
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let result = test.validate_against_state_and_deduct_caller();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            )) if reason.contains("authorization-list authority")
+        ),
+        "native multisig authorization-list authority should be rejected (state-dependent)"
+    );
+}
+
+#[test]
+fn test_t11_standard_auth_list_rejects_native_multisig_authority() {
+    let config = native_multisig_config();
+    let authority = config.account().unwrap();
+    let mut test = TestHandlerEvm::tx(TempoHardfork::T11, |tx_env| {
+        tx_env.inner.caller = Address::random();
+        tx_env.inner.kind = TxKind::Call(Address::random());
+        tx_env.inner.authorization_list = vec![Either::Right(recovered_authorization(authority))];
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let result = test.validate_against_state_and_deduct_caller();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            )) if reason.contains("authorization-list authority")
+        ),
+        "native multisig standard authorization-list authority should be rejected (state-dependent)"
+    );
+}
+
+#[test]
+fn test_t11_bootstrap_auth_list_rejects_current_multisig_authority() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            Some(config),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![tempo_authorization(account)],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+            )) if reason.contains("authorization-list authority")
+        ),
+        "bootstrap multisig account cannot be an authorization-list authority"
+    );
+}
+
+#[test]
+fn test_t11_multisig_signature_rejects_caller_mismatch_in_env_validation() {
+    let config = native_multisig_config();
     let account = config.account().unwrap();
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Multisig(MultisigSignature::new(
@@ -4507,29 +5028,413 @@ fn native_multisig_execution_remains_inactive() {
         ..Default::default()
     };
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
-        tx_env.inner.caller = account;
+        tx_env.inner.caller = Address::repeat_byte(0x99);
     });
 
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+            )) if reason.contains("account does not match transaction caller")
+        ),
+        "native multisig caller mismatch should be rejected statically"
+    );
+}
+
+#[test]
+fn test_t11_bootstrap_multisig_persists_initial_config() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let mut signers = [
+        PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+        PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+    ];
+    signers.sort_by_key(|signer| signer.address());
+
+    let config = InitMultisig {
+        salt: B256::repeat_byte(0x44),
+        threshold: 1,
+        owners: signers
+            .iter()
+            .map(|signer| MultisigOwner {
+                owner: signer.address(),
+                weight: 1,
+            })
+            .collect(),
+    };
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x42);
+    let digest = multisig_digest(signature_hash, account, 0);
+    let owner_signature = PrimitiveSignature::Secp256k1(
+        signers[0]
+            .sign_hash_sync(&digest)
+            .expect("owner signing succeeds"),
+    )
+    .to_bytes();
+
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![owner_signature],
+            Some(config.clone()),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x24),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+
+    test.validate_against_state_and_deduct_caller()
+        .expect("valid bootstrap transaction should pass");
+
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        let multisig = NativeMultisig::new();
+        assert!(multisig.is_multisig_account(account)?);
+        assert_eq!(
+            multisig.get_multisig_config(account)?.threshold,
+            config.threshold
+        );
+        Ok::<_, TempoPrecompileError>(())
+    })
+    .expect("stored native multisig config should be readable");
+}
+
+#[test]
+fn test_t11_bootstrap_multisig_rejects_nonzero_protocol_nonce() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x42);
+    let aa_env = TempoBatchCallEnv {
+        signature: sign_native_multisig(&config, signature_hash, &owner, true),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.nonce = 1;
+    });
+    test.evm.ctx().db_mut().insert_account_info(
+        account,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+
     assert!(matches!(
-        test.validate_env(),
+        test.validate_against_state_and_deduct_caller(),
         Err(EVMError::Transaction(
-            TempoInvalidTransaction::NativeMultisigNotActive
-        ))
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+        )) if reason.contains("zero protocol nonce")
     ));
 }
 
 #[test]
-fn native_multisig_key_authorization_remains_inactive() {
-    let account = Address::repeat_byte(0x44);
+fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
     let key_authorization =
-        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x55))
-            .with_account(account)
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let signed_key_authorization = key_authorization.clone().into_signed(sign_native_multisig(
+        &config,
+        key_authorization.signature_hash(),
+        &owner,
+        true,
+    ));
+    let signature_hash = B256::repeat_byte(0x42);
+    let access_key_signature = PrimitiveSignature::Secp256k1(
+        access_key
+            .sign_hash_sync(&KeychainSignature::signing_hash(signature_hash, account))
+            .unwrap(),
+    );
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Keychain(KeychainSignature::new(account, access_key_signature)),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x24),
+        ..Default::default()
+    };
+    let mut nonzero_nonce_test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env.clone(), |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+        tx_env.inner.nonce = 1;
+    });
+    nonzero_nonce_test.evm.ctx().db_mut().insert_account_info(
+        account,
+        AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        nonzero_nonce_test.validate_against_state_and_deduct_caller(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+        )) if reason.contains("zero protocol nonce")
+    ));
+
+    let mut registered_test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env.clone(), |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut registered_test, &config);
+    let Err(EVMError::Transaction(err)) =
+        registered_test.validate_against_state_and_deduct_caller()
+    else {
+        panic!("registered account should reject key-authorization bootstrap");
+    };
+    assert!(matches!(
+        &err,
+        TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            if reason.contains("already initialized")
+    ));
+    assert!(!err.is_bad_transaction());
+
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+
+    test.validate_env().expect("T11 key authorization is valid");
+    test.validate_against_state_and_deduct_caller()
+        .expect("key authorization bootstrap succeeds");
+
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        assert!(NativeMultisig::new().is_multisig_account(account)?);
+        assert!(AccountKeychain::new().is_active_key(account, access_key.address())?);
+        Ok::<_, TempoPrecompileError>(())
+    })
+    .expect("bootstrap config and access key are stored");
+}
+
+#[test]
+fn test_t11_key_authorization_bootstrap_rejects_current_multisig_authority() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let signed_key_authorization = key_authorization.clone().into_signed(sign_native_multisig(
+        &config,
+        key_authorization.signature_hash(),
+        &owner,
+        true,
+    ));
+    let signature_hash = B256::repeat_byte(0x42);
+    let access_key_signature = PrimitiveSignature::Secp256k1(
+        access_key
+            .sign_hash_sync(&KeychainSignature::signing_hash(signature_hash, account))
+            .unwrap(),
+    );
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Keychain(KeychainSignature::new(account, access_key_signature)),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![tempo_authorization(account)],
+        signature_hash,
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { ref reason }
+            )) if reason.contains("authorization-list authority")
+        ),
+        "key-authorization bootstrap account cannot be an authorization-list authority: {result:?}"
+    );
+}
+
+#[test]
+fn test_t11_multisig_key_authorization_rejects_different_account() {
+    let caller = Address::repeat_byte(0x44);
+    let signing_account = Address::repeat_byte(0x55);
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x66))
+            .with_account(caller)
             .into_signed(TempoSignature::Multisig(MultisigSignature::new(
-                account,
+                signing_account,
                 vec![PrimitiveSignature::default().to_bytes()],
                 None,
             )));
     let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        key_authorization: Some(key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = caller;
+    });
+
+    let result = test.validate_env();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { ref reason }
+            )) if reason.contains("must be signed by the transaction caller")
+        ),
+        "a multisig account cannot authorize a key for another account: {result:?}"
+    );
+}
+
+#[test]
+fn test_t11_registered_multisig_can_authorize_access_key() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let signed_key_authorization = key_authorization.clone().into_signed(sign_native_multisig(
+        &config,
+        key_authorization.signature_hash(),
+        &owner,
+        false,
+    ));
+    let signature_hash = B256::repeat_byte(0x42);
+    let aa_env = TempoBatchCallEnv {
+        signature: sign_native_multisig(&config, signature_hash, &owner, false),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x24),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    test.validate_env().expect("T11 key authorization is valid");
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("registered multisig key authorization succeeds");
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        2 * native_multisig_complete_config_validation_gas(config.owners.len())
+            + cold_storage_read_gas,
+        "multisig roots should charge complete config validation and the access key should charge one registry read"
+    );
+
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        assert!(AccountKeychain::new().is_active_key(account, access_key.address())?);
+        Ok::<_, TempoPrecompileError>(())
+    })
+    .expect("access key is stored");
+}
+
+#[test]
+fn test_t11_rpc_simulation_skips_registered_multisig_owner_verification() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+        tx_env.execution_context = ExecutionContext::Simulation;
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("RPC simulation should skip native multisig owner-signature verification");
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        native_multisig_complete_config_validation_gas(config.owners.len()),
+        "RPC simulation should charge every stored owner and direct-weight row"
+    );
+}
+
+#[test]
+fn test_t11_rpc_simulation_charges_nested_key_authorization_config() {
+    use tempo_primitives::transaction::SignatureType;
+
+    let nested_config = single_owner_native_multisig_config(0x41, Address::from([0x11; 20]));
+    let nested_account = nested_config.account().unwrap();
+    let config = single_owner_native_multisig_config(0x42, nested_account);
+    let account = config.account().unwrap();
+    let access_key = Address::from([0x33; 20]);
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
+        nested_account,
+        vec![owner_signature],
+        None,
+    ));
+    let key_authorization = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key)
+        .with_account(account)
+        .into_signed(TempoSignature::Multisig(
+            MultisigSignature::from_decoded(account, vec![nested_signature], None).unwrap(),
+        ));
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        )),
         key_authorization: Some(key_authorization),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
@@ -4540,12 +5445,993 @@ fn native_multisig_key_authorization_remains_inactive() {
     };
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+        tx_env.execution_context = ExecutionContext::Simulation;
     });
+    store_native_multisig_account(&mut test, &config);
+    store_native_multisig_account(&mut test, &nested_config);
+
+    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
+        + test.gas_params().cold_storage_additional_cost();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("RPC simulation should model nested key-authorization config validation");
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        cold_storage_read_gas
+            + native_multisig_complete_config_validation_gas(config.owners.len())
+            + native_multisig_complete_config_validation_gas(nested_config.owners.len()),
+    );
+}
+
+#[test]
+fn test_t11_registered_account_rejects_multisig_init_outside_simulation() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            Some(config.clone()),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let Err(EVMError::Transaction(err)) = test.validate_against_state_and_deduct_caller() else {
+        panic!("registered account should reject bootstrap");
+    };
+    assert!(matches!(
+        &err,
+        TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            if reason.contains("already initialized")
+    ));
+    assert!(!err.is_bad_transaction());
+}
+
+#[test]
+fn test_t11_registered_native_multisig_accepts_max_depth_nested_multisig_owner() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
+    let child_config = single_owner_native_multisig_config(0x42, signer.address());
+    let child_account = child_config.account().unwrap();
+    let parent_config = single_owner_native_multisig_config(0x43, child_account);
+    let parent_account = parent_config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x44);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
+    let child_digest = multisig_digest(parent_digest, child_account, 0);
+    let child_owner_signature = PrimitiveSignature::Secp256k1(
+        signer
+            .sign_hash_sync(&child_digest)
+            .expect("owner signing succeeds"),
+    )
+    .to_bytes();
+    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
+        child_account,
+        vec![child_owner_signature],
+        None,
+    ))
+    .to_bytes();
+
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            parent_account,
+            vec![nested_signature],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x45),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = parent_account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &child_config);
+    store_native_multisig_account(&mut test, &parent_config);
+
+    test.validate_against_state_and_deduct_caller()
+        .expect("nested native multisig owner should authorize parent multisig");
+}
+
+#[test]
+fn test_t11_registered_native_multisig_rejects_code_bearing_nested_owner() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
+    let child_config = single_owner_native_multisig_config(0x42, signer.address());
+    let child_account = child_config.account().unwrap();
+    let parent_config = single_owner_native_multisig_config(0x43, child_account);
+    let parent_account = parent_config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x44);
+    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
+    let child_digest = multisig_digest(parent_digest, child_account, 0);
+    let child_owner_signature = PrimitiveSignature::Secp256k1(
+        signer
+            .sign_hash_sync(&child_digest)
+            .expect("owner signing succeeds"),
+    )
+    .to_bytes();
+    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
+        child_account,
+        vec![child_owner_signature],
+        None,
+    ))
+    .to_bytes();
+
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            parent_account,
+            vec![nested_signature],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x45),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = parent_account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &child_config);
+    store_native_multisig_account(&mut test, &parent_config);
+    let code = revm::bytecode::Bytecode::new_raw(Bytes::from_static(&[0x00]));
+    test.evm.ctx().db_mut().insert_account_info(
+        child_account,
+        AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code),
+            ..Default::default()
+        },
+    );
+
+    let result = test.validate_against_state_and_deduct_caller();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigValidationFailed { ref reason }
+            )) if reason.contains("owner account") && reason.contains("cannot have code")
+        ),
+        "nested multisig owner with code must be rejected: {result:?}"
+    );
+}
+
+#[test]
+fn test_t11_registered_native_multisig_rejects_excessive_nesting_depth() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
+    let grandchild_config = single_owner_native_multisig_config(0x42, signer.address());
+    let grandchild_account = grandchild_config.account().unwrap();
+    let child_config = single_owner_native_multisig_config(0x43, grandchild_account);
+    let child_account = child_config.account().unwrap();
+    let parent_config = single_owner_native_multisig_config(0x44, child_account);
+    let parent_account = parent_config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x45);
+
+    let parent_digest = multisig_digest(signature_hash, parent_account, 0);
+    let child_digest = multisig_digest(parent_digest, child_account, 0);
+    let grandchild_digest = multisig_digest(child_digest, grandchild_account, 0);
+    let grandchild_owner_signature = PrimitiveSignature::Secp256k1(
+        signer
+            .sign_hash_sync(&grandchild_digest)
+            .expect("owner signing succeeds"),
+    )
+    .to_bytes();
+    let grandchild_signature = TempoSignature::Multisig(MultisigSignature::new(
+        grandchild_account,
+        vec![grandchild_owner_signature],
+        None,
+    ))
+    .to_bytes();
+    let child_signature = TempoSignature::Multisig(MultisigSignature::new(
+        child_account,
+        vec![grandchild_signature],
+        None,
+    ))
+    .to_bytes();
+
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            parent_account,
+            vec![child_signature],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        tx_hash: B256::repeat_byte(0x46),
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = parent_account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &grandchild_config);
+    store_native_multisig_account(&mut test, &child_config);
+    store_native_multisig_account(&mut test, &parent_config);
+
+    let result = test.validate_against_state_and_deduct_caller();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+            )) if reason.contains("nesting depth")
+        ),
+        "native multisig authorization paths deeper than the max depth should be rejected"
+    );
+}
+
+#[test]
+fn test_t11_registered_native_multisig_rejects_nested_multisig_bootstrap() {
+    let child_config = native_multisig_config();
+    let child_account = child_config.account().unwrap();
+    let parent_config = InitMultisig {
+        salt: B256::repeat_byte(0x42),
+        threshold: 1,
+        owners: vec![MultisigOwner {
+            owner: child_account,
+            weight: 1,
+        }],
+    };
+    let parent_account = parent_config.account().unwrap();
+    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
+        child_account,
+        vec![Bytes::from_static(&[0xaa; 65])],
+        Some(child_config.clone()),
+    ))
+    .to_bytes();
+
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            parent_account,
+            vec![nested_signature],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = parent_account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &child_config);
+    store_native_multisig_account(&mut test, &parent_config);
+
+    let result = test.validate_against_state_and_deduct_caller();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+            )) if reason.contains("invalid nested multisig owner signature")
+        ),
+        "nested native multisig owner signatures must not carry bootstrap init"
+    );
+}
+
+#[test]
+fn test_t11_registered_native_multisig_rejects_keychain_owner_approval_as_bad_transaction() {
+    let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
+    let account = config.account().unwrap();
+    let owner_approval = TempoSignature::Keychain(KeychainSignature::new(
+        Address::random(),
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+    ))
+    .to_bytes();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![owner_approval],
+            None,
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let result = test.validate_against_state_and_deduct_caller();
+    let Err(EVMError::Transaction(err)) = result else {
+        panic!("keychain owner approval should fail validation");
+    };
+    assert!(
+        matches!(
+            &err,
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+                if reason.contains("keychain signatures cannot authorize")
+        ),
+        "keychain owner approval should be classified as invalid transaction, got {err:?}"
+    );
+    assert!(err.is_bad_transaction());
+}
+
+#[test]
+fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let mut signers = [
+        PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+        PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+    ];
+    signers.sort_by_key(|signer| signer.address());
+
+    let config = InitMultisig {
+        salt: B256::repeat_byte(0x42),
+        threshold: 2,
+        owners: signers
+            .iter()
+            .map(|signer| MultisigOwner {
+                owner: signer.address(),
+                weight: 1,
+            })
+            .collect(),
+    };
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let digest = multisig_digest(signature_hash, account, 0);
+    let mut signed = signers
+        .iter()
+        .map(|signer| {
+            let signature = PrimitiveSignature::Secp256k1(
+                signer
+                    .sign_hash_sync(&digest)
+                    .expect("owner signing succeeds"),
+            )
+            .to_bytes();
+            (signer.address(), signature)
+        })
+        .collect::<Vec<_>>();
+    signed.sort_by_key(|(owner, _)| *owner);
+    signed.reverse();
+
+    let signature = MultisigSignature::new(
+        account,
+        signed.into_iter().map(|(_, signature)| signature).collect(),
+        None,
+    );
+    let result = NativeMultisig::new().verify_authorization(
+        signature_hash,
+        &signature,
+        NativeMultisigAuthConfig::Inline(&config),
+        |_| unreachable!("primitive owner approvals should not load nested configs"),
+        |_, _| unreachable!("inline owner approvals should not load owner weights"),
+    );
+
+    assert!(
+        matches!(
+            result,
+            Err(NativeMultisigAuthError::InvalidTransaction(reason))
+                if reason.contains("ascending")
+        ),
+        "recovered owner order is fixed by the transaction and should be bad"
+    );
+}
+
+#[test]
+fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
+    let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x22));
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let digest = multisig_digest(signature_hash, account, 0);
+    let signature = MultisigSignature::new(
+        account,
+        vec![
+            PrimitiveSignature::Secp256k1(
+                signer
+                    .sign_hash_sync(&digest)
+                    .expect("owner signing succeeds"),
+            )
+            .to_bytes(),
+        ],
+        None,
+    );
+
+    let result = NativeMultisig::new().verify_authorization(
+        signature_hash,
+        &signature,
+        NativeMultisigAuthConfig::Inline(&config),
+        |_| unreachable!("primitive owner approvals should not load nested configs"),
+        |_, _| unreachable!("inline owner approvals should not load owner weights"),
+    );
+
+    assert!(
+        matches!(
+            result,
+            Err(NativeMultisigAuthError::ValidationFailed(reason))
+                if reason.contains("not an owner")
+        ),
+        "owner membership depends on current stored config and should remain revalidatable"
+    );
+}
+
+#[test]
+fn native_multisig_authorization_binds_registered_config_version() {
+    let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let config = single_owner_native_multisig_config(0x42, signer.address());
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let signature_for_version = |version| {
+        let digest = multisig_digest(signature_hash, account, version);
+        MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&digest)
+                        .expect("owner signing succeeds"),
+                )
+                .to_bytes(),
+            ],
+            None,
+        )
+    };
+    let verify = |signature: &MultisigSignature| {
+        NativeMultisig::new().verify_authorization(
+            signature_hash,
+            signature,
+            NativeMultisigAuthConfig::Registered {
+                account,
+                threshold: 1,
+                version: 1,
+            },
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |stored_account, owner| {
+                assert_eq!(stored_account, account);
+                Ok(u8::from(owner == signer.address()))
+            },
+        )
+    };
 
     assert!(matches!(
-        test.validate_env(),
-        Err(EVMError::Transaction(
-            TempoInvalidTransaction::NativeMultisigNotActive
-        ))
+        verify(&signature_for_version(0)),
+        Err(NativeMultisigAuthError::ValidationFailed(_))
     ));
+    verify(&signature_for_version(1)).expect("current config version should authorize");
+}
+
+#[test]
+fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
+    use p256::{
+        ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+        elliptic_curve::rand_core::OsRng,
+    };
+    use sha2::{Digest, Sha256};
+    use tempo_primitives::transaction::tt_signature::normalize_p256_s;
+
+    let signing_key = SigningKey::random(&mut OsRng);
+    let encoded_point = signing_key.verifying_key().to_encoded_point(false);
+    let pub_key_x = B256::from_slice(encoded_point.x().unwrap());
+    let pub_key_y = B256::from_slice(encoded_point.y().unwrap());
+    let owner = derive_p256_address(&pub_key_x, &pub_key_y);
+    let config = single_owner_native_multisig_config(0x42, owner);
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let signature_for_version = |version| {
+        let digest = multisig_digest(signature_hash, account, version);
+        let prehashed = Sha256::digest(digest);
+        let signature: p256::ecdsa::Signature = signing_key
+            .sign_prehash(&prehashed)
+            .expect("owner signing succeeds");
+        let signature_bytes = signature.to_bytes();
+        MultisigSignature::new(
+            account,
+            vec![
+                PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r: B256::from_slice(&signature_bytes[..32]),
+                    s: normalize_p256_s(&signature_bytes[32..])
+                        .expect("p256 crate produces valid s"),
+                    pub_key_x,
+                    pub_key_y,
+                    pre_hash: true,
+                })
+                .to_bytes(),
+            ],
+            None,
+        )
+    };
+    let verify_registered = |signature: &MultisigSignature| {
+        NativeMultisig::new().verify_authorization(
+            signature_hash,
+            signature,
+            NativeMultisigAuthConfig::Registered {
+                account,
+                threshold: 1,
+                version: 1,
+            },
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |stored_account, stored_owner| {
+                assert_eq!(stored_account, account);
+                Ok(u8::from(stored_owner == owner))
+            },
+        )
+    };
+
+    let stale_signature = signature_for_version(0);
+    NativeMultisig::new()
+        .verify_authorization(
+            signature_hash,
+            &stale_signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        )
+        .expect("version-zero approval should authorize bootstrap");
+    assert!(matches!(
+        verify_registered(&stale_signature),
+        Err(NativeMultisigAuthError::ValidationFailed(reason))
+            if reason == "invalid multisig owner signature"
+    ));
+
+    let current_signature = signature_for_version(1);
+    verify_registered(&current_signature).expect("current config version should authorize");
+    assert!(matches!(
+        NativeMultisig::new().verify_authorization(
+            signature_hash,
+            &current_signature,
+            NativeMultisigAuthConfig::Inline(&config),
+            |_| unreachable!("primitive owner approvals should not load nested configs"),
+            |_, _| unreachable!("inline owner approvals should not load owner weights"),
+        ),
+        Err(NativeMultisigAuthError::InvalidTransaction(reason))
+            if reason == "invalid multisig owner signature"
+    ));
+}
+
+#[test]
+fn native_multisig_authorization_rejects_trailing_owner_approvals() {
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+    let mut signers = [
+        PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+        PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+    ];
+    signers.sort_by_key(|signer| signer.address());
+
+    let config = InitMultisig {
+        salt: B256::repeat_byte(0x42),
+        threshold: 1,
+        owners: signers
+            .iter()
+            .map(|signer| MultisigOwner {
+                owner: signer.address(),
+                weight: 1,
+            })
+            .collect(),
+    };
+    let account = config.account().unwrap();
+    let signature_hash = B256::repeat_byte(0x43);
+    let digest = multisig_digest(signature_hash, account, 0);
+    let signatures = signers
+        .iter()
+        .map(|signer| {
+            PrimitiveSignature::Secp256k1(
+                signer
+                    .sign_hash_sync(&digest)
+                    .expect("owner signing succeeds"),
+            )
+            .to_bytes()
+        })
+        .collect();
+
+    let signature = MultisigSignature::new(account, signatures, None);
+    let result = NativeMultisig::new().verify_authorization(
+        signature_hash,
+        &signature,
+        NativeMultisigAuthConfig::Inline(&config),
+        |_| unreachable!("primitive owner approvals should not load nested configs"),
+        |_, _| unreachable!("inline owner approvals should not load owner weights"),
+    );
+
+    assert!(
+        matches!(
+            result,
+            Err(NativeMultisigAuthError::InvalidTransaction(reason))
+                if reason.contains("excess")
+        ),
+        "unused trailing approvals should make multisig signatures non-canonical"
+    );
+}
+
+#[test]
+fn native_multisig_authorization_rejects_oversized_owner_approval_before_decode() {
+    let signature = MultisigSignature::try_new(
+        Address::repeat_byte(0x11),
+        vec![Bytes::from(vec![
+            0xaa;
+            MAX_MULTISIG_OWNER_SIGNATURE_BYTES + 1
+        ])],
+        None,
+    );
+
+    assert!(
+        matches!(signature, Err("multisig owner signature too large")),
+        "oversized owner approval should be rejected before constructing a multisig signature"
+    );
+}
+
+#[test]
+fn test_aa_gas_native_multisig_1_of_1_secp256k1_overhead() {
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+        Address::from([0x44; 20]),
+        vec![owner_signature],
+        None,
+    ));
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS;
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "1-of-1 native multisig should add validation plus one owner-weight lookup because base tx gas already covers one secp256k1 verification"
+    );
+    assert_eq!(
+        multisig_gas.initial_state_gas, base_gas.initial_state_gas,
+        "native multisig signature validation overhead is regular intrinsic gas"
+    );
+    assert_eq!(
+        multisig_gas.initial_total_gas() - base_gas.initial_total_gas(),
+        expected_overhead
+    );
+}
+
+#[test]
+fn test_aa_gas_native_multisig_extra_secp256k1_owner_overhead() {
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+        Address::from([0x44; 20]),
+        vec![owner_signature.clone(), owner_signature],
+        None,
+    ));
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let expected_overhead =
+        NATIVE_MULTISIG_VALIDATION_GAS + 2 * NATIVE_MULTISIG_OWNER_WEIGHT_GAS + ECRECOVER_GAS;
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "native multisig should charge extra owner signatures after subtracting the traditional secp256k1 verification covered by base tx gas"
+    );
+}
+
+#[test]
+fn test_aa_gas_native_multisig_p256_owner_overhead() {
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+        pre_hash: false,
+    })
+    .to_bytes();
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+        Address::from([0x44; 20]),
+        vec![owner_signature],
+        None,
+    ));
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let expected_overhead =
+        NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS + P256_VERIFY_GAS;
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "1-of-1 P256 native multisig should pay validation plus P256 cost relative to the traditional secp256k1 tx baseline"
+    );
+}
+
+#[test]
+fn test_aa_gas_native_multisig_nested_owner_overhead() {
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
+        Address::from([0x33; 20]),
+        vec![owner_signature],
+        None,
+    ))
+    .to_bytes();
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+        Address::from([0x44; 20]),
+        vec![nested_signature],
+        None,
+    ));
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let expected_overhead = (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2;
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "nested native multisig should charge validation for both accounts and subtract the base secp256k1 verification only once"
+    );
+}
+
+#[test]
+fn test_aa_gas_native_multisig_simulation_models_nested_config_validation() {
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let nested_signature = TempoSignature::Multisig(
+        MultisigSignature::new(Address::from([0x33; 20]), vec![owner_signature], None)
+            .with_simulation_config_owner_count(2)
+            .unwrap(),
+    );
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(
+        MultisigSignature::from_decoded(Address::from([0x44; 20]), vec![nested_signature], None)
+            .unwrap(),
+    );
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let expected_overhead = (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2
+        + native_multisig_complete_config_validation_gas(2);
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "RPC simulation should include complete validation of nested registered configs"
+    );
+}
+
+#[test]
+fn test_aa_gas_native_multisig_bootstrap_charges_packed_storage_slots_t11() {
+    use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
+
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+    let owner_signature =
+        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+    let config = native_multisig_config();
+    let mut multisig_env = base_env.clone();
+    multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+        config.account().unwrap(),
+        vec![owner_signature],
+        Some(config.clone()),
+    ));
+
+    let base_gas = calculate_aa_batch_intrinsic_gas(
+        &base_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let multisig_gas = calculate_aa_batch_intrinsic_gas(
+        &multisig_env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+
+    let storage_slots = native_multisig_bootstrap_storage_slots(&config);
+    assert_eq!(storage_slots, 1 + 2 * config.owners.len() as u64);
+
+    let expected_storage_gas = (SSTORE_CREATE_COST + gas_params.sstore_static_gas())
+        * storage_slots
+        + gas_params.cold_storage_cost() * storage_slots.saturating_sub(1)
+        + 2 * gas_params.warm_storage_read_cost()
+        + revm::interpreter::gas::LOG
+        + gas_params.log_cost(2, 0);
+    let expected_overhead =
+        NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS + expected_storage_gas;
+    assert_eq!(
+        multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+        expected_overhead,
+        "bootstrap should charge packed account header, indexed and lookup owner slots, and the initialization event"
+    );
+    assert_eq!(
+        multisig_gas.initial_state_gas, base_gas.initial_state_gas,
+        "native multisig bootstrap storage stays in regular intrinsic gas under non-Amsterdam params"
+    );
+}
+
+#[test]
+fn test_aa_gas_max_native_multisig_bootstrap_allows_recursive_authorization_t11() {
+    use tempo_chainspec::constants::gas::{SSTORE_CREATE_COST, TEMPO_T1_TX_GAS_LIMIT_CAP};
+
+    let gas_params = tempo_gas_params(TempoHardfork::T11);
+    let config = InitMultisig {
+        salt: B256::ZERO,
+        threshold: MAX_MULTISIG_SIGNATURES as u8,
+        owners: (1..=MAX_MULTISIG_OWNERS as u16)
+            .map(|index| MultisigOwner {
+                owner: Address::from_word(B256::from(U256::from(index))),
+                weight: 1,
+            })
+            .collect(),
+    };
+    let webauthn_signature = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+        webauthn_data: Bytes::from(vec![0xff; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
+    })
+    .to_bytes();
+    let account = config.account().unwrap();
+    let nested_signatures = config
+        .owners
+        .iter()
+        .take(MAX_MULTISIG_SIGNATURES)
+        .map(|owner| {
+            TempoSignature::Multisig(
+                MultisigSignature::new(
+                    owner.owner,
+                    vec![webauthn_signature.clone(); MAX_MULTISIG_SIGNATURES],
+                    None,
+                )
+                .with_simulation_config_owner_count(MAX_MULTISIG_OWNERS)
+                .unwrap(),
+            )
+        })
+        .collect();
+    let mut env = make_single_call_env(Bytes::new());
+    env.signature = TempoSignature::Multisig(
+        MultisigSignature::from_decoded(account, nested_signatures, Some(config)).unwrap(),
+    );
+
+    let gas = calculate_aa_batch_intrinsic_gas(
+        &env,
+        &gas_params,
+        None::<std::iter::Empty<&AccessListItem>>,
+        TempoHardfork::T11,
+    )
+    .unwrap();
+    let bootstrap_gas = gas
+        .initial_total_gas()
+        .saturating_add(gas_params.get(GasId::new_account_cost()));
+
+    assert!(
+        bootstrap_gas <= TEMPO_T1_TX_GAS_LIMIT_CAP,
+        "the maximum config and recursive authorization must fit the transaction gas cap"
+    );
+    const OWNERS_TO_PREVIOUS_LIMIT: u64 = 2;
+    assert!(
+        bootstrap_gas
+            + 2 * OWNERS_TO_PREVIOUS_LIMIT
+                * (SSTORE_CREATE_COST
+                    + gas_params.sstore_static_gas()
+                    + gas_params.cold_storage_cost())
+            + MAX_MULTISIG_SIGNATURES as u64
+                * native_multisig_complete_config_validation_gas(OWNERS_TO_PREVIOUS_LIMIT as usize,)
+            > TEMPO_T1_TX_GAS_LIMIT_CAP,
+        "the previous 50-owner limit would exceed the transaction gas cap"
+    );
 }
