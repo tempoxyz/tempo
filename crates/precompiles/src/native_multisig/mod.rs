@@ -58,11 +58,12 @@ struct StoredMultisigConfig {
 }
 
 /// Registered configuration fields needed during transaction authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredMultisigConfig {
     pub threshold: u8,
     pub version: u64,
     pub owner_count: usize,
+    pub owners: Vec<MultisigOwner>,
 }
 
 /// Native multisig account storage.
@@ -191,10 +192,13 @@ impl NativeMultisig {
             ParsedMultisigHeader::Initialized { .. } => self
                 .load_stored_config_with_header(account, header)
                 .map(|stored| {
+                    let StoredMultisigConfig { config, version } = stored;
+                    let owner_count = config.owners.len();
                     Some(RegisteredMultisigConfig {
-                        threshold: stored.config.threshold,
-                        version: stored.version,
-                        owner_count: stored.config.owners.len(),
+                        threshold: config.threshold,
+                        version,
+                        owner_count,
+                        owners: config.owners,
                     })
                 }),
         }
