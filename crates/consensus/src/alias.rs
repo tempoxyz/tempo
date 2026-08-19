@@ -135,16 +135,6 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
 
-        let finalized_blocks = storage::init_finalized_blocks(
-            &context,
-            &config.partition_prefix,
-            page_cache.clone(),
-            execution_node.provider.clone(),
-            config.finalized_blocks_retention,
-        )
-        .await
-        .wrap_err("failed to initialize hybrid finalized blocks store")?;
-
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
@@ -161,6 +151,16 @@ pub(crate) mod marshal {
         let start =
             start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
                 .await?;
+
+        let finalized_blocks = storage::init_finalized_blocks(
+            &context,
+            &config.partition_prefix,
+            page_cache.clone(),
+            execution_node.provider.clone(),
+            config.finalized_blocks_retention,
+        )
+        .await
+        .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
