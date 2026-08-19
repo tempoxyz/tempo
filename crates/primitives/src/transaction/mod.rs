@@ -25,7 +25,8 @@ pub use multisig::{
     MAX_MULTISIG_SIGNATURES, MAX_MULTISIG_THRESHOLD, MULTISIG_ACCOUNT_DOMAIN,
     MULTISIG_CONFIG_DOMAIN, MULTISIG_SIGNATURE_DOMAIN, MultisigConfig, MultisigConfigError,
     MultisigOwner, MultisigQuorumError, MultisigSignature, MultisigSignatureError,
-    MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG, multisig_digest,
+    MultisigWeightAccumulator, SIGNATURE_TYPE_MULTISIG, is_valid_multisig_account,
+    multisig_digest,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, InvalidValidAfter, InvalidValidBefore,

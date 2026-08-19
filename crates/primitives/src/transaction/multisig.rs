@@ -1,9 +1,10 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::TempoSignature};
+use crate::TempoAddressExt;
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, address, keccak256};
 use alloy_rlp::Encodable as _;
 use core::mem::size_of;
-use tempo_contracts::precompiles::INativeMultisig;
+use tempo_contracts::{TempoHardfork, precompiles::INativeMultisig};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -35,6 +36,8 @@ pub const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 
 /// Domain prefix for native multisig configuration commitments.
 pub const MULTISIG_CONFIG_DOMAIN: &[u8] = b"tempo:multisig:config";
+
+const P256VERIFY_ADDRESS: Address = address!("0x0000000000000000000000000000000000000100");
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -769,6 +772,32 @@ impl alloy_rlp::Encodable for MultisigSignature {
     }
 }
 
+/// Returns whether an address is eligible to be a native multisig account.
+///
+/// Rejects addresses in reserved namespaces so a derived multisig account cannot collide with
+/// another account type. The account is `keccak256(..)[12:]` over a caller-chosen salt (both the
+/// direct and CREATE2 recovery derivations), so an attacker can grind the salt to aim the derived
+/// address at a pattern; the exclusions differ in how feasible that is:
+/// - `is_virtual` fixes 10 bytes (~2^80 work) and `is_tip20` fixes a 12-byte prefix (~2^96): these
+///   are pattern namespaces a well-resourced attacker could plausibly grind, so they are the
+///   load-bearing checks that keep a multisig account out of the virtual / TIP-20 address spaces.
+/// - `is_zero` and the fixed / low-range precompile cases fix ~152-160 bits (>= ~2^156 work): not
+///   grindable in practice, kept as cheap defense-in-depth.
+///
+/// EVM built-in precompiles are checked locally so native multisig does not change the shared
+/// `is_precompile` behavior used by earlier protocol features.
+pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
+    !account.is_zero()
+        && !account.is_virtual()
+        && !account.is_precompile(spec)
+        && !is_evm_precompile(account, spec)
+}
+
+fn is_evm_precompile(account: Address, spec: TempoHardfork) -> bool {
+    (account.as_slice()[..19] == [0; 19] && (1..=0x11).contains(&account.as_slice()[19]))
+        || (spec.is_t1c() && account == P256VERIFY_ADDRESS)
+}
+
 /// Computes the digest that native multisig owners approve.
 ///
 /// This free function is also used while constructing a signature, before a [`MultisigSignature`]
@@ -845,6 +874,7 @@ mod tests {
     };
     use proptest::prelude::*;
     use sha2::{Digest, Sha256};
+    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, SYSTEM_PRECOMPILES};
 
     fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> MultisigConfig {
         let mut owners = owners
@@ -1193,6 +1223,37 @@ mod tests {
             MultisigWeightAccumulator::new(0).err(),
             Some(MultisigQuorumError::ZeroThreshold)
         );
+    }
+
+    #[test]
+    fn multisig_account_eligibility_uses_current_hardfork_precompile_set() {
+        let identity_precompile = Address::with_last_byte(0x04);
+        assert!(!is_valid_multisig_account(
+            identity_precompile,
+            TempoHardfork::T11
+        ));
+
+        assert!(is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1B
+        ));
+        assert!(!is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1C
+        ));
+        assert!(!is_valid_multisig_account(
+            PATH_USD_ADDRESS,
+            TempoHardfork::Genesis
+        ));
+
+        for &(precompile, activated) in SYSTEM_PRECOMPILES {
+            if activated <= TempoHardfork::T11 {
+                assert!(
+                    !is_valid_multisig_account(precompile, TempoHardfork::T11),
+                    "{precompile} should not be eligible as a native multisig account"
+                );
+            }
+        }
     }
 
     #[test]
