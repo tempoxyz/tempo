@@ -377,6 +377,28 @@ impl TempoPooledTransaction {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
+    /// Clones this transaction while discarding validation-derived caches.
+    ///
+    /// Revalidation must not reuse cached state such as the resolved fee token and key expiry
+    /// from a previous canonical state. Transaction-intrinsic caches are retained.
+    pub(crate) fn with_discarded_caches(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            fee_token_cost: self.fee_token_cost,
+            is_payment: self.is_payment,
+            expiring_nonce_hash: self.expiring_nonce_hash,
+            nonce_key_slot: self.nonce_key_slot.clone(),
+            expiring_nonce_slot: self.expiring_nonce_slot.clone(),
+            tx_env: self.tx_env.clone(),
+            key_authorization_target_subject: self.key_authorization_target_subject.clone(),
+            // Discard state-dependent caches before revalidation.
+            fee_balance_slot: OnceLock::new(),
+            key_expiry: OnceLock::new(),
+            resolved_fee_token: OnceLock::new(),
+            key_authorization_signer_subject: OnceLock::new(),
+        }
+    }
+
     /// Returns the fee token cached during transaction validation, if available.
     ///
     /// This is `None` for transactions that have not completed validation through
@@ -960,6 +982,24 @@ mod tests {
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
         (pooled, envelope, sender, encoded_length)
+    }
+
+    #[test]
+    fn discarded_caches_preserve_transaction_intrinsic_values() {
+        let transaction = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(42))
+            .build();
+        let nonce_key_slot = transaction.nonce_key_slot();
+        let _ = transaction.tx_env();
+        transaction.set_key_expiry(Some(123));
+        transaction.set_resolved_fee_token(Address::random());
+
+        let fresh = transaction.with_discarded_caches();
+
+        assert_eq!(fresh.nonce_key_slot(), nonce_key_slot);
+        assert!(fresh.cached_tx_env().is_some());
+        assert_eq!(fresh.key_expiry(), None);
+        assert_eq!(fresh.resolved_fee_token(), None);
     }
 
     #[test]

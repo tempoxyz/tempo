@@ -137,10 +137,13 @@ impl TempoPoolUpdates {
             // three address comparisons per transfer before reaching the matching branch.
             if log.address.is_tip20() {
                 match Tip20PoolEvent::decode(log) {
-                    Some(Tip20PoolEvent::PauseStateUpdate(event)) if event.isPaused => {
-                        updates.paused_tokens.insert(log.address);
+                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                        if event.isPaused {
+                            updates.paused_tokens.insert(log.address);
+                        } else {
+                            updates.paused_tokens.remove(&log.address);
+                        }
                     }
-                    Some(Tip20PoolEvent::PauseStateUpdate(_)) => {}
                     Some(Tip20PoolEvent::TransferPolicyUpdate) => {
                         updates.transfer_policy_updates.insert(log.address);
                     }
@@ -591,7 +594,7 @@ where
                 tokio::spawn(async move {
                     let txs: Vec<_> = removed_txs
                         .into_iter()
-                        .map(|tx| (tx.origin, tx.transaction.clone()))
+                        .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
                         .collect();
 
                     let results = pool_clone.add_transactions_with_origins(txs).await;
