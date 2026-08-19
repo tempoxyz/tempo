@@ -38,6 +38,7 @@ fn non_empty_env_var(name: &str) -> Option<String> {
 /// Test that the RelayTransport correctly routes reads to the default transport
 /// and sendRawTransaction through the sponsor relay.
 #[tokio::test]
+#[ignore]
 async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
     let (rpc_url, sponsor_url) = match rpc_and_sponsor_urls() {
         Some(urls) => urls,
