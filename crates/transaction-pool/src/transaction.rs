@@ -35,7 +35,10 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, MultisigSignature, TempoSignature,
+        calc_gas_balance_spending,
+    },
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
@@ -211,6 +214,42 @@ impl TempoPooledTransaction {
             key_id,
             fee_token,
         })
+    }
+
+    /// Returns every native multisig account whose stored config this transaction's authorization
+    /// depends on across its outer and key-authorization signatures, including every nested
+    /// multisig owner account in either approval tree.
+    ///
+    /// The stateful verifier recurses into nested multisig owners and reloads their
+    /// threshold/owner weights, so a config rotation of the outer account *or any nested owner*
+    /// can invalidate an already-pooled transaction. All of them must be matched against on-chain
+    /// config changes when deciding eviction. Recursion is bounded by `MAX_MULTISIG_NESTING_DEPTH`,
+    /// which is enforced at decode time.
+    pub fn multisig_accounts(&self) -> Vec<Address> {
+        fn collect(sig: &MultisigSignature, out: &mut Vec<Address>) {
+            out.push(sig.account());
+            for approval in sig.signatures() {
+                if let TempoSignature::Multisig(nested) = approval {
+                    collect(nested, out);
+                }
+            }
+        }
+
+        let mut accounts = Vec::new();
+        if let Some(aa_tx) = self.inner().as_aa() {
+            if let Some(multisig) = aa_tx.signature().as_multisig() {
+                collect(multisig, &mut accounts);
+            }
+            if let Some(multisig) = aa_tx
+                .tx()
+                .key_authorization
+                .as_ref()
+                .and_then(|authorization| authorization.signature.as_multisig())
+            {
+                collect(multisig, &mut accounts);
+            }
+        }
+        accounts
     }
 
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
@@ -952,7 +991,8 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
+        KeyAuthorization, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+        TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
@@ -1107,6 +1147,44 @@ mod tests {
             tx.aa_transaction_id().is_none(),
             "Non-AA tx should have no AA transaction ID"
         );
+    }
+
+    #[test]
+    fn test_multisig_accounts_includes_key_authorization_tree() {
+        let account = Address::random();
+        let nested_account = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let key_authorization = |nested: Option<Address>| {
+            let owner_approval = PrimitiveSignature::Secp256k1(Signature::test_signature());
+            let owner_approval = nested.map_or_else(
+                || owner_approval.to_bytes(),
+                |nested_account| {
+                    TempoSignature::Multisig(MultisigSignature::new(
+                        nested_account,
+                        vec![owner_approval.to_bytes()],
+                        None,
+                    ))
+                    .to_bytes()
+                },
+            );
+            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, access_key.address())
+                .with_account(account)
+                .into_signed(TempoSignature::Multisig(MultisigSignature::new(
+                    account,
+                    vec![owner_approval],
+                    None,
+                )))
+        };
+
+        let direct = TxBuilder::aa(account)
+            .key_authorization(key_authorization(None))
+            .build_keychain(account, &access_key);
+        assert_eq!(direct.multisig_accounts(), vec![account]);
+
+        let nested = TxBuilder::aa(account)
+            .key_authorization(key_authorization(Some(nested_account)))
+            .build_keychain(account, &access_key);
+        assert_eq!(nested.multisig_accounts(), vec![account, nested_account]);
     }
 
     #[test]
