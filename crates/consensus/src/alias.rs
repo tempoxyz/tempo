@@ -335,8 +335,8 @@ pub(crate) mod marshal {
         ))
     }
 
-    async fn register_scheme<TContext, R>(
-        rng: &mut R,
+    async fn register_scheme<TContext>(
+        context: &mut TContext,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
         finalized_blocks: &Hybrid<
@@ -347,8 +347,7 @@ pub(crate) mod marshal {
         (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
     ) -> eyre::Result<()>
     where
-        TContext: Clock + Metrics + Storage + BufferPooler + Send + Sync + 'static,
-        R: CryptoRng,
+        TContext: Clock + Metrics + Storage + BufferPooler + CryptoRng + Send + Sync + 'static,
     {
         let digest = match execution_node
             .provider
@@ -397,7 +396,7 @@ pub(crate) mod marshal {
         );
 
         ensure!(
-            finalization.verify(rng, &scheme, &Sequential),
+            finalization.verify(context, &scheme, &Sequential),
             "finalized floor failed verification"
         );
 
