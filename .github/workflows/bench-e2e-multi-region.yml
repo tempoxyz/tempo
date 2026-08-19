@@ -270,7 +270,7 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
-      BENCH_REPO_REF: ${{ github.event_name == 'workflow_dispatch' && '656303232a2ce8c0737185e827788dd9c1bb86cb' || inputs['benchmark-ref'] || 'main' }}
+      BENCH_REPO_REF: ${{ github.event_name == 'workflow_dispatch' && '57e8aa0cc94aa61b70d43ebe35d9d77ee5c3bdc5' || inputs['benchmark-ref'] || 'main' }}
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
