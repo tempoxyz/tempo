@@ -693,6 +693,52 @@ where
             {
                 return Ok((root, reth_trie_common::updates::TrieUpdates::default()));
             }
+            // Overlapped apply (validator lane): a block this process did not
+            // build used to pay the full inline flat apply under the shadow
+            // write lock (~330ms/blk at 100G, on the validation critical
+            // path) before its header root could be checked. Compute the
+            // root with the sparse-over-flat trie instead — read-only, no
+            // write lock, cold reveals fetched in finish() — and queue the
+            // flat apply to the background follower, whose root cross-check
+            // stays the loud correctness gate. Same flow, gates, and
+            // fallback as the builder's sparse commitment.
+            if tempo_flatmpt::sparse_enabled() {
+                let t = std::time::Instant::now();
+                let worker =
+                    tempo_flatmpt::SparseWorker::begin(shadow, input.parent_block.state_root());
+                match worker.finish(ops.clone()) {
+                    Ok((root, stats)) => {
+                        info!(
+                            target: "flatmpt",
+                            block = input.parent_block.number() + 1,
+                            n_ops = ops.len(),
+                            %root,
+                            total_ms = t.elapsed().as_millis() as u64,
+                            finish_ms = stats.finish_ms,
+                            reveal_ms = stats.reveal_ms,
+                            proof_ms = stats.proof_ms,
+                            pool_hit = stats.pool_hit,
+                            follower_queue = tempo_flatmpt::follower(shadow).depth(),
+                            "sparse commitment (validator)"
+                        );
+                        tempo_flatmpt::follower(shadow).queue_apply(
+                            input.parent_block.number(),
+                            input.parent_block.state_root(),
+                            ops,
+                            root,
+                        );
+                        return Ok((root, reth_trie_common::updates::TrieUpdates::default()));
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "flatmpt",
+                            block = input.parent_block.number() + 1,
+                            err = %format!("{e:#}"),
+                            "validator sparse commitment failed; falling back to inline flat apply"
+                        );
+                    }
+                }
+            }
             let root = shadow
                 .write()
                 .root_for(
