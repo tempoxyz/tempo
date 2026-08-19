@@ -78,10 +78,13 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
-        let prewarm = ctx.prewarm.clone();
-        pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
 
         pool.in_place_scope(|scope| {
+            let prewarm = ctx.prewarm.clone();
+            scope.spawn(move |_| {
+                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+            });
+
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -777,22 +780,20 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_clears_worker_state() {
+    fn prewarming_does_not_use_shared_worker_state_slot() {
         let executor = TaskExecutor::test();
         let pool = executor.prewarming_pool();
         pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
 
-        {
-            let sender = Address::random();
-            let txs = vec![test_tx(sender, 0)];
-            let log = Arc::new(Mutex::new(TestLog::default()));
-            let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
+        let sender = Address::random();
+        let txs = vec![test_tx(sender, 0)];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
 
-            assert!(prewarming.next().is_some());
-        }
+        assert!(prewarming.next().is_some());
 
         pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get_or_init(|| 2usize), 2);
+            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 }

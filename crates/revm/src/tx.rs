@@ -488,7 +488,7 @@ mod tests {
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
-            Call, MultisigSignature, calc_gas_balance_spending,
+            Call, calc_gas_balance_spending,
             tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
             tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
@@ -682,10 +682,8 @@ mod tests {
                 nonce,
                 ..Default::default()
             };
-            let signature = TempoSignature::Multisig(MultisigSignature::new(
-                account,
-                vec![Bytes::from_static(&[0xAA; 65])],
-                None,
+            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
             ));
             AASigned::new_unhashed(tx, signature)
         };
@@ -712,6 +710,7 @@ mod tests {
             tx_env.channel_open_context_hash(),
             "distinct simulated transactions must retain distinct replay identities"
         );
+
         let tx_env = TempoTxEnv::from_encoded_tx(
             &envelope,
             account,

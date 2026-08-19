@@ -78,10 +78,9 @@ use crate::{
 
 #[cfg(test)]
 use crate::signature_gas::{
-    NATIVE_MULTISIG_OWNER_WEIGHT_GAS, NATIVE_MULTISIG_VALIDATION_GAS, P256_VERIFY_GAS,
+    NATIVE_MULTISIG_OWNER_WEIGHT_GAS, NATIVE_MULTISIG_VALIDATION_GAS,
     native_multisig_bootstrap_storage_slots, primitive_signature_verification_gas,
 };
-
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
