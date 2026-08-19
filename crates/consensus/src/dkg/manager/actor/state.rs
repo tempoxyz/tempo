@@ -25,11 +25,9 @@ use commonware_cryptography::{
     transcript::{Summary, Transcript},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Storage as RuntimeStorage, buffer::paged::CacheRef,
-};
+use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
-use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered::Set};
+use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail};
 use futures::StreamExt as _;
 use tempo_primitives::TempoHeader;
@@ -55,7 +53,7 @@ pub(super) fn builder() -> Builder {
 
 pub(super) struct Storage<TContext>
 where
-    TContext: BufferPooler + RuntimeStorage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     states: metadata::Metadata<TContext, u64, State>,
     events: segmented::variable::Journal<TContext, Event>,
@@ -108,7 +106,7 @@ where
 
 impl<TContext> Storage<TContext>
 where
-    TContext: BufferPooler + RuntimeStorage + Clock + Metrics,
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
 {
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
@@ -533,7 +531,7 @@ impl Builder {
         context: TContext,
     ) -> eyre::Result<Unverified<TContext>>
     where
-        TContext: BufferPooler + RuntimeStorage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         let Self { partition_prefix } = self;
         let partition_prefix =
@@ -670,24 +668,24 @@ pub(super) struct State {
     pub(super) seed: Summary,
     pub(super) output: Output<MinSig, PublicKey>,
     pub(super) share: ShareState,
-    pub(super) players: Set<PublicKey>,
+    pub(super) players: ordered::Set<PublicKey>,
     pub(super) is_full_dkg: bool,
 }
 
 impl State {
     /// Returns the dealers active in the DKG round tracked by this state.
-    pub(super) fn dealers(&self) -> &Set<PublicKey> {
+    pub(super) fn dealers(&self) -> &ordered::Set<PublicKey> {
         self.output.players()
     }
 
     /// Returns the players active in the DKG round tracked by this state.
-    pub(super) fn players(&self) -> &Set<PublicKey> {
+    pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
     }
 
     /// Placeholder for the legacy `syncers` field.
-    fn legacy_syncers(&self) -> Set<PublicKey> {
-        Set::default()
+    fn legacy_syncers(&self) -> ordered::Set<PublicKey> {
+        ordered::Set::default()
     }
 }
 
@@ -733,7 +731,7 @@ impl Read for State {
         let players = Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
 
         // Until the next state migration, the unused syncers field must still be read to remain backwards compatible.
-        Set::<PublicKey>::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?;
+        ordered::Set::<PublicKey>::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?;
 
         let is_full_dkg = ReadExt::read(buf)?;
 
@@ -973,7 +971,7 @@ impl Dealer {
         ack: PlayerAck<PublicKey>,
     ) -> eyre::Result<()>
     where
-        TContext: BufferPooler + RuntimeStorage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         if !self.unsent.contains_key(&player) {
             bail!("already received an ack from `{player}`");
@@ -1037,8 +1035,8 @@ impl Dealer {
 pub(super) struct Round {
     epoch: Epoch,
     info: dkg::Info<MinSig, PublicKey>,
-    dealers: Set<PublicKey>,
-    players: Set<PublicKey>,
+    dealers: ordered::Set<PublicKey>,
+    players: ordered::Set<PublicKey>,
     is_full_dkg: bool,
 }
 
@@ -1079,11 +1077,11 @@ impl Round {
         self.epoch
     }
 
-    pub(super) fn dealers(&self) -> &Set<PublicKey> {
+    pub(super) fn dealers(&self) -> &ordered::Set<PublicKey> {
         &self.dealers
     }
 
-    pub(super) fn players(&self) -> &Set<PublicKey> {
+    pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
     }
 
@@ -1120,7 +1118,7 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: BufferPooler + RuntimeStorage + Clock + Metrics,
+        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
         // If we've already generated an ack, return the cached version
         if let Some(ack) = self.acks.get(&dealer) {
@@ -1250,7 +1248,7 @@ mod tests {
 
         keys.sort_by_key(|k| k.public_key());
 
-        let pubkeys = Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
+        let pubkeys = ordered::Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
 
         let (output, _shares) =
             dkg::deal::<_, _, N3f1>(&mut *rng, Mode::NonZeroCounter, pubkeys.clone()).unwrap();
@@ -1328,7 +1326,7 @@ mod tests {
         let keys = std::iter::repeat_with(|| PrivateKey::random(&mut rng))
             .take(3)
             .collect::<Vec<_>>();
-        let pubkeys = Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
+        let pubkeys = ordered::Set::try_from_iter(keys.iter().map(|k| k.public_key())).unwrap();
 
         let (_output, shares) =
             dkg::deal::<MinSig, _, N3f1>(&mut rng, Mode::NonZeroCounter, pubkeys).unwrap();

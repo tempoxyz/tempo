@@ -11,7 +11,7 @@ use commonware_cryptography::{
 use commonware_runtime::{
     BufferPooler, Clock, Metrics, Spawner, Storage, telemetry::metrics::histogram::Timed,
 };
-use commonware_utils::ordered::Set;
+use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
 use futures::{Stream, channel::mpsc};
 use rand_core::CryptoRng;
@@ -27,13 +27,9 @@ pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
 use crate::{
-    alias::marshal::Mailbox as MarshalMailbox,
     consensus::{Block, Digest},
-    epoch::manager::Mailbox as EpochManagerMailbox,
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
-
-pub(crate) type TempoExecutionProvider = Arc<TempoFullNode>;
 
 use ingress::{Command, Message};
 
@@ -43,7 +39,7 @@ pub(crate) async fn init<TContext, P, M, E>(
 ) -> eyre::Result<(Actor<TContext, P, M, E>, Mailbox)>
 where
     TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
-    P: ExecutionProvider + 'static,
+    P: ExecutionLayer + 'static,
     M: Marshal + 'static,
     E: EpochManager + 'static,
 {
@@ -57,7 +53,7 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<P = TempoExecutionProvider, M = MarshalMailbox, E = EpochManagerMailbox> {
+pub(crate) struct Config<P, M, E> {
     pub(crate) epoch_strategy: FixedEpocher,
 
     pub(crate) epoch_manager: E,
@@ -83,7 +79,7 @@ pub(crate) struct Config<P = TempoExecutionProvider, M = MarshalMailbox, E = Epo
     pub(crate) partition_prefix: String,
 
     /// Execution-layer state used to initialize DKG and determine future ceremonies.
-    pub(crate) execution_provider: P,
+    pub(crate) execution_node: P,
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
@@ -94,7 +90,7 @@ pub(crate) struct Config<P = TempoExecutionProvider, M = MarshalMailbox, E = Epo
 /// During initialization, these reads provide the initial validator set and
 /// public polynomial. During normal operation, they provide the validator
 /// configuration used at the end of each epoch.
-pub(crate) trait ExecutionProvider: Clone + Send + Sync {
+pub(crate) trait ExecutionLayer: Clone + Send + Sync {
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
@@ -104,7 +100,7 @@ pub(crate) trait ExecutionProvider: Clone + Send + Sync {
     /// This is used while constructing or verifying a proposal, so `digest`
     /// must identify that proposal's parent. If the corresponding execution
     /// state is unavailable, the proposal cannot be constructed or verified.
-    fn next_players(&self, digest: Digest) -> eyre::Result<Set<PublicKey>>;
+    fn next_players(&self, digest: Digest) -> eyre::Result<ordered::Set<PublicKey>>;
 
     /// Reads the epoch scheduled for the next full DKG ceremony from the
     /// validator configuration at `digest`.
@@ -153,14 +149,14 @@ pub(crate) trait EpochManager: Send + Sync {
         epoch: Epoch,
         public: Sharing<MinSig>,
         share: Option<Share>,
-        participants: Set<PublicKey>,
+        participants: ordered::Set<PublicKey>,
     ) -> eyre::Result<()>;
 
     /// Stops the consensus engine for `epoch`.
     fn exit(&mut self, epoch: Epoch) -> eyre::Result<()>;
 }
 
-impl ExecutionProvider for TempoExecutionProvider {
+impl ExecutionLayer for Arc<TempoFullNode> {
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         use reth_provider::HeaderProvider as _;
 
@@ -180,11 +176,14 @@ impl ExecutionProvider for TempoExecutionProvider {
     }
 
     #[tracing::instrument(skip_all, fields(%digest), err(level = Level::WARN))]
-    fn next_players(&self, digest: Digest) -> eyre::Result<Set<PublicKey>> {
-        let next_players =
-            read_active_and_known_peers_at_block_hash(self.as_ref(), &Set::default(), digest.0)
-                .wrap_err("failed reading peers from validator config v2")?
-                .into_keys();
+    fn next_players(&self, digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
+        let next_players = read_active_and_known_peers_at_block_hash(
+            self.as_ref(),
+            &ordered::Set::default(),
+            digest.0,
+        )
+        .wrap_err("failed reading peers from validator config v2")?
+        .into_keys();
 
         tracing::debug!(?next_players, "determined next players");
         Ok(next_players)
@@ -210,7 +209,7 @@ impl ExecutionProvider for TempoExecutionProvider {
     }
 }
 
-impl Marshal for MarshalMailbox {
+impl Marshal for crate::alias::marshal::Mailbox {
     type Ancestry = Pin<Box<dyn Stream<Item = Arc<Block>> + Send>>;
 
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
@@ -237,13 +236,13 @@ impl Marshal for MarshalMailbox {
     }
 }
 
-impl EpochManager for EpochManagerMailbox {
+impl EpochManager for crate::epoch::manager::Mailbox {
     fn enter(
         &mut self,
         epoch: Epoch,
         public: Sharing<MinSig>,
         share: Option<Share>,
-        participants: Set<PublicKey>,
+        participants: ordered::Set<PublicKey>,
     ) -> eyre::Result<()> {
         Self::enter(self, epoch, public, share, participants)
     }

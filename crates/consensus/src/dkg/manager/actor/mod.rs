@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc, task
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::{Buf, BufMut};
-use commonware_codec::{Encode as _, EncodeSize, Error as CodecError, Read, ReadExt as _, Write};
+use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{Update, core::DigestFallback},
@@ -27,8 +27,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, IoBuf, Metrics as RuntimeMetrics, Spawner,
-    Storage as RuntimeStorage, spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, IoBuf, Spawner, Storage, spawn_cell,
     telemetry::metrics::{
         Counter, Gauge, MetricsExt as _,
         histogram::{Buckets, Timed},
@@ -54,10 +53,10 @@ use crate::consensus::{Digest, block::Block};
 mod state;
 #[cfg(test)]
 mod test;
-use state::{Dealer, Player, Round, ShareState, State, Storage as DkgStorage};
+use state::{Dealer, Player, Round, ShareState, State};
 
 use super::{
-    Command, EpochManager, ExecutionProvider, Marshal,
+    Command, EpochManager, ExecutionLayer, Marshal,
     ingress::{GetDkgOutcome, VerifyDealerLog},
 };
 
@@ -97,7 +96,7 @@ impl EncodeSize for Message {
 impl Read for Message {
     type Cfg = NonZeroU32;
 
-    fn read_cfg(reader: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(reader: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(reader)?;
         match tag {
             0 => {
@@ -109,18 +108,18 @@ impl Read for Message {
                 let ack = PlayerAck::read(reader)?;
                 Ok(Self::Ack(ack))
             }
-            other => Err(CodecError::InvalidEnum(other)),
+            other => Err(commonware_codec::Error::InvalidEnum(other)),
         }
     }
 }
 
 pub(crate) struct Actor<
     TContext,
-    P = super::TempoExecutionProvider,
+    P = Arc<tempo_node::TempoFullNode>,
     M = crate::alias::marshal::Mailbox,
     E = crate::epoch::manager::Mailbox,
 > where
-    TContext: BufferPooler + Clock + RuntimeMetrics + RuntimeStorage,
+    TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,
 {
     /// The actor configuration passed in when constructing the actor.
     config: super::Config<P, M, E>,
@@ -142,8 +141,8 @@ pub(crate) struct Actor<
 
 impl<TContext, P, M, E> Actor<TContext, P, M, E>
 where
-    TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Spawner + RuntimeStorage,
-    P: ExecutionProvider + 'static,
+    TContext: BufferPooler + Clock + CryptoRng + commonware_runtime::Metrics + Spawner + Storage,
+    P: ExecutionLayer + 'static,
     M: Marshal + 'static,
     E: EpochManager + 'static,
 {
@@ -228,11 +227,11 @@ where
 
     async fn run_dkg_loop<TStorageContext, TSender, TReceiver>(
         &mut self,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
@@ -508,9 +507,9 @@ where
     async fn heal<TStorageContext>(
         &mut self,
         storage: state::Unverified<TStorageContext>,
-    ) -> eyre::Result<DkgStorage<TStorageContext>>
+    ) -> eyre::Result<state::Storage<TStorageContext>>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let mut share_candidate = ShareState::unset_plaintext();
         if let Some(state) = storage.state() {
@@ -550,10 +549,10 @@ where
     #[instrument(skip_all, err)]
     async fn prepopulate_to_last_finalized_height<TStorageContext>(
         &self,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let state = storage.current();
         let round = Round::from_state(&state, &self.config.namespace);
@@ -585,7 +584,7 @@ where
 
         while height <= target_height {
             let header = get_header(
-                &self.config.execution_provider,
+                &self.config.execution_node,
                 &self.config.marshal,
                 height,
             ).await
@@ -603,13 +602,13 @@ where
 
     async fn record_finalized_header<TStorageContext>(
         &self,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
         round: &Round,
         header: TempoHeader,
         dealer_state: Option<&mut Dealer>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let height = Height::new(header.number());
         if !header.extra_data().is_empty() {
@@ -729,13 +728,13 @@ where
         state: &State,
         round: &Round,
         round_channel: &mut TSender,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
         dealer_state: &mut Option<Dealer>,
         player_state: &mut Option<Player>,
         header: TempoHeader,
     ) -> eyre::Result<Option<State>>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let height = Height::new(header.number());
@@ -903,13 +902,13 @@ where
     #[instrument(skip_all, fields(me = %self.config.me.public_key(), %epoch))]
     async fn distribute_shares<TStorageContext, TSender>(
         &self,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
         epoch: Epoch,
         dealer_state: &mut Dealer,
         player_state: &mut Option<Player>,
         round_channel: &mut TSender,
     ) where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let me = self.config.me.public_key();
@@ -961,14 +960,14 @@ where
         &self,
         round: &Round,
         round_channel: &mut impl Sender<PublicKey = PublicKey>,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
         dealer_state: Option<&mut Dealer>,
         player_state: Option<&mut Player>,
         from: PublicKey,
         mut message: IoBuf,
     ) -> eyre::Result<()>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
@@ -1044,14 +1043,14 @@ where
     async fn handle_get_dkg_outcome<TStorageContext>(
         &mut self,
         cause: &Span,
-        storage: &mut DkgStorage<TStorageContext>,
+        storage: &mut state::Storage<TStorageContext>,
         player_state: &Option<Player>,
         round: &Round,
         state: &State,
         request: GetDkgOutcome,
     ) -> eyre::Result<Option<(Digest, GetDkgOutcome)>>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let epoch_info = self
             .config
@@ -1196,7 +1195,7 @@ where
         let next_epoch = state.epoch.next();
         let will_be_re_dkg = self
             .config
-            .execution_provider
+            .execution_node
             .next_full_dkg_epoch(request.digest)
             // in theory it should never fail, but if it does, just stick to reshare.
             .is_ok_and(|epoch| epoch == next_epoch.get());
@@ -1208,7 +1207,7 @@ where
 
         let next_players = self
             .config
-            .execution_provider
+            .execution_node
             .next_players(request.digest)
             .wrap_err("could not determine who the next players are supposed to be")?;
 
@@ -1263,7 +1262,7 @@ where
         share_candidate: ShareState,
     ) -> eyre::Result<State>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let latest_boundary = latest_boundary_at_or_before(
             &self.config.epoch_strategy,
@@ -1277,7 +1276,7 @@ where
         );
 
         let onchain_outcome = read_outcome_from_boundary(
-            &self.config.execution_provider,
+            &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
         )
@@ -1341,7 +1340,7 @@ where
         state: &State,
     ) -> eyre::Result<Option<Share>>
     where
-        TStorageContext: BufferPooler + RuntimeMetrics + Clock + RuntimeStorage,
+        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
     {
         let public_key = self.config.me.public_key();
         if state.output.players().position(&public_key).is_none()
@@ -1363,7 +1362,7 @@ where
         });
 
         let ceremony_outcome = read_outcome_from_boundary(
-            &self.config.execution_provider,
+            &self.config.execution_node,
             &self.config.marshal,
             ceremony_boundary,
         )
@@ -1416,13 +1415,9 @@ where
         let mut height = first;
         let mut dealer_logs = BTreeMap::new();
         while height < last && dealer_logs.len() < selected_dealers.len() {
-            let header = get_header(
-                &self.config.execution_provider,
-                &self.config.marshal,
-                height,
-            )
-            .await
-            .wrap_err("failed reading finalized header")?;
+            let header = get_header(&self.config.execution_node, &self.config.marshal, height)
+                .await
+                .wrap_err("failed reading finalized header")?;
 
             if !header.extra_data().is_empty()
                 && let Ok((dealer, log)) = read_dealer_log(header.extra_data().as_ref(), &round)
@@ -1511,7 +1506,7 @@ async fn read_outcome_from_boundary<P, M>(
     boundary: Height,
 ) -> eyre::Result<OnchainDkgOutcome>
 where
-    P: ExecutionProvider,
+    P: ExecutionLayer,
     M: Marshal,
 {
     let header = get_header(node, marshal, boundary)
@@ -1527,7 +1522,7 @@ where
 #[instrument(skip_all, fields(%height))]
 async fn get_header<P, M>(node: &P, marshal: &M, height: Height) -> eyre::Result<TempoHeader>
 where
-    P: ExecutionProvider,
+    P: ExecutionLayer,
     M: Marshal,
 {
     match node.finalized_header(height) {
@@ -1575,7 +1570,7 @@ struct Metrics {
 impl Metrics {
     fn init<TContext>(context: &TContext) -> Self
     where
-        TContext: RuntimeMetrics,
+        TContext: commonware_runtime::Metrics,
     {
         let failures = context.counter(
             "ceremony_failures",

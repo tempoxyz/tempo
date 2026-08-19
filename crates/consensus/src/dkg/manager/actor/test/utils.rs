@@ -30,18 +30,18 @@ use commonware_cryptography::{
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
-use commonware_p2p::{CheckedSender, LimitedSender, Message as P2pMessage, Receiver, Recipients};
+use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, IoBufs, telemetry::metrics::histogram::Timed};
-use commonware_utils::{N3f1, ordered::Set};
+use commonware_utils::{N3f1, ordered};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
+use tempo_primitives::{BlockBody, TempoHeader};
 
 use super::super::{
-    Block, Digest, EpochManager, ExecutionProvider, Marshal, State,
+    Block, Digest, EpochManager, ExecutionLayer, Marshal, State,
     state::{Round, ShareState},
 };
 
@@ -52,7 +52,7 @@ impl Receiver for InertReceiver {
     type Error = io::Error;
     type PublicKey = PublicKey;
 
-    async fn recv(&mut self) -> Result<P2pMessage<Self::PublicKey>, Self::Error> {
+    async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
         std::future::pending().await
     }
 }
@@ -64,7 +64,7 @@ pub(super) struct TestNetwork {
 
 #[derive(Default)]
 struct NetworkState {
-    routes: Mutex<BTreeMap<PublicKey, mpsc::UnboundedSender<P2pMessage<PublicKey>>>>,
+    routes: Mutex<BTreeMap<PublicKey, mpsc::UnboundedSender<commonware_p2p::Message<PublicKey>>>>,
     deliveries: Mutex<Vec<(PublicKey, PublicKey)>>,
 }
 
@@ -164,14 +164,14 @@ impl CheckedSender for NetworkCheckedSender {
 
 #[derive(Debug)]
 pub(super) struct NetworkReceiver {
-    receiver: mpsc::UnboundedReceiver<P2pMessage<PublicKey>>,
+    receiver: mpsc::UnboundedReceiver<commonware_p2p::Message<PublicKey>>,
 }
 
 impl Receiver for NetworkReceiver {
     type Error = io::Error;
     type PublicKey = PublicKey;
 
-    async fn recv(&mut self) -> Result<P2pMessage<Self::PublicKey>, Self::Error> {
+    async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
         self.receiver
             .next()
             .await
@@ -232,7 +232,7 @@ impl CheckedSender for RecordingCheckedSender {
 pub(super) struct StubExecutionProvider {
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
-    next_players: Arc<Mutex<Set<PublicKey>>>,
+    next_players: Arc<Mutex<ordered::Set<PublicKey>>>,
     fail_next_players: Arc<AtomicBool>,
     fail_next_full_dkg_epoch: Arc<AtomicBool>,
 }
@@ -249,7 +249,7 @@ impl StubExecutionProvider {
         self.reads.lock().unwrap().clone()
     }
 
-    pub(super) fn set_next_players(&self, players: Set<PublicKey>) {
+    pub(super) fn set_next_players(&self, players: ordered::Set<PublicKey>) {
         *self.next_players.lock().unwrap() = players;
     }
 
@@ -262,13 +262,13 @@ impl StubExecutionProvider {
     }
 }
 
-impl ExecutionProvider for StubExecutionProvider {
+impl ExecutionLayer for StubExecutionProvider {
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>> {
         self.reads.lock().unwrap().push(height);
         Ok(self.headers.lock().unwrap().get(&height).cloned())
     }
 
-    fn next_players(&self, _digest: Digest) -> eyre::Result<Set<PublicKey>> {
+    fn next_players(&self, _digest: Digest) -> eyre::Result<ordered::Set<PublicKey>> {
         if self.fail_next_players.load(Ordering::SeqCst) {
             eyre::bail!("next players unavailable");
         }
@@ -333,7 +333,7 @@ pub(super) enum EpochEvent {
         epoch: Epoch,
         public: Sharing<MinSig>,
         share: Option<Share>,
-        participants: Set<PublicKey>,
+        participants: ordered::Set<PublicKey>,
     },
     Exit(Epoch),
 }
@@ -355,7 +355,7 @@ impl EpochManager for StubEpochManager {
         epoch: Epoch,
         public: Sharing<MinSig>,
         share: Option<Share>,
-        participants: Set<PublicKey>,
+        participants: ordered::Set<PublicKey>,
     ) -> eyre::Result<()> {
         self.events.lock().unwrap().push(EpochEvent::Enter {
             epoch,
@@ -384,7 +384,7 @@ pub(super) fn header(height: Height) -> TempoHeader {
 
 pub(super) fn block(header: TempoHeader) -> Block {
     Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(TempoBlock {
+        SealedBlock::seal_slow(tempo_primitives::Block {
             header,
             body: BlockBody::default(),
         }),
@@ -425,7 +425,7 @@ pub(super) fn full_dkg_state(
     let keys = (0..players as u64)
         .map(PrivateKey::from_seed)
         .collect::<Vec<_>>();
-    let players = Set::from_iter_dedup(keys.iter().map(|key| key.public_key()));
+    let players = ordered::Set::from_iter_dedup(keys.iter().map(|key| key.public_key()));
     let (output, _) = dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
         .expect("test DKG");
 

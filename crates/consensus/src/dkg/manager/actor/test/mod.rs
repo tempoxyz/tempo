@@ -18,7 +18,7 @@ use commonware_consensus::{
 use commonware_cryptography::ed25519::PrivateKey;
 use commonware_runtime::{
     Clock as _, Runner as _, Supervisor as _,
-    deterministic::{Context, Runner as DeterministicRunner},
+    deterministic::{Context, Runner},
 };
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use futures::{
@@ -42,7 +42,7 @@ fn config(
     epoch_strategy: FixedEpocher,
     last_finalized_height: Height,
     partition_prefix: &str,
-    execution_provider: StubExecutionProvider,
+    execution_node: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
 ) -> Config<StubExecutionProvider, StubMarshal, StubEpochManager> {
@@ -55,7 +55,7 @@ fn config(
         marshal,
         last_finalized_height,
         partition_prefix: partition_prefix.to_string(),
-        execution_provider,
+        execution_node,
         initial_share: None,
     }
 }
@@ -64,7 +64,7 @@ async fn actor(
     context: Context,
     epoch_strategy: FixedEpocher,
     last_finalized_height: Height,
-    execution_provider: StubExecutionProvider,
+    execution_node: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
 ) -> Actor<Context, StubExecutionProvider, StubMarshal, StubEpochManager> {
@@ -75,7 +75,7 @@ async fn actor(
             epoch_strategy,
             last_finalized_height,
             "dkg_actor_test",
-            execution_provider,
+            execution_node,
             marshal,
             epoch_manager,
         ),
@@ -104,7 +104,7 @@ async fn has_dealer_log(mailbox: &Mailbox, epoch: Epoch) -> bool {
 
 #[test]
 fn exhausted_ancestry_releases_pending_outcome_request() {
-    DeterministicRunner::default().start(|_| async move {
+    Runner::default().start(|_| async move {
         let (response, receiver) = oneshot::channel();
         let request = GetDkgOutcome {
             digest: Digest(B256::repeat_byte(1)),
@@ -124,7 +124,7 @@ fn exhausted_ancestry_releases_pending_outcome_request() {
 
 #[test]
 fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let execution = StubExecutionProvider::default();
         let (state, _) = full_dkg_state(&mut context, Epoch::new(1), 4);
         execution.set_next_players(state.players().clone());
@@ -174,7 +174,7 @@ fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
 
 #[test]
 fn healing_discards_stale_state_on_startup() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let stale_state = dkg_state(&mut context, Epoch::new(1));
         let current_state = dkg_state(&mut context, Epoch::new(2));
 
@@ -237,7 +237,7 @@ fn healing_discards_stale_state_on_startup() {
 
 #[test]
 fn healing_recovers_an_acked_share_from_persisted_dealings() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let execution = StubExecutionProvider::default();
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let ceremony_epoch = Epoch::new(1);
@@ -316,7 +316,7 @@ fn healing_recovers_an_acked_share_from_persisted_dealings() {
 
 #[test]
 fn healing_skips_recovery_after_a_failed_ceremony() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let ceremony_epoch = Epoch::new(1);
         let (ceremony_state, keys) = full_dkg_state(&mut context, ceremony_epoch, 1);
@@ -386,7 +386,7 @@ fn healing_skips_recovery_after_a_failed_ceremony() {
 
 #[test]
 fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let stale_state = dkg_state(&mut context, Epoch::new(1));
         let current_state = dkg_state(&mut context, Epoch::new(2));
@@ -457,7 +457,7 @@ fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
 
 #[test]
 fn prepopulation_replays_only_missing_headers() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let execution = StubExecutionProvider::default();
         execution.add_header(header(Height::new(10)));
         execution.add_header(header(Height::new(11)));
@@ -516,7 +516,7 @@ fn prepopulation_replays_only_missing_headers() {
 
 #[test]
 fn prepopulation_enforces_dkg_epoch_relative_to_finalized_tip() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let behind_execution = StubExecutionProvider::default();
         let behind_state = dkg_state(&mut context, Epoch::zero());
         behind_execution.add_header(outcome_header(Height::new(9), &behind_state));
@@ -595,7 +595,7 @@ fn prepopulation_enforces_dkg_epoch_relative_to_finalized_tip() {
 
 #[test]
 fn prepopulation_fails_when_required_header_is_unavailable() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let actor = actor(
             context.child("actor"),
             FixedEpocher::new(NonZeroU64::new(10).unwrap()),
@@ -626,7 +626,7 @@ fn prepopulation_fails_when_required_header_is_unavailable() {
 
 #[test]
 fn epoch_phases_distribute_then_finalize_without_redistributing() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let (state, _) = full_dkg_state(&mut context, Epoch::new(1), 4);
 
         let execution = StubExecutionProvider::default();
@@ -722,7 +722,7 @@ fn epoch_phases_distribute_then_finalize_without_redistributing() {
 
 #[test]
 fn exchange_dealer_messages_and_replay_acks_after_restart() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let (state, keys) = full_dkg_state(&mut context, Epoch::new(1), 4);
         let first = keys[0].clone();
         let second = keys[1].clone();
@@ -866,7 +866,7 @@ fn exchange_dealer_messages_and_replay_acks_after_restart() {
 
 #[test]
 fn outcome_requests_use_reshare_fallback_and_require_next_players() {
-    DeterministicRunner::default().start(|mut context| async move {
+    Runner::default().start(|mut context| async move {
         let execution = StubExecutionProvider::default();
         execution.fail_next_full_dkg_epoch();
 
