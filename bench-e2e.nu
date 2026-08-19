@@ -171,10 +171,17 @@ def validate-schelk-state [a_state_path: string, b_state_path: string] {
 def bench-restore-at [state_path: string, mount_point: string, datadir: string] {
     if (has-schelk) {
         run-bench-schelk "restore" $state_path $mount_point
-    } else {
+    } else if ($"($datadir).virgin" | path exists) {
         print $"Restoring snapshot from ($datadir).virgin..."
-        rm -rf $datadir
+        # Privileged rm: nodes run under sudo (systemd-run), and a crashed
+        # phase skips the chown-back — leaving root-owned consensus dirs a
+        # plain rm cannot remove. nu's builtin rm also fails on .ipc sockets.
+        ^sudo rm -rf $datadir
         ^cp -a $"($datadir).virgin" $datadir
+    } else {
+        # First schelk-less run: nothing to restore yet — the init path below
+        # builds the datadir and promote saves the initial .virgin.
+        print $"No virgin snapshot at ($datadir).virgin yet; skipping restore."
     }
 }
 

@@ -512,6 +512,18 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
         return
     }
 
+    # BENCH_LOCAL_TARGET_ROOT (schelk-less local iteration): worktrees are
+    # removed and re-added every run, so their cargo targets would rebuild
+    # cold each time (CI avoids this via the MinIO binary cache). Symlink the
+    # worktree's target to a per-worktree persistent dir instead. Unset in CI.
+    let local_target_root = ($env.BENCH_LOCAL_TARGET_ROOT? | default "")
+    if $local_target_root != "" {
+        let tdir = $"($local_target_root)/($worktree_dir | path basename)"
+        mkdir $tdir
+        if not ($"($worktree_dir)/target" | path exists) {
+            ^ln -s $tdir $"($worktree_dir)/target"
+        }
+    }
     print $"Building tempo for ($ref) in ($worktree_dir)..."
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
