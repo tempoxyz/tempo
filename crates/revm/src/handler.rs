@@ -44,6 +44,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
+    native_multisig::NativeMultisig,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
@@ -55,7 +56,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls,
+        MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending,
+        validate_calls,
     },
 };
 
@@ -64,9 +66,17 @@ use crate::{
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
+    native_multisig::{
+        validate_native_multisig_signature_account,
+        validate_state as validate_native_multisig_state,
+    },
     signature_gas::tempo_signature_verification_gas,
 };
 
+#[cfg(test)]
+use crate::signature_gas::{
+    NATIVE_MULTISIG_COMMITMENT_READ_GAS, primitive_signature_verification_gas,
+};
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
@@ -297,9 +307,9 @@ fn calculate_key_authorization_gas(
     gas_params: &GasParams,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> (u64, u64) {
-    // All signature types pay ECRECOVER_GAS (3k) as the baseline since
-    // tempo_signature_verification_gas assumes ecrecover is already in base 21k.
-    // For KeyAuthorization, we're doing an additional signature verification.
+    // KeyAuthorization signature verification is additional to the transaction signature. The
+    // generic signature schedule subtracts the traditional secp256k1 verification covered by the
+    // base transaction stipend, so add it back here.
     let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
@@ -394,6 +404,13 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let directly_authorized_multisig = ctx
+            .tx
+            .tempo_tx_env
+            .as_deref()
+            .and_then(|env| env.signature.as_multisig())
+            .map(MultisigSignature::account)
+            .unwrap_or_default();
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
@@ -405,7 +422,12 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             StorageActions::disabled(),
             || {
                 let mut keychain = AccountKeychain::new();
+                keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(ctx.tx.caller())?;
+
+                let mut multisig = NativeMultisig::new();
+                multisig.set_tx_origin(ctx.tx.caller())?;
+                multisig.set_directly_authorized_account(directly_authorized_multisig)?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
@@ -1016,9 +1038,6 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
-        // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
-
         let nonce_key = tx
             .tempo_tx_env
             .as_ref()
@@ -1026,6 +1045,18 @@ where
             .unwrap_or_default();
 
         let spec = cfg.spec();
+        let early_multisig_balance = validate_native_multisig_state(
+            journal,
+            block,
+            cfg,
+            tx,
+            actions.clone(),
+            init_gas,
+            account_balance,
+        )?;
+
+        // Load caller's account mutably after multisig validation.
+        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
         let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
@@ -1230,7 +1261,10 @@ where
         }
 
         // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
+        let new_balance = match early_multisig_balance {
+            Some(balance) => balance,
+            None => calculate_caller_fee(account_balance, tx, block, cfg)?,
+        };
         // doing max to avoid underflow as new_balance can be more than account
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
@@ -1244,6 +1278,9 @@ where
         let mut loaded_tx_access_key = None;
         // Access key whose fee-token spending limit was debited during fee collection, if any.
         let mut keychain_fee_key = None;
+        // Access key selected for execution. Root-authorized sidecars temporarily clear this
+        // while mutating the keychain, then restore it before user calls execute.
+        let mut keychain_transaction_key = Address::ZERO;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1269,6 +1306,7 @@ where
                     .key_id(&tempo_tx_env.signature_hash)
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
+            keychain_transaction_key = access_key_addr;
 
             let key_auth = tempo_tx_env.key_authorization.as_ref();
             // Classify whether this keychain-signed tx is using the same access key that the
@@ -1334,7 +1372,10 @@ where
 
                         // T6 adds admin delegation: a keychain signer may authorize a different
                         // child key only if the acting transaction key is itself an active admin key.
-                        if key_auth.is_some() && !key.is_admin {
+                        // A multisig sidecar is independently authorized by the root quorum.
+                        if key_auth.is_some_and(|key_auth| !key_auth.signature.is_multisig())
+                            && !key.is_admin
+                        {
                             return Err(
                                 TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                             );
@@ -1367,14 +1408,17 @@ where
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
             let auth_signer = key_auth
-                .recover_signer()
+                .recover_authorizing_account()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
                 let key_auth_sig_type: u8 = key_auth
                     .signature
                     .signature_type()
-                    .expect("non-primitive key authorization rejected in validate_env")
+                    .ok_or_else(|| TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "admin key authorization signature type is not registered"
+                            .to_string(),
+                    })?
                     .into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
@@ -1591,6 +1635,13 @@ where
                     allowedCalls: precompile_allowed_calls,
                 };
 
+                let quorum_authorized = key_auth.signature.is_multisig();
+                if quorum_authorized {
+                    keychain
+                        .set_transaction_key(Address::ZERO)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+                }
+
                 // Call precompile to authorize the key (same phase as nonce increment).
                 let result = if key_auth.is_admin() {
                     keychain.authorize_admin_key(
@@ -1608,6 +1659,11 @@ where
                         key_auth.witness(),
                     )
                 };
+                if quorum_authorized {
+                    keychain
+                        .set_transaction_key(keychain_transaction_key)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+                }
 
                 match result {
                     // all is good, we can do execution.
@@ -1804,19 +1860,6 @@ where
             )
             .map_err(TempoInvalidTransaction::from)?;
 
-            if aa_env.signature.is_multisig()
-                || aa_env
-                    .key_authorization
-                    .as_ref()
-                    .is_some_and(|authorization| authorization.signature.is_multisig())
-                || aa_env
-                    .tempo_authorization_list
-                    .iter()
-                    .any(|authorization| authorization.signature().is_multisig())
-            {
-                return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
-            }
-
             // Access-key CREATE is a cheap structural rejection that does not depend on any
             // per-call scope walk or state mutation. Rejecting it here keeps validation work
             // constant and avoids entering CREATE execution paths that require special protocol-
@@ -1847,20 +1890,72 @@ where
             if let Some(key_auth) = &aa_env.key_authorization
                 && key_auth.signature.is_keychain()
             {
-                return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                    reason: "key authorization signatures cannot use keychain encoding".to_string(),
-                }
-                .into());
+                return Err(TempoInvalidTransaction::InvalidKeyAuthorizationSignature.into());
             }
 
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
+            let has_native_multisig_authorization = aa_env.signature.is_multisig()
+                || aa_env
+                    .key_authorization
+                    .as_ref()
+                    .is_some_and(|key_auth| key_auth.signature.is_multisig());
+
+            if has_native_multisig_authorization && !cfg.spec.is_t12() {
+                return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
+            }
+
+            if aa_env.subblock_transaction && has_native_multisig_authorization {
+                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                    reason: "native multisig signatures are not allowed in subblock transactions"
+                        .to_string(),
+                }
+                .into());
+            }
+
+            if let Some(multisig_signature) = aa_env.signature.as_multisig() {
+                validate_native_multisig_signature_account(
+                    multisig_signature,
+                    tx.caller,
+                    *cfg.spec(),
+                    "multisig signature account does not match transaction caller",
+                )?;
+            }
 
             if aa_env.subblock_transaction && has_keychain_fields {
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
             }
 
+            if aa_env
+                .tempo_authorization_list
+                .iter()
+                .any(|auth| auth.signature().is_multisig())
+            {
+                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+                    reason: "native multisig signatures are not allowed in authorization lists"
+                        .to_string(),
+                }
+                .into());
+            }
+
             if let Some(key_auth) = &aa_env.key_authorization {
+                if let Some(signature) = key_auth.signature.as_multisig() {
+                    validate_native_multisig_signature_account(
+                        signature,
+                        tx.caller,
+                        *cfg.spec(),
+                        "multisig key authorization must be signed by the transaction caller",
+                    )?;
+                    if key_auth.account != Some(tx.caller) {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "multisig-signed key authorization must name the transaction caller"
+                                    .to_string(),
+                        }
+                        .into());
+                    }
+                }
+
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
                 // keys cannot authorize other keys; T6 admin keys can.
                 let mut same_tx_auth_use = false;
@@ -1933,7 +2028,7 @@ where
                 }
 
                 if !cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    let auth_signer = key_auth.recover_authorizing_account().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
 
@@ -1979,7 +2074,7 @@ where
                 }
 
                 if cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    let auth_signer = key_auth.recover_authorizing_account().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
                     if auth_signer != tx.caller && key_auth.account.is_none() {
@@ -1992,6 +2087,7 @@ where
                     if auth_signer == tx.caller
                         && aa_env.signature.is_keychain()
                         && !same_tx_auth_use
+                        && !key_auth.signature.is_multisig()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason:

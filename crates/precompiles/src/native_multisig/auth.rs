@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn initial_witness_requires_zero_commitment() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || {
             NativeMultisig::new().validate_authorization_state(&signature(0))
         })?;
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn current_witness_requires_matching_commitment() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let signature = signature(1);
         StorageCtx::enter(&mut storage, || {
             let mut multisig = NativeMultisig::new();

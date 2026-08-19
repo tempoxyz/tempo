@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || {
             let mut multisig = NativeMultisig::new();
             let unsupported = check_selector_coverage(

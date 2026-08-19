@@ -13808,6 +13808,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-sol-types",
  "crossbeam-channel",
  "metrics",
  "proptest",

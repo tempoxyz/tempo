@@ -1658,15 +1658,6 @@ mod tests {
     fn multisig_signature_json_rejects_structured_form() {
         let json = serde_json::json!({
             "account": Address::repeat_byte(0x11),
-            "config": {
-                "salt": B256::ZERO,
-                "version": 1,
-                "threshold": 1,
-                "owners": [{
-                    "owner": indexed_owner(2),
-                    "weight": 1,
-                }],
-            },
             "signatures": [],
         });
         let error = serde_json::from_value::<TempoSignature>(json)

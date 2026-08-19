@@ -151,6 +151,10 @@ pub enum TempoInvalidTransaction {
     #[error("failed to recover signer from KeyAuthorization signature")]
     KeyAuthorizationSignatureRecoveryFailed,
 
+    /// Keychain encoding is not valid for a key authorization signature.
+    #[error("key authorization signatures cannot use keychain encoding")]
+    InvalidKeyAuthorizationSignature,
+
     /// KeyAuthorization not signed by root account.
     ///
     /// The KeyAuthorization must be signed by the root account (transaction caller),
@@ -237,9 +241,28 @@ pub enum TempoInvalidTransaction {
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
 
-    /// Native multisig transactions are not active.
+    /// Native multisig transactions are not active on this hardfork.
     #[error("native multisig transactions are not active")]
     NativeMultisigNotActive,
+
+    /// Native multisig transaction shape or stateless policy is invalid.
+    ///
+    /// This is deterministic for the transaction payload and is treated as a bad transaction.
+    #[error("native multisig invalid transaction: {reason}")]
+    NativeMultisigInvalidTransaction {
+        /// Validation error details.
+        reason: String,
+    },
+
+    /// Native multisig state or configuration validation failed.
+    ///
+    /// This can depend on the account's current native multisig storage and is not treated as a
+    /// bad transaction.
+    #[error("native multisig validation failed: {reason}")]
+    NativeMultisigValidationFailed {
+        /// Validation error details.
+        reason: String,
+    },
 
     /// Fee payment error.
     #[error(transparent)]
@@ -307,6 +330,7 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyRecoveryFailed
             | Self::AccessKeyCannotAuthorizeOtherKeys
             | Self::KeyAuthorizationSignatureRecoveryFailed
+            | Self::InvalidKeyAuthorizationSignature
             | Self::KeyAuthorizationNotSignedByRoot { .. }
             | Self::KeychainUserAddressMismatch { .. }
             | Self::KeyAuthorizationChainIdMismatch { .. }
@@ -317,6 +341,7 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceNonceNotZero
             | Self::SubblockTransactionMustHaveZeroFee
             | Self::KeychainOpInSubblockTransaction
+            | Self::NativeMultisigInvalidTransaction { .. }
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
@@ -331,6 +356,7 @@ impl TempoInvalidTransaction {
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
             | Self::NativeMultisigNotActive
+            | Self::NativeMultisigValidationFailed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
@@ -526,6 +552,30 @@ mod tests {
         for err in cases {
             assert!(!err.is_bad_transaction(), "{err} should not be bad");
         }
+    }
+
+    #[test]
+    fn test_native_multisig_bad_transaction_classification() {
+        let invalid_shape = TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+            reason: "invalid shape".to_string(),
+        };
+        assert!(
+            invalid_shape.is_bad_transaction(),
+            "stateless native multisig shape/policy failures should be bad transactions"
+        );
+
+        let validation_failed = TempoInvalidTransaction::NativeMultisigValidationFailed {
+            reason: "below threshold".to_string(),
+        };
+        assert!(
+            !validation_failed.is_bad_transaction(),
+            "config/quorum validation can depend on native multisig account state"
+        );
+
+        assert!(
+            !TempoInvalidTransaction::NativeMultisigNotActive.is_bad_transaction(),
+            "native multisig transactions can become valid after fork activation"
+        );
     }
 
     #[test]
