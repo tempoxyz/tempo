@@ -5498,10 +5498,11 @@ fn test_t11_rpc_simulation_charges_nested_key_authorization_config() {
     test.handler
         .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
         .expect("RPC simulation should model nested key-authorization config validation");
+    // The fixed nested-account surcharge is intrinsic signature gas; this accumulator records
+    // only the state-dependent registry and complete-config reads.
     assert_eq!(
         init_gas.initial_regular_gas,
         cold_storage_read_gas
-            + NATIVE_MULTISIG_NESTED_ACCOUNT_GAS
             + native_multisig_complete_config_validation_gas(config.owners.len())
             + native_multisig_complete_config_validation_gas(nested_config.owners.len()),
     );
