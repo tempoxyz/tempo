@@ -34,19 +34,6 @@ impl NativeMultisigAuthError {
     fn validation_failed(reason: impl Into<String>) -> Self {
         Self::ValidationFailed(reason.into())
     }
-
-    fn quorum_error(err: MultisigQuorumError) -> Self {
-        match err {
-            MultisigQuorumError::SignerNotOwner | MultisigQuorumError::WeightBelowThreshold => {
-                Self::validation_failed(err.as_str())
-            }
-            MultisigQuorumError::EmptySignatures
-            | MultisigQuorumError::TooManySignatures
-            | MultisigQuorumError::ExcessSignatures
-            | MultisigQuorumError::SignersNotAscending
-            | MultisigQuorumError::WeightOverflow => Self::invalid_transaction(err.as_str()),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +47,14 @@ pub enum NativeMultisigAuthConfig<'a> {
 }
 
 impl NativeMultisigAuthConfig<'_> {
+    fn matches_signature(&self, signature: &MultisigSignature) -> bool {
+        match (self, signature.init()) {
+            (Self::Inline(expected), Some(actual)) => *expected == actual,
+            (Self::Registered { .. }, None) => true,
+            _ => false,
+        }
+    }
+
     fn invalid_owner_signature(&self) -> NativeMultisigAuthError {
         match self {
             Self::Inline(_) => {
@@ -95,9 +90,7 @@ impl NativeMultisigAuthConfig<'_> {
                 .unwrap_or_default(),
         };
         if weight == 0 {
-            return Err(NativeMultisigAuthError::quorum_error(
-                MultisigQuorumError::SignerNotOwner,
-            ));
+            return Err(self.quorum_error(MultisigQuorumError::SignerNotOwner));
         }
         Ok(weight)
     }
@@ -109,6 +102,26 @@ impl NativeMultisigAuthConfig<'_> {
                 .map(|_| ())
                 .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str())),
             Self::Registered { .. } => Ok(()),
+        }
+    }
+
+    fn quorum_error(&self, err: MultisigQuorumError) -> NativeMultisigAuthError {
+        match err {
+            MultisigQuorumError::SignerNotOwner | MultisigQuorumError::WeightBelowThreshold => {
+                NativeMultisigAuthError::validation_failed(err.as_str())
+            }
+            MultisigQuorumError::ExcessSignatures | MultisigQuorumError::SignersNotAscending
+                if matches!(self, Self::Registered { .. }) =>
+            {
+                NativeMultisigAuthError::validation_failed(err.as_str())
+            }
+            MultisigQuorumError::EmptySignatures
+            | MultisigQuorumError::TooManySignatures
+            | MultisigQuorumError::ExcessSignatures
+            | MultisigQuorumError::SignersNotAscending
+            | MultisigQuorumError::WeightOverflow => {
+                NativeMultisigAuthError::invalid_transaction(err.as_str())
+            }
         }
     }
 }
@@ -151,6 +164,11 @@ impl NativeMultisig {
             NativeMultisigAuthError,
         >,
     ) -> Result<u8, NativeMultisigAuthError> {
+        if !config.matches_signature(signature) {
+            return Err(NativeMultisigAuthError::invalid_transaction(
+                "multisig authorization config does not match signature",
+            ));
+        }
         signature
             .validate_shape()
             .map_err(NativeMultisigAuthError::invalid_transaction)?;
@@ -187,7 +205,7 @@ impl NativeMultisig {
             let weight = config.owner_weight(owner)?;
             weight_accumulator
                 .record_owner(owner, weight)
-                .map_err(NativeMultisigAuthError::quorum_error)?;
+                .map_err(|err| config.quorum_error(err))?;
 
             if let Some(nested_signature) = nested_signature {
                 if account_path.len() >= MAX_MULTISIG_NESTING_DEPTH {
@@ -219,18 +237,76 @@ impl NativeMultisig {
 
             if weight_accumulator.has_quorum() {
                 if signature_index + 1 != signature.signatures().len() {
-                    return Err(NativeMultisigAuthError::quorum_error(
-                        MultisigQuorumError::ExcessSignatures,
-                    ));
+                    return Err(config.quorum_error(MultisigQuorumError::ExcessSignatures));
                 }
                 return weight_accumulator
                     .finish()
-                    .map_err(NativeMultisigAuthError::quorum_error);
+                    .map_err(|err| config.quorum_error(err));
             }
         }
 
         weight_accumulator
             .finish()
-            .map_err(NativeMultisigAuthError::quorum_error)
+            .map_err(|err| config.quorum_error(err))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::{Address, B256, Signature};
+    use tempo_primitives::transaction::{
+        InitMultisig, MultisigOwner, MultisigSignature, TempoSignature,
+    };
+
+    use super::{NativeMultisigAuthConfig, NativeMultisigAuthError};
+    use crate::native_multisig::NativeMultisig;
+
+    fn init_config() -> InitMultisig {
+        InitMultisig {
+            salt: B256::ZERO,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: Address::repeat_byte(0x11),
+                weight: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn authorization_config_must_match_signature_address_source() {
+        let init = init_config();
+        let account = init.account().unwrap();
+        let approvals = vec![TempoSignature::from(Signature::test_signature())];
+        let inline_signature =
+            MultisigSignature::from_decoded(account, approvals.clone(), Some(init.clone()))
+                .unwrap();
+        let registered_signature =
+            MultisigSignature::from_decoded(account, approvals, None).unwrap();
+        let registered_config = NativeMultisigAuthConfig::Registered {
+            threshold: init.threshold,
+            version: 1,
+            owners: init.owners.clone(),
+        };
+
+        let verify = |signature, config| {
+            NativeMultisig::new().verify_authorization(B256::ZERO, signature, config, |_| {
+                unreachable!("mismatched config must fail before nested config loading")
+            })
+        };
+
+        for result in [
+            verify(&inline_signature, registered_config),
+            verify(
+                &registered_signature,
+                NativeMultisigAuthConfig::Inline(&init),
+            ),
+        ] {
+            assert_eq!(
+                result,
+                Err(NativeMultisigAuthError::InvalidTransaction(
+                    "multisig authorization config does not match signature".to_string()
+                ))
+            );
+        }
     }
 }
