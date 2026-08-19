@@ -197,6 +197,7 @@ impl TestExecutorBuilder {
             consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
             block_hash: None,
+            expiring_nonce_overlay: Default::default(),
         };
 
         let mut executor =

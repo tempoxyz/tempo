@@ -400,6 +400,7 @@ where
         consensus_context: None,
         subblock_fee_recipients: Default::default(),
         block_hash: None,
+        expiring_nonce_overlay: Default::default(),
     };
     let mut executor = config.create_executor(evm, ctx);
     executor

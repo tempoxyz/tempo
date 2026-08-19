@@ -1,9 +1,57 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
+use crate::ExpiringNonceEntry;
 use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::{Address, B256};
 use reth_evm::NextBlockEnvAttributes;
 use tempo_primitives::{TempoConsensusContext, subblock::PartialValidatorKey};
+
+/// Replay entries committed while constructing one local payload.
+///
+/// The block builder clones the execution context before creating the executor, so this overlay
+/// provides a direct handoff to the assembler without storing unsealed payloads in global replay
+/// history.
+#[derive(Debug, Clone, Default)]
+pub struct ExpiringNonceBlockOverlay {
+    entries: Arc<Mutex<Vec<ExpiringNonceEntry>>>,
+}
+
+impl ExpiringNonceBlockOverlay {
+    /// Publishes the entries committed by the block executor.
+    pub(crate) fn publish(&self, entries: Vec<ExpiringNonceEntry>) {
+        *self
+            .entries
+            .lock()
+            .expect("expiring nonce block overlay lock poisoned") = entries;
+    }
+
+    /// Takes the committed entries when assembling the sealed block.
+    pub(crate) fn take(&self) -> Vec<ExpiringNonceEntry> {
+        std::mem::take(
+            &mut *self
+                .entries
+                .lock()
+                .expect("expiring nonce block overlay lock poisoned"),
+        )
+    }
+
+    /// Benchmark-only access to the block overlay handoff.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    pub fn bench_publish(&self, entries: Vec<ExpiringNonceEntry>) {
+        self.publish(entries);
+    }
+
+    /// Benchmark-only access to the block overlay handoff.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    pub fn bench_take(&self) -> Vec<ExpiringNonceEntry> {
+        self.take()
+    }
+}
 
 /// Execution context for Tempo block.
 #[derive(Debug, Clone, derive_more::Deref)]
@@ -33,6 +81,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     /// Payload construction leaves this unset and records replay history when the built block is
     /// later imported.
     pub block_hash: Option<B256>,
+    /// Per-build handoff for expiring nonce entries committed by the executor.
+    pub expiring_nonce_overlay: ExpiringNonceBlockOverlay,
 }
 
 /// Context required for next block environment.
@@ -106,5 +156,19 @@ mod tests {
         assert_eq!(pending_env.shared_gas_limit, shared_gas_limit);
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
         assert!(pending_env.subblock_fee_recipients.is_empty());
+    }
+
+    #[test]
+    fn block_overlay_hands_entries_to_assembler_once() {
+        let overlay = ExpiringNonceBlockOverlay::default();
+        let entry = ExpiringNonceEntry {
+            replay_id: B256::repeat_byte(1),
+            valid_before: 300,
+        };
+
+        overlay.publish(vec![entry]);
+
+        assert_eq!(overlay.take(), vec![entry]);
+        assert!(overlay.take().is_empty());
     }
 }

@@ -17,7 +17,7 @@ pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
-pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+pub use context::{ExpiringNonceBlockOverlay, TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub mod consensus;
 #[cfg(feature = "engine")]
 mod engine;
@@ -338,6 +338,7 @@ impl ConfigureEvm for TempoEvmConfig {
             consensus_context: block.header().consensus_context,
             subblock_fee_recipients,
             block_hash: Some(block.hash()),
+            expiring_nonce_overlay: Default::default(),
         })
     }
 
@@ -366,6 +367,7 @@ impl ConfigureEvm for TempoEvmConfig {
             consensus_context: attributes.consensus_context,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
             block_hash: None,
+            expiring_nonce_overlay: Default::default(),
         })
     }
 }

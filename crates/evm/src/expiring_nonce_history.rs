@@ -1,7 +1,7 @@
-use alloy_consensus::transaction::{SignerRecoverable, TxHashRef};
+use alloy_consensus::transaction::SignerRecoverable;
 use alloy_primitives::{
     B256,
-    map::{B256Map, Entry, HashMap},
+    map::{B256Map, Entry},
 };
 use smallvec::SmallVec;
 use std::{
@@ -11,8 +11,6 @@ use std::{
 };
 use tempo_primitives::TempoTxEnvelope;
 use tracing::info;
-
-const MAX_PENDING_BLOCKS: usize = 256;
 
 /// An expiring nonce identifier and its consensus expiry timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,29 +77,12 @@ struct Anchor {
 }
 
 #[derive(Debug)]
-struct PendingBlock {
-    sequence: u64,
-    transaction_hashes: Arc<[B256]>,
-    entries: Vec<ExpiringNonceEntry>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PendingKey {
-    parent_hash: B256,
-    timestamp: u64,
-}
-
-#[derive(Debug)]
 struct HistoryInner {
     blocks: B256Map<BlockRecord>,
     blocks_by_timestamp: BTreeMap<u64, SmallVec<[B256; 2]>>,
     children: B256Map<SmallVec<[B256; 2]>>,
     inclusions: B256Map<SmallVec<[Inclusion; 1]>>,
     anchors: B256Map<Anchor>,
-    pending_blocks: HashMap<PendingKey, SmallVec<[PendingBlock; 1]>>,
-    pending_order: VecDeque<(u64, PendingKey)>,
-    next_pending_sequence: u64,
-    pending_count: usize,
     retained_identifiers: usize,
     highest_timestamp: u64,
 }
@@ -116,10 +97,6 @@ impl Default for HistoryInner {
             children: B256Map::default(),
             inclusions: B256Map::default(),
             anchors,
-            pending_blocks: HashMap::default(),
-            pending_order: VecDeque::new(),
-            next_pending_sequence: 0,
-            pending_count: 0,
             retained_identifiers: 0,
             highest_timestamp: 0,
         }
@@ -149,31 +126,6 @@ impl ExpiringNonceHistory {
             inner: Arc::new(RwLock::new(HistoryInner::default())),
             max_expiry_secs,
         }
-    }
-
-    /// Benchmark-only access to the pending payload cache.
-    #[cfg(feature = "bench")]
-    #[doc(hidden)]
-    pub fn bench_cache_pending_block(
-        &self,
-        parent_hash: B256,
-        timestamp: u64,
-        transaction_hashes: Vec<B256>,
-        entries: Vec<ExpiringNonceEntry>,
-    ) {
-        self.cache_pending_block(parent_hash, timestamp, transaction_hashes, entries);
-    }
-
-    /// Benchmark-only access to pending payload resolution.
-    #[cfg(feature = "bench")]
-    #[doc(hidden)]
-    pub fn bench_entries_for_block(
-        &self,
-        parent_hash: B256,
-        timestamp: u64,
-        transactions: &[TempoTxEnvelope],
-    ) -> Result<(Vec<ExpiringNonceEntry>, bool), ExpiringNonceHistoryError> {
-        self.entries_for_block(parent_hash, timestamp, transactions)
     }
 
     /// Builds a cache from an oldest-to-newest contiguous block sequence.
@@ -224,150 +176,6 @@ impl ExpiringNonceHistory {
             replay_id: aa.expiring_nonce_hash(sender),
             valid_before,
         }))
-    }
-
-    /// Caches the replay entries collected while building a local payload until its final block
-    /// hash is available to the assembler.
-    pub(crate) fn cache_pending_block(
-        &self,
-        parent_hash: B256,
-        timestamp: u64,
-        transaction_hashes: Vec<B256>,
-        entries: Vec<ExpiringNonceEntry>,
-    ) {
-        let key = PendingKey {
-            parent_hash,
-            timestamp,
-        };
-        debug_assert_eq!(transaction_hashes.len(), entries.len());
-        let mut inner = self
-            .inner
-            .write()
-            .expect("expiring nonce history lock poisoned");
-        if inner.pending_blocks.get(&key).is_some_and(|pending| {
-            pending
-                .iter()
-                .any(|block| block.transaction_hashes.as_ref() == transaction_hashes)
-        }) {
-            return;
-        }
-        let sequence = inner.next_pending_sequence;
-        inner.next_pending_sequence = inner.next_pending_sequence.wrapping_add(1);
-        inner
-            .pending_blocks
-            .entry(key)
-            .or_default()
-            .push(PendingBlock {
-                sequence,
-                transaction_hashes: transaction_hashes.into(),
-                entries,
-            });
-        inner.pending_count += 1;
-        inner.pending_order.push_back((sequence, key));
-        Self::trim_pending_locked(&mut inner);
-    }
-
-    /// Resolves replay entries for an assembled payload, reusing the entries collected during
-    /// execution and falling back to sender recovery when the bounded pending cache missed.
-    pub(crate) fn entries_for_block(
-        &self,
-        parent_hash: B256,
-        timestamp: u64,
-        transactions: &[TempoTxEnvelope],
-    ) -> Result<(Vec<ExpiringNonceEntry>, bool), ExpiringNonceHistoryError> {
-        let key = PendingKey {
-            parent_hash,
-            timestamp,
-        };
-        let candidates = self
-            .inner
-            .read()
-            .expect("expiring nonce history lock poisoned")
-            .pending_blocks
-            .get(&key)
-            .map(|pending| {
-                pending
-                    .iter()
-                    .map(|block| (block.sequence, Arc::clone(&block.transaction_hashes)))
-                    .collect::<SmallVec<[_; 1]>>()
-            })
-            .unwrap_or_default();
-        let matching_sequence = candidates
-            .iter()
-            .find(|(_, transaction_hashes)| Self::pending_matches(transaction_hashes, transactions))
-            .map(|(sequence, _)| *sequence);
-        if let Some(sequence) = matching_sequence {
-            let mut inner = self
-                .inner
-                .write()
-                .expect("expiring nonce history lock poisoned");
-            if let Some(pending) = Self::remove_pending_locked(&mut inner, key, sequence) {
-                Self::trim_pending_locked(&mut inner);
-                return Ok((pending.entries, true));
-            }
-        }
-
-        let entries = transactions
-            .iter()
-            .filter_map(|tx| Self::entry_from_transaction(tx).transpose())
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((entries, false))
-    }
-
-    fn pending_matches(transaction_hashes: &[B256], transactions: &[TempoTxEnvelope]) -> bool {
-        transactions
-            .iter()
-            .filter_map(|tx| {
-                tx.as_aa()
-                    .is_some_and(|aa| aa.tx().is_expiring_nonce_tx())
-                    .then_some(*tx.tx_hash())
-            })
-            .eq(transaction_hashes.iter().copied())
-    }
-
-    fn remove_pending_locked(
-        inner: &mut HistoryInner,
-        key: PendingKey,
-        sequence: u64,
-    ) -> Option<PendingBlock> {
-        let (pending, remove_key) = {
-            let blocks = inner.pending_blocks.get_mut(&key)?;
-            let position = blocks.iter().position(|block| block.sequence == sequence)?;
-            let pending = blocks.swap_remove(position);
-            (pending, blocks.is_empty())
-        };
-        if remove_key {
-            inner.pending_blocks.remove(&key);
-        }
-        inner.pending_count -= 1;
-        Some(pending)
-    }
-
-    fn trim_pending_locked(inner: &mut HistoryInner) {
-        while let Some(&(sequence, key)) = inner.pending_order.front() {
-            let is_live = inner
-                .pending_blocks
-                .get(&key)
-                .is_some_and(|pending| pending.iter().any(|block| block.sequence == sequence));
-            if is_live && inner.pending_count <= MAX_PENDING_BLOCKS {
-                break;
-            }
-            inner.pending_order.pop_front();
-            if is_live {
-                Self::remove_pending_locked(inner, key, sequence);
-            }
-        }
-
-        // Out-of-order payload completion can leave tombstones behind a live entry. Compact only
-        // when those tombstones grow large enough, keeping the common in-order path O(1).
-        if inner.pending_order.len() > MAX_PENDING_BLOCKS * 2 {
-            inner.pending_order.retain(|(sequence, key)| {
-                inner
-                    .pending_blocks
-                    .get(key)
-                    .is_some_and(|pending| pending.iter().any(|block| block.sequence == *sequence))
-            });
-        }
     }
 
     /// Records a block and its replay identifiers.
@@ -904,22 +712,5 @@ mod tests {
 
         assert!(!history.contains(hash(1), hash(9), 350).unwrap());
         assert!(history.contains(hash(1), hash(9), 200).unwrap());
-    }
-
-    #[test]
-    fn consumes_pending_local_block_entries() {
-        let history = ExpiringNonceHistory::new(300);
-        history.cache_pending_block(hash(1), 100, Vec::new(), Vec::new());
-
-        let (entries, pending_cache_hit) = history
-            .entries_for_block(hash(1), 100, &[])
-            .expect("pending entries should resolve");
-        assert!(pending_cache_hit);
-        assert!(entries.is_empty());
-
-        let (_, pending_cache_hit) = history
-            .entries_for_block(hash(1), 100, &[])
-            .expect("empty blocks can be reconstructed without recovery");
-        assert!(!pending_cache_hit);
     }
 }

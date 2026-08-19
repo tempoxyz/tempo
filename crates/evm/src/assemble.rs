@@ -51,6 +51,7 @@ impl TempoBlockAssembler {
                     consensus_context,
                     subblock_fee_recipients: _,
                     block_hash: _,
+                    expiring_nonce_overlay,
                 },
             parent,
             transactions,
@@ -65,10 +66,7 @@ impl TempoBlockAssembler {
         let parent_hash = inner.parent_hash;
         let block_timestamp = evm_env.block_env.inner.timestamp.to::<u64>();
         let entry_resolution_started = Instant::now();
-        let (expiring_nonce_entries, pending_cache_hit) = self
-            .expiring_nonce_history
-            .entries_for_block(parent_hash, block_timestamp, &transactions)
-            .map_err(|err| BlockExecutionError::msg(err.to_string()))?;
+        let expiring_nonce_entries = expiring_nonce_overlay.take();
         let entry_resolution_elapsed = entry_resolution_started.elapsed();
 
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
@@ -119,7 +117,6 @@ impl TempoBlockAssembler {
             block_timestamp,
             transaction_count = block.body.transactions.len(),
             entry_count,
-            pending_cache_hit,
             ?entry_resolution_elapsed,
             record_elapsed = ?record_started.elapsed(),
             "indexed assembled block into expiring nonce history"
@@ -238,6 +235,7 @@ mod tests {
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
             block_hash: None,
+            expiring_nonce_overlay: Default::default(),
         };
 
         let tx = create_legacy_tx();
@@ -356,6 +354,7 @@ mod tests {
             consensus_context: Some(ctx),
             subblock_fee_recipients: HashMap::new(),
             block_hash: None,
+            expiring_nonce_overlay: Default::default(),
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -439,6 +438,7 @@ mod tests {
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
             block_hash: None,
+            expiring_nonce_overlay: Default::default(),
         };
 
         let transactions = vec![create_legacy_tx()];

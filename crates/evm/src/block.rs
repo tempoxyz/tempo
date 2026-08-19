@@ -108,8 +108,6 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
-    /// Hash of the transaction that produced this result.
-    tx_hash: B256,
     /// Expiring nonce consumed by this transaction, if any.
     expiring_nonce_entry: Option<ExpiringNonceEntry>,
 }
@@ -136,7 +134,6 @@ impl TempoTxResult {
             tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
             block_gas_used,
             validator_fee,
-            tx_hash: *tx.tx_hash(),
             expiring_nonce_entry: None,
         }
     }
@@ -202,8 +199,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
 
     expiring_nonce_history: ExpiringNonceHistory,
     block_expiring_nonce_entries: Vec<ExpiringNonceEntry>,
-    /// Transaction hashes are only needed to match a locally built payload during assembly.
-    block_expiring_nonce_hashes: Option<Vec<B256>>,
+    expiring_nonce_overlay: crate::ExpiringNonceBlockOverlay,
     block_expiring_nonce_ids: B256HashSet,
     parent_hash: B256,
     block_hash: Option<B256>,
@@ -224,7 +220,7 @@ where
         let parent_hash = ctx.inner.parent_hash;
         let block_hash = ctx.block_hash;
         let block_timestamp = evm.block().timestamp.to::<u64>();
-        let block_expiring_nonce_hashes = block_hash.is_none().then(Vec::new);
+        let expiring_nonce_overlay = ctx.expiring_nonce_overlay.clone();
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
@@ -244,7 +240,7 @@ where
             replay_state: StorageActionReplayState::default(),
             expiring_nonce_history,
             block_expiring_nonce_entries: Vec::new(),
-            block_expiring_nonce_hashes,
+            expiring_nonce_overlay,
             block_expiring_nonce_ids: B256HashSet::default(),
             parent_hash,
             block_hash,
@@ -780,7 +776,6 @@ where
                 .then(|| recovered.tx().clone()),
             block_gas_used,
             validator_fee,
-            tx_hash: *recovered.tx().tx_hash(),
             expiring_nonce_entry,
         })
     }
@@ -793,7 +788,6 @@ where
             tx,
             block_gas_used,
             validator_fee: _,
-            tx_hash,
             expiring_nonce_entry,
         } = output;
 
@@ -838,9 +832,6 @@ where
         self.replay_state.commit_tx_changes();
         if let Some(entry) = expiring_nonce_entry {
             self.block_expiring_nonce_entries.push(entry);
-            if let Some(transaction_hashes) = &mut self.block_expiring_nonce_hashes {
-                transaction_hashes.push(tx_hash);
-            }
         }
 
         gas_output
@@ -877,13 +868,8 @@ where
                     entries: self.block_expiring_nonce_entries,
                 });
         } else {
-            self.expiring_nonce_history.cache_pending_block(
-                self.parent_hash,
-                self.block_timestamp,
-                self.block_expiring_nonce_hashes
-                    .expect("locally built blocks retain expiring transaction hashes"),
-                self.block_expiring_nonce_entries,
-            );
+            self.expiring_nonce_overlay
+                .publish(self.block_expiring_nonce_entries);
         }
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
@@ -1692,7 +1678,6 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx.tx_hash(),
             expiring_nonce_entry: None,
         };
 
@@ -1845,7 +1830,6 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx.tx_hash(),
             expiring_nonce_entry: None,
         };
 
@@ -1887,7 +1871,6 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx1.tx_hash(),
             expiring_nonce_entry: None,
         };
         executor.commit_transaction(output1);
@@ -1913,7 +1896,6 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx2.tx_hash(),
             expiring_nonce_entry: None,
         };
         executor.commit_transaction(output2);
@@ -1978,7 +1960,6 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx.tx_hash(),
             expiring_nonce_entry: None,
         };
         executor.commit_transaction(output);
@@ -2026,7 +2007,6 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx.tx_hash(),
             expiring_nonce_entry: None,
         };
         executor.commit_transaction(output);
@@ -2077,7 +2057,6 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
-            tx_hash: *tx.tx_hash(),
             expiring_nonce_entry: None,
         };
         executor.commit_transaction(output);
