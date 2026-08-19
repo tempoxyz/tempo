@@ -18,15 +18,6 @@ use tempo_primitives::{
     },
 };
 
-/// Non-zero transaction identifier used only for RPC simulations.
-///
-/// RPC requests are not final signed transactions, so gas filling and other request normalization
-/// can make a simulated signing payload differ from the eventual submitted transaction. Use a
-/// fixed sentinel instead of deriving a misleading transaction identifier from the simulated
-/// payload.
-pub const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 =
-    B256::new(*b"TEMPO_RPC_SIMULATION_UNIQUE_TXID");
-
 /// Tempo transaction environment for AA features.
 #[derive(Debug, Clone, Default)]
 pub struct TempoBatchCallEnv {
@@ -470,7 +461,6 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
         // Reth wraps eth_simulateV1 transactions with an empty encoding before execution.
         if encoded.is_empty() {
             tx_env.execution_context = ExecutionContext::Simulation;
-            tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         }
         tx_env
     }
@@ -673,25 +663,42 @@ mod tests {
     #[test]
     fn test_empty_encoded_tx_marks_rpc_block_simulation() {
         let account = Address::repeat_byte(0xAA);
-        let tx = tempo_primitives::transaction::TempoTransaction {
-            chain_id: 1,
-            gas_limit: 100_000,
-            calls: vec![create_call(TxKind::Call(Address::repeat_byte(0x42)))],
-            ..Default::default()
+        let make_envelope = |nonce| {
+            let tx = tempo_primitives::transaction::TempoTransaction {
+                chain_id: 1,
+                gas_limit: 100_000,
+                calls: vec![create_call(TxKind::Call(Address::repeat_byte(0x42)))],
+                nonce,
+                ..Default::default()
+            };
+            let signature = TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![Bytes::from_static(&[0xAA; 65])],
+                None,
+            ));
+            TempoTxEnvelope::AA(AASigned::new_unhashed(tx, signature))
         };
-        let signature = TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            vec![Bytes::from_static(&[0xAA; 65])],
-            None,
-        ));
-        let envelope = TempoTxEnvelope::AA(AASigned::new_unhashed(tx, signature));
+        let envelope = make_envelope(0);
+        let expected_identifier = envelope.unique_tx_identifier(account);
 
         let tx_env = TempoTxEnv::from_encoded_tx(&envelope, account, Bytes::new());
 
         assert_eq!(tx_env.execution_context(), ExecutionContext::Simulation);
         assert_eq!(
             tx_env.channel_open_context_hash(),
-            Some(super::RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
+            Some(expected_identifier)
+        );
+
+        let next_envelope = make_envelope(1);
+        let next_tx_env = TempoTxEnv::from_encoded_tx(&next_envelope, account, Bytes::new());
+        assert_eq!(
+            next_tx_env.execution_context(),
+            ExecutionContext::Simulation
+        );
+        assert_ne!(
+            next_tx_env.channel_open_context_hash(),
+            tx_env.channel_open_context_hash(),
+            "distinct simulated transactions must retain distinct replay identities"
         );
     }
 

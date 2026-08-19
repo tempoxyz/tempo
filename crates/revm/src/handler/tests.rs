@@ -131,7 +131,12 @@ struct TestHandlerEvm {
 
 impl TestHandlerEvm {
     fn tx(spec: TempoHardfork, configure_tx_env: impl FnOnce(&mut TempoTxEnv)) -> Self {
-        let mut tx_env = TempoTxEnv::default();
+        let mut tx_env = TempoTxEnv {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
+            ..Default::default()
+        };
         configure_tx_env(&mut tx_env);
         Self::new(spec, tx_env)
     }
@@ -142,6 +147,9 @@ impl TestHandlerEvm {
         configure_tx_env: impl FnOnce(&mut TempoTxEnv),
     ) -> Self {
         let mut tx_env = TempoTxEnv {
+            execution_context: ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
             tempo_tx_env: Some(Box::new(aa_env)),
             ..Default::default()
         };
@@ -5288,7 +5296,7 @@ fn test_t11_rpc_simulation_skips_registered_multisig_owner_verification() {
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.inner.kind = TxKind::Call(Address::random());
-        tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        tx_env.execution_context = ExecutionContext::Simulation;
     });
     store_native_multisig_account(&mut test, &config);
 
@@ -5339,7 +5347,7 @@ fn test_t11_rpc_simulation_charges_nested_key_authorization_config() {
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
         tx_env.inner.kind = TxKind::Call(Address::random());
-        tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        tx_env.execution_context = ExecutionContext::Simulation;
     });
     store_native_multisig_account(&mut test, &config);
     store_native_multisig_account(&mut test, &nested_config);

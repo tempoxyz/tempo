@@ -999,7 +999,7 @@ mod tests {
         })?;
 
         let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, account);
-        tx_env.unique_tx_identifier = Some(crate::RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        tx_env.execution_context = crate::ExecutionContext::Simulation;
 
         // Gas estimation transacts repeatedly on one EVM, discarding each
         // result. The discarded bootstrap must not poison later iterations.

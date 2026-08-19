@@ -66,8 +66,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    ProtocolFeeContext, RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, TempoBatchCallEnv, TempoEvm,
-    TempoInvalidTransaction,
+    ExecutionContext, ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
@@ -1066,8 +1065,7 @@ where
             || has_authorization_list;
 
         if spec.is_t11() && requires_native_multisig_state {
-            let is_rpc_simulation =
-                tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+            let is_rpc_simulation = tx.execution_context() == ExecutionContext::Simulation;
             let validates_caller_multisig = outer_multisig_signature.is_some()
                 || key_authorization_multisig_signature
                     .is_some_and(|signature| signature.account() == tx.caller());
