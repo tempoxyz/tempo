@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, B256};
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigQuorumError, MultisigSignature,
-    MultisigWeightAccumulator, TempoSignature,
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigOwner, MultisigQuorumError,
+    MultisigSignature, MultisigWeightAccumulator, TempoSignature,
 };
 
 use super::NativeMultisig;
@@ -49,18 +49,18 @@ impl NativeMultisigAuthError {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum NativeMultisigAuthConfig<'a> {
     Inline(&'a InitMultisig),
     Registered {
-        account: Address,
         threshold: u8,
         version: u64,
+        owners: Vec<MultisigOwner>,
     },
 }
 
 impl NativeMultisigAuthConfig<'_> {
-    fn invalid_owner_signature(self) -> NativeMultisigAuthError {
+    fn invalid_owner_signature(&self) -> NativeMultisigAuthError {
         match self {
             Self::Inline(_) => {
                 NativeMultisigAuthError::invalid_transaction("invalid multisig owner signature")
@@ -71,28 +71,28 @@ impl NativeMultisigAuthConfig<'_> {
         }
     }
 
-    fn threshold(self) -> u8 {
+    fn threshold(&self) -> u8 {
         match self {
             Self::Inline(config) => config.threshold,
-            Self::Registered { threshold, .. } => threshold,
+            Self::Registered { threshold, .. } => *threshold,
         }
     }
 
-    fn version(self) -> u64 {
+    fn version(&self) -> u64 {
         match self {
             Self::Inline(_) => 0,
-            Self::Registered { version, .. } => version,
+            Self::Registered { version, .. } => *version,
         }
     }
 
-    fn owner_weight(
-        self,
-        owner: Address,
-        load_owner_weight: &mut impl FnMut(Address, Address) -> Result<u8, NativeMultisigAuthError>,
-    ) -> Result<u8, NativeMultisigAuthError> {
+    fn owner_weight(&self, owner: Address) -> Result<u8, NativeMultisigAuthError> {
         let weight = match self {
             Self::Inline(config) => config.owner_weight(owner).unwrap_or_default(),
-            Self::Registered { account, .. } => load_owner_weight(account, owner)?,
+            Self::Registered { owners, .. } => owners
+                .binary_search_by_key(&owner, |configured| configured.owner)
+                .ok()
+                .map(|index| owners[index].weight)
+                .unwrap_or_default(),
         };
         if weight == 0 {
             return Err(NativeMultisigAuthError::quorum_error(
@@ -102,7 +102,7 @@ impl NativeMultisigAuthConfig<'_> {
         Ok(weight)
     }
 
-    fn validate(self) -> Result<(), NativeMultisigAuthError> {
+    fn validate(&self) -> Result<(), NativeMultisigAuthError> {
         match self {
             Self::Inline(config) => config
                 .validate()
@@ -122,9 +122,10 @@ impl NativeMultisig {
         config: NativeMultisigAuthConfig<'_>,
         mut load_threshold_and_version: impl FnMut(
             Address,
-        )
-            -> Result<(u8, u64), NativeMultisigAuthError>,
-        mut load_owner_weight: impl FnMut(Address, Address) -> Result<u8, NativeMultisigAuthError>,
+        ) -> Result<
+            (u8, u64, Vec<MultisigOwner>),
+            NativeMultisigAuthError,
+        >,
     ) -> Result<(), NativeMultisigAuthError> {
         let mut account_path = vec![signature.account()];
         self.verify_authorization_inner(
@@ -133,7 +134,6 @@ impl NativeMultisig {
             config,
             &mut account_path,
             &mut load_threshold_and_version,
-            &mut load_owner_weight,
         )
         .map(|_| ())
     }
@@ -146,9 +146,10 @@ impl NativeMultisig {
         account_path: &mut Vec<Address>,
         load_threshold_and_version: &mut impl FnMut(
             Address,
-        )
-            -> Result<(u8, u64), NativeMultisigAuthError>,
-        load_owner_weight: &mut impl FnMut(Address, Address) -> Result<u8, NativeMultisigAuthError>,
+        ) -> Result<
+            (u8, u64, Vec<MultisigOwner>),
+            NativeMultisigAuthError,
+        >,
     ) -> Result<u8, NativeMultisigAuthError> {
         signature
             .validate_shape()
@@ -183,7 +184,7 @@ impl NativeMultisig {
                 }
             };
 
-            let weight = config.owner_weight(owner, load_owner_weight)?;
+            let weight = config.owner_weight(owner)?;
             weight_accumulator
                 .record_owner(owner, weight)
                 .map_err(NativeMultisigAuthError::quorum_error)?;
@@ -200,19 +201,18 @@ impl NativeMultisig {
                     ));
                 }
 
-                let (threshold, version) = load_threshold_and_version(owner)?;
+                let (threshold, version, owners) = load_threshold_and_version(owner)?;
                 account_path.push(owner);
                 self.verify_authorization_inner(
                     digest,
                     nested_signature,
                     NativeMultisigAuthConfig::Registered {
-                        account: owner,
                         threshold,
                         version,
+                        owners,
                     },
                     account_path,
                     load_threshold_and_version,
-                    load_owner_weight,
                 )?;
                 account_path.pop();
             }
