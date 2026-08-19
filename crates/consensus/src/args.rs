@@ -492,11 +492,14 @@ mod tests {
         // gate on `--consensus.signing-key`. These args live in the outer
         // binary's CLI struct; we re-declare them here just so clap can
         // resolve the references during parse-time validation.
+        //
+        // NOTE(re #[allow(dead_code)]): those are explicitly allow(dead_code) due to the fact that
+        // those trigger rust-analyzer warnings otherwise.
         #[arg(long = "follow")]
-        #[expect(dead_code)]
+        #[allow(dead_code)]
         follow: Option<String>,
         #[arg(long = "dev")]
-        #[expect(dead_code)]
+        #[allow(dead_code)]
         dev: bool,
 
         #[command(flatten)]
