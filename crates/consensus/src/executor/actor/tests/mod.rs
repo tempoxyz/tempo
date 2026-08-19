@@ -1,12 +1,13 @@
 use alloy_primitives::B256;
 use commonware_consensus::types::{Height, Round};
 use futures::executor::block_on;
+use reth_stages_types::StageCheckpoint;
 
 use commonware_consensus::Heightable as _;
 
 use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
-    notarized_tree::LocalState, queue_consensus_request,
+    notarized_tree::LocalState, queue_consensus_request, synced_pipeline_checkpoint,
 };
 use crate::consensus::Digest;
 
@@ -22,6 +23,29 @@ mod scheduling;
 mod verify;
 
 use harness::{make_block, round};
+
+#[test]
+fn pipeline_checkpoints_only_sync_at_the_same_height() {
+    assert_eq!(
+        synced_pipeline_checkpoint(
+            Some(StageCheckpoint::new(10)),
+            Some(StageCheckpoint::new(10)),
+        ),
+        Some(10)
+    );
+    assert_eq!(
+        synced_pipeline_checkpoint(
+            Some(StageCheckpoint::new(11)),
+            Some(StageCheckpoint::new(10)),
+        ),
+        None
+    );
+    assert_eq!(
+        synced_pipeline_checkpoint(Some(StageCheckpoint::new(10)), None),
+        None
+    );
+    assert_eq!(synced_pipeline_checkpoint(None, None), None);
+}
 
 #[test]
 fn execution_task_finishes_with_an_outcome() {

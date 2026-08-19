@@ -38,6 +38,7 @@ use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
+use reth_stages_types::{StageCheckpoint, StageId};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
@@ -580,6 +581,10 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
+    fn stage_checkpoint(&self, _stage: StageId) -> eyre::Result<Option<StageCheckpoint>> {
+        Ok(Some(StageCheckpoint::new(0)))
+    }
+
     fn finalized_num_hash(&self) -> BlockNumHash {
         self.inner
             .state

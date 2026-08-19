@@ -11,7 +11,10 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
-use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use reth_provider::{
+    BlockHashReader as _, BlockReader as _, BlockSource, StageCheckpointReader as _,
+};
+use reth_stages_types::{StageCheckpoint, StageId};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::sync::oneshot;
@@ -37,6 +40,9 @@ use crate::consensus::{Digest, block::Block};
 /// Implementations are cheap-clone handles: clones are moved into the
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
+    /// Returns the persisted checkpoint for a reth pipeline stage.
+    fn stage_checkpoint(&self, stage: StageId) -> eyre::Result<Option<StageCheckpoint>>;
+
     /// The execution layer's finalized block, falling back to genesis if no
     /// block has been explicitly finalized yet.
     fn finalized_num_hash(&self) -> BlockNumHash;
@@ -99,6 +105,12 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
+    fn stage_checkpoint(&self, stage: StageId) -> eyre::Result<Option<StageCheckpoint>> {
+        self.provider
+            .get_stage_checkpoint(stage)
+            .map_err(Into::into)
+    }
+
     fn finalized_num_hash(&self) -> BlockNumHash {
         self.provider
             .canonical_in_memory_state()
