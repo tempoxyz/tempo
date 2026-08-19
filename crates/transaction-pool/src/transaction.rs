@@ -225,7 +225,7 @@ impl TempoPooledTransaction {
     /// can invalidate an already-pooled transaction. All of them must be matched against on-chain
     /// config changes when deciding eviction. Recursion is bounded by `MAX_MULTISIG_NESTING_DEPTH`,
     /// which is enforced at decode time.
-    pub fn multisig_accounts(&self) -> Vec<Address> {
+    pub(crate) fn multisig_accounts(&self) -> Vec<Address> {
         fn collect(sig: &MultisigSignature, out: &mut Vec<Address>) {
             out.push(sig.account());
             for approval in sig.signatures() {
@@ -254,7 +254,7 @@ impl TempoPooledTransaction {
 
     /// Returns identities whose later native multisig initialization would invalidate this
     /// transaction's use of a registry-restricted role.
-    pub fn multisig_registry_dependencies(&self) -> Vec<Address> {
+    pub(crate) fn multisig_registry_dependencies(&self) -> Vec<Address> {
         let mut accounts = Vec::new();
 
         if let Some(aa_tx) = self.inner().as_aa() {
