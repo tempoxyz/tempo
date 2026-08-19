@@ -1,9 +1,6 @@
 use crate::rpc::{
     TempoHeaderResponse, TempoTransactionRequest,
-    revm_compat::{
-        create_mock_native_multisig_sig, create_mock_native_multisig_sig_for_account,
-        create_mock_native_multisig_sig_from_hint,
-    },
+    revm_compat::create_mock_native_multisig_sig_for_request,
 };
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
@@ -16,35 +13,20 @@ use reth_rpc_convert::{
 use reth_rpc_eth_types::EthApiError;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{SignatureType, TempoHeader, TempoTxEnvelope, TempoTxType};
 use tempo_revm::TempoTxEnv;
+
+#[cfg(test)]
+use tempo_primitives::TempoSignature;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
             TempoTxType::AA => {
                 let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
-                let signature = if let Some(hint) = self.multisig_simulation_hint.as_ref() {
-                    create_mock_native_multisig_sig_from_hint(
-                        hint,
-                        self.multisig_init.as_ref(),
-                        false,
-                    )
+                let signature = create_mock_native_multisig_sig_for_request(&self, &key_type)
                     .map_err(|err| ValueError::new(self.clone(), err))?
-                } else if let Some(init) = self.multisig_init.as_ref() {
-                    create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
-                        .map_err(|err| ValueError::new(self.clone(), err))?
-                } else if let Some(signature_count) = self.multisig_signature_count {
-                    create_mock_native_multisig_sig_for_account(
-                        self.inner.from.unwrap_or_default(),
-                        signature_count,
-                        &key_type,
-                        self.key_data.as_ref(),
-                    )
-                    .map_err(|err| ValueError::new(self.clone(), err))?
-                } else {
-                    TempoSignature::default()
-                };
+                    .unwrap_or_default();
                 let tx = self.build_aa()?;
 
                 Ok(tx.into_signed(signature).into())

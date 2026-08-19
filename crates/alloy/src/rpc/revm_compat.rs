@@ -48,29 +48,17 @@ impl TempoTransactionRequest {
         };
 
         let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
-        let mock_signature = if let Some(hint) = self.multisig_simulation_hint.as_ref() {
-            create_mock_native_multisig_sig_from_hint(hint, self.multisig_init.as_ref(), false)
-                .map_err(|err| ValueError::new(self.clone(), err))?
-        } else if let Some(init) = self.multisig_init.as_ref() {
-            create_mock_native_multisig_sig(init, &key_type, self.key_data.as_ref())
-                .map_err(|err| ValueError::new(self.clone(), err))?
-        } else if let Some(signature_count) = self.multisig_signature_count {
-            create_mock_native_multisig_sig_for_account(
-                caller_addr,
-                signature_count,
-                &key_type,
-                self.key_data.as_ref(),
-            )
+        let mock_signature = create_mock_native_multisig_sig_for_request(&self, &key_type)
             .map_err(|err| ValueError::new(self.clone(), err))?
-        } else {
-            create_mock_tempo_sig(
-                &key_type,
-                self.key_data.as_ref(),
-                self.key_id,
-                caller_addr,
-                is_t1c,
-            )
-        };
+            .unwrap_or_else(|| {
+                create_mock_tempo_sig(
+                    &key_type,
+                    self.key_data.as_ref(),
+                    self.key_id,
+                    caller_addr,
+                    is_t1c,
+                )
+            });
 
         let Self {
             inner,
@@ -130,6 +118,27 @@ impl TempoTransactionRequest {
     }
 }
 
+pub(super) fn create_mock_native_multisig_sig_for_request(
+    request: &TempoTransactionRequest,
+    key_type: &SignatureType,
+) -> Result<Option<TempoSignature>, &'static str> {
+    if let Some(hint) = request.multisig_simulation_hint.as_ref() {
+        create_mock_native_multisig_sig_from_hint(hint, request.multisig_init.as_ref()).map(Some)
+    } else if let Some(init) = request.multisig_init.as_ref() {
+        create_mock_native_multisig_sig(init, key_type, request.key_data.as_ref()).map(Some)
+    } else if let Some(signature_count) = request.multisig_signature_count {
+        create_mock_native_multisig_sig_for_account(
+            request.inner.from.unwrap_or_default(),
+            signature_count,
+            key_type,
+            request.key_data.as_ref(),
+        )
+        .map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 pub(super) fn create_mock_native_multisig_sig(
     init: &tempo_primitives::transaction::InitMultisig,
     key_type: &SignatureType,
@@ -172,6 +181,13 @@ pub(super) fn create_mock_native_multisig_sig_for_account(
 pub(super) fn create_mock_native_multisig_sig_from_hint(
     hint: &MultisigSimulationHint,
     init: Option<&tempo_primitives::transaction::InitMultisig>,
+) -> Result<TempoSignature, &'static str> {
+    create_mock_native_multisig_sig_from_hint_inner(hint, init, false)
+}
+
+fn create_mock_native_multisig_sig_from_hint_inner(
+    hint: &MultisigSimulationHint,
+    init: Option<&tempo_primitives::transaction::InitMultisig>,
     attach_config_validation_gas: bool,
 ) -> Result<TempoSignature, &'static str> {
     use tempo_primitives::transaction::MultisigSignature;
@@ -190,7 +206,7 @@ pub(super) fn create_mock_native_multisig_sig_from_hint(
                 create_conservative_native_multisig_primitive_signature(),
             )),
             MultisigSimulationApproval::Multisig(nested) => {
-                create_mock_native_multisig_sig_from_hint(nested, None, true)
+                create_mock_native_multisig_sig_from_hint_inner(nested, None, true)
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
