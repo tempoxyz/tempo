@@ -9,12 +9,41 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, InitMultisig, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
 use crate::TempoNetwork;
+
+/// Native multisig approval shape inferred from state for RPC simulation.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MultisigSimulationHint {
+    /// Account authorized by this signature node.
+    pub account: Address,
+    /// Number of owners in the account's complete stored configuration.
+    pub owner_count: usize,
+    /// Owner approvals required to reach this account's threshold.
+    pub approvals: Vec<MultisigSimulationApproval>,
+}
+
+/// Native multisig owner approval inferred from state for RPC simulation.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigSimulationApproval {
+    /// Primitive owner signature with an exact per-approval simulation hint.
+    Primitive {
+        /// Signature verification algorithm used by this owner approval.
+        key_type: SignatureType,
+        /// Optional signature-specific gas-estimation data.
+        key_data: Option<Bytes>,
+    },
+    /// Primitive owner whose signature scheme is unavailable from stored configuration.
+    UnknownPrimitive,
+    /// Nested native multisig owner signature.
+    Multisig(Box<MultisigSimulationHint>),
+}
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
 #[derive(
@@ -80,6 +109,19 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
+    /// Initial native multisig config for bootstrapping a derived account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_init: Option<InitMultisig>,
+
+    /// Number of native multisig owner signatures to model during RPC simulation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_signature_count: Option<usize>,
+
+    /// Native multisig approval tree inferred from state for RPC simulation.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub multisig_simulation_hint: Option<MultisigSimulationHint>,
+
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
     ///
@@ -119,6 +161,9 @@ impl TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
+            || self.multisig_init.is_some()
+            || self.multisig_signature_count.is_some()
+            || self.multisig_simulation_hint.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -461,6 +506,9 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            multisig_init: None,
+            multisig_signature_count: None,
+            multisig_simulation_hint: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -470,7 +518,15 @@ impl From<TempoTransaction> for TempoTransactionRequest {
 
 impl From<AASigned> for TempoTransactionRequest {
     fn from(value: AASigned) -> Self {
-        value.into_parts().0.into()
+        let (tx, signature, _) = value.into_parts();
+        let multisig = signature.as_multisig();
+        let multisig_init = multisig.and_then(|multisig| multisig.init().cloned());
+        let multisig_signature_count = multisig.map(|multisig| multisig.signature_count());
+        Self {
+            multisig_init,
+            multisig_signature_count,
+            ..tx.into()
+        }
     }
 }
 
