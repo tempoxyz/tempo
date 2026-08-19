@@ -25,7 +25,8 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM, NATIVE_MULTISIG_ADDRESS};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, account_keychain::getTransactionKeyCall,
-    storage::ContractStorage, test_util::TIP20Setup, tip_fee_manager::TipFeeManager,
+    native_multisig::RegisteredMultisigConfig, storage::ContractStorage, test_util::TIP20Setup,
+    tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
     Call, InitMultisig, KeyAuthorization, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
@@ -5958,6 +5959,17 @@ fn test_t11_registered_native_multisig_rejects_keychain_owner_approval_as_bad_tr
     assert!(err.is_bad_transaction());
 }
 
+fn registered_multisig_auth_config(
+    config: &InitMultisig,
+    version: u64,
+) -> NativeMultisigAuthConfig<'static> {
+    NativeMultisigAuthConfig::Registered(RegisteredMultisigConfig {
+        threshold: config.threshold,
+        version,
+        owners: config.owners.clone(),
+    })
+}
+
 #[test]
 fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction() {
     use alloy_signer::SignerSync;
@@ -6043,11 +6055,7 @@ fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction(
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
         &signature,
-        NativeMultisigAuthConfig::Registered {
-            threshold: config.threshold,
-            version: 1,
-            owners: config.owners,
-        },
+        registered_multisig_auth_config(&config, 1),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
     );
     assert!(matches!(
@@ -6104,11 +6112,7 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
         &registered_signature,
-        NativeMultisigAuthConfig::Registered {
-            threshold: config.threshold,
-            version: 1,
-            owners: config.owners,
-        },
+        registered_multisig_auth_config(&config, 1),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
     );
     assert!(
@@ -6146,11 +6150,7 @@ fn native_multisig_authorization_binds_registered_config_version() {
         NativeMultisig::new().verify_authorization(
             signature_hash,
             signature,
-            NativeMultisigAuthConfig::Registered {
-                threshold: 1,
-                version: 1,
-                owners: config.owners.clone(),
-            },
+            registered_multisig_auth_config(&config, 1),
             |_| unreachable!("primitive owner approvals should not load nested configs"),
         )
     };
@@ -6206,11 +6206,7 @@ fn native_multisig_authorization_classifies_stale_p256_by_config_source() {
         NativeMultisig::new().verify_authorization(
             signature_hash,
             signature,
-            NativeMultisigAuthConfig::Registered {
-                threshold: 1,
-                version: 1,
-                owners: config.owners.clone(),
-            },
+            registered_multisig_auth_config(&config, 1),
             |_| unreachable!("primitive owner approvals should not load nested configs"),
         )
     };
@@ -6317,11 +6313,7 @@ fn native_multisig_authorization_rejects_trailing_owner_approvals() {
     let result = NativeMultisig::new().verify_authorization(
         signature_hash,
         &signature,
-        NativeMultisigAuthConfig::Registered {
-            threshold: config.threshold,
-            version: 1,
-            owners: config.owners,
-        },
+        registered_multisig_auth_config(&config, 1),
         |_| unreachable!("primitive owner approvals should not load nested configs"),
     );
     assert!(matches!(
