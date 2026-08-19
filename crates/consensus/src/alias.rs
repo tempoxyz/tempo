@@ -8,7 +8,7 @@ pub(crate) mod marshal {
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
+        marshal::{self, core, standard::Standard, store::Blocks as _},
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -135,6 +135,16 @@ pub(crate) mod marshal {
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
 
+        let finalized_blocks = storage::init_finalized_blocks(
+            &context,
+            &config.partition_prefix,
+            page_cache.clone(),
+            execution_node.provider.clone(),
+            config.finalized_blocks_retention,
+        )
+        .await
+        .wrap_err("failed to initialize hybrid finalized blocks store")?;
+
         let FinalizationRange {
             floor: finalized_floor,
             tip: finalized_tip,
@@ -157,20 +167,12 @@ pub(crate) mod marshal {
                 &mut context,
                 &config.epoch_strategy,
                 &config.scheme_provider,
+                &finalized_blocks,
                 &execution_node,
                 (finalized_floor.0, finalization),
-            )?;
+            )
+            .await?;
         }
-
-        let finalized_blocks = storage::init_finalized_blocks(
-            &context,
-            &config.partition_prefix,
-            page_cache.clone(),
-            execution_node.provider.clone(),
-            config.finalized_blocks_retention,
-        )
-        .await
-        .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
         let (actor, mailbox, marshal_stored_height) = core::Actor::init(
             context,
@@ -333,35 +335,61 @@ pub(crate) mod marshal {
         ))
     }
 
-    fn register_scheme<R: CryptoRng>(
+    async fn register_scheme<TContext, R>(
         rng: &mut R,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
+        finalized_blocks: &Hybrid<
+            TContext,
+            BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
+        >,
         execution_node: &TempoFullNode,
         (height, finalization): (Height, &Finalization<Scheme<PublicKey, MinSig>, Digest>),
-    ) -> eyre::Result<()> {
-        let digest = execution_node
+    ) -> eyre::Result<()>
+    where
+        TContext: Clock + Metrics + Storage + BufferPooler + Send + Sync + 'static,
+        R: CryptoRng,
+    {
+        let digest = match execution_node
             .provider
             .block_hash(height.get())
             .map_err(eyre::Report::new)
             .wrap_err("failed reading finalized floor block hash")?
-            .ok_or_eyre("missing finalized floor block hash")?;
+        {
+            Some(digest) => Digest(digest),
+            None => finalized_blocks
+                .get(Identifier::Index(height.get()))
+                .await
+                .wrap_err("failed reading finalized floor block from archive")?
+                .map(|block| block.digest())
+                .ok_or_eyre("missing finalized floor block")?,
+        };
 
         ensure!(
-            digest == finalization.proposal.payload.0,
+            digest == finalization.proposal.payload,
             "finalization digest does not match execution state"
         );
 
         let epoch = finalization.epoch();
         let boundary = boundary_for_epoch(epoch_strategy, epoch)?;
-        let header = execution_node
+        let header = match execution_node
             .provider
             .header_by_number(boundary.get())
             .map_err(eyre::Report::new)
-            .wrap_err("failed reading block header")?
-            .ok_or_eyre("missing boundary header")?;
+            .wrap_err("failed reading boundary header")?
+        {
+            Some(header) => header,
+            None => finalized_blocks
+                .get(Identifier::Index(boundary.get()))
+                .await
+                .wrap_err("failed reading boundary block from archive")?
+                .map(|block| block.block().header().clone())
+                .ok_or_eyre("missing boundary block")?,
+        };
+
         let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("failed to read DKG outcome from boundary header")?;
+
         let scheme = Scheme::verifier(
             crate::config::NAMESPACE,
             onchain_outcome.players().clone(),
