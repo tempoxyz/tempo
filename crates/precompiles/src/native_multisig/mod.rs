@@ -162,21 +162,14 @@ impl NativeMultisig {
             .is_some())
     }
 
-    pub fn get_multisig_config_id(&self, account: Address) -> Result<B256> {
-        if self.is_multisig_account(account)? {
-            Ok(account.into_word())
-        } else {
-            Ok(B256::ZERO)
-        }
-    }
-
     pub fn get_multisig_config(&self, account: Address) -> Result<INativeMultisig::MultisigConfig> {
         let header = self.read_stored_header(account)?;
         let stored = self.load_stored_config_with_header(account, header)?;
         Ok(init_config_to_abi(stored.config, stored.version))
     }
 
-    pub fn load_registered_config(&self, account: Address) -> Result<InitMultisig> {
+    #[cfg(test)]
+    fn load_registered_config(&self, account: Address) -> Result<InitMultisig> {
         self.load_stored_config(account).map(|stored| stored.config)
     }
 
@@ -207,19 +200,9 @@ impl NativeMultisig {
         }
     }
 
-    pub fn read_owner_weight(&self, account: Address, owner: Address) -> Result<u8> {
+    #[cfg(test)]
+    fn read_owner_weight(&self, account: Address, owner: Address) -> Result<u8> {
         self.read_stored_owner_weight(account, owner)
-    }
-
-    pub fn validate_config_id(&self, account: Address, config_id: B256) -> Result<()> {
-        if config_id == B256::ZERO
-            || config_id[..12].iter().any(|byte| *byte != 0)
-            || Address::from_word(config_id) != account
-            || self.get_multisig_config_id(account)? != config_id
-        {
-            return Err(NativeMultisigError::invalid_config().into());
-        }
-        Ok(())
     }
 
     pub fn store_initial_config(&mut self, account: Address, config: &InitMultisig) -> Result<()> {
@@ -488,14 +471,10 @@ fn map_multisig_config_error(err: MultisigConfigError) -> TempoPrecompileError {
             NativeMultisigError::invalid_owner().into()
         }
         MultisigConfigError::TooManyOwners => NativeMultisigError::too_many_owners().into(),
-        MultisigConfigError::ZeroThreshold
-        | MultisigConfigError::ThresholdTooHigh
-        | MultisigConfigError::ThresholdExceedsWeight => {
+        MultisigConfigError::ZeroThreshold | MultisigConfigError::ThresholdExceedsWeight => {
             NativeMultisigError::invalid_threshold().into()
         }
-        MultisigConfigError::ZeroWeight
-        | MultisigConfigError::WeightOverflow
-        | MultisigConfigError::TotalWeightExceedsMax => {
+        MultisigConfigError::ZeroWeight | MultisigConfigError::TotalWeightExceedsMax => {
             NativeMultisigError::invalid_weight().into()
         }
         MultisigConfigError::DuplicateOwner => NativeMultisigError::duplicate_owner().into(),
