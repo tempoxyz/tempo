@@ -1,6 +1,7 @@
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
+    gossip::GossipProtocol,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
@@ -9,23 +10,23 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
+use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
+use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
-    PayloadAttributesBuilder, PayloadTypes,
+    PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
 };
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
+        NetworkBuilder, PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
         PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
     },
 };
-use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
@@ -36,9 +37,9 @@ use reth_rpc_eth_api::{
 use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
-    Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
-    TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
-    error::InvalidPoolTransactionError,
+    Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
+    TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+    blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
@@ -148,6 +149,61 @@ impl TempoNodeArgs {
     }
 }
 
+/// Builds the node's network and announces `tempo/1`.
+///
+/// The protocol must be registered before the network starts. `RLPx`
+/// capabilities are negotiated when a session opens, so existing sessions do
+/// not learn about protocols added later. On a small network, this could leave
+/// a follower with no gossip peer.
+///
+/// All other behavior comes from the standard Ethereum network builder. The
+/// provider used by the `eth` request handler does not change.
+#[derive(Debug, Default, Clone)]
+pub struct TempoNetworkBuilder {
+    gossip: Option<GossipProtocol>,
+}
+
+impl TempoNetworkBuilder {
+    /// Announces `tempo/1` on every session this node establishes.
+    pub fn with_finalization_cert_gossip(gossip: GossipProtocol) -> Self {
+        Self {
+            gossip: Some(gossip),
+        }
+    }
+}
+
+impl<Node, Pool> NetworkBuilder<Node, Pool> for TempoNetworkBuilder
+where
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: Hardforks>>,
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
+        + Unpin
+        + 'static,
+{
+    type Network =
+        NetworkHandle<BasicNetworkPrimitives<PrimitivesTy<Node::Types>, PoolPooledTx<Pool>>>;
+
+    async fn build_network(
+        self,
+        ctx: &BuilderContext<Node>,
+        pool: Pool,
+    ) -> eyre::Result<Self::Network> {
+        let mut network = ctx.network_builder().await?;
+        if let Some(gossip) = self.gossip {
+            let gossip = gossip.install();
+            network.network_mut().add_rlpx_sub_protocol(gossip);
+        }
+
+        let handle = ctx.start_network(network, pool);
+        reth_tracing::tracing::info!(
+            target: "reth::cli",
+            enode = %handle.local_node_record(),
+            "P2P networking initialized",
+        );
+
+        Ok(handle)
+    }
+}
+
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -158,6 +214,8 @@ pub struct TempoNode {
     payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
+    /// Network builder with optional `tempo/1` support.
+    network_builder: TempoNetworkBuilder,
 }
 
 impl TempoNode {
@@ -167,18 +225,30 @@ impl TempoNode {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
+            network_builder: TempoNetworkBuilder::default(),
         }
+    }
+
+    /// Announces `tempo/1` for finalization certificate gossip on every session.
+    ///
+    /// Call this before the node starts. `RLPx` capabilities are negotiated
+    /// during the handshake, so existing sessions do not learn about protocols
+    /// added later.
+    pub fn with_finalization_cert_gossip(mut self, gossip: crate::gossip::GossipProtocol) -> Self {
+        self.network_builder = TempoNetworkBuilder::with_finalization_cert_gossip(gossip);
+        self
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>(
         pool_builder: TempoPoolBuilder,
         payload_builder_builder: TempoPayloadBuilderBuilder,
+        network_builder: TempoNetworkBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
         BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TempoNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
     >
@@ -194,7 +264,7 @@ impl TempoNode {
                     // we can disable basic parent state caching because tempo builder always uses execution cache
                     .with_pre_cache_state(false),
             )
-            .network(EthereumNetworkBuilder::default())
+            .network(network_builder)
             .consensus(TempoConsensusBuilder::default())
     }
 
@@ -360,7 +430,7 @@ where
         N,
         TempoPoolBuilder,
         BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TempoNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
     >;
@@ -368,7 +438,11 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder.clone(), self.payload_builder_builder)
+        Self::components(
+            self.pool_builder.clone(),
+            self.payload_builder_builder,
+            self.network_builder.clone(),
+        )
     }
 
     fn add_ons(&self) -> Self::AddOns {

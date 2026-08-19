@@ -191,32 +191,6 @@ function fmtKiB(value) {
   return Number.isFinite(value) ? (value / 1024).toFixed(1) : '-';
 }
 
-function sumFees(runs) {
-  const fees = runs
-    .map(run => run.total_fees_paid)
-    .filter(value => typeof value === 'string' && /^\d+$/.test(value));
-  if (fees.length === 0) return null;
-  return fees.reduce((total, value) => total + BigInt(value), 0n).toString();
-}
-
-function fmtFees(value) {
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) return '-';
-  const attodollars = BigInt(value);
-  const cents = (attodollars + 5_000_000_000_000_000n) / 10_000_000_000_000_000n;
-  const dollars = cents / 100n;
-  const fraction = (cents % 100n).toString().padStart(2, '0');
-  return `$${dollars.toLocaleString('en-US')}.${fraction}`;
-}
-
-function fmtFeeChange(base, feature) {
-  if (typeof base !== 'string' || typeof feature !== 'string') return '';
-  const baseline = BigInt(base);
-  const candidate = BigInt(feature);
-  if (baseline === 0n) return candidate === 0n ? '0.00%' : 'n/a';
-  const basisPoints = ((candidate - baseline) * 1_000_000n) / baseline;
-  return `${basisPoints >= 0n ? '+' : ''}${(Number(basisPoints) / 10_000).toFixed(2)}%`;
-}
-
 function fmtChange(change) {
   if (!change || change.pct == null) return '';
   const sign = change.pct >= 0 ? '+' : '';
@@ -288,11 +262,6 @@ function buildMarkdown(summary) {
       const f = formatter(summary.results.feature[axis]);
       lines.push(`| ${label} | ${b} | ${f} | ${fmtChange(summary.results.changes[axis])} |`);
     }
-    if (section.title === 'Tempo Metrics') {
-      const b = summary.results.baseline.total_fees_paid;
-      const f = summary.results.feature.total_fees_paid;
-      lines.push(`| Total Fees Paid [USD] | ${fmtFees(b)} | ${fmtFees(f)} | ${fmtFeeChange(b, f)} |`);
-    }
     if (section.title === 'Builder') appendBuilderDetails(lines, summary);
     lines.push('');
   }
@@ -310,8 +279,6 @@ function main(resultsDir = process.argv[2]) {
   const runs = summary.per_run || [];
   const baselineRuns = runs.filter(r => /^baseline/.test(r.label));
   const featureRuns = runs.filter(r => /^feature/.test(r.label));
-  summary.results.baseline.total_fees_paid = sumFees(baselineRuns);
-  summary.results.feature.total_fees_paid = sumFees(featureRuns);
   const rand = rng(42);
 
   const changes = {};

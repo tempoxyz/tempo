@@ -39,7 +39,6 @@ use std::{
     sync::{Arc, mpsc::RecvError},
     time::{Duration, Instant},
 };
-use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,

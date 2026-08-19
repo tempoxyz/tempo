@@ -8,11 +8,10 @@ use alloy_primitives::{
     Address, FixedBytes,
     aliases::{I96, U96},
 };
-use tempo_precompiles::storage::Mapping;
+use tempo_precompiles::{storage::Mapping, test_util::storage_conformance::*};
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
 };
-use utils::*;
 
 #[test]
 fn test_basic_types_layout() {
