@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, B256, Bytes, LogData, U256},
+    primitives::{Address, B256, Bytes, LogData, TxKind, U256},
     sol_types::SolInterface,
 };
 use alloy_evm::{Database, EvmInternals};
@@ -153,6 +153,11 @@ impl StorageCtx {
         Self::with_storage(|s| f(s.block_env()))
     }
 
+    /// Returns the current top-level transaction call target.
+    pub fn tx_kind(&self) -> Option<TxKind> {
+        Self::with_storage(|s| s.tx_kind())
+    }
+
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
         self.with_block_env(|block_env| block_env.epoch(height))
@@ -288,7 +293,7 @@ impl StorageCtx {
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
-    pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
+    pub fn deduct_gas(&self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
 
