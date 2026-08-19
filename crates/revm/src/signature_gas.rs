@@ -1,5 +1,5 @@
 use revm::{
-    context_interface::cfg::{GasId, GasParams},
+    context_interface::cfg::{GasId, GasParams, gas::COLD_ACCOUNT_ACCESS_COST},
     interpreter::gas::{
         COLD_SLOAD_COST, LOG, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
     },
@@ -27,6 +27,9 @@ pub(crate) const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
 
 /// Additional gas for each native multisig owner-weight lookup.
 pub(crate) const NATIVE_MULTISIG_OWNER_WEIGHT_GAS: u64 = COLD_SLOAD_COST;
+
+/// Gas for checking that each nested multisig owner account has no code or delegation.
+pub(crate) const NATIVE_MULTISIG_NESTED_ACCOUNT_GAS: u64 = COLD_ACCOUNT_ACCESS_COST;
 
 /// Additional storage reads required to validate every ordered owner row against its direct
 /// weight row before using a registered configuration.
@@ -83,7 +86,9 @@ fn native_multisig_owner_approval_verification_gas(
             native_multisig_primitive_owner_signature_verification_gas(primitive)
         }
         TempoSignature::Multisig(multisig_signature) if depth < MAX_MULTISIG_NESTING_DEPTH => {
-            native_multisig_signature_verification_gas(multisig_signature, false, depth + 1)
+            NATIVE_MULTISIG_NESTED_ACCOUNT_GAS.saturating_add(
+                native_multisig_signature_verification_gas(multisig_signature, false, depth + 1),
+            )
         }
         TempoSignature::Keychain(_) | TempoSignature::Multisig(_) => {
             ECRECOVER_GAS + P256_VERIFY_GAS

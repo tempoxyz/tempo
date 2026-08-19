@@ -78,8 +78,9 @@ use crate::{
 
 #[cfg(test)]
 use crate::signature_gas::{
-    NATIVE_MULTISIG_OWNER_WEIGHT_GAS, NATIVE_MULTISIG_VALIDATION_GAS,
-    native_multisig_bootstrap_storage_slots, primitive_signature_verification_gas,
+    NATIVE_MULTISIG_NESTED_ACCOUNT_GAS, NATIVE_MULTISIG_OWNER_WEIGHT_GAS,
+    NATIVE_MULTISIG_VALIDATION_GAS, native_multisig_bootstrap_storage_slots,
+    primitive_signature_verification_gas,
 };
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -1061,13 +1062,7 @@ where
                 .is_some_and(|signature| signature.account() == tx.caller());
         let caller_account_info =
             if spec.is_t11() && (validates_caller_multisig || outer_keychain_signature) {
-                Some(
-                    journal
-                        .load_account_with_code(tx.caller())?
-                        .data
-                        .info
-                        .clone(),
-                )
+                Some(journal.load_account(tx.caller())?.data.info.clone())
             } else {
                 None
             };
@@ -1194,7 +1189,7 @@ where
                         continue;
                     };
                     if !journal
-                        .load_account_with_code(nested.account())?
+                        .load_account(nested.account())?
                         .data
                         .info
                         .is_empty_code_hash()
