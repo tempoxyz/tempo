@@ -5460,6 +5460,7 @@ fn test_t11_rpc_simulation_charges_nested_key_authorization_config() {
     assert_eq!(
         init_gas.initial_regular_gas,
         cold_storage_read_gas
+            + NATIVE_MULTISIG_NESTED_ACCOUNT_GAS
             + native_multisig_complete_config_validation_gas(config.owners.len())
             + native_multisig_complete_config_validation_gas(nested_config.owners.len()),
     );
@@ -6266,7 +6267,8 @@ fn test_aa_gas_native_multisig_nested_owner_overhead() {
     )
     .unwrap();
 
-    let expected_overhead = (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2;
+    let expected_overhead = (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2
+        + NATIVE_MULTISIG_NESTED_ACCOUNT_GAS;
     assert_eq!(
         multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
         expected_overhead,
@@ -6307,6 +6309,7 @@ fn test_aa_gas_native_multisig_simulation_models_nested_config_validation() {
     .unwrap();
 
     let expected_overhead = (NATIVE_MULTISIG_VALIDATION_GAS + NATIVE_MULTISIG_OWNER_WEIGHT_GAS) * 2
+        + NATIVE_MULTISIG_NESTED_ACCOUNT_GAS
         + native_multisig_complete_config_validation_gas(2);
     assert_eq!(
         multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
