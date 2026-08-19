@@ -69,36 +69,29 @@
 //! longer serve them. Repairing them here would be futile anyway — the
 //! prunable cache has evicted them too, so the re-fetched block's put would
 //! be silently absorbed (see "Stale puts") and the gap would reappear on
-//! the next repair tick. The marshal actor's repair path never asks for such
-//! heights; startup has a separate best-effort lookup described below.
+//! the next repair tick. The marshal never asks for such heights; see
+//! "Why reth pruning is not a concern" below.
 //!
-//! # Reth pruning behavior
+//! # Why reth pruning is not a concern
 //!
 //! Reth may be configured to retain only a window of recent history,
-//! creating a `reth.pruned_below ≤ reth.finalized` watermark. Indexed reads
-//! have different contracts during startup and regular marshal operation:
+//! creating a `reth.pruned_below ≤ reth.finalized` watermark. The
+//! marshal can never ask for a block panic-on-miss below
+//! `reth.pruned_below`:
 //!
 //! - **`Blocks::put(H)`**: marshal's `last_processed_height` is floored
 //!   to `max(stored_height, reth.finalized)` at startup
 //!   ([`alias::marshal::init`]), so every put has
 //!   `H > reth.finalized > reth.pruned_below`.
-//! - **Startup `Blocks::get(Index(H))`**: before constructing the marshal
-//!   actor, [`alias::marshal::init`] registers the finalized floor's scheme.
-//!   If direct execution-layer reads miss, it uses this store to look up the
-//!   finalized floor and its epoch boundary. These heights may be below
-//!   `reth.pruned_below`; a miss in both the cache and reth returns `Ok(None)`
-//!   and fails initialization rather than serving an unfinalized block.
-//! - **Actor `Blocks::get(Index(H))`**: only asks for the next contiguous
-//!   height or a `gap_end` already in the cache.
+//! - **`Blocks::get(Index(H))`**: only ever asks for the next
+//!   contiguous height or a `gap_end` already in the cache.
 //! - **`Blocks::get(Key(digest))`**: gap-repair parent walks may ask
 //!   for a digest below `reth.pruned_below`; on miss we return
 //!   `Ok(None)` and the marshal falls back to peer resolution.
 //!
 //! Configuring reth with a smaller retention window than
-//! `retention_blocks` causes more peer fetches during regular operation and
-//! can make the startup fallback unavailable. It is not a correctness issue:
-//! startup fails closed when neither backing store contains the requested
-//! block.
+//! `retention_blocks` is a perf concern (more peer fetches), not a
+//! correctness one.
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
