@@ -5309,6 +5309,55 @@ fn test_t11_key_authorization_can_bootstrap_and_authorize_access_key() {
 }
 
 #[test]
+fn test_t11_outer_bootstrap_config_can_authorize_companion_key_auth() {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+    let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+    let config = single_owner_native_multisig_config(0x44, owner.address());
+    let account = config.account().unwrap();
+    let key_authorization =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            .with_account(account);
+    let authorization_digest = multisig_digest(key_authorization.signature_hash(), account, 0);
+    let authorization_signature = PrimitiveSignature::Secp256k1(
+        owner
+            .sign_hash_sync(&authorization_digest)
+            .expect("owner signing succeeds"),
+    );
+    let signed_key_authorization = key_authorization
+        .clone()
+        .into_signed(TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![authorization_signature.to_bytes()],
+            None,
+        )));
+    let signature_hash = B256::repeat_byte(0x42);
+    let aa_env = TempoBatchCallEnv {
+        signature: sign_native_multisig(&config, signature_hash, &owner, true),
+        key_authorization: Some(signed_key_authorization),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        signature_hash,
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    test.validate_against_state_and_deduct_caller()
+        .expect("companion key authorization uses the outer bootstrap config");
+
+    StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+        assert!(NativeMultisig::new().is_multisig_account(account)?);
+        assert!(AccountKeychain::new().is_active_key(account, access_key.address())?);
+        Ok::<_, TempoPrecompileError>(())
+    })
+    .expect("bootstrap config and access key are stored");
+}
+
+#[test]
 fn test_t11_key_authorization_bootstrap_rejects_current_multisig_authority() {
     let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
     let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
