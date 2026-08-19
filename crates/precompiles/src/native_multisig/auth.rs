@@ -39,6 +39,8 @@ impl NativeMultisigAuthError {
 #[derive(Clone, Debug)]
 pub enum NativeMultisigAuthConfig<'a> {
     Inline(&'a InitMultisig),
+    /// An inline config carried by the transaction's other multisig authorization.
+    BootstrapCompanion(&'a InitMultisig),
     Registered {
         threshold: u8,
         version: u64,
@@ -50,6 +52,7 @@ impl NativeMultisigAuthConfig<'_> {
     fn matches_signature(&self, signature: &MultisigSignature) -> bool {
         match (self, signature.init()) {
             (Self::Inline(expected), Some(actual)) => *expected == actual,
+            (Self::BootstrapCompanion(_), None) => true,
             (Self::Registered { .. }, None) => true,
             _ => false,
         }
@@ -57,7 +60,7 @@ impl NativeMultisigAuthConfig<'_> {
 
     fn invalid_owner_signature(&self) -> NativeMultisigAuthError {
         match self {
-            Self::Inline(_) => {
+            Self::Inline(_) | Self::BootstrapCompanion(_) => {
                 NativeMultisigAuthError::invalid_transaction("invalid multisig owner signature")
             }
             Self::Registered { .. } => {
@@ -68,21 +71,23 @@ impl NativeMultisigAuthConfig<'_> {
 
     fn threshold(&self) -> u8 {
         match self {
-            Self::Inline(config) => config.threshold,
+            Self::Inline(config) | Self::BootstrapCompanion(config) => config.threshold,
             Self::Registered { threshold, .. } => *threshold,
         }
     }
 
     fn version(&self) -> u64 {
         match self {
-            Self::Inline(_) => 0,
+            Self::Inline(_) | Self::BootstrapCompanion(_) => 0,
             Self::Registered { version, .. } => *version,
         }
     }
 
     fn owner_weight(&self, owner: Address) -> Result<u8, NativeMultisigAuthError> {
         let weight = match self {
-            Self::Inline(config) => config.owner_weight(owner).unwrap_or_default(),
+            Self::Inline(config) | Self::BootstrapCompanion(config) => {
+                config.owner_weight(owner).unwrap_or_default()
+            }
             Self::Registered { owners, .. } => owners
                 .binary_search_by_key(&owner, |configured| configured.owner)
                 .ok()
@@ -97,7 +102,7 @@ impl NativeMultisigAuthConfig<'_> {
 
     fn validate(&self) -> Result<(), NativeMultisigAuthError> {
         match self {
-            Self::Inline(config) => config
+            Self::Inline(config) | Self::BootstrapCompanion(config) => config
                 .validate()
                 .map(|_| ())
                 .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str())),
@@ -308,5 +313,10 @@ mod tests {
                 ))
             );
         }
+
+        assert!(
+            NativeMultisigAuthConfig::BootstrapCompanion(&init)
+                .matches_signature(&registered_signature)
+        );
     }
 }
