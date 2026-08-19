@@ -1,7 +1,14 @@
-use revm::interpreter::gas::{
-    COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
+use revm::{
+    context_interface::cfg::{GasId, GasParams},
+    interpreter::gas::{
+        COLD_SLOAD_COST, LOG, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
+    },
 };
-use tempo_primitives::transaction::{PrimitiveSignature, TempoSignature};
+use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
+use tempo_precompiles::ECRECOVER_GAS;
+use tempo_primitives::transaction::{
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigSignature, PrimitiveSignature, TempoSignature,
+};
 
 /// Additional gas for P256 signature verification.
 ///
@@ -11,6 +18,31 @@ pub(crate) const P256_VERIFY_GAS: u64 = 5_000;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+
+/// Additional gas for each native multisig config/header validation.
+///
+/// Owner signature verification and owner-weight lookups are charged separately, relative to the
+/// secp256k1 verification already covered by the base transaction stipend.
+pub(crate) const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
+
+/// Additional gas for each native multisig owner-weight lookup.
+pub(crate) const NATIVE_MULTISIG_OWNER_WEIGHT_GAS: u64 = COLD_SLOAD_COST;
+
+/// Additional storage reads required to validate every ordered owner row against its direct
+/// weight row before using a registered configuration.
+#[inline]
+pub(crate) fn native_multisig_complete_config_validation_gas(owner_count: usize) -> u64 {
+    (owner_count as u64)
+        .saturating_mul(2)
+        .saturating_mul(COLD_SLOAD_COST)
+}
+
+/// Persistent storage rows created by native multisig bootstrap before owner rows:
+/// the packed `{ threshold, owner_count, version }` account header.
+const NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS: u64 = 1;
+
+/// Topic count for the non-anonymous `MultisigInitialized(address indexed account)` event.
+const NATIVE_MULTISIG_BOOTSTRAP_EVENT_TOPICS: u8 = 2;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -30,6 +62,63 @@ pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignatur
     }
 }
 
+/// Calculates full primitive owner-signature verification gas.
+///
+/// Unlike transaction signatures, owner approvals are nested inside the multisig signature, so this
+/// returns the full verification cost before the top-level native multisig schedule subtracts the
+/// one traditional secp256k1 verification already included in base transaction gas.
+#[inline]
+fn native_multisig_primitive_owner_signature_verification_gas(
+    signature: &PrimitiveSignature,
+) -> u64 {
+    ECRECOVER_GAS + primitive_signature_verification_gas(signature)
+}
+
+fn native_multisig_owner_approval_verification_gas(
+    signature: &TempoSignature,
+    depth: usize,
+) -> u64 {
+    match signature {
+        TempoSignature::Primitive(primitive) => {
+            native_multisig_primitive_owner_signature_verification_gas(primitive)
+        }
+        TempoSignature::Multisig(multisig_signature) if depth < MAX_MULTISIG_NESTING_DEPTH => {
+            native_multisig_signature_verification_gas(multisig_signature, false, depth + 1)
+        }
+        TempoSignature::Keychain(_) | TempoSignature::Multisig(_) => {
+            ECRECOVER_GAS + P256_VERIFY_GAS
+        }
+    }
+}
+
+fn native_multisig_signature_verification_gas(
+    signature: &MultisigSignature,
+    subtract_base_secp256k1: bool,
+    depth: usize,
+) -> u64 {
+    let owner_signature_gas = signature
+        .signatures()
+        .iter()
+        .map(|sig| native_multisig_owner_approval_verification_gas(sig, depth))
+        .fold(0u64, u64::saturating_add);
+    let owner_weight_gas =
+        NATIVE_MULTISIG_OWNER_WEIGHT_GAS.saturating_mul(signature.signatures().len() as u64);
+    let complete_config_validation_gas = signature
+        .simulation_config_owner_count()
+        .map(native_multisig_complete_config_validation_gas)
+        .unwrap_or_default();
+
+    let gas = NATIVE_MULTISIG_VALIDATION_GAS
+        .saturating_add(owner_weight_gas)
+        .saturating_add(complete_config_validation_gas)
+        .saturating_add(owner_signature_gas);
+    if subtract_base_secp256k1 {
+        gas.saturating_sub(ECRECOVER_GAS)
+    } else {
+        gas
+    }
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For keychain signatures, adds key validation overhead to the inner signature cost. Returns the
@@ -41,7 +130,62 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
         TempoSignature::Keychain(keychain_sig) => {
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
-        // Native multisig transactions are rejected before intrinsic gas is calculated.
-        TempoSignature::Multisig(_) => 0,
+        TempoSignature::Multisig(multisig_sig) => {
+            native_multisig_signature_verification_gas(multisig_sig, true, 1)
+        }
     }
+}
+
+#[inline]
+pub(crate) fn native_multisig_bootstrap_storage_slots(init: &InitMultisig) -> u64 {
+    let owner_slots = u64::try_from(init.owners.len()).unwrap_or(u64::MAX);
+    NATIVE_MULTISIG_BOOTSTRAP_FIXED_STORAGE_SLOTS.saturating_add(owner_slots.saturating_mul(2))
+}
+
+/// Calculates persistent storage gas for native multisig bootstrap.
+///
+/// The committed bootstrap write is a protocol pre-execution write. It runs without TIP-1060
+/// storage-credit accounting because this intrinsic charge includes the creditable portion.
+/// The packed native multisig layout creates exactly:
+/// - one packed account header slot containing threshold, owner count, and version
+/// - one packed owner slot per owner
+/// - one direct owner-weight lookup slot per owner
+#[inline]
+pub(crate) fn calculate_native_multisig_bootstrap_storage_gas(
+    init: &InitMultisig,
+    gas_params: &GasParams,
+    spec: TempoHardfork,
+) -> (u64, u64) {
+    let num_sstores = native_multisig_bootstrap_storage_slots(init);
+    let num_cold_sstores = num_sstores.saturating_sub(1);
+
+    let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
+    if spec.is_t7() {
+        // T7 exposes only the SSTORE residual in the gas table. Since bootstrap storage is
+        // intrinsic-only, also charge the TIP-1060 creditable portion here.
+        sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
+    }
+
+    // Bootstrap validation has already warmed the account header. The owner rows and direct
+    // weight rows are new cold slots. The committed write also re-reads the warm header and
+    // records the bootstrapped account in transient storage before emitting the event.
+    let sstore_gas = sstore_cost
+        .saturating_add(gas_params.sstore_static_gas())
+        .saturating_mul(num_sstores)
+        .saturating_add(
+            gas_params
+                .cold_storage_cost()
+                .saturating_mul(num_cold_sstores),
+        );
+    let warm_context_gas = gas_params.warm_storage_read_cost().saturating_mul(2);
+    let event_gas =
+        LOG.saturating_add(gas_params.log_cost(NATIVE_MULTISIG_BOOTSTRAP_EVENT_TOPICS, 0));
+    let regular_gas = sstore_gas
+        .saturating_add(warm_context_gas)
+        .saturating_add(event_gas);
+    let state_gas = gas_params
+        .get(GasId::sstore_set_state_gas())
+        .saturating_mul(num_sstores);
+
+    (regular_gas, state_gas)
 }
