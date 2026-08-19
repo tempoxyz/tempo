@@ -80,7 +80,13 @@ impl TempoSignedAuthorization {
     /// # Note
     ///
     /// Implementers should check that the authority has no code.
+    /// Native multisig signatures are rejected because their claimed account cannot be
+    /// authenticated without stateful owner and threshold validation.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_multisig() {
+            return Err(alloy_consensus::crypto::RecoveryError::new());
+        }
+
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
@@ -309,7 +315,7 @@ impl AuthorizationTr for RecoveredTempoAuthorization {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::TempoSignature;
+    use crate::{TempoSignature, transaction::MultisigSignature};
     use alloy_primitives::{U256, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -448,5 +454,29 @@ pub mod tests {
         let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
         assert!(bad_lazy.authority().is_some());
         assert_ne!(bad_lazy.authority().unwrap(), expected_address);
+    }
+
+    #[test]
+    fn test_multisig_cannot_recover_eip7702_authority() {
+        let claimed_account = Address::random();
+        let auth = Authorization {
+            chain_id: U256::ONE,
+            address: Address::random(),
+            nonce: 1,
+        };
+        let signature = TempoSignature::Multisig(MultisigSignature::new(
+            claimed_account,
+            vec![TempoSignature::default().to_bytes()],
+            None,
+        ));
+        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
+
+        assert!(signed.recover_authority().is_err());
+        assert!(signed.clone().into_recovered().authority().is_none());
+        assert!(
+            RecoveredTempoAuthorization::new(signed)
+                .authority()
+                .is_none()
+        );
     }
 }
