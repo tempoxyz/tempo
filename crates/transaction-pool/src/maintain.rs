@@ -18,7 +18,7 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use reth_transaction_pool::{AllPoolTransactions, TransactionOrigin, TransactionPool};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
@@ -31,6 +31,20 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+/// Maps paused entries back to `(origin, transaction)` pairs for re-admission.
+///
+/// The original [`TransactionOrigin`] must be preserved: it is what the validator turns into the
+/// `propagate` flag, so re-admitting as `External` would gossip `Private` transactions and strip
+/// local-transaction exemptions from `Local` ones.
+fn restored_transactions(
+    entries: Vec<PausedEntry>,
+) -> Vec<(TransactionOrigin, TempoPooledTransaction)> {
+    entries
+        .into_iter()
+        .map(|entry| (entry.tx.origin, entry.tx.transaction.clone()))
+        .collect()
+}
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -644,12 +658,9 @@ where
                 let pool_clone = pool.clone();
                 let token = *token;
                 tokio::spawn(async move {
-                    let txs: Vec<_> = paused_entries
-                        .into_iter()
-                        .map(|e| e.tx.transaction.clone())
-                        .collect();
+                    let txs = restored_transactions(paused_entries);
 
-                    let results = pool_clone.add_external_transactions(txs).await;
+                    let results = pool_clone.add_transactions_with_origins(txs).await;
 
                     let success = results.iter().filter(|r| r.is_ok()).count();
                     debug!(
