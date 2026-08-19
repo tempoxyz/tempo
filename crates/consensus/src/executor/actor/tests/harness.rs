@@ -60,6 +60,20 @@ pub(super) fn round(view: u64) -> Round {
 
 /// Builds a block constructed in `view` at `height` on top of `parent`.
 pub(super) fn make_block(view: u64, height: u64, parent: Digest) -> Block {
+    make_block_with_proposer(
+        view,
+        height,
+        parent,
+        tempo_primitives::ed25519::PublicKey::from_seed(42),
+    )
+}
+
+pub(super) fn make_block_with_proposer(
+    view: u64,
+    height: u64,
+    parent: Digest,
+    proposer: tempo_primitives::ed25519::PublicKey,
+) -> Block {
     Block::from_execution_block_unchecked(
         SealedBlock::seal_slow(TempoBlock {
             header: TempoHeader {
@@ -72,7 +86,7 @@ pub(super) fn make_block(view: u64, height: u64, parent: Digest) -> Block {
                     epoch: 0,
                     view,
                     parent_view: view.saturating_sub(1),
-                    proposer: tempo_primitives::ed25519::PublicKey::from_seed(42),
+                    proposer,
                 }),
                 ..Default::default()
             },
@@ -913,6 +927,10 @@ where
     pub(super) fn run_for(&self, duration: Duration) -> impl Future<Output = ()> + use<TContext> {
         let context = self.context.child("run_for");
         async move { context.sleep(duration).await }
+    }
+
+    pub(super) fn metrics(&self) -> String {
+        self.context.encode()
     }
 
     /// Reports a new finalized network tip.

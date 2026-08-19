@@ -6,11 +6,25 @@
 use alloy_rpc_types_engine::PayloadStatusEnum;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use tempo_primitives::ed25519::PublicKey;
 
-use super::harness::{GENESIS, Harness, make_block, round};
+use super::harness::{
+    ElCall, GENESIS, Harness, HarnessOptions, make_block, make_block_with_proposer, round,
+};
+
+fn finalized_blocks_proposed_by_self(h: &Harness) -> u64 {
+    h.metrics()
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(' ')?;
+            (name == "executor_finalized_blocks_proposed_by_self_total")
+                .then(|| value.parse().expect("counter should contain an integer"))
+        })
+        .expect("self-proposed finalization counter should be published")
+}
 
 #[test_traced]
-fn finalized_block_is_forwarded_and_acknowledged() {
+fn finalized_block_without_local_public_key_is_forwarded_and_acknowledged() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
@@ -25,6 +39,7 @@ fn finalized_block_is_forwarded_and_acknowledged() {
         assert_eq!(h.execution.fcus(), vec![(digest, digest, false)]);
         assert_eq!(h.execution.head(), digest);
         assert_eq!(h.execution.finalized(), Some((1, digest)));
+        assert_eq!(finalized_blocks_proposed_by_self(&h), 0);
     });
 }
 
@@ -117,6 +132,32 @@ fn invalid_finalized_block_is_fatal() {
 }
 
 #[test_traced]
+fn accepted_finalized_block_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Accepted));
+
+        h.deliver_tip(round(1), 1, d1);
+        h.deliver_finalized(b1)
+            .await
+            .expect_err("an unexecuted finalized payload must not be acknowledged");
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a fatal error");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert!(
+            h.execution.fcus().is_empty(),
+            "ACCEPTED does not prove execution, so no forkchoice update may follow",
+        );
+    });
+}
+
+#[test_traced]
 fn new_payload_transport_error_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
@@ -165,11 +206,14 @@ fn rejected_finalization_forkchoice_update_is_fatal() {
         let mut h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
         h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
             validation_error: "rejected".into(),
         }));
 
-        h.deliver_tip(round(1), 1, b1.digest());
+        // newPayload succeeds by default. Rejecting the following FCU must
+        // still cancel, rather than resolve, the acknowledgement waiter.
+        h.deliver_tip(round(1), 1, d1);
         h.deliver_finalized(b1)
             .await
             .expect_err("the block must not be acknowledged when its FCU fails");
@@ -177,6 +221,35 @@ fn rejected_finalization_forkchoice_update_is_fatal() {
         h.actor
             .await
             .expect("actor should shut down cleanly on a fatal error");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![(d1, d1, false)],
+            "the rejected FCU must have followed a successful new-payload request",
+        );
+    });
+}
+
+#[test_traced]
+fn forkchoice_update_transport_error_is_fatal() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution.script_fcu(Err("connection closed"));
+
+        h.deliver_tip(round(1), 1, d1);
+        h.deliver_finalized(b1)
+            .await
+            .expect_err("an FCU transport failure must not acknowledge the finalized block");
+
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a finalization FCU transport error");
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert_eq!(h.execution.fcus(), vec![(d1, d1, false)]);
+        assert_eq!(h.execution.finalized(), None);
     });
 }
 
@@ -248,9 +321,59 @@ fn redelivered_finalized_block_at_the_tracked_state_is_acknowledged() {
         h.deliver_finalized(b1)
             .await
             .expect("the re-delivered block should be acknowledged");
+        let d1 = make_block(1, 1, GENESIS).digest();
         assert_eq!(
-            h.execution.finalized(),
-            Some((1, make_block(1, 1, GENESIS).digest()))
+            h.execution.calls(),
+            vec![
+                ElCall::NewPayload(d1),
+                ElCall::Fcu {
+                    head: d1,
+                    finalized: d1,
+                    with_attrs: false,
+                },
+                ElCall::NewPayload(d1),
+                ElCall::Fcu {
+                    head: d1,
+                    finalized: d1,
+                    with_attrs: false,
+                },
+            ],
+            "a redelivery is re-checked and re-affirmed before acknowledgment",
+        );
+        assert_eq!(h.execution.finalized(), Some((1, d1)),);
+    });
+}
+
+#[test_traced]
+fn only_blocks_proposed_by_this_node_increment_the_metric() {
+    deterministic::Runner::default().start(|context| async move {
+        let local_proposer = PublicKey::from_seed(42);
+        let other_proposer = PublicKey::from_seed(43);
+        let mut h = Harness::builder()
+            .harness_options(HarnessOptions {
+                public_key: Some(local_proposer.to_inner()),
+                ..Default::default()
+            })
+            .start(&context);
+
+        let b1 = make_block_with_proposer(1, 1, GENESIS, local_proposer);
+        let d1 = b1.digest();
+        h.deliver_tip(round(1), 1, d1);
+        h.deliver_finalized(b1)
+            .await
+            .expect("the locally proposed block should be acknowledged");
+        assert_eq!(finalized_blocks_proposed_by_self(&h), 1);
+
+        let b2 = make_block_with_proposer(2, 2, d1, other_proposer);
+        let d2 = b2.digest();
+        h.deliver_tip(round(2), 2, d2);
+        h.deliver_finalized(b2)
+            .await
+            .expect("the block proposed by another node should be acknowledged");
+        assert_eq!(
+            finalized_blocks_proposed_by_self(&h),
+            1,
+            "another proposer's finalized block must not increment the counter",
         );
     });
 }
