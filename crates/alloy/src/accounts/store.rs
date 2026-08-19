@@ -2408,7 +2408,7 @@ struct WritableTokenLimit {
     period: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct WritableScope {
     address: Address,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2601,13 +2601,14 @@ fn writable_access_key(
             })
             .collect()
     });
+    let scopes = writable_scopes(authorization);
     let key_authorization = if let Some(signature) = authorization.signature.as_primitive() {
         WritableKeyAuthorization::Structured(Box::new(WritableSignedKeyAuthorization {
             address: authorization.key_id,
             chain_id: writable_bigint(U256::from(authorization.chain_id)),
             expiry: authorization.expiry.map(NonZeroU64::get),
             limits: limits.clone(),
-            scopes: writable_scopes(authorization),
+            scopes: scopes.clone(),
             witness: authorization.witness,
             is_admin: authorization.is_admin,
             account: authorization.account,
@@ -2628,7 +2629,7 @@ fn writable_access_key(
         private_key: alloy_primitives::hex::encode_prefixed(signer.to_bytes()),
         expiry: authorization.expiry.map(NonZeroU64::get),
         limits,
-        scopes: writable_scopes(authorization),
+        scopes,
         key_authorization,
     })
 }
