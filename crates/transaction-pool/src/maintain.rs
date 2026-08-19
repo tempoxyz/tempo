@@ -18,9 +18,12 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
+use tempo_contracts::precompiles::{
+    IAccountKeychain, IFeeManager, INativeMultisig, ITIP20, ITIP403Registry,
+};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, NATIVE_MULTISIG_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -91,6 +94,13 @@ pub struct TempoPoolUpdates {
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
     pub key_authorization_witness_burns: AddressMap<B256Set>,
+    /// Native multisig accounts whose owner set or threshold changed.
+    ///
+    /// A native-multisig-signed transaction is validated against the account's current stored
+    /// config, so once the config is rotated (or the account is initialized) any pooled multisig
+    /// transaction admitted under the previous owner set may no longer meet quorum and should be
+    /// re-validated. Indexed by account.
+    pub multisig_config_changes: AddressSet,
 }
 
 impl TempoPoolUpdates {
@@ -114,6 +124,7 @@ impl TempoPoolUpdates {
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
+            && self.multisig_config_changes.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -233,9 +244,37 @@ impl TempoPoolUpdates {
                     Some(_) | None => {}
                 }
             }
+            // Native multisig owner-set / threshold rotations and initializations.
+            else if log.address == NATIVE_MULTISIG_ADDRESS {
+                updates.record_native_multisig_config_change(log);
+            }
         }
 
         updates
+    }
+
+    fn record_native_multisig_config_change(&mut self, log: &Log) {
+        let account = match NativeMultisigPoolEvent::decode(log) {
+            Some(NativeMultisigPoolEvent::ConfigUpdated(event)) => event.account,
+            // Initialization also makes any pending duplicate bootstrap inadmissible.
+            Some(NativeMultisigPoolEvent::Initialized(event)) => event.account,
+            None => return,
+        };
+        self.multisig_config_changes.insert(account);
+    }
+
+    /// Adds multisig configurations changed by a reverted chain segment.
+    fn extend_reverted_multisig_config_changes(&mut self, chain: &Chain<TempoPrimitives>) {
+        for log in chain
+            .execution_outcome()
+            .receipts()
+            .iter()
+            .flatten()
+            .flat_map(|receipt| &receipt.logs)
+            .filter(|log| log.address == NATIVE_MULTISIG_ADDRESS)
+        {
+            self.record_native_multisig_config_change(log);
+        }
     }
 
     /// Returns true if there are any invalidation events that require scanning the pool.
@@ -249,6 +288,7 @@ impl TempoPoolUpdates {
             || !self.paused_tokens.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
+            || !self.multisig_config_changes.is_empty()
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -294,6 +334,29 @@ impl AccountKeychainPoolEvent {
             }
             IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
                 decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `INativeMultisig` events.
+enum NativeMultisigPoolEvent {
+    /// [`INativeMultisig::MultisigConfigUpdated`] log.
+    ConfigUpdated(INativeMultisig::MultisigConfigUpdated),
+    /// [`INativeMultisig::MultisigInitialized`] log.
+    Initialized(INativeMultisig::MultisigInitialized),
+}
+
+impl NativeMultisigPoolEvent {
+    /// Decodes only native-multisig events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            INativeMultisig::MultisigConfigUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::ConfigUpdated)
+            }
+            INativeMultisig::MultisigInitialized::SIGNATURE_HASH => {
+                decode_event(log).map(Self::Initialized)
             }
             _ => None,
         }
@@ -492,17 +555,17 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
-        let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+        let (new, reverted) = match event {
+            CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
                     error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                new
+                (new, Some(old))
             }
-            CanonStateNotification::Commit { new } => new,
+            CanonStateNotification::Commit { new } => (new, None),
         };
 
         let block_update_start = Instant::now();
@@ -539,7 +602,10 @@ where
             .record(amm_start.elapsed());
 
         // 3. Collect all block-level invalidation events
-        let updates = TempoPoolUpdates::from_chain(tip);
+        let mut updates = TempoPoolUpdates::from_chain(tip);
+        if let Some(reverted) = reverted {
+            updates.extend_reverted_multisig_config_changes(&reverted);
+        }
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
@@ -895,6 +961,40 @@ mod tests {
         }
 
         #[test]
+        fn native_multisig_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                NATIVE_MULTISIG_ADDRESS,
+                INativeMultisig::MultisigConfigUpdated {
+                    account: Address::random(),
+                    threshold: 2,
+                    owners: vec![INativeMultisig::MultisigOwner {
+                        owner: Address::random(),
+                        weight: 1,
+                    }],
+                },
+            );
+            assert_decodes_like_generated!(
+                NativeMultisigPoolEvent,
+                ConfigUpdated,
+                INativeMultisig::MultisigConfigUpdated,
+                log
+            );
+
+            let log = event_log(
+                NATIVE_MULTISIG_ADDRESS,
+                INativeMultisig::MultisigInitialized {
+                    account: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                NativeMultisigPoolEvent,
+                Initialized,
+                INativeMultisig::MultisigInitialized,
+                log
+            );
+        }
+
+        #[test]
         fn fee_manager_decode_matches_generated_event_decoders() {
             let log = event_log(
                 TIP_FEE_MANAGER_ADDRESS,
@@ -1064,6 +1164,44 @@ mod tests {
         };
         let block = Block::new(header, body);
         RecoveredBlock::new_unhashed(block, senders)
+    }
+
+    #[test]
+    fn reorg_updates_include_reverted_multisig_config_changes() {
+        let account = Address::random();
+        let log = Log::new_from_event_unchecked(
+            NATIVE_MULTISIG_ADDRESS,
+            INativeMultisig::MultisigConfigUpdated {
+                account,
+                threshold: 1,
+                owners: vec![INativeMultisig::MultisigOwner {
+                    owner: Address::random(),
+                    weight: 1,
+                }],
+            },
+        )
+        .reserialize();
+        let receipt = tempo_primitives::TempoReceipt {
+            tx_type: tempo_primitives::TempoTxType::AA,
+            success: true,
+            cumulative_gas_used: 1,
+            logs: vec![log],
+        };
+        let reverted = create_test_chain_with_receipts(
+            vec![create_block_with_txs(1, vec![], vec![])],
+            vec![vec![receipt]],
+        );
+        let replacement = create_test_chain(vec![create_block_with_txs(1, vec![], vec![])]);
+
+        let mut updates = TempoPoolUpdates::from_chain(&replacement);
+        assert!(updates.multisig_config_changes.is_empty());
+
+        updates.extend_reverted_multisig_config_changes(&reverted);
+
+        assert_eq!(
+            updates.multisig_config_changes,
+            AddressSet::from_iter([account])
+        );
     }
 
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.
