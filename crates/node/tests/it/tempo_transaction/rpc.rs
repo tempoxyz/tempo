@@ -410,7 +410,7 @@ async fn test_tip_1061_fill_sign_send() -> eyre::Result<()> {
     submit_local_raw_transaction(&mut env, bootstrap, signature).await?;
 
     let stored = stored_config(&env, account).await?;
-    assert_eq!(stored.version, 0);
+    assert_eq!(stored.version, 1);
     assert_eq!(stored.threshold, 2);
 
     let mut initialized =
