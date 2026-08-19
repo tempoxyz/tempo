@@ -1423,7 +1423,7 @@ where
                             native_multisig_bootstrap.as_ref()
                             && signature.account() == *account
                         {
-                            NativeMultisigAuthConfig::Inline(init_config)
+                            NativeMultisigAuthConfig::BootstrapCompanion(init_config)
                         } else {
                             signature.validate_registered_shape().map_err(|reason| {
                                 TempoInvalidTransaction::NativeMultisigInvalidTransaction {
