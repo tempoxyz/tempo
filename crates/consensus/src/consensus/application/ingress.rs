@@ -162,6 +162,8 @@ mod tests {
         simplex::Plan,
         types::{Epoch, Round, View},
     };
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use commonware_p2p::Recipients;
     use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
     use commonware_utils::NZUsize;
 
@@ -194,6 +196,42 @@ mod tests {
             assert_eq!(first_message.digest, first);
 
             assert!(receiver.try_recv().is_err());
+        });
+    }
+
+    #[test]
+    fn broadcast_forwards_plan_to_mailbox() {
+        deterministic::Runner::default().start(|context| async move {
+            let (sender, mut receiver) = mailbox::new(context.child("mailbox"), NZUsize!(1));
+            let mut mailbox = Mailbox::from_sender(sender);
+            let round = Round::new(Epoch::zero(), View::zero());
+            let digest = Digest(B256::with_last_byte(7));
+            let peer = PrivateKey::from_seed(1).public_key();
+
+            assert_eq!(
+                mailbox.broadcast(
+                    digest,
+                    Plan::Forward {
+                        round,
+                        recipients: Recipients::One(peer.clone()),
+                    }
+                ),
+                Feedback::Ok
+            );
+
+            let Message::Broadcast(message) =
+                receiver.recv().await.expect("forward broadcast missing")
+            else {
+                panic!("expected broadcast");
+            };
+            assert_eq!(message.digest, digest);
+            assert!(matches!(
+                message.plan,
+                Plan::Forward {
+                    round: got_round,
+                    recipients: Recipients::One(got_peer)
+                } if got_round == round && got_peer == peer
+            ));
         });
     }
 }

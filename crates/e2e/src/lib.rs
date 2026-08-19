@@ -311,6 +311,7 @@ pub async fn setup_validators(
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state,
             with_subblocks,
+            forwarding: commonware_consensus::simplex::config::ForwardingPolicy::SilentLeader,
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,

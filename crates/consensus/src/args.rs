@@ -9,6 +9,7 @@ use std::{
 };
 
 use crate::network_identity::NetworkIdentity;
+use commonware_consensus::simplex::config::ForwardingPolicy;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
@@ -282,6 +283,19 @@ pub struct Args {
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
     pub subblock_broadcast_interval: PositiveDuration,
 
+    /// How simplex forwards certified blocks after entering the next view.
+    ///
+    /// `silent-leader` (default) sends only to the next view's leader when they
+    /// did not vote — the common liveness gap when a proposer withholds the
+    /// block from its successor. `silent-voters` forwards to every non-voter
+    /// (higher bandwidth). `disabled` turns forwarding off.
+    #[arg(
+        long = "consensus.forwarding-policy",
+        default_value = "silent-leader",
+        value_name = "POLICY"
+    )]
+    pub forwarding_policy: ForwardingPolicyArg,
+
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer. This is sent periodically even when there are no new
     /// blocks to ensure the execution layer stays in sync with the consensus
@@ -344,6 +358,37 @@ impl FromStr for PositiveDuration {
         let _: Duration = duration.try_into().wrap_err("duration must be positive")?;
 
         Ok(Self(duration))
+    }
+}
+
+/// CLI wrapper around [`ForwardingPolicy`].
+#[derive(Debug, Clone, Copy)]
+pub struct ForwardingPolicyArg(ForwardingPolicy);
+
+impl ForwardingPolicyArg {
+    pub const fn into_inner(self) -> ForwardingPolicy {
+        self.0
+    }
+}
+
+impl Default for ForwardingPolicyArg {
+    fn default() -> Self {
+        Self(ForwardingPolicy::SilentLeader)
+    }
+}
+
+impl FromStr for ForwardingPolicyArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self(ForwardingPolicy::Disabled)),
+            "silent-voters" | "silentvoters" => Ok(Self(ForwardingPolicy::SilentVoters)),
+            "silent-leader" | "silentleader" => Ok(Self(ForwardingPolicy::SilentLeader)),
+            other => Err(format!(
+                "unknown forwarding policy `{other}`; expected one of: disabled, silent-voters, silent-leader"
+            )),
+        }
     }
 }
 
@@ -516,6 +561,46 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
+    }
+
+    #[test]
+    fn forwarding_policy_defaults_to_silent_leader() {
+        use commonware_consensus::simplex::config::ForwardingPolicy;
+
+        let cli = parse(&["--dev"]);
+        assert!(matches!(
+            cli.consensus.forwarding_policy.into_inner(),
+            ForwardingPolicy::SilentLeader
+        ));
+    }
+
+    #[test]
+    fn forwarding_policy_parses_variants() {
+        use commonware_consensus::simplex::config::ForwardingPolicy;
+
+        let cli = parse(&["--dev", "--consensus.forwarding-policy", "disabled"]);
+        assert!(matches!(
+            cli.consensus.forwarding_policy.into_inner(),
+            ForwardingPolicy::Disabled
+        ));
+
+        let cli = parse(&["--dev", "--consensus.forwarding-policy", "silent-voters"]);
+        assert!(matches!(
+            cli.consensus.forwarding_policy.into_inner(),
+            ForwardingPolicy::SilentVoters
+        ));
+
+        let cli = parse(&["--dev", "--consensus.forwarding-policy", "SilentVoters"]);
+        assert!(matches!(
+            cli.consensus.forwarding_policy.into_inner(),
+            ForwardingPolicy::SilentVoters
+        ));
+
+        let cli = parse(&["--dev", "--consensus.forwarding-policy", "silent-leader"]);
+        assert!(matches!(
+            cli.consensus.forwarding_policy.into_inner(),
+            ForwardingPolicy::SilentLeader
+        ));
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

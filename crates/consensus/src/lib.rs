@@ -43,7 +43,7 @@ pub use crate::config::{
     VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
-pub use args::{Args, PositiveDuration};
+pub use args::{Args, ForwardingPolicyArg, PositiveDuration};
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
@@ -133,6 +133,7 @@ pub async fn run_consensus_stack(
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         with_subblocks: false,
+        forwarding: config.forwarding_policy.into_inner(),
 
         feed_state,
 
