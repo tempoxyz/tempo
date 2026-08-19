@@ -484,30 +484,41 @@ where
 
     /// Waits for reth's startup index rebuild to catch the Finish stage up to Headers.
     async fn wait_for_index_rebuild(&mut self) -> eyre::Result<()> {
-        loop {
-            let headers = self
-                .execution_node
-                .provider
-                .get_stage_checkpoint(StageId::Headers)
-                .wrap_err("failed reading reth Headers stage checkpoint")?;
-            let finish = self
-                .execution_node
-                .provider
-                .get_stage_checkpoint(StageId::Finish)
-                .wrap_err("failed reading reth Finish stage checkpoint")?;
+        for attempts in 1_u64.. {
+            let attempt = info_span!("index_rebuild_attempt", attempts);
+            let rebuilt = attempt.in_scope(|| -> eyre::Result<bool> {
+                let headers = self
+                    .execution_node
+                    .provider
+                    .get_stage_checkpoint(StageId::Headers)
+                    .wrap_err("failed reading reth Headers stage checkpoint")?;
+                let finish = self
+                    .execution_node
+                    .provider
+                    .get_stage_checkpoint(StageId::Finish)
+                    .wrap_err("failed reading reth Finish stage checkpoint")?;
 
-            if let Some(checkpoint) = rebuilt_index_checkpoint(headers, finish) {
-                info!(checkpoint, "execution indices are rebuilt");
+                if let Some(checkpoint) = rebuilt_index_checkpoint(headers, finish) {
+                    info_span!("index_rebuild_complete", checkpoint)
+                        .in_scope(|| info!("execution indices are rebuilt"));
+                    return Ok(true);
+                }
+
+                info!(
+                    headers = ?headers.map(|checkpoint| checkpoint.block_number),
+                    finish = ?finish.map(|checkpoint| checkpoint.block_number),
+                    "waiting for execution indices to rebuild"
+                );
+                Ok(false)
+            })?;
+            if rebuilt {
                 return Ok(());
             }
 
-            info!(
-                headers = ?headers.map(|checkpoint| checkpoint.block_number),
-                finish = ?finish.map(|checkpoint| checkpoint.block_number),
-                "waiting for execution indices to rebuild"
-            );
             self.context.sleep(INDEX_REBUILD_POLL_INTERVAL).await;
         }
+
+        unreachable!("unbounded index rebuild attempt range cannot be exhausted")
     }
 
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
