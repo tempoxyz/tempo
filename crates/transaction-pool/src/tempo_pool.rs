@@ -99,6 +99,17 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    /// Validates transactions without inserting them into either subpool.
+    pub(crate) async fn validate_transactions(
+        &self,
+        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
+    ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
+        self.protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.

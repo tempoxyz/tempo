@@ -14,6 +14,7 @@ use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
 use alloy_sol_types::SolInterface;
+use parking_lot::RwLock;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
@@ -43,7 +44,7 @@ use thiserror::Error;
 /// Tempo pooled transaction representation.
 ///
 /// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific implementations.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
@@ -58,25 +59,39 @@ pub struct TempoPooledTransaction {
     expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
-    /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
-    ///
-    /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
-    /// `None` for non-keychain transactions or keys that never expire.
-    key_expiry: OnceLock<Option<u64>>,
-    /// Resolved fee token cached at validation time.
-    ///
-    /// Used by `keychain_subject()` so pool maintenance matches against the same token
-    /// that was validated without requiring state access.
-    resolved_fee_token: OnceLock<Address>,
-    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
-    key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
+    /// State-derived values populated during pool validation.
+    validation_caches: RwLock<ValidationCaches>,
     /// Cached target key of an inline `KeyAuthorization`.
     key_authorization_target_subject: OnceLock<Option<KeyAuthorizationTargetSubject>>,
+}
+
+impl Clone for TempoPooledTransaction {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            fee_token_cost: self.fee_token_cost,
+            is_payment: self.is_payment,
+            expiring_nonce_hash: self.expiring_nonce_hash,
+            nonce_key_slot: self.nonce_key_slot.clone(),
+            expiring_nonce_slot: self.expiring_nonce_slot.clone(),
+            tx_env: self.tx_env.clone(),
+            validation_caches: RwLock::new(self.validation_caches.read().clone()),
+            key_authorization_target_subject: self.key_authorization_target_subject.clone(),
+        }
+    }
+}
+
+/// State-derived transaction metadata that must be refreshed together after revalidation.
+#[derive(Debug, Clone, Default)]
+struct ValidationCaches {
+    /// Keychain key expiry timestamp. The outer option distinguishes uncached from no expiry.
+    key_expiry: Option<Option<u64>>,
+    /// Resolved fee token cached at validation time.
+    resolved_fee_token: Option<Address>,
+    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
+    key_authorization_signer_subject: Option<Option<KeychainSubject>>,
     /// Cached TIP20 balance storage slot for the fee payer.
-    ///
-    /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
-    /// can check if the fee payer's balance was modified without recomputing the keccak.
-    fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    fee_balance_slot: Option<Option<(Address, U256)>>,
 }
 
 impl TempoPooledTransaction {
@@ -122,11 +137,8 @@ impl TempoPooledTransaction {
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
-            key_expiry: OnceLock::new(),
-            resolved_fee_token: OnceLock::new(),
-            key_authorization_signer_subject: OnceLock::new(),
+            validation_caches: RwLock::new(ValidationCaches::default()),
             key_authorization_target_subject: OnceLock::new(),
-            fee_balance_slot: OnceLock::new(),
         }
     }
 
@@ -218,7 +230,15 @@ impl TempoPooledTransaction {
     /// Used for revocation matching: if the access key that signed an inline authorization is
     /// revoked while the transaction is still in the pool, the transaction must be revalidated.
     pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
-        *self.key_authorization_signer_subject.get_or_init(|| {
+        if let Some(subject) = self
+            .validation_caches
+            .read()
+            .key_authorization_signer_subject
+        {
+            return subject;
+        }
+
+        let subject = (|| {
             let aa_tx = self.inner().as_aa()?;
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let key_id = key_authorization.recover_signer().ok()?;
@@ -232,7 +252,12 @@ impl TempoPooledTransaction {
                 key_id,
                 fee_token,
             })
-        })
+        })();
+
+        let mut caches = self.validation_caches.write();
+        *caches
+            .key_authorization_signer_subject
+            .get_or_insert(subject)
     }
 
     /// Extracts the target key of an inline `KeyAuthorization`.
@@ -348,7 +373,10 @@ impl TempoPooledTransaction {
     /// Pass `Some(expiry)` for keys with finite expiry, `None` for non-keychain txs
     /// or keys that never expire.
     pub fn set_key_expiry(&self, expiry: Option<u64>) {
-        let _ = self.key_expiry.set(expiry);
+        self.validation_caches
+            .write()
+            .key_expiry
+            .get_or_insert(expiry);
     }
 
     /// Returns the keychain key expiry timestamp, if set during validation.
@@ -356,7 +384,7 @@ impl TempoPooledTransaction {
     /// Returns `Some(expiry)` for keychain transactions with finite expiry.
     /// Returns `None` if not a keychain tx, key never expires, or not yet validated.
     pub fn key_expiry(&self) -> Option<u64> {
-        self.key_expiry.get().copied().flatten()
+        self.validation_caches.read().key_expiry.flatten()
     }
 
     /// Returns whether the transaction or its signing key expires by `cutoff`.
@@ -374,7 +402,23 @@ impl TempoPooledTransaction {
     /// transaction's explicit `fee_token` field or from fee-manager state. Pool
     /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
-        let _ = self.resolved_fee_token.set(fee_token);
+        self.validation_caches
+            .write()
+            .resolved_fee_token
+            .get_or_insert(fee_token);
+    }
+
+    /// Clones this transaction without state derived by an earlier validation.
+    pub(crate) fn with_discarded_caches(&self) -> Self {
+        let mut transaction = self.clone();
+        transaction.validation_caches = RwLock::new(ValidationCaches::default());
+        transaction
+    }
+
+    /// Atomically replaces state-derived caches with values from a fresh validation.
+    pub(crate) fn refresh_validation_caches_from(&self, fresh: &Self) {
+        let fresh = fresh.validation_caches.read().clone();
+        *self.validation_caches.write() = fresh;
     }
 
     /// Returns the fee token cached during transaction validation, if available.
@@ -383,7 +427,7 @@ impl TempoPooledTransaction {
     /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
     /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
-        self.resolved_fee_token.get().copied()
+        self.validation_caches.read().resolved_fee_token
     }
 
     /// Returns the effective fee token for pool maintenance and accounting.
@@ -402,14 +446,21 @@ impl TempoPooledTransaction {
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
     /// lazily computed and cached on first access.
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
-        *self.fee_balance_slot.get_or_init(|| {
+        if let Some(slot) = self.validation_caches.read().fee_balance_slot {
+            return slot;
+        }
+
+        let slot = (|| {
             let fee_token = self
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
-        })
+        })();
+
+        let mut caches = self.validation_caches.write();
+        *caches.fee_balance_slot.get_or_insert(slot)
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -960,6 +1011,37 @@ mod tests {
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
         (pooled, envelope, sender, encoded_length)
+    }
+
+    #[test]
+    fn revalidation_caches_are_discarded_and_refreshed_atomically() {
+        let original = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(42))
+            .build();
+        let old_fee_token = address!("20C0000000000000000000000000000000000002");
+        let new_fee_token = address!("20C0000000000000000000000000000000000003");
+
+        let nonce_key_slot = original.nonce_key_slot();
+        let _ = original.tx_env();
+        original.set_key_expiry(Some(100));
+        original.set_resolved_fee_token(old_fee_token);
+        let old_balance_slot = original.fee_balance_slot();
+
+        let fresh = original.with_discarded_caches();
+        assert_eq!(fresh.nonce_key_slot(), nonce_key_slot);
+        assert!(fresh.cached_tx_env().is_some());
+        assert_eq!(fresh.key_expiry(), None);
+        assert_eq!(fresh.resolved_fee_token(), None);
+
+        fresh.set_key_expiry(Some(200));
+        fresh.set_resolved_fee_token(new_fee_token);
+        let new_balance_slot = fresh.fee_balance_slot();
+        assert_ne!(new_balance_slot, old_balance_slot);
+
+        original.refresh_validation_caches_from(&fresh);
+        assert_eq!(original.key_expiry(), Some(200));
+        assert_eq!(original.resolved_fee_token(), Some(new_fee_token));
+        assert_eq!(original.fee_balance_slot(), new_balance_slot);
     }
 
     #[test]

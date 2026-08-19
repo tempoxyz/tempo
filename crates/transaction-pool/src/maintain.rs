@@ -18,8 +18,10 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
-use std::time::Instant;
+use reth_transaction_pool::{
+    AllPoolTransactions, TransactionPool, TransactionValidationOutcome, ValidPoolTransaction,
+};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -31,6 +33,110 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+/// Revalidates the selected entries without making them temporarily invisible to pool maintenance.
+///
+/// A validation result is only applied if it was produced while the canonical head stayed fixed
+/// and the exact pool entry is still current. Head changes retry against the new state; entry
+/// changes mean another pool operation already superseded this work.
+async fn revalidate_current_entries<Client, EvmConfig>(
+    pool: TempoTransactionPool<Client, EvmConfig>,
+    mut entries: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    reason: &'static str,
+) where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    loop {
+        entries.retain(|expected| {
+            pool.get(expected.hash())
+                .is_some_and(|current| Arc::ptr_eq(&current, expected))
+        });
+        if entries.is_empty() {
+            return;
+        }
+
+        let validation_head = match pool.client().chain_info() {
+            Ok(info) => info.best_hash,
+            Err(err) => {
+                error!(target: "txpool", ?err, reason, "Failed to read revalidation head");
+                return;
+            }
+        };
+        let transactions = entries
+            .iter()
+            .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+            .collect();
+        let outcomes = pool.validate_transactions(transactions).await;
+
+        let current_head = match pool.client().chain_info() {
+            Ok(info) => info.best_hash,
+            Err(err) => {
+                error!(target: "txpool", ?err, reason, "Failed to verify revalidation head");
+                return;
+            }
+        };
+        if current_head != validation_head {
+            debug!(
+                target: "txpool",
+                ?validation_head,
+                ?current_head,
+                reason,
+                "Canonical head changed during revalidation; retrying"
+            );
+            continue;
+        }
+
+        let mut valid = 0usize;
+        let mut invalid = 0usize;
+        let mut errors = 0usize;
+        for (expected, outcome) in entries.into_iter().zip(outcomes) {
+            let is_current = || {
+                pool.get(expected.hash())
+                    .is_some_and(|current| Arc::ptr_eq(&current, &expected))
+            };
+            if !is_current() {
+                continue;
+            }
+
+            match outcome {
+                TransactionValidationOutcome::Valid { transaction, .. } => {
+                    expected
+                        .transaction
+                        .refresh_validation_caches_from(transaction.transaction());
+                    valid += 1;
+                }
+                TransactionValidationOutcome::Invalid(_, _) => {
+                    if is_current()
+                        && pool
+                            .remove_transactions(vec![*expected.hash()])
+                            .iter()
+                            .any(|removed| Arc::ptr_eq(removed, &expected))
+                    {
+                        invalid += 1;
+                    }
+                }
+                TransactionValidationOutcome::Error(_, err) => {
+                    errors += 1;
+                    debug!(target: "txpool", ?err, tx_hash = %expected.hash(), reason, "Transaction revalidation failed");
+                }
+            }
+        }
+
+        debug!(
+            target: "txpool",
+            valid,
+            invalid,
+            errors,
+            reason,
+            "Revalidated transactions in place"
+        );
+        return;
+    }
+}
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -646,7 +752,7 @@ where
                 tokio::spawn(async move {
                     let txs: Vec<_> = paused_entries
                         .into_iter()
-                        .map(|e| e.tx.transaction.clone())
+                        .map(|e| e.tx.transaction.with_discarded_caches())
                         .collect();
 
                     let results = pool_clone.add_external_transactions(txs).await;
@@ -695,9 +801,9 @@ where
             .record(pause_start.elapsed());
 
         // 7. Handle potentially invalidating updates
-        // When a cached value changes of a token (transfer policy, or quote token) changes,
-        // pending transactions using that token may become invalid. We need to remove them
-        // and re-add so they go through full validation against the updated state.
+        // When a cached value of a token (transfer policy or quote token) changes, pending
+        // transactions using that token may become invalid. Revalidate copies while keeping the
+        // current entries visible so later maintenance events cannot miss them.
         for (updated, counter, reason) in [
             (
                 &updates.transfer_policy_updates,
@@ -714,7 +820,7 @@ where
                 continue;
             }
 
-            let hashes: Vec<TxHash> = {
+            let transactions: Vec<_> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                 all_txs
                     .iter()
@@ -724,36 +830,15 @@ where
                             .resolved_fee_token()
                             .is_some_and(|t| updated.contains(&t))
                     })
-                    .map(|tx| *tx.hash())
+                    .cloned()
                     .collect()
             };
-            if !hashes.is_empty() {
-                let removed_txs = pool.remove_transactions(hashes);
-                let count = removed_txs.len();
-
-                for tx in &removed_txs {
-                    removed_this_iteration.insert(*tx.hash());
-                }
-
+            if !transactions.is_empty() {
+                let count = transactions.len();
                 counter.increment(count as u64);
 
                 let pool_clone = pool.clone();
-                tokio::spawn(async move {
-                    let txs: Vec<_> = removed_txs
-                        .into_iter()
-                        .map(|tx| (tx.origin, tx.transaction.clone()))
-                        .collect();
-
-                    let results = pool_clone.add_transactions_with_origins(txs).await;
-                    let success = results.iter().filter(|r| r.is_ok()).count();
-                    debug!(
-                        target: "txpool",
-                        total = count,
-                        success,
-                        reason,
-                        "Re-validated transactions"
-                    );
-                });
+                tokio::spawn(revalidate_current_entries(pool_clone, transactions, reason));
             }
         }
 
