@@ -302,15 +302,9 @@ impl TempoPoolUpdates {
 
     fn affects_multisig_transaction(&self, transaction: &TempoPooledTransaction) -> bool {
         (!self.multisig_config_changes.is_empty()
-            && transaction
-                .multisig_accounts()
-                .iter()
-                .any(|account| self.multisig_config_changes.contains(account)))
+            && transaction.depends_on_multisig_config(&self.multisig_config_changes))
             || (!self.multisig_initializations.is_empty()
-                && transaction
-                    .multisig_registry_dependencies()
-                    .iter()
-                    .any(|account| self.multisig_initializations.contains(account)))
+                && transaction.uses_multisig_restricted_account(&self.multisig_initializations))
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.

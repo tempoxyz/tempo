@@ -11,7 +11,8 @@ use alloy_eips::{
 };
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
 use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
@@ -36,8 +37,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        InvalidValidAfter, InvalidValidBefore, MultisigSignature, TempoSignature,
-        calc_gas_balance_spending,
+        InvalidValidAfter, InvalidValidBefore, MultisigSignature, calc_gas_balance_spending,
     },
 };
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -216,71 +216,61 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns every native multisig account whose stored config this transaction's authorization
-    /// depends on across its outer and key-authorization signatures, including every nested
-    /// multisig owner account in either approval tree.
-    ///
-    /// The stateful verifier recurses into nested multisig owners and reloads their
-    /// threshold/owner weights, so a config rotation of the outer account *or any nested owner*
-    /// can invalidate an already-pooled transaction. All of them must be matched against on-chain
-    /// config changes when deciding eviction. Recursion is bounded by `MAX_MULTISIG_NESTING_DEPTH`,
-    /// which is enforced at decode time.
-    pub(crate) fn multisig_accounts(&self) -> Vec<Address> {
-        fn collect(sig: &MultisigSignature, out: &mut Vec<Address>) {
-            out.push(sig.account());
-            for approval in sig.signatures() {
-                if let TempoSignature::Multisig(nested) = approval {
-                    collect(nested, out);
-                }
-            }
+    /// Returns whether this transaction's authorization depends on one of the changed multisig
+    /// configs, including nested owner accounts.
+    pub(crate) fn depends_on_multisig_config(&self, changed_accounts: &AddressSet) -> bool {
+        fn contains_changed_account(
+            signature: &MultisigSignature,
+            changed_accounts: &AddressSet,
+        ) -> bool {
+            changed_accounts.contains(&signature.account())
+                || signature.signatures().iter().any(|approval| {
+                    approval
+                        .as_multisig()
+                        .is_some_and(|nested| contains_changed_account(nested, changed_accounts))
+                })
         }
 
-        let mut accounts = Vec::new();
-        if let Some(aa_tx) = self.inner().as_aa() {
-            if let Some(multisig) = aa_tx.signature().as_multisig() {
-                collect(multisig, &mut accounts);
-            }
-            if let Some(multisig) = aa_tx
-                .tx()
-                .key_authorization
-                .as_ref()
-                .and_then(|authorization| authorization.signature.as_multisig())
-            {
-                collect(multisig, &mut accounts);
-            }
-        }
-        accounts
+        self.inner().as_aa().is_some_and(|aa_tx| {
+            aa_tx
+                .signature()
+                .as_multisig()
+                .is_some_and(|signature| contains_changed_account(signature, changed_accounts))
+                || aa_tx
+                    .tx()
+                    .key_authorization
+                    .as_ref()
+                    .and_then(|authorization| authorization.signature.as_multisig())
+                    .is_some_and(|signature| contains_changed_account(signature, changed_accounts))
+        })
     }
 
-    /// Returns identities whose later native multisig initialization would invalidate this
-    /// transaction's use of a registry-restricted role.
-    pub(crate) fn multisig_registry_dependencies(&self) -> Vec<Address> {
-        let mut accounts = Vec::new();
-
+    /// Returns whether this transaction uses one of the accounts newly subject to native
+    /// multisig registry restrictions.
+    pub(crate) fn uses_multisig_restricted_account(&self, accounts: &AddressSet) -> bool {
         if let Some(aa_tx) = self.inner().as_aa() {
             let tx = aa_tx.tx();
-            if let Some(key_authorization) = &tx.key_authorization {
-                accounts.push(key_authorization.authorization.key_id);
-            }
-            if tx.fee_payer_signature.is_some()
-                && let Ok(fee_payer) = self.fee_payer()
-            {
-                accounts.push(fee_payer);
-            }
-            accounts.extend(
-                tx.tempo_authorization_list
-                    .iter()
-                    .filter_map(|authorization| authorization.recover_authority().ok()),
-            );
+            tx.key_authorization
+                .as_ref()
+                .is_some_and(|authorization| accounts.contains(&authorization.authorization.key_id))
+                || (tx.fee_payer_signature.is_some()
+                    && self
+                        .fee_payer()
+                        .is_ok_and(|fee_payer| accounts.contains(&fee_payer)))
+                || tx.tempo_authorization_list.iter().any(|authorization| {
+                    authorization
+                        .recover_authority()
+                        .is_ok_and(|authority| accounts.contains(&authority))
+                })
         } else if let Some(authorizations) = self.inner().authorization_list() {
-            accounts.extend(
-                authorizations
-                    .iter()
-                    .filter_map(|authorization| authorization.recover_authority().ok()),
-            );
+            authorizations.iter().any(|authorization| {
+                authorization
+                    .recover_authority()
+                    .is_ok_and(|authority| accounts.contains(&authority))
+            })
+        } else {
+            false
         }
-
-        accounts
     }
 
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
@@ -1210,12 +1200,14 @@ mod tests {
         let direct = TxBuilder::aa(account)
             .key_authorization(key_authorization(None))
             .build_keychain(account, &access_key);
-        assert_eq!(direct.multisig_accounts(), vec![account]);
+        assert!(direct.depends_on_multisig_config(&AddressSet::from_iter([account])));
+        assert!(!direct.depends_on_multisig_config(&AddressSet::from_iter([nested_account])));
 
         let nested = TxBuilder::aa(account)
             .key_authorization(key_authorization(Some(nested_account)))
             .build_keychain(account, &access_key);
-        assert_eq!(nested.multisig_accounts(), vec![account, nested_account]);
+        assert!(nested.depends_on_multisig_config(&AddressSet::from_iter([account])));
+        assert!(nested.depends_on_multisig_config(&AddressSet::from_iter([nested_account])));
     }
 
     #[test]
