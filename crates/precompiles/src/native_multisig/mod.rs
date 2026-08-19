@@ -70,7 +70,6 @@ pub struct RegisteredMultisigHeader {
 pub struct RegisteredMultisigConfig {
     pub threshold: u8,
     pub version: u64,
-    pub owner_count: usize,
     pub owners: Vec<MultisigOwner>,
 }
 
@@ -223,11 +222,9 @@ impl NativeMultisig {
                 .load_stored_config_with_header(account, header)
                 .map(|stored| {
                     let StoredMultisigConfig { config, version } = stored;
-                    let owner_count = config.owners.len();
                     Some(RegisteredMultisigConfig {
                         threshold: config.threshold,
                         version,
-                        owner_count,
                         owners: config.owners,
                     })
                 }),

@@ -1,10 +1,10 @@
 use alloy::primitives::{Address, B256};
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigOwner, MultisigQuorumError,
-    MultisigSignature, MultisigWeightAccumulator, TempoSignature,
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MultisigQuorumError, MultisigSignature,
+    MultisigWeightAccumulator, TempoSignature,
 };
 
-use super::NativeMultisig;
+use super::{NativeMultisig, RegisteredMultisigConfig};
 use crate::error::TempoPrecompileError;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -41,11 +41,7 @@ pub enum NativeMultisigAuthConfig<'a> {
     Inline(&'a InitMultisig),
     /// An inline config carried by the transaction's other multisig authorization.
     BootstrapCompanion(&'a InitMultisig),
-    Registered {
-        threshold: u8,
-        version: u64,
-        owners: Vec<MultisigOwner>,
-    },
+    Registered(RegisteredMultisigConfig),
 }
 
 impl NativeMultisigAuthConfig<'_> {
@@ -53,7 +49,7 @@ impl NativeMultisigAuthConfig<'_> {
         match (self, signature.init()) {
             (Self::Inline(expected), Some(actual)) => *expected == actual,
             (Self::BootstrapCompanion(_), None) => true,
-            (Self::Registered { .. }, None) => true,
+            (Self::Registered(_), None) => true,
             _ => false,
         }
     }
@@ -63,7 +59,7 @@ impl NativeMultisigAuthConfig<'_> {
             Self::Inline(_) | Self::BootstrapCompanion(_) => {
                 NativeMultisigAuthError::invalid_transaction("invalid multisig owner signature")
             }
-            Self::Registered { .. } => {
+            Self::Registered(_) => {
                 NativeMultisigAuthError::validation_failed("invalid multisig owner signature")
             }
         }
@@ -72,14 +68,14 @@ impl NativeMultisigAuthConfig<'_> {
     fn threshold(&self) -> u8 {
         match self {
             Self::Inline(config) | Self::BootstrapCompanion(config) => config.threshold,
-            Self::Registered { threshold, .. } => *threshold,
+            Self::Registered(config) => config.threshold,
         }
     }
 
     fn version(&self) -> u64 {
         match self {
             Self::Inline(_) | Self::BootstrapCompanion(_) => 0,
-            Self::Registered { version, .. } => *version,
+            Self::Registered(config) => config.version,
         }
     }
 
@@ -88,10 +84,11 @@ impl NativeMultisigAuthConfig<'_> {
             Self::Inline(config) | Self::BootstrapCompanion(config) => {
                 config.owner_weight(owner).unwrap_or_default()
             }
-            Self::Registered { owners, .. } => owners
+            Self::Registered(config) => config
+                .owners
                 .binary_search_by_key(&owner, |configured| configured.owner)
                 .ok()
-                .map(|index| owners[index].weight)
+                .map(|index| config.owners[index].weight)
                 .unwrap_or_default(),
         };
         if weight == 0 {
@@ -106,7 +103,7 @@ impl NativeMultisigAuthConfig<'_> {
                 .validate()
                 .map(|_| ())
                 .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str())),
-            Self::Registered { .. } => Ok(()),
+            Self::Registered(_) => Ok(()),
         }
     }
 
@@ -116,7 +113,7 @@ impl NativeMultisigAuthConfig<'_> {
                 NativeMultisigAuthError::validation_failed(err.as_str())
             }
             MultisigQuorumError::ExcessSignatures | MultisigQuorumError::SignersNotAscending
-                if matches!(self, Self::Registered { .. }) =>
+                if matches!(self, Self::Registered(_)) =>
             {
                 NativeMultisigAuthError::validation_failed(err.as_str())
             }
@@ -141,7 +138,7 @@ impl NativeMultisig {
         mut load_registered_config: impl FnMut(
             Address,
         ) -> Result<
-            (u8, u64, Vec<MultisigOwner>),
+            RegisteredMultisigConfig,
             NativeMultisigAuthError,
         >,
     ) -> Result<(), NativeMultisigAuthError> {
@@ -164,7 +161,7 @@ impl NativeMultisig {
         load_registered_config: &mut impl FnMut(
             Address,
         ) -> Result<
-            (u8, u64, Vec<MultisigOwner>),
+            RegisteredMultisigConfig,
             NativeMultisigAuthError,
         >,
     ) -> Result<(), NativeMultisigAuthError> {
@@ -223,16 +220,12 @@ impl NativeMultisig {
                     ));
                 }
 
-                let (threshold, version, owners) = load_registered_config(owner)?;
+                let config = load_registered_config(owner)?;
                 account_path.push(owner);
                 self.verify_authorization_inner(
                     digest,
                     nested_signature,
-                    NativeMultisigAuthConfig::Registered {
-                        threshold,
-                        version,
-                        owners,
-                    },
+                    NativeMultisigAuthConfig::Registered(config),
                     account_path,
                     load_registered_config,
                 )?;
@@ -264,7 +257,7 @@ mod tests {
         InitMultisig, MultisigOwner, MultisigSignature, TempoSignature,
     };
 
-    use super::{NativeMultisigAuthConfig, NativeMultisigAuthError};
+    use super::{NativeMultisigAuthConfig, NativeMultisigAuthError, RegisteredMultisigConfig};
     use crate::native_multisig::NativeMultisig;
 
     fn init_config() -> InitMultisig {
@@ -288,11 +281,11 @@ mod tests {
                 .unwrap();
         let registered_signature =
             MultisigSignature::from_decoded(account, approvals, None).unwrap();
-        let registered_config = NativeMultisigAuthConfig::Registered {
+        let registered_config = NativeMultisigAuthConfig::Registered(RegisteredMultisigConfig {
             threshold: init.threshold,
             version: 1,
             owners: init.owners.clone(),
-        };
+        });
 
         let verify = |signature, config| {
             NativeMultisig::new().verify_authorization(B256::ZERO, signature, config, |_| {
