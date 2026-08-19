@@ -262,13 +262,6 @@ pub enum TempoInvalidTransaction {
         reason: String,
     },
 
-    /// Registered native multisig accounts must use a native multisig signature.
-    #[error("registered native multisig account {account} requires a native multisig signature")]
-    NativeMultisigRequiresMultisigSignature {
-        /// Native multisig account.
-        account: Address,
-    },
-
     /// Native multisig accounts cannot sponsor other transactions via fee-payer signatures.
     #[error("native multisig account {account} cannot be used as a fee payer")]
     NativeMultisigFeePayerNotAllowed {
@@ -368,7 +361,6 @@ impl TempoInvalidTransaction {
             | Self::KeychainValidationFailed { .. }
             | Self::NativeMultisigNotActive
             | Self::NativeMultisigValidationFailed { .. }
-            | Self::NativeMultisigRequiresMultisigSignature { .. }
             | Self::NativeMultisigFeePayerNotAllowed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
