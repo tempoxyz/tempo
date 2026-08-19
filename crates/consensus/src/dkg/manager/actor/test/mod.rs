@@ -315,7 +315,7 @@ fn healing_recovers_an_acked_share_from_persisted_dealings() {
 }
 
 #[test]
-fn healing_skips_recovery_after_a_failed_ceremony() {
+fn healing_skips_reading_previous_epoch_after_a_failed_ceremony() {
     Runner::default().start(|mut context| async move {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let ceremony_epoch = Epoch::new(1);
