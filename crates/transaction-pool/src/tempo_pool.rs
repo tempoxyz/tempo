@@ -503,7 +503,6 @@ where
             {
                 to_remove.push(*tx.hash());
                 user_token_count += 1;
-                continue;
             }
         }
 
