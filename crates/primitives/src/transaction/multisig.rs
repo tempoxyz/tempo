@@ -1053,9 +1053,10 @@ impl alloy_rlp::Encodable for MultisigSignature {
 /// another account type. The account is `keccak256(..)[12:]` over a caller-chosen salt (both the
 /// direct and CREATE2 recovery derivations), so an attacker can grind the salt to aim the derived
 /// address at a pattern; the exclusions differ in how feasible that is:
-/// - `is_virtual` fixes 10 bytes (~2^80 work) and `is_tip20` fixes a 12-byte prefix (~2^96): these
-///   are pattern namespaces a well-resourced attacker could plausibly grind, so they are the
-///   load-bearing checks that keep a multisig account out of the virtual / TIP-20 address spaces.
+/// - `is_virtual` fixes 10 bytes (~2^80 work), while the TIP-20 and ZonePortal namespaces fix a
+///   12-byte prefix (~2^96): these are pattern namespaces a well-resourced attacker could
+///   plausibly grind, so they are the load-bearing checks that keep a multisig account out of
+///   reserved address spaces.
 /// - `is_zero` and the fixed / low-range precompile cases fix ~152-160 bits (>= ~2^156 work): not
 ///   grindable in practice, kept as cheap defense-in-depth.
 ///
@@ -1064,6 +1065,7 @@ impl alloy_rlp::Encodable for MultisigSignature {
 pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
     !account.is_zero()
         && !account.is_virtual()
+        && !account.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX)
         && !account.is_precompile(spec)
         && !is_evm_precompile(account, spec)
 }
@@ -1581,6 +1583,14 @@ mod tests {
         assert!(!is_valid_multisig_account(
             PATH_USD_ADDRESS,
             TempoHardfork::Genesis
+        ));
+
+        let mut zone_portal = [0u8; 20];
+        zone_portal[..12].copy_from_slice(&Address::ZONE_PORTAL_PREFIX);
+        zone_portal[19] = 1;
+        assert!(!is_valid_multisig_account(
+            Address::from(zone_portal),
+            TempoHardfork::T11
         ));
 
         for &(precompile, activated) in SYSTEM_PRECOMPILES {
