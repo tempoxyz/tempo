@@ -112,7 +112,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          # Temporary: foundry-rs/foundry#16213 pins tempoxyz/mpp-rs#391 at 5d2fdf7.
+          ref: 607d560005bec7972df15e4f231b5fe33b11e7b6
           path: foundry
           persist-credentials: false
 
@@ -260,7 +261,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: master
+          # Temporary: foundry-rs/foundry#16213 pins tempoxyz/mpp-rs#391 at 5d2fdf7.
+          ref: 607d560005bec7972df15e4f231b5fe33b11e7b6
           path: foundry
           persist-credentials: false
 
