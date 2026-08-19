@@ -35,8 +35,9 @@ use revm::{
     state::AccountInfo,
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
-use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
+use tempo_contracts::{
+    TempoHardfork,
+    precompiles::{IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
@@ -1407,12 +1408,6 @@ where
                                 }
                                 .into());
                             }
-                            if signature.account() != tx.caller() {
-                                return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                                    reason: "key authorization multisig_init must derive the transaction caller".to_string(),
-                                }
-                                .into());
-                            }
                             validate_native_multisig_bootstrap_nonce(
                                 caller_account_info
                                     .as_ref()
@@ -1465,6 +1460,14 @@ where
                                 owners,
                             }
                         };
+                        let bootstrap = match &config {
+                            NativeMultisigAuthConfig::Inline(init_config)
+                                if native_multisig_bootstrap.is_none() =>
+                            {
+                                Some((signature.account(), (*init_config).clone()))
+                            }
+                            _ => None,
+                        };
 
                         if is_rpc_simulation {
                             validate_rpc_nested_multisig_configs::<DB>(
@@ -1476,14 +1479,11 @@ where
                                 &multisig_precompile,
                                 key_auth.authorization.signature_hash(),
                                 signature,
-                                config.clone(),
+                                config,
                             )?;
                         }
-                        if let NativeMultisigAuthConfig::Inline(init_config) = config
-                            && native_multisig_bootstrap.is_none()
-                        {
-                            native_multisig_bootstrap =
-                                Some((signature.account(), init_config.clone()));
+                        if let Some(bootstrap) = bootstrap {
+                            native_multisig_bootstrap = Some(bootstrap);
                         }
                     }
 
@@ -2341,17 +2341,17 @@ where
 
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
-            let has_native_multisig_fields = aa_env.signature.is_multisig()
+            let has_native_multisig_authorization = aa_env.signature.is_multisig()
                 || aa_env
                     .key_authorization
                     .as_ref()
                     .is_some_and(|key_auth| key_auth.signature.is_multisig());
 
-            if has_native_multisig_fields && !cfg.spec.is_t11() {
+            if has_native_multisig_authorization && !cfg.spec.is_t11() {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
             }
 
-            if aa_env.subblock_transaction && has_native_multisig_fields {
+            if aa_env.subblock_transaction && has_native_multisig_authorization {
                 return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
                     reason: "native multisig signatures are not allowed in subblock transactions"
                         .to_string(),
@@ -2360,26 +2360,12 @@ where
             }
 
             if let Some(multisig_signature) = aa_env.signature.as_multisig() {
-                let account = multisig_signature.recover_account().map_err(|reason| {
-                    TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                        reason: reason.to_string(),
-                    }
-                })?;
-                if account != tx.caller {
-                    return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                        reason: "multisig signature account does not match transaction caller"
-                            .to_string(),
-                    }
-                    .into());
-                }
-                if multisig_signature.init().is_some()
-                    && !is_valid_multisig_account(account, *cfg.spec())
-                {
-                    return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                        reason: "multisig_init derives a reserved account address".to_string(),
-                    }
-                    .into());
-                }
+                let account = validate_native_multisig_signature_account(
+                    multisig_signature,
+                    tx.caller,
+                    *cfg.spec(),
+                    "multisig signature account does not match transaction caller",
+                )?;
                 if aa_env
                     .tempo_authorization_list
                     .iter()
@@ -2412,26 +2398,12 @@ where
 
             if let Some(key_auth) = &aa_env.key_authorization {
                 if let Some(signature) = key_auth.signature.as_multisig() {
-                    let account = signature.recover_account().map_err(|reason| {
-                        TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                            reason: reason.to_string(),
-                        }
-                    })?;
-                    if account != tx.caller {
-                        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                            reason: "multisig key authorization must be signed by the transaction caller"
-                                .to_string(),
-                        }
-                        .into());
-                    }
-                    if signature.init().is_some()
-                        && !is_valid_multisig_account(account, *cfg.spec())
-                    {
-                        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                            reason: "multisig_init derives a reserved account address".to_string(),
-                        }
-                        .into());
-                    }
+                    let account = validate_native_multisig_signature_account(
+                        signature,
+                        tx.caller,
+                        *cfg.spec(),
+                        "multisig key authorization must be signed by the transaction caller",
+                    )?;
                     if key_auth.account != Some(tx.caller) {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason:
@@ -2441,13 +2413,6 @@ where
                         .into());
                     }
                     if signature.init().is_some() {
-                        if account != tx.caller {
-                            return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                                reason: "key authorization multisig_init must derive the transaction caller"
-                                    .to_string(),
-                            }
-                            .into());
-                        }
                         if aa_env
                             .tempo_authorization_list
                             .iter()
@@ -3235,6 +3200,30 @@ pub fn validate_time_window(
     }
 
     Ok(())
+}
+
+fn validate_native_multisig_signature_account(
+    signature: &MultisigSignature,
+    expected_account: Address,
+    spec: TempoHardfork,
+    account_mismatch_reason: &'static str,
+) -> Result<Address, TempoInvalidTransaction> {
+    let account = signature.recover_account().map_err(|reason| {
+        TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+            reason: reason.to_string(),
+        }
+    })?;
+    if account != expected_account {
+        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+            reason: account_mismatch_reason.to_string(),
+        });
+    }
+    if signature.init().is_some() && !is_valid_multisig_account(account, spec) {
+        return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+            reason: "multisig_init derives a reserved account address".to_string(),
+        });
+    }
+    Ok(account)
 }
 
 fn verify_native_multisig_authorization<DB: Database>(
