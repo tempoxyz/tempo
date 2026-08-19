@@ -452,7 +452,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
     fn from_encoded_tx(tx: &AASigned, sender: Address, encoded: Bytes) -> Self {
         let mut tx_env = Self::from_recovered_tx(tx, sender);
-        tx_env.mark_rpc_block_simulation(&encoded);
+        tx_env.maybe_mark_rpc_block_simulation(&encoded);
         tx_env
     }
 }
@@ -460,7 +460,7 @@ impl FromTxWithEncoded<AASigned> for TempoTxEnv {
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, encoded: Bytes) -> Self {
         let mut tx_env = Self::from_recovered_tx(tx, sender);
-        tx_env.mark_rpc_block_simulation(&encoded);
+        tx_env.maybe_mark_rpc_block_simulation(&encoded);
         tx_env
     }
 }
@@ -470,7 +470,7 @@ impl TempoTxEnv {
     ///
     /// Real signed transactions always have a non-empty EIP-2718 encoding. Reth uses an empty
     /// encoding only for block simulations so execution layers can omit envelope-derived costs.
-    fn mark_rpc_block_simulation(&mut self, encoded: &Bytes) {
+    fn maybe_mark_rpc_block_simulation(&mut self, encoded: &Bytes) {
         if encoded.is_empty() {
             self.execution_context = ExecutionContext::Simulation;
         }
