@@ -383,6 +383,9 @@ pub(crate) mod marshal {
         Ok(())
     }
 
+    /// Reads the header at `height` from the execution layer, falling back to
+    /// the hybrid store (and therefore its finalized-block archive cache) when
+    /// unavailable.
     #[instrument(skip_all, fields(%height), err)]
     async fn read_header<TContext>(
         execution_node: &TempoFullNode,
