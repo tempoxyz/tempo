@@ -212,6 +212,151 @@ fn new_payload_transport_error_is_withheld_then_retried() {
 }
 
 #[test_traced]
+fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
+            validation_error: "rejected".into(),
+        }));
+
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+        h.wait_until(|| h.execution.fcus().len() == 1).await;
+        h.run_for(Duration::from_millis(10)).await;
+
+        assert!(
+            h.execution.knows_block(d1),
+            "the successful new-payload call must leave the block known to the EL",
+        );
+        assert_eq!(
+            h.execution.head(),
+            GENESIS,
+            "the rejected FCU must not move the EL head",
+        );
+
+        // Re-anchor consensus on genesis. If the actor had advanced its own
+        // tracked head despite the rejected FCU, it would now issue a repoint.
+        h.report_pending_head(3, 0, GENESIS);
+        let candidate = make_block(3, 1, GENESIS);
+        assert!(
+            h.verify(round(3), candidate)
+                .await
+                .expect("the actor should continue serving validation")
+                .is_some(),
+        );
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(
+            h.execution.fcus().len(),
+            1,
+            "the actor and EL must agree that the head remained at genesis",
+        );
+    });
+}
+
+#[test_traced]
+fn rejected_notarized_fcu_is_withheld_then_retried() {
+    deterministic::Runner::default().start(|context| async move {
+        // An FCU rejection uses the shared notarized-block retry mechanism:
+        // the block is withheld for the rejection delay, and heartbeats drive
+        // the scheduler until it becomes eligible to be forwarded again.
+        let h = Harness::builder()
+            .harness_options(HarnessOptions {
+                fcu_heartbeat_interval: Duration::from_millis(200),
+                ..Default::default()
+            })
+            .start(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
+            validation_error: "transient".into(),
+        }));
+
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+
+        h.run_for(Duration::from_secs(5)).await;
+        assert_eq!(
+            h.execution.new_payloads(),
+            vec![d1],
+            "a rejected FCU must not trigger a tight convergence retry",
+        );
+        assert_eq!(h.execution.head(), GENESIS);
+
+        h.run_for(Duration::from_secs(6)).await;
+        h.wait_until(|| h.execution.head() == d1).await;
+        assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
+    });
+}
+
+#[test_traced]
+fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+
+        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.head(), GENESIS);
+
+        let candidate = make_block(3, 1, GENESIS);
+        assert!(
+            h.verify(round(3), candidate)
+                .await
+                .expect("the actor should survive a SYNCING notarized payload")
+                .is_some(),
+        );
+    });
+}
+
+#[test_traced]
+fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+        h.execution
+            .script_new_payload(d1, Ok(PayloadStatusEnum::Accepted));
+
+        h.report_pending_head(2, 1, d1);
+        h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
+            .await;
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+        h.run_for(Duration::from_millis(10)).await;
+
+        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.head(), GENESIS);
+
+        let candidate = make_block(3, 1, GENESIS);
+        assert!(
+            h.verify(round(3), candidate)
+                .await
+                .expect("the actor should survive an ACCEPTED notarized payload")
+                .is_some(),
+        );
+    });
+}
+
+#[test_traced]
 fn stranded_head_is_repointed_onto_the_finalized_tip() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
