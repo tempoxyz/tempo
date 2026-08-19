@@ -252,6 +252,37 @@ impl TempoPooledTransaction {
         accounts
     }
 
+    /// Returns identities whose later native multisig initialization would invalidate this
+    /// transaction's use of a registry-restricted role.
+    pub fn multisig_registry_dependencies(&self) -> Vec<Address> {
+        let mut accounts = Vec::new();
+
+        if let Some(aa_tx) = self.inner().as_aa() {
+            let tx = aa_tx.tx();
+            if let Some(key_authorization) = &tx.key_authorization {
+                accounts.push(key_authorization.authorization.key_id);
+            }
+            if tx.fee_payer_signature.is_some()
+                && let Ok(fee_payer) = self.fee_payer()
+            {
+                accounts.push(fee_payer);
+            }
+            accounts.extend(
+                tx.tempo_authorization_list
+                    .iter()
+                    .filter_map(|authorization| authorization.recover_authority().ok()),
+            );
+        } else if let Some(authorizations) = self.inner().authorization_list() {
+            accounts.extend(
+                authorizations
+                    .iter()
+                    .filter_map(|authorization| authorization.recover_authority().ok()),
+            );
+        }
+
+        accounts
+    }
+
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
     ///
     /// Used for revocation matching: if the access key that signed an inline authorization is
