@@ -502,7 +502,7 @@ where
 
             if let Some(checkpoint) = rebuilt_index_checkpoint(headers, finish) {
                 attempt_span.in_scope(|| info!(checkpoint, "execution indices are rebuilt"));
-                return Ok(());
+                break;
             }
 
             attempt_span.in_scope(|| {
@@ -516,7 +516,7 @@ where
             self.context.sleep(INDEX_REBUILD_POLL_INTERVAL).await;
         }
 
-        unreachable!("unbounded index rebuild attempt range cannot be exhausted")
+        Ok(())
     }
 
     async fn backfill_to_finalized_floor(&mut self) -> eyre::Result<()> {
