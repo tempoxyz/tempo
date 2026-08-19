@@ -75,6 +75,10 @@ on:
         type: boolean
         required: false
         default: true
+      rpc-path-comparison:
+        type: boolean
+        required: false
+        default: false
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -214,6 +218,11 @@ on:
         type: boolean
         required: true
         default: true
+      rpc-path-comparison:
+        description: Compare runner-to-SSM RPC with a dedicated in-VPC load generator.
+        type: boolean
+        required: false
+        default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -295,6 +304,7 @@ jobs:
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
       BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_RPC_PATH_COMPARISON: ${{ inputs['rpc-path-comparison'] == true || inputs['rpc-path-comparison'] == 'true' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
