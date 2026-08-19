@@ -1294,7 +1294,7 @@ where
                 > {
                     let caller_multisig_config = if validates_caller_multisig {
                         multisig_precompile
-                            .load_registered_config_summary_if_present(tx.caller())
+                            .load_registered_config_if_present(tx.caller())
                             .map_err(NativeMultisigAuthError::from)
                             .map_err(map_native_multisig_error::<DB>)?
                     } else {
@@ -1435,7 +1435,7 @@ where
                                 )?
                             } else {
                                 multisig_precompile
-                                    .load_registered_config_summary(signature.account())
+                                    .load_registered_config(signature.account())
                                     .map_err(NativeMultisigAuthError::from)
                                     .map_err(map_native_multisig_error::<DB>)?
                             };
@@ -3216,7 +3216,7 @@ fn verify_native_multisig_authorization<DB: Database>(
     multisig
         .verify_authorization(inner_digest, signature, config, |account| {
             multisig
-                .load_registered_config_summary(account)
+                .load_registered_config(account)
                 .map_err(NativeMultisigAuthError::from)
         })
         .map_err(map_native_multisig_error::<DB>)
@@ -3284,7 +3284,7 @@ fn validate_rpc_nested_multisig_configs<DB: Database>(
 
         if nested.simulation_config_owner_count().is_none() {
             multisig
-                .load_registered_config_summary(nested.account())
+                .load_registered_config(nested.account())
                 .map_err(NativeMultisigAuthError::from)
                 .map_err(map_native_multisig_error::<DB>)?;
         }
