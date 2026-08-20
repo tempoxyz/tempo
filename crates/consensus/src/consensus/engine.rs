@@ -259,10 +259,9 @@ where
                     context.child("gossip"),
                     crate::gossip::ActorConfig {
                         verify_rate: gossip_config.verify_rate,
-                        recent_frames: gossip_config.recent_frames,
                         transport: gossip_config.transport,
                         mailbox: receiver,
-                        peer_control: Arc::new(execution_node.network.clone()),
+                        peer_control: execution_node.network.clone(),
                         driver: crate::gossip::PublishOnlySink,
                         marshal: marshal_mailbox.clone(),
                     },
@@ -411,7 +410,13 @@ where
     feed_mailbox: crate::feed::Mailbox,
     gossip_mailbox: Option<crate::gossip::Mailbox>,
     /// Publish-only certificate gossip for validators.
-    gossip_actor: Option<crate::gossip::Actor<TContext, crate::gossip::PublishOnlySink>>,
+    gossip_actor: Option<
+        crate::gossip::Actor<
+            TContext,
+            crate::gossip::PublishOnlySink,
+            crate::gossip::NetworkPeerControl,
+        >,
+    >,
 
     subblocks: Option<subblocks::Actor<TContext>>,
 }
