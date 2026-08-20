@@ -367,7 +367,7 @@ fn prepopulation_fails_when_required_header_is_unavailable() {
 }
 
 #[test]
-fn epoch_phases_distribute_then_finalize_without_redistributing() {
+fn epoch_shares_only_distributed_in_the_first_half() {
     Runner::default().start(|mut context| async move {
         let (state, _) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH, 4, true);
 
@@ -443,7 +443,7 @@ fn epoch_phases_distribute_then_finalize_without_redistributing() {
 }
 
 #[test]
-fn exchange_dealer_messages_and_replay_acks_after_restart() {
+fn acked_dealer_messages_not_re_exchanged_after_restart() {
     Runner::default().start(|mut context| async move {
         let (state, keys) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH, 4, true);
         let first = keys[0].clone();
