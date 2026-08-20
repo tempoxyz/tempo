@@ -6,7 +6,7 @@ use std::{
 };
 
 use alloy_consensus::Sealable as _;
-use alloy_primitives::{Address, B256, Bytes, LogData, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256, keccak256};
 use commonware_codec::{Encode as _, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -488,6 +488,10 @@ where
 
     fn block_env(&self) -> &TempoBlockEnv {
         &self.block_env
+    }
+
+    fn tx_kind(&self) -> Option<TxKind> {
+        None
     }
 
     fn set_code(&mut self, _address: Address, _code: Bytecode) -> Result<(), TempoPrecompileError> {
