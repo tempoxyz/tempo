@@ -496,7 +496,7 @@ fn load_native_multisig_simulation_hint_at_depth(
         owners,
     };
     config
-        .validate()
+        .validate_for_account(account)
         .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
 
     native_multisig_simulation_hint_for_config(account, &config, db, depth, signature_count)
@@ -1303,6 +1303,19 @@ mod tests {
         assert!(matches!(
             load_native_multisig_simulation_hint(account, None, &mut db),
             Err(EthApiError::InvalidParams(reason)) if reason.contains("invalid header")
+        ));
+    }
+
+    #[test]
+    fn simulation_hints_reject_self_owned_config() {
+        let account = Address::from([0xaa; 20]);
+        let mut db = SlotDb::default();
+        db.insert_config(account, 1, &[(account, 1)]);
+
+        assert!(matches!(
+            load_native_multisig_simulation_hint(account, None, &mut db),
+            Err(EthApiError::InvalidParams(reason))
+                if reason == "multisig account cannot own itself"
         ));
     }
 

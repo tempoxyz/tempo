@@ -30,8 +30,15 @@ impl TempoTransactionRequest {
         let caller_addr = self.inner.from.unwrap_or_default();
         let is_aa = self.has_aa_fields();
 
-        if is_aa && self.calls.is_empty() && self.inner.to.is_none() {
-            return Err(ValueError::new(self, "empty calls list"));
+        if self.key_id.is_some()
+            && (self.multisig_init.is_some()
+                || self.multisig_signature_count.is_some()
+                || self.multisig_simulation_hint.is_some())
+        {
+            return Err(ValueError::new(
+                self,
+                "keyId cannot be combined with native multisig simulation fields",
+            ));
         }
 
         let fee_payer = if self.fee_payer_signature.is_some() {
@@ -85,9 +92,12 @@ impl TempoTransactionRequest {
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
             let mut calls = calls;
-            if let Some(to) = &inner.to {
+            if let Some(to) = inner
+                .to
+                .or_else(|| calls.is_empty().then_some(alloy_primitives::TxKind::Create))
+            {
                 calls.push(Call {
-                    to: *to,
+                    to,
                     value: inner.value.unwrap_or_default(),
                     input: inner.input.clone().into_input().unwrap_or_default(),
                 });
@@ -385,6 +395,47 @@ mod tests {
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
+    }
+
+    #[test]
+    fn access_key_request_rejects_multisig_simulation_fields() {
+        let request = TempoTransactionRequest {
+            key_id: Some(address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")),
+            multisig_signature_count: Some(1),
+            ..Default::default()
+        };
+
+        let err = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect_err("access-key and multisig simulation fields conflict");
+        assert_eq!(
+            err.to_string(),
+            "keyId cannot be combined with native multisig simulation fields"
+        );
+    }
+
+    #[test]
+    fn multisig_simulation_preserves_contract_creation() {
+        let account = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let initcode = Bytes::from_static(&[0x60, 0x00]);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                input: initcode.clone().into(),
+                ..Default::default()
+            },
+            multisig_signature_count: Some(1),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect("valid multisig creation simulation");
+        let calls = &env.tempo_tx_env.expect("AA simulation env").aa_calls;
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].to, TxKind::Create);
+        assert_eq!(calls[0].input, initcode);
     }
 
     #[test]
