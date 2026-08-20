@@ -310,17 +310,6 @@ pub struct Args {
     )]
     pub gossip_enabled: bool,
 
-    /// Accept gossiped certificates, rather than only publishing them.
-    ///
-    /// Off by default. This option takes effect only when
-    /// `--consensus.gossip.enabled` is also set. Without it, the node does not
-    /// register the `tempo/1` subprotocol.
-    ///
-    /// Validators already receive certificates from their authenticated
-    /// consensus network and gain no benefit from gossip ingest.
-    #[arg(long = "consensus.gossip.ingest", default_value_t = false)]
-    pub gossip_ingest: bool,
-
     /// Gossiped certificates verified per second, across all peers.
     ///
     /// This bounds work on the follower driver. The same task acknowledges
@@ -398,7 +387,7 @@ impl Args {
     /// no driver that can verify a certificate.
     pub fn gossip_transport(&self, following: bool) -> tempo_node::gossip::Config {
         tempo_node::gossip::Config {
-            ingest: self.gossip_ingest && following,
+            ingest: following,
             peer_frame_rate: self.gossip_peer_frame_rate,
             frame_queue: GOSSIP_FRAME_QUEUE,
             route_queue: GOSSIP_ROUTE_QUEUE,

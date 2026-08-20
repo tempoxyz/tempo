@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn gossip_ingest_is_follower_only() {
+    fn gossip_ingest_follows_node_mode() {
         init_defaults_once();
 
         let validator = parse_node_args(&[
@@ -910,18 +910,12 @@ mod tests {
             "--consensus.signing-key",
             "unused-signing-key",
             "--consensus.gossip.enabled",
-            "--consensus.gossip.ingest",
         ]);
         assert!(validator.has_gossip(false));
         assert!(!validator.consensus.gossip_transport(false).ingest);
 
-        let follower = parse_node_args(&[
-            "tempo",
-            "node",
-            "--follow",
-            "--consensus.gossip.enabled",
-            "--consensus.gossip.ingest",
-        ]);
+        let follower =
+            parse_node_args(&["tempo", "node", "--follow", "--consensus.gossip.enabled"]);
         assert!(follower.has_gossip(false));
         assert!(follower.consensus.gossip_transport(true).ingest);
     }
