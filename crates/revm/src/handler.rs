@@ -1408,24 +1408,17 @@ where
                                     reason: reason.to_string(),
                                 }
                             })?;
-                            let config = if signature.account() == tx.caller() {
-                                caller_multisig_config.ok_or_else(
-                                    || -> EVMError<DB::Error, TempoInvalidTransaction> {
-                                        TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                            reason: format!(
-                                                "native multisig account {} is not registered",
-                                                signature.account()
-                                            ),
-                                        }
-                                        .into()
-                                    },
-                                )?
-                            } else {
-                                multisig_precompile
-                                    .load_registered_config(signature.account())
-                                    .map_err(NativeMultisigAuthError::from)
-                                    .map_err(map_native_multisig_error::<DB>)?
-                            };
+                            let config = caller_multisig_config.ok_or_else(
+                                || -> EVMError<DB::Error, TempoInvalidTransaction> {
+                                    TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                        reason: format!(
+                                            "native multisig account {} is not registered",
+                                            signature.account()
+                                        ),
+                                    }
+                                    .into()
+                                },
+                            )?;
                             NativeMultisigAuthConfig::Registered(config)
                         };
                         let bootstrap = match &config {
