@@ -159,6 +159,18 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns `true` if this is an AA transaction whose fee payer signature is the
+    /// [`FEE_PAYER_SIGNATURE_MARKER`](super::FEE_PAYER_SIGNATURE_MARKER) placeholder,
+    /// indicating it still needs to be signed by a fee payer.
+    ///
+    /// Other transaction types do not carry a fee payer signature.
+    pub fn has_fee_payer_signature_marker(&self) -> bool {
+        match self {
+            Self::AA(tx) => tx.tx().has_fee_payer_signature_marker(),
+            _ => false,
+        }
+    }
+
     /// Returns the sender-scoped transaction identifier used for replay-sensitive features.
     pub fn unique_tx_identifier(&self, sender: Address) -> B256 {
         match self {
