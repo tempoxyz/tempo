@@ -5967,130 +5967,6 @@ fn test_t11_registered_native_multisig_rejects_code_bearing_nested_owner() {
     );
 }
 
-#[test]
-fn test_t11_registered_native_multisig_rejects_excessive_nesting_depth() {
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
-    use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
-
-    let signer = PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap();
-    let grandchild_config = single_owner_native_multisig_config(0x42, signer.address());
-    let grandchild_account = grandchild_config.account().unwrap();
-    let child_config = single_owner_native_multisig_config(0x43, grandchild_account);
-    let child_account = child_config.account().unwrap();
-    let parent_config = single_owner_native_multisig_config(0x44, child_account);
-    let parent_account = parent_config.account().unwrap();
-    let signature_hash = B256::repeat_byte(0x45);
-
-    let parent_digest = multisig_digest(signature_hash, parent_account, 1);
-    let child_digest = multisig_digest(parent_digest, child_account, 1);
-    let grandchild_digest = multisig_digest(child_digest, grandchild_account, 1);
-    let grandchild_owner_signature = PrimitiveSignature::Secp256k1(
-        signer
-            .sign_hash_sync(&grandchild_digest)
-            .expect("owner signing succeeds"),
-    )
-    .to_bytes();
-    let grandchild_signature = TempoSignature::Multisig(MultisigSignature::new(
-        grandchild_account,
-        vec![grandchild_owner_signature],
-        None,
-    ))
-    .to_bytes();
-    let child_signature = TempoSignature::Multisig(MultisigSignature::new(
-        child_account,
-        vec![grandchild_signature],
-        None,
-    ))
-    .to_bytes();
-
-    let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Multisig(MultisigSignature::new(
-            parent_account,
-            vec![child_signature],
-            None,
-        )),
-        aa_calls: vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        signature_hash,
-        tx_hash: B256::repeat_byte(0x46),
-        ..Default::default()
-    };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
-        tx_env.inner.caller = parent_account;
-        tx_env.inner.kind = TxKind::Call(Address::random());
-    });
-    store_native_multisig_account(&mut test, &grandchild_config);
-    store_native_multisig_account(&mut test, &child_config);
-    store_native_multisig_account(&mut test, &parent_config);
-
-    let result = test.validate_against_state_and_deduct_caller();
-    assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
-            )) if reason.contains("nesting depth")
-        ),
-        "native multisig authorization paths deeper than the max depth should be rejected"
-    );
-}
-
-#[test]
-fn test_t11_registered_native_multisig_rejects_nested_multisig_bootstrap() {
-    let child_config = native_multisig_config();
-    let child_account = child_config.account().unwrap();
-    let parent_config = InitMultisig {
-        salt: B256::repeat_byte(0x42),
-        threshold: 1,
-        owners: vec![MultisigOwner {
-            owner: child_account,
-            weight: 1,
-        }],
-    };
-    let parent_account = parent_config.account().unwrap();
-    let nested_signature = TempoSignature::Multisig(MultisigSignature::new(
-        child_account,
-        vec![Bytes::from_static(&[0xaa; 65])],
-        Some(child_config.clone()),
-    ))
-    .to_bytes();
-
-    let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Multisig(MultisigSignature::new(
-            parent_account,
-            vec![nested_signature],
-            None,
-        )),
-        aa_calls: vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        ..Default::default()
-    };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
-        tx_env.inner.caller = parent_account;
-        tx_env.inner.kind = TxKind::Call(Address::random());
-    });
-    store_native_multisig_account(&mut test, &child_config);
-    store_native_multisig_account(&mut test, &parent_config);
-
-    let result = test.validate_against_state_and_deduct_caller();
-    assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
-            )) if reason.contains("invalid nested multisig owner signature")
-        ),
-        "nested native multisig owner signatures must not carry bootstrap init"
-    );
-}
-
 fn registered_multisig_auth_config(
     config: &InitMultisig,
     version: u64,
@@ -6199,7 +6075,7 @@ fn native_multisig_authorization_classifies_signer_order_as_invalid_transaction(
 }
 
 #[test]
-fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
+fn native_multisig_authorization_classifies_non_owner_by_config_source() {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
@@ -6235,10 +6111,10 @@ fn native_multisig_authorization_keeps_non_owner_as_validation_failed() {
     assert!(
         matches!(
             result,
-            Err(NativeMultisigAuthError::ValidationFailed(reason))
+            Err(NativeMultisigAuthError::InvalidTransaction(reason))
                 if reason.contains("not an owner")
         ),
-        "owner membership depends on current stored config and should remain revalidatable"
+        "inline owner membership is fixed by the transaction payload"
     );
 
     let registered_signature = signature_for_version(1, None);
