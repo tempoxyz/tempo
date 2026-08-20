@@ -647,7 +647,8 @@ mod tests {
 
     #[test]
     fn store_read_and_update_config() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+            .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -716,7 +717,8 @@ mod tests {
 
     #[test]
     fn update_config_rejects_access_key_authority() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+            .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -790,7 +792,8 @@ mod tests {
 
     #[test]
     fn update_config_rejects_version_overflow() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+            .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -1152,7 +1155,8 @@ mod tests {
 
     #[test]
     fn invalid_update_does_not_deactivate_multisig() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+            .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
         let config = init_config();
         let account = config.account().unwrap();
 
@@ -1232,7 +1236,8 @@ mod tests {
 
     #[test]
     fn update_config_returns_specific_config_errors() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+            .with_tx_kind(TxKind::Call(NATIVE_MULTISIG_ADDRESS));
         let config = init_config();
         let account = config.account().unwrap();
 
