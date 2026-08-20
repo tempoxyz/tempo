@@ -136,7 +136,7 @@ where
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if !updates.has_invalidation_events() {
+        if !updates.has_invalidation_events() && !updates.has_multisig_updates() {
             return Vec::new();
         }
 
@@ -154,8 +154,9 @@ where
         expiry_cutoff: Option<u64>,
         multisig_revalidated: Option<&mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let revalidate_multisig = multisig_revalidated.is_some() && updates.has_multisig_updates();
-        if !updates.has_invalidation_events() && expiry_cutoff.is_none() && !revalidate_multisig {
+        let has_multisig_updates = updates.has_multisig_updates();
+        let revalidate_multisig = multisig_revalidated.is_some() && has_multisig_updates;
+        if !updates.has_invalidation_events() && expiry_cutoff.is_none() && !has_multisig_updates {
             return Vec::new();
         }
 
@@ -248,8 +249,12 @@ where
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         for tx in transactions {
-            if revalidate_multisig && updates.affects_multisig_transaction(&tx.transaction) {
-                to_revalidate.push(*tx.hash());
+            if has_multisig_updates && updates.affects_multisig_transaction(&tx.transaction) {
+                if revalidate_multisig {
+                    to_revalidate.push(*tx.hash());
+                } else {
+                    to_remove.push(*tx.hash());
+                }
                 continue;
             }
 
@@ -515,7 +520,9 @@ where
             }
         }
 
-        if let Some(multisig_revalidated) = multisig_revalidated {
+        if let Some(multisig_revalidated) = multisig_revalidated
+            && !to_revalidate.is_empty()
+        {
             multisig_revalidated.extend(self.remove_transactions(to_revalidate));
         }
 
@@ -1690,6 +1697,21 @@ mod tests {
         assert_eq!(tx_hashes(&evicted), vec![*expired.hash()]);
         assert!(pool.get(multisig.hash()).is_none());
         assert!(pool.get(expired.hash()).is_none());
+    }
+
+    #[test]
+    fn public_invalidation_evicts_affected_multisig_transactions() {
+        let account = Address::random();
+        let multisig = crate::test_utils::TxBuilder::aa(account).build_multisig(account);
+        let pool = create_test_pool(create_provider_with_tip());
+        add_validated(&pool, multisig.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.multisig_config_changes.insert(account);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*multisig.hash()]);
+        assert!(pool.get(multisig.hash()).is_none());
     }
 
     fn sponsored_keychain_transaction(
