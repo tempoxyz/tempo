@@ -940,12 +940,14 @@ enum ConsensusRequest {
 /// Queues `request` into `slot` unless the slot already holds a request from
 /// the same or a newer round.
 ///
-/// Propose and verify are mutually exclusive within a round, but the
-/// application's handlers run concurrently, so a request sent by a dying
-/// older-round task can arrive after a newer one; the round guard keeps it
-/// from clobbering the newer request. Dropping a request - superseded or
-/// stale - drops its response channel, signalling the failure to the
-/// subscriber.
+/// Propose and verify are mutually exclusive within a round. Because Simplex
+/// views are strictly monotonically increasing, a request at or below the
+/// queued round cannot represent later consensus progress and must not replace
+/// the request already queued. The application's handlers run concurrently,
+/// so a request sent by a dying older-round task can still arrive after a newer
+/// one; the round guard keeps it from clobbering the newer request. Dropping a
+/// request - superseded or stale - drops its response channel, signalling the
+/// failure to the subscriber.
 fn queue_consensus_request(
     slot: &mut Option<(Round, ConsensusRequest)>,
     round: Round,
