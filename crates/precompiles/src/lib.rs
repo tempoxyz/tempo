@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod native_multisig;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -36,6 +37,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
+    native_multisig::NativeMultisig,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -68,12 +70,12 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -199,6 +201,8 @@ pub fn extend_tempo_precompiles(
             Some(ValidatorConfig::create_precompile(&env))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychain::create_precompile(&env))
+        } else if *address == NATIVE_MULTISIG_ADDRESS && env.cfg.spec.is_t11() {
+            Some(NativeMultisig::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&env))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
@@ -328,6 +332,13 @@ impl AccountKeychain {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("AccountKeychain", env: env, |input| { Self::new() })
+    }
+}
+
+impl NativeMultisig {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("NativeMultisig", env: env, |input| { Self::new() })
     }
 }
 
@@ -1144,6 +1155,27 @@ mod tests {
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
+        );
+    }
+
+    #[test]
+    fn test_native_multisig_registered_at_t11_only() {
+        let mut t10 = CfgEnv::<TempoHardfork>::default();
+        t10.set_spec_and_mainnet_gas_params(TempoHardfork::T10);
+        assert!(
+            test_tempo_precompiles(&t10)
+                .get(&NATIVE_MULTISIG_ADDRESS)
+                .is_none(),
+            "NativeMultisig should NOT be registered before T11"
+        );
+
+        let mut t11 = CfgEnv::<TempoHardfork>::default();
+        t11.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
+        assert!(
+            test_tempo_precompiles(&t11)
+                .get(&NATIVE_MULTISIG_ADDRESS)
+                .is_some(),
+            "NativeMultisig should be registered at T11"
         );
     }
 

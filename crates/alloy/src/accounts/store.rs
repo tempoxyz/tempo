@@ -1847,7 +1847,8 @@ impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
             is_admin: false,
             account: None,
         };
-        Ok(Self::new(authorization, value.signature.try_into()?))
+        let signature: PrimitiveSignature = value.signature.try_into()?;
+        Ok(Self::new(authorization, signature))
     }
 }
 
@@ -1993,7 +1994,8 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(Self::new(authorization, signature.try_into()?))
+        let signature: PrimitiveSignature = signature.try_into()?;
+        Ok(Self::new(authorization, signature))
     }
 }
 
@@ -2388,7 +2390,14 @@ struct WritableAccessKey {
     limits: Option<Vec<WritableTokenLimit>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scopes: Option<Vec<WritableScope>>,
-    key_authorization: WritableSignedKeyAuthorization,
+    key_authorization: WritableKeyAuthorization,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WritableKeyAuthorization {
+    Structured(Box<WritableSignedKeyAuthorization>),
+    Rlp(String),
 }
 
 #[derive(Clone, Serialize)]
@@ -2592,6 +2601,25 @@ fn writable_access_key(
             })
             .collect()
     });
+    let key_authorization = if let Some(signature) = authorization.signature.as_primitive() {
+        WritableKeyAuthorization::Structured(Box::new(WritableSignedKeyAuthorization {
+            address: authorization.key_id,
+            chain_id: writable_bigint(U256::from(authorization.chain_id)),
+            expiry: authorization.expiry.map(NonZeroU64::get),
+            limits: limits.clone(),
+            scopes: writable_scopes(authorization),
+            witness: authorization.witness,
+            is_admin: authorization.is_admin,
+            account: authorization.account,
+            key_type: "secp256k1",
+            signature: writable_signature(signature)?,
+        }))
+    } else {
+        let mut encoded = Vec::new();
+        alloy_rlp::Encodable::encode(authorization, &mut encoded);
+        WritableKeyAuthorization::Rlp(alloy_primitives::hex::encode_prefixed(encoded))
+    };
+
     Ok(WritableAccessKey {
         address: signer.address(),
         access: account,
@@ -2599,20 +2627,9 @@ fn writable_access_key(
         key_type: "secp256k1",
         private_key: alloy_primitives::hex::encode_prefixed(signer.to_bytes()),
         expiry: authorization.expiry.map(NonZeroU64::get),
-        limits: limits.clone(),
+        limits,
         scopes: writable_scopes(authorization),
-        key_authorization: WritableSignedKeyAuthorization {
-            address: authorization.key_id,
-            chain_id: writable_bigint(U256::from(authorization.chain_id)),
-            expiry: authorization.expiry.map(NonZeroU64::get),
-            limits,
-            scopes: writable_scopes(authorization),
-            witness: authorization.witness,
-            is_admin: authorization.is_admin,
-            account: authorization.account,
-            key_type: "secp256k1",
-            signature: writable_signature(&authorization.signature)?,
-        },
+        key_authorization,
     })
 }
 
@@ -3255,7 +3272,10 @@ mod tests {
     use alloy_network::{NetworkWallet, TransactionBuilder};
     use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller, mock::Asserter};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-    use tempo_primitives::{TempoTxEnvelope, transaction::TempoSignature};
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{MultisigSignature, TempoSignature},
+    };
 
     use super::*;
 
@@ -3556,6 +3576,39 @@ mod tests {
     }
 
     #[test]
+    fn multisig_key_authorization_roundtrips_through_store() {
+        let directory = unique_test_directory();
+        let path = directory.join("wallet/store.json");
+        let account = Address::repeat_byte(0x44);
+        let signer = PrivateKeySigner::random();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
+                .with_account(account)
+                .into_signed(TempoSignature::Multisig(MultisigSignature::new(
+                    account,
+                    vec![PrimitiveSignature::default().to_bytes()],
+                    None,
+                )));
+
+        TempoAccountsStore::at(&path)
+            .upsert_secp256k1_access_key(account, &signer, &authorization)
+            .unwrap();
+
+        let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            written["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"].is_string()
+        );
+        let stored = TempoAccountsStore::open(&path)
+            .unwrap()
+            .access_keys()
+            .unwrap()
+            .remove(0);
+        assert_eq!(stored.key_authorization(), Some(&authorization));
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn persisted_boundary_deserializes_to_strict_types() {
         let state: PersistedAccountsState = serde_json::from_value(serde_json::json!({
             "activeAccount": ROOT,
@@ -3634,7 +3687,9 @@ mod tests {
                 .as_slice()
             )
         );
-        let PrimitiveSignature::WebAuthn(signature) = &authorization.signature else {
+        let TempoSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
+            &authorization.signature
+        else {
             panic!("expected WebAuthn root signature")
         };
         assert_eq!(signature.webauthn_data.as_ref(), webauthn_data);

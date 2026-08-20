@@ -158,6 +158,10 @@ pub(crate) trait TestEnv: Sized {
     async fn run_fill_transaction_error_decoding_scenario(&mut self) -> eyre::Result<()> {
         super::runners::run_fill_transaction_error_decoding_scenario(self).await
     }
+
+    async fn run_tip_1061_examples(&mut self) -> eyre::Result<()> {
+        super::multisig::run_tip_1061_examples(self).await
+    }
 }
 
 /// Key type for matrix tests

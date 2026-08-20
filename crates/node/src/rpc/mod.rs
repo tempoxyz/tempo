@@ -8,7 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
@@ -22,10 +22,19 @@ use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, Transact
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
+use tempo_alloy::rpc::{MultisigSimulationApproval, MultisigSimulationHint};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{FeeTokenResolver, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+use tempo_precompiles::{
+    NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    native_multisig::NativeMultisig,
+    nonce::NonceManager,
+    storage::{StorageActions, packing::extract_from_word},
+};
+use tempo_primitives::transaction::{
+    InitMultisig, MAX_MULTISIG_NESTING_DEPTH, MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES,
+    MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::rpc::error::TempoEthApiError;
@@ -376,6 +385,285 @@ where
     }
 }
 
+fn populate_native_multisig_simulation_hints(
+    request: &mut TempoTransactionRequest,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+) -> Result<(), EthApiError> {
+    let Some(from) = request.from else {
+        return Ok(());
+    };
+
+    if request.key_id.is_some() {
+        return Ok(());
+    }
+
+    if request.multisig_simulation_hint.is_some() {
+        return Ok(());
+    }
+
+    if let Some(hint) =
+        load_native_multisig_simulation_hints(from, request.multisig_signature_count, db)?
+    {
+        // `multisig_init` is advisory: a registered sender cannot re-init, so the
+        // stored config wins and the bootstrap hint is dropped.
+        request.multisig_init = None;
+        if request.multisig_signature_count.is_none() {
+            request.multisig_signature_count = Some(hint.approvals.len());
+        }
+        request.multisig_simulation_hint = Some(hint);
+        return Ok(());
+    }
+
+    if let Some(init) = request.multisig_init.as_ref() {
+        let hint = native_multisig_simulation_hint_for_config(
+            init.account()
+                .map_err(|err| EthApiError::InvalidParams(err.to_string()))?,
+            init,
+            db,
+            1,
+            request.multisig_signature_count,
+        )?;
+        if request.multisig_signature_count.is_none() {
+            request.multisig_signature_count = Some(hint.approvals.len());
+        }
+        request.multisig_simulation_hint = Some(hint);
+    }
+
+    Ok(())
+}
+
+fn load_native_multisig_simulation_hints(
+    from: Address,
+    signature_count: Option<usize>,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+) -> Result<Option<MultisigSimulationHint>, EthApiError> {
+    load_native_multisig_simulation_hint(from, db, 1, signature_count)
+}
+
+fn load_native_multisig_simulation_hint(
+    account: Address,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    depth: usize,
+    signature_count: Option<usize>,
+) -> Result<Option<MultisigSimulationHint>, EthApiError> {
+    let (threshold_slot, threshold_offset) =
+        NativeMultisig::account_threshold_storage_slot(account);
+    let (owner_count_slot, owner_count_offset) =
+        NativeMultisig::account_owners_len_storage_slot(account);
+    debug_assert_eq!(threshold_slot, owner_count_slot);
+    let header = db
+        .storage(NATIVE_MULTISIG_ADDRESS, threshold_slot)
+        .map_err(Into::into)?;
+    validate_native_multisig_storage_word(header, 10)?;
+    let threshold = extract_from_word::<u8>(header, threshold_offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    let owner_count = extract_from_word::<u8>(header, owner_count_offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))? as usize;
+    if threshold == 0 && owner_count == 0 {
+        return Ok(None);
+    }
+    if threshold == 0 || owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
+        return Err(EthApiError::InvalidParams(
+            "native multisig config has an invalid header".to_string(),
+        ));
+    }
+
+    let mut owners = Vec::with_capacity(owner_count);
+    for index in 0..owner_count {
+        let owner = read_native_multisig_owner(db, account, index)?;
+        let (weight_slot, weight_offset) =
+            NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner.owner);
+        if read_native_multisig_weight(db, weight_slot, weight_offset)? != owner.weight {
+            return Err(EthApiError::InvalidParams(
+                "native multisig config has mismatched owner weights".to_string(),
+            ));
+        }
+        owners.push(owner);
+    }
+
+    let config = InitMultisig {
+        salt: B256::ZERO,
+        threshold,
+        owners,
+    };
+    config
+        .validate()
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+
+    native_multisig_simulation_hint_for_config(account, &config, db, depth, signature_count)
+        .map(Some)
+}
+
+fn native_multisig_simulation_hint_for_config(
+    account: Address,
+    config: &InitMultisig,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    depth: usize,
+    signature_count: Option<usize>,
+) -> Result<MultisigSimulationHint, EthApiError> {
+    if signature_count.is_some_and(|count| count == 0 || count > MAX_MULTISIG_SIGNATURES) {
+        return Err(EthApiError::InvalidParams(
+            "invalid native multisig signature count".to_string(),
+        ));
+    }
+
+    let mut owner_approvals = Vec::with_capacity(config.owners.len());
+    for owner in &config.owners {
+        let approval = if depth < MAX_MULTISIG_NESTING_DEPTH {
+            load_native_multisig_simulation_hint(owner.owner, db, depth + 1, None)?
+                .map(Box::new)
+                .map(MultisigSimulationApproval::Multisig)
+                .unwrap_or(MultisigSimulationApproval::UnknownPrimitive)
+        } else {
+            MultisigSimulationApproval::UnknownPrimitive
+        };
+        owner_approvals.push(approval);
+    }
+
+    let approvals =
+        select_native_multisig_simulation_approvals(config, owner_approvals, signature_count)?;
+
+    Ok(MultisigSimulationHint {
+        account,
+        owner_count: config.owners.len(),
+        approvals,
+    })
+}
+
+#[derive(Clone)]
+struct MultisigSimulationSelection {
+    gas: u64,
+    approvals: Vec<MultisigSimulationApproval>,
+}
+
+fn select_native_multisig_simulation_approvals(
+    config: &InitMultisig,
+    owner_approvals: Vec<MultisigSimulationApproval>,
+    signature_count: Option<usize>,
+) -> Result<Vec<MultisigSimulationApproval>, EthApiError> {
+    let threshold = usize::from(config.threshold);
+    // Retain the highest-gas partial quorum for each signature-count and weight pair.
+    // Completed candidates stop when they first reach the threshold, matching validation.
+    let mut states = vec![vec![None; threshold]; MAX_MULTISIG_SIGNATURES + 1];
+    states[0][0] = Some(MultisigSimulationSelection {
+        gas: 0,
+        approvals: Vec::new(),
+    });
+    let mut best: Option<MultisigSimulationSelection> = None;
+
+    for (owner, approval) in config.owners.iter().zip(owner_approvals) {
+        let mut next = states.clone();
+        for (count, selections) in states.iter().enumerate().take(MAX_MULTISIG_SIGNATURES) {
+            for (weight, selection) in selections.iter().enumerate() {
+                let Some(selection) = selection else {
+                    continue;
+                };
+                let next_count = count + 1;
+                let mut candidate = selection.clone();
+                candidate.gas = candidate
+                    .gas
+                    .saturating_add(native_multisig_simulation_approval_gas(&approval));
+                candidate.approvals.push(approval.clone());
+
+                let next_weight = weight.saturating_add(usize::from(owner.weight));
+                if next_weight >= threshold {
+                    if signature_count.is_none_or(|expected| expected == next_count)
+                        && best
+                            .as_ref()
+                            .is_none_or(|current| candidate.gas > current.gas)
+                    {
+                        best = Some(candidate);
+                    }
+                } else if next[next_count][next_weight]
+                    .as_ref()
+                    .is_none_or(|current| candidate.gas > current.gas)
+                {
+                    next[next_count][next_weight] = Some(candidate);
+                }
+            }
+        }
+        states = next;
+    }
+
+    best.map(|selection| selection.approvals).ok_or_else(|| {
+        let reason = signature_count.map_or_else(
+            || "native multisig config cannot satisfy its threshold".to_string(),
+            |count| format!("native multisig threshold cannot be satisfied by {count} signatures"),
+        );
+        EthApiError::InvalidParams(reason)
+    })
+}
+
+fn native_multisig_simulation_approval_gas(approval: &MultisigSimulationApproval) -> u64 {
+    const OWNER_WEIGHT_GAS: u64 = 2_100;
+    const NODE_HEADER_GAS: u64 = 2_100;
+    const CONFIG_OWNER_GAS: u64 = 4_200;
+    const SECP256K1_GAS: u64 = 3_000;
+    const P256_GAS: u64 = 8_000;
+    const MAX_WEBAUTHN_GAS: u64 = P256_GAS + (MAX_WEBAUTHN_SIGNATURE_LENGTH as u64 - 128) * 16;
+
+    let verification_gas = match approval {
+        MultisigSimulationApproval::Primitive { key_type, .. } => match key_type {
+            SignatureType::Secp256k1 => SECP256K1_GAS,
+            SignatureType::P256 => P256_GAS,
+            SignatureType::WebAuthn => MAX_WEBAUTHN_GAS,
+        },
+        MultisigSimulationApproval::UnknownPrimitive => MAX_WEBAUTHN_GAS,
+        MultisigSimulationApproval::Multisig(hint) => NODE_HEADER_GAS
+            .saturating_add(CONFIG_OWNER_GAS.saturating_mul(hint.owner_count as u64))
+            .saturating_add(
+                hint.approvals
+                    .iter()
+                    .map(native_multisig_simulation_approval_gas)
+                    .fold(0u64, u64::saturating_add),
+            ),
+    };
+
+    OWNER_WEIGHT_GAS.saturating_add(verification_gas)
+}
+
+fn read_native_multisig_owner(
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    account: Address,
+    index: usize,
+) -> Result<MultisigOwner, EthApiError> {
+    let (slot, owner_offset) = NativeMultisig::config_owner_address_storage_slot(account, index);
+    let word = db
+        .storage(NATIVE_MULTISIG_ADDRESS, slot)
+        .map_err(Into::into)?;
+    validate_native_multisig_storage_word(word, 21)?;
+    let owner = extract_from_word::<Address>(word, owner_offset.unwrap_or_default(), 20)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    let (weight_slot, weight_offset) =
+        NativeMultisig::config_owner_weight_storage_slot(account, index);
+    debug_assert_eq!(slot, weight_slot);
+    let weight = extract_from_word::<u8>(word, weight_offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?;
+    Ok(MultisigOwner { owner, weight })
+}
+
+fn read_native_multisig_weight(
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    slot: U256,
+    offset: Option<usize>,
+) -> Result<u8, EthApiError> {
+    let word = db
+        .storage(NATIVE_MULTISIG_ADDRESS, slot)
+        .map_err(Into::into)?;
+    validate_native_multisig_storage_word(word, 1)?;
+    extract_from_word::<u8>(word, offset.unwrap_or_default(), 1)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))
+}
+
+fn validate_native_multisig_storage_word(word: U256, used_bytes: usize) -> Result<(), EthApiError> {
+    if word >> (used_bytes * 8) != U256::ZERO {
+        return Err(EthApiError::InvalidParams(
+            "native multisig config has nonzero reserved bits".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> Trace for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -450,6 +738,9 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
+        populate_native_multisig_simulation_hints(&mut request, &mut db)
+            .map_err(Self::Error::from_eth_err)?;
+
         if let Some(nonce_key) = request.nonce_key
             && !nonce_key.is_zero()
             && request.nonce.is_none()
@@ -653,5 +944,334 @@ where
             .build();
 
         Ok(TempoEthApi::new(eth_api, self.validator_key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, B256, TxKind};
+    use alloy_rpc_types_eth::TransactionRequest;
+    use reth_evm::revm::{bytecode::Bytecode, state::AccountInfo};
+    use std::collections::HashMap;
+    use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
+
+    /// Storage-only test DB for `NATIVE_MULTISIG_ADDRESS` slots.
+    #[derive(Default)]
+    struct SlotDb(HashMap<U256, U256>);
+
+    impl SlotDb {
+        /// Packs `value` into `slot` at `offset`, mirroring `extract_from_word`.
+        fn insert_u8(&mut self, (slot, offset): (U256, Option<usize>), value: u8) {
+            *self.0.entry(slot).or_default() |=
+                U256::from(value) << (offset.unwrap_or_default() * 8);
+        }
+
+        fn insert_address(&mut self, (slot, offset): (U256, Option<usize>), value: Address) {
+            *self.0.entry(slot).or_default() |=
+                U256::from_be_slice(value.as_slice()) << (offset.unwrap_or_default() * 8);
+        }
+
+        fn insert_config(&mut self, account: Address, threshold: u8, owners: &[(Address, u8)]) {
+            self.insert_u8(
+                NativeMultisig::account_threshold_storage_slot(account),
+                threshold,
+            );
+            self.insert_u8(
+                NativeMultisig::account_owners_len_storage_slot(account),
+                owners.len() as u8,
+            );
+            for (index, &(owner, weight)) in owners.iter().enumerate() {
+                self.insert_address(
+                    NativeMultisig::config_owner_address_storage_slot(account, index),
+                    owner,
+                );
+                self.insert_u8(
+                    NativeMultisig::config_owner_weight_storage_slot(account, index),
+                    weight,
+                );
+                self.insert_u8(
+                    NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner),
+                    weight,
+                );
+            }
+        }
+
+        fn registered_one_of_one(account: Address) -> Self {
+            let mut db = Self::default();
+            db.insert_config(account, 1, &[(Address::from([0x11; 20]), 1)]);
+            db
+        }
+    }
+
+    impl Database for SlotDb {
+        type Error = ProviderError;
+
+        fn basic(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(None)
+        }
+
+        fn code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+            debug_assert_eq!(address, NATIVE_MULTISIG_ADDRESS);
+            Ok(self.0.get(&index).copied().unwrap_or_default())
+        }
+
+        fn block_hash(&mut self, _number: u64) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
+        }
+    }
+
+    fn init_request(from: Address) -> TempoTransactionRequest {
+        TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(from),
+                ..Default::default()
+            },
+            multisig_init: Some(InitMultisig {
+                salt: B256::ZERO,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::from([0x11; 20]),
+                    weight: 1,
+                }],
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn populate_drops_multisig_init_for_registered_senders() {
+        let account = Address::from([0xaa; 20]);
+        let mut db = SlotDb::registered_one_of_one(account);
+        let hint = load_native_multisig_simulation_hints(account, None, &mut db)
+            .unwrap()
+            .expect("registered account hint");
+        assert_eq!(hint.account, account);
+        assert_eq!(hint.owner_count, 1);
+        assert_eq!(
+            hint.approvals,
+            vec![MultisigSimulationApproval::UnknownPrimitive]
+        );
+
+        let mut request = init_request(account);
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+        assert!(request.multisig_init.is_none());
+        assert_eq!(request.multisig_signature_count, Some(1));
+        assert_eq!(request.multisig_simulation_hint, Some(hint));
+    }
+
+    #[test]
+    fn populate_keeps_multisig_init_for_unregistered_senders() {
+        let account = Address::from([0xbb; 20]);
+        let mut db = SlotDb::default();
+
+        let mut request = init_request(account);
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+        assert!(request.multisig_init.is_some());
+        assert_eq!(request.multisig_signature_count, Some(1));
+        assert!(request.multisig_simulation_hint.is_some());
+    }
+
+    #[test]
+    fn populate_preserves_access_key_simulation_for_registered_multisig_sender() {
+        let account = Address::from([0xaa; 20]);
+        let key_id = Address::from([0xbb; 20]);
+        let mut db = SlotDb::registered_one_of_one(account);
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(Address::from([0xcc; 20]))),
+                ..Default::default()
+            },
+            key_id: Some(key_id),
+            ..Default::default()
+        };
+
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+        assert!(request.multisig_signature_count.is_none());
+        assert!(request.multisig_simulation_hint.is_none());
+
+        let tx_env = request
+            .try_into_tempo_tx_env(TempoTxEnv::default(), true)
+            .expect("valid access-key simulation request");
+        let aa_env = tx_env.tempo_tx_env.expect("AA simulation env");
+        assert_eq!(aa_env.override_key_id, Some(key_id));
+        assert!(aa_env.signature.is_v2_keychain());
+    }
+
+    #[test]
+    fn populate_models_nested_multisig_approvals() {
+        let account = Address::from([0xaa; 20]);
+        let nested_account = Address::from([0x11; 20]);
+        let mut db = SlotDb::default();
+        db.insert_config(account, 1, &[(nested_account, 1)]);
+        db.insert_config(
+            nested_account,
+            2,
+            &[
+                (Address::from([0x21; 20]), 1),
+                (Address::from([0x22; 20]), 1),
+            ],
+        );
+
+        for signature_count in [None, Some(1)] {
+            let mut request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    from: Some(account),
+                    ..Default::default()
+                },
+                multisig_signature_count: signature_count,
+                ..Default::default()
+            };
+            populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+
+            assert_eq!(request.multisig_signature_count, Some(1));
+            let hint = request
+                .multisig_simulation_hint
+                .expect("registered account hint");
+            assert_eq!(hint.account, account);
+            assert_eq!(hint.owner_count, 1);
+            assert_eq!(hint.approvals.len(), 1);
+            let MultisigSimulationApproval::Multisig(nested) = &hint.approvals[0] else {
+                panic!("registered threshold owner should use a nested approval");
+            };
+            assert_eq!(nested.account, nested_account);
+            assert_eq!(nested.owner_count, 2);
+            assert_eq!(
+                nested.approvals,
+                vec![
+                    MultisigSimulationApproval::UnknownPrimitive,
+                    MultisigSimulationApproval::UnknownPrimitive,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn populate_uses_the_most_expensive_valid_quorum() {
+        let account = Address::from([0xaa; 20]);
+        let owners = (0..9)
+            .map(|index| {
+                (
+                    Address::from([0x11 + index as u8; 20]),
+                    if index == 0 { 8 } else { 1 },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut db = SlotDb::default();
+        db.insert_config(account, 8, &owners);
+
+        let mut conservative = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        populate_native_multisig_simulation_hints(&mut conservative, &mut db).unwrap();
+        assert_eq!(conservative.multisig_signature_count, Some(8));
+        assert_eq!(
+            conservative
+                .multisig_simulation_hint
+                .as_ref()
+                .unwrap()
+                .approvals
+                .len(),
+            8
+        );
+
+        let mut explicit = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                ..Default::default()
+            },
+            multisig_signature_count: Some(1),
+            ..Default::default()
+        };
+        populate_native_multisig_simulation_hints(&mut explicit, &mut db).unwrap();
+        assert_eq!(explicit.multisig_signature_count, Some(1));
+        assert_eq!(
+            explicit
+                .multisig_simulation_hint
+                .as_ref()
+                .unwrap()
+                .approvals
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn populate_supports_threshold_above_signature_cap() {
+        let account = Address::from([0xaa; 20]);
+        let mut db = SlotDb::default();
+        db.insert_config(account, u8::MAX, &[(Address::from([0x11; 20]), u8::MAX)]);
+
+        let hint = load_native_multisig_simulation_hints(account, None, &mut db)
+            .unwrap()
+            .expect("registered account hint");
+
+        assert_eq!(hint.approvals.len(), 1);
+    }
+
+    #[test]
+    fn populate_prefers_the_more_expensive_approval_shape() {
+        let account = Address::from([0xaa; 20]);
+        let nested_account = Address::from([0x22; 20]);
+        let mut db = SlotDb::default();
+        db.insert_config(
+            account,
+            1,
+            &[(Address::from([0x11; 20]), 1), (nested_account, 1)],
+        );
+        let nested_owners = (0..8)
+            .map(|index| (Address::from([0x31 + index as u8; 20]), 1))
+            .collect::<Vec<_>>();
+        db.insert_config(nested_account, 8, &nested_owners);
+
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        populate_native_multisig_simulation_hints(&mut request, &mut db).unwrap();
+
+        assert_eq!(request.multisig_signature_count, Some(1));
+        let hint = request
+            .multisig_simulation_hint
+            .expect("registered account hint");
+        assert_eq!(hint.approvals.len(), 1);
+        let MultisigSimulationApproval::Multisig(nested) = &hint.approvals[0] else {
+            panic!("the higher-gas nested approval should be selected");
+        };
+        assert_eq!(nested.account, nested_account);
+        assert_eq!(nested.approvals.len(), 8);
+    }
+
+    #[test]
+    fn simulation_hints_reject_nonzero_reserved_storage_bits() {
+        let account = Address::from([0xaa; 20]);
+        let owner = Address::from([0x11; 20]);
+        let corrupted_slots = [
+            NativeMultisig::account_threshold_storage_slot(account).0,
+            NativeMultisig::config_owner_address_storage_slot(account, 0).0,
+            NativeMultisig::config_owner_lookup_weight_storage_slot(account, owner).0,
+        ];
+
+        for corrupted_slot in corrupted_slots {
+            let mut db = SlotDb::registered_one_of_one(account);
+            *db.0.entry(corrupted_slot).or_default() |= U256::ONE << 255;
+            assert!(matches!(
+                load_native_multisig_simulation_hints(account, None, &mut db),
+                Err(EthApiError::InvalidParams(reason))
+                    if reason.contains("nonzero reserved bits")
+            ));
+        }
     }
 }
