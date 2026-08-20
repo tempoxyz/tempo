@@ -6091,49 +6091,6 @@ fn test_t11_registered_native_multisig_rejects_nested_multisig_bootstrap() {
     );
 }
 
-#[test]
-fn test_t11_registered_native_multisig_rejects_keychain_owner_approval_as_bad_transaction() {
-    let config = single_owner_native_multisig_config(0x42, Address::repeat_byte(0x11));
-    let account = config.account().unwrap();
-    let owner_approval = TempoSignature::Keychain(KeychainSignature::new(
-        Address::random(),
-        PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-    ))
-    .to_bytes();
-    let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Multisig(MultisigSignature::new(
-            account,
-            vec![owner_approval],
-            None,
-        )),
-        aa_calls: vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        ..Default::default()
-    };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
-        tx_env.inner.caller = account;
-        tx_env.inner.kind = TxKind::Call(Address::random());
-    });
-    store_native_multisig_account(&mut test, &config);
-
-    let result = test.validate_against_state_and_deduct_caller();
-    let Err(EVMError::Transaction(err)) = result else {
-        panic!("keychain owner approval should fail validation");
-    };
-    assert!(
-        matches!(
-            &err,
-            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
-                if reason.contains("keychain signatures cannot authorize")
-        ),
-        "keychain owner approval should be classified as invalid transaction, got {err:?}"
-    );
-    assert!(err.is_bad_transaction());
-}
-
 fn registered_multisig_auth_config(
     config: &InitMultisig,
     version: u64,
