@@ -117,9 +117,9 @@ impl FinalizationVerifier {
     }
 
     /// Verify an already decoded certificate without requiring its block.
-    pub(crate) fn verify_certificate(
+    pub(crate) fn verify_certificate<R: CryptoRng>(
         &self,
-        rng: &mut impl CryptoRng,
+        rng: &mut R,
         finalization: &Finalization<Scheme<PublicKey, MinSig>, Digest>,
     ) -> Result<(), CertificateVerificationError> {
         let epoch = finalization.epoch();
