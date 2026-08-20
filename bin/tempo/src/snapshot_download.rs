@@ -304,8 +304,7 @@ async fn install_consensus_archive(
         );
     }
 
-    fs::create_dir_all(consensus_dir)
-        .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
+    prepare_consensus_dir(consensus_dir, force)?;
     extract_zstd_tar_archive(archive_file.path(), consensus_dir, force)?;
     verify_consensus_output_files(
         consensus_dir,
@@ -314,6 +313,25 @@ async fn install_consensus_archive(
 
     info!("persisted consensus archive");
     Ok(())
+}
+
+fn prepare_consensus_dir(consensus_dir: &Path, force: bool) -> eyre::Result<()> {
+    if force {
+        let exists = consensus_dir
+            .try_exists()
+            .wrap_err_with(|| format!("failed to stat {}", consensus_dir.display()))?;
+        if exists {
+            info!(
+                path = %consensus_dir.display(),
+                "removing existing consensus state"
+            );
+            fs::remove_dir_all(consensus_dir)
+                .wrap_err_with(|| format!("failed to remove {}", consensus_dir.display()))?;
+        }
+    }
+
+    fs::create_dir_all(consensus_dir)
+        .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))
 }
 
 async fn write_consensus_archive_to_temp(
@@ -659,6 +677,32 @@ mod tests {
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
             b"abc"
         );
+    }
+
+    #[test]
+    fn prepare_consensus_dir_removes_existing_state_when_forced() {
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        fs::create_dir_all(consensus_dir.join("nested")).unwrap();
+        fs::write(consensus_dir.join("nested").join("stale"), b"stale").unwrap();
+
+        prepare_consensus_dir(&consensus_dir, true).unwrap();
+
+        assert!(consensus_dir.is_dir());
+        assert!(fs::read_dir(&consensus_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn prepare_consensus_dir_preserves_existing_state_without_force() {
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        fs::create_dir_all(&consensus_dir).unwrap();
+        let existing = consensus_dir.join("existing");
+        fs::write(&existing, b"existing").unwrap();
+
+        prepare_consensus_dir(&consensus_dir, false).unwrap();
+
+        assert_eq!(fs::read(existing).unwrap(), b"existing");
     }
 
     #[test]
