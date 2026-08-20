@@ -7,7 +7,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     num::NonZeroU32,
-    sync::Arc,
 };
 
 use alloy_primitives::{B256, Bytes, keccak256};
@@ -52,7 +51,6 @@ enum SlotState {
 
 /// A peer's current candidate or quarantined certificate.
 struct Slot {
-    round: Round,
     certificate: Certificate,
     id: FrameId,
     state: SlotState,
@@ -109,13 +107,12 @@ type PendingJudgement = (Pending, Option<eyre::Result<(), CertificateError>>);
 type PeerKey = alloy_primitives::B512;
 
 /// Inputs and limits for the `tempo/1` actor.
-pub(crate) struct Config<K, M = crate::alias::marshal::Mailbox> {
+pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
     /// Maximum driver judgements per second across all peers.
     ///
     /// Each signature check runs on the driver task, which also acknowledges
-    /// blocks to marshal. This limit bounds how much a flood can delay block
-    /// import. Initialization treats zero as one.
-    pub(crate) verify_rate: u32,
+    /// blocks to marshal. This limit bounds how much a flood can delay block import.
+    pub(crate) verify_rate: NonZeroU32,
     /// Frames remembered as already settled or published.
     pub(crate) recent_frames: usize,
     /// The consensus layer's end of the `tempo/1` transport.
@@ -123,20 +120,22 @@ pub(crate) struct Config<K, M = crate::alias::marshal::Mailbox> {
     /// Marshal notifications that trigger durable publication and scheme retries.
     pub(crate) mailbox: mpsc::UnboundedReceiver<Message>,
     /// Reputation control for peers that misbehave.
-    pub(crate) peer_control: Arc<dyn PeerControl>,
+    pub(crate) peer_control: P,
     /// Driver capability that verifies and processes peer certificates.
     pub(crate) driver: K,
     /// Retrieves certificates after marshal announces their persisted tips.
     pub(crate) marshal: M,
 }
 
-pub(crate) fn init<TContext, K, M>(context: TContext, config: Config<K, M>) -> Actor<TContext, K, M>
+pub(crate) fn init<TContext, K, P, M>(
+    context: TContext,
+    config: Config<K, P, M>,
+) -> Actor<TContext, K, P, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
 {
     let metrics = Metrics::init(&context);
-    let quota =
-        Quota::per_second(NonZeroU32::new(config.verify_rate.max(1)).expect("clamped above zero"));
+    let quota = Quota::per_second(config.verify_rate);
     let recent = SettledFrames::with_capacity(config.recent_frames);
     let limiter_context = context.child("verify_limiter");
 
@@ -156,9 +155,9 @@ where
     }
 }
 
-pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> {
+pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
-    config: Config<K, M>,
+    config: Config<K, P, M>,
 
     /// Active logical `tempo/1` peers.
     ///
@@ -186,10 +185,11 @@ pub(crate) struct Actor<TContext: Clock, K, M = crate::alias::marshal::Mailbox> 
     metrics: Metrics,
 }
 
-impl<TContext, K, M> Actor<TContext, K, M>
+impl<TContext, K, P, M> Actor<TContext, K, P, M>
 where
     TContext: Clock + RuntimeMetrics + Spawner + Send + 'static,
     K: CertificateMailbox,
+    P: PeerControl,
     M: Marshal,
 {
     pub(crate) fn start(mut self) -> Handle<()> {
@@ -309,14 +309,12 @@ where
                 self.metrics.dropped_locked_replacement.inc();
                 return;
             }
-            if round <= current.round {
+            if round <= current.certificate.round() {
                 return;
             }
 
-            current.round = round;
             current.certificate = certificate;
             current.id = id;
-            self.update_slot_metrics();
             self.try_dispatch();
             return;
         }
@@ -325,7 +323,6 @@ where
         self.slots.insert(
             peer,
             Slot {
-                round,
                 certificate,
                 id,
                 state: SlotState::Ready,
@@ -403,7 +400,7 @@ where
                 %peer,
                 %epoch,
                 %installed,
-                round = %slot.round,
+                round = %slot.certificate.round(),
                 digest = %slot.certificate.proposal.payload,
                 "releasing quarantined certificate after boundary scheme installation",
             );
@@ -431,7 +428,8 @@ where
             .latest_verified_view
             .set(round.view().get() as i64);
 
-        self.slots.retain(|_, slot| slot.round > round);
+        self.slots
+            .retain(|_, slot| slot.certificate.round() > round);
         self.update_slot_metrics();
     }
 
@@ -462,11 +460,12 @@ where
             let slot = self.slots.get_mut(&peer).expect("selected peer has a slot");
             debug_assert_eq!(slot.state, SlotState::Ready);
             slot.state = SlotState::Judging;
+            let round = slot.certificate.round();
 
             (
                 Pending {
                     peer,
-                    round: slot.round,
+                    round,
                     id: slot.id,
                 },
                 slot.certificate.clone(),

@@ -6,6 +6,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    num::NonZeroU32,
     sync::Arc,
     time::Duration,
 };
@@ -249,17 +250,20 @@ impl Rig {
 }
 
 /// A rate high enough that tests do not reach the verify limit.
-const UNLIMITED_VERIFY_RATE: u32 = 1_000;
+const UNLIMITED_VERIFY_RATE: NonZeroU32 = NonZeroU32::new(1_000).expect("test rate is non-zero");
 
 fn start(context: &mut deterministic::Context) -> Rig {
     start_with(context, UNLIMITED_VERIFY_RATE)
 }
 
 fn start_with_verify_rate(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
-    start_with(context, verify_rate)
+    start_with(
+        context,
+        NonZeroU32::new(verify_rate).expect("test rate is non-zero"),
+    )
 }
 
-fn start_with(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
+fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> Rig {
     let fixture = dkg_fixture(context, Epoch::zero());
 
     let (control_tx, control_rx) = mpsc::unbounded_channel();
@@ -291,7 +295,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: u32) -> Rig {
             recent_frames: 64,
             transport,
             mailbox: receiver,
-            peer_control: Arc::new(peer_control.clone()),
+            peer_control: peer_control.clone(),
             driver: sink.clone(),
             marshal: marshal.clone(),
         },
