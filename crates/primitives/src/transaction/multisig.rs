@@ -20,7 +20,36 @@ use serde::{
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
 #[cfg(feature = "std")]
-use std::sync::OnceLock;
+use std::{cell::Cell, sync::OnceLock};
+
+#[cfg(all(feature = "serde", feature = "std"))]
+std::thread_local! {
+    static BINARY_MULTISIG_DESERIALIZE_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(all(feature = "serde", feature = "std"))]
+struct BinaryMultisigDepthGuard;
+
+#[cfg(all(feature = "serde", feature = "std"))]
+impl BinaryMultisigDepthGuard {
+    fn enter<E: serde::de::Error>() -> Result<Self, E> {
+        BINARY_MULTISIG_DESERIALIZE_DEPTH.with(|depth| {
+            let next = depth.get() + 1;
+            if next > MAX_MULTISIG_NESTING_DEPTH {
+                return Err(E::custom("native multisig nesting depth exceeded"));
+            }
+            depth.set(next);
+            Ok(Self)
+        })
+    }
+}
+
+#[cfg(all(feature = "serde", feature = "std"))]
+impl Drop for BinaryMultisigDepthGuard {
+    fn drop(&mut self) {
+        BINARY_MULTISIG_DESERIALIZE_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
 
 /// Tempo signature type byte for native multisig signatures.
 pub const SIGNATURE_TYPE_MULTISIG: u8 = 0x05;
@@ -69,6 +98,8 @@ pub enum MultisigConfigError {
     ThresholdExceedsWeight,
     /// The derived multisig account address is zero.
     DerivedAccountZero,
+    /// The multisig account is included in its own owner set.
+    AccountIsOwner,
 }
 
 impl MultisigConfigError {
@@ -87,6 +118,7 @@ impl MultisigConfigError {
                 "multisig threshold cannot be reached within the owner approval limit"
             }
             Self::DerivedAccountZero => "multisig account cannot be zero",
+            Self::AccountIsOwner => "multisig account cannot own itself",
         }
     }
 }
@@ -437,6 +469,15 @@ impl InitMultisig {
         Ok(total_weight as u8)
     }
 
+    /// Validates this config for an existing multisig account.
+    pub fn validate_for_account(&self, account: Address) -> Result<u8, MultisigConfigError> {
+        let total_weight = self.validate()?;
+        if self.owner_weight(account).is_some() {
+            return Err(MultisigConfigError::AccountIsOwner);
+        }
+        Ok(total_weight)
+    }
+
     /// Derives the native multisig account address for this initial config.
     pub fn account(&self) -> Result<Address, MultisigConfigError> {
         self.validate()?;
@@ -458,6 +499,9 @@ impl InitMultisig {
         let account = Address::from_slice(&keccak256(input)[12..]);
         if account.is_zero() {
             return Err(MultisigConfigError::DerivedAccountZero);
+        }
+        if self.owner_weight(account).is_some() {
+            return Err(MultisigConfigError::AccountIsOwner);
         }
         Ok(account)
     }
@@ -663,13 +707,18 @@ impl MultisigSignature {
         if self.signatures.len() > MAX_MULTISIG_SIGNATURES {
             return Err("too many multisig signatures");
         }
-        if self
-            .signatures
-            .iter()
-            .filter_map(TempoSignature::as_primitive)
-            .any(|sig| sig.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES)
-        {
-            return Err("multisig owner signature too large");
+        for signature in &self.signatures {
+            match signature {
+                TempoSignature::Primitive(signature)
+                    if signature.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES =>
+                {
+                    return Err("multisig owner signature too large");
+                }
+                TempoSignature::Keychain(_) => {
+                    return Err("keychain signatures cannot authorize native multisig owners");
+                }
+                TempoSignature::Primitive(_) | TempoSignature::Multisig(_) => {}
+            }
         }
         Ok(())
     }
@@ -796,6 +845,8 @@ impl<'de> Deserialize<'de> for MultisigSignature {
                 }
             }
         } else {
+            #[cfg(feature = "std")]
+            let _depth_guard = BinaryMultisigDepthGuard::enter::<D::Error>()?;
             let wire = MultisigSignatureSerde::deserialize(deserializer)?;
             Self::try_from(wire).map_err(D::Error::custom)
         }
@@ -997,7 +1048,7 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
 mod tests {
     use super::*;
     use crate::transaction::{
-        PrimitiveSignature, TempoSignature, derive_p256_address,
+        KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     };
@@ -1259,6 +1310,31 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err(MultisigConfigError::ThresholdExceedsWeight)
+        );
+    }
+
+    #[test]
+    fn config_rejects_own_account_as_owner() {
+        let account = indexed_owner(1);
+        let config = sorted_secp_config(&[(account, 1)], 1);
+
+        assert_eq!(
+            config.validate_for_account(account),
+            Err(MultisigConfigError::AccountIsOwner)
+        );
+    }
+
+    #[test]
+    fn multisig_shape_rejects_keychain_owner_approval() {
+        let account = indexed_owner(1);
+        let approval = TempoSignature::Keychain(KeychainSignature::new(
+            indexed_owner(2),
+            PrimitiveSignature::default(),
+        ));
+
+        assert_eq!(
+            MultisigSignature::from_decoded(account, vec![approval], None),
+            Err("keychain signatures cannot authorize native multisig owners")
         );
     }
 

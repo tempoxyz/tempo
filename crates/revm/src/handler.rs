@@ -1800,7 +1800,12 @@ where
             )
             .map_err(TempoInvalidTransaction::from)?;
 
-            if aa_env.signature.is_multisig() {
+            if aa_env.signature.is_multisig()
+                || aa_env
+                    .tempo_authorization_list
+                    .iter()
+                    .any(|authorization| authorization.signature().is_multisig())
+            {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
             }
 
