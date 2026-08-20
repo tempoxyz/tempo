@@ -23,7 +23,10 @@ use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManif
 #[derive(Debug, Parser)]
 #[command(
     name = "download",
-    about = "Downloads snapshot archives produced by `tempo snapshot-manifest`."
+    about = "Downloads snapshot archives produced by `tempo snapshot-manifest`.",
+    mut_arg("force", |arg| arg.help(
+        "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+    ))
 )]
 pub(crate) struct Args {
     #[command(flatten)]
@@ -499,6 +502,15 @@ mod tests {
         let help = Args::command().render_long_help().to_string();
 
         assert!(!help.contains("--skip-consensus"));
+    }
+
+    #[test]
+    fn help_documents_force_removing_consensus_directory() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains(
+            "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+        ));
     }
 
     #[test]
