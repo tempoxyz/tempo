@@ -2,18 +2,42 @@ use alloy_primitives::B256;
 use commonware_consensus::types::{Epoch, Height, Round, View};
 use futures::executor::block_on;
 use reth_node_core::primitives::SealedBlock;
+use reth_stages_types::StageCheckpoint;
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
 use commonware_consensus::Heightable as _;
 
 use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
-    notarized_tree::LocalState, queue_consensus_request,
+    notarized_tree::LocalState, queue_consensus_request, rebuilt_index_checkpoint,
 };
 use crate::consensus::{Digest, block::Block};
 
 fn round(view: u64) -> Round {
     Round::new(Epoch::zero(), View::new(view))
+}
+
+#[test]
+fn indices_are_only_rebuilt_when_finish_reaches_headers() {
+    assert_eq!(
+        rebuilt_index_checkpoint(
+            Some(StageCheckpoint::new(10)),
+            Some(StageCheckpoint::new(10)),
+        ),
+        Some(10)
+    );
+    assert_eq!(
+        rebuilt_index_checkpoint(
+            Some(StageCheckpoint::new(11)),
+            Some(StageCheckpoint::new(10)),
+        ),
+        None
+    );
+    assert_eq!(
+        rebuilt_index_checkpoint(Some(StageCheckpoint::new(10)), None),
+        None
+    );
+    assert_eq!(rebuilt_index_checkpoint(None, None), None);
 }
 
 /// Builds a block constructed in `view` at `height`.
