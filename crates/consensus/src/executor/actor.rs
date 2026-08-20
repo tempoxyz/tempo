@@ -402,6 +402,7 @@ where
             self.execution_task.replace(task).is_none(),
             "invariant violation: must not replace an in-flight execution task"
         );
+        info!("execution task scheduled");
     }
 
     #[instrument(
