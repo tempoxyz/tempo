@@ -148,7 +148,11 @@ jobs:
   bench-e2e-multi-region:
     needs: resolve-refs
     if: needs.resolve-refs.outputs.should-run == 'true'
-    name: bench-e2e-multi-region-scheduled
+    name: bench-e2e-multi-region-scheduled-${{ matrix.tps }}-tps
+    strategy:
+      fail-fast: false
+      matrix:
+        tps: ${{ fromJSON(github.event_name == 'schedule' && '["500","2000","5000"]' || format('["{0}"]', inputs.tps)) }}
     uses: ./.github/workflows/bench-e2e-multi-region.yml
     permissions:
       actions: read
@@ -165,11 +169,13 @@ jobs:
       bloat: ${{ inputs.bloat || '100' }}
       validator-count: ${{ inputs['validator-count'] || '10' }}
       regions: ${{ inputs.regions || '' }}
-      tps: ${{ inputs.tps || '50000' }}
+      tps: ${{ matrix.tps }}
       accounts: ${{ inputs.accounts || '1000' }}
       max-concurrent-requests: ${{ inputs['max-concurrent-requests'] || '5000' }}
       run-pairs: ${{ inputs['run-pairs'] || '3' }}
       clickhouse-run: feature-1
+      benchmark-id-suffix: ${{ matrix.tps }}-tps
+      artifact-name: tempo-bench-e2e-multi-region-results-${{ matrix.tps }}-tps
       otlp: true
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}

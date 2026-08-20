@@ -63,6 +63,14 @@ on:
         type: string
         required: false
         default: "feature-1"
+      benchmark-id-suffix:
+        type: string
+        required: false
+        default: ""
+      artifact-name:
+        type: string
+        required: false
+        default: tempo-bench-e2e-multi-region-results
       otlp:
         type: boolean
         required: false
@@ -237,7 +245,6 @@ on:
         type: string
         required: false
         default: "feature-1"
-
 permissions:
   actions: read
   contents: read
@@ -255,7 +262,7 @@ jobs:
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
-      BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
+      BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs['benchmark-id-suffix'] && format('-{0}', inputs['benchmark-id-suffix']) || '' }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
       BENCH_INPUT_CLOUD: ${{ inputs.cloud || 'aws' }}
       BENCH_GCP_PROJECT_ID: chain-benchmarking-zygis
@@ -714,7 +721,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tempo-bench-e2e-multi-region-results
+          name: ${{ inputs['artifact-name'] || 'tempo-bench-e2e-multi-region-results' }}
           path: ${{ env.BENCH_RESULTS_DIR }}
           if-no-files-found: warn
 
