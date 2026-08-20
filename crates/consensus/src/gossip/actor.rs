@@ -60,6 +60,8 @@ struct Slot {
 struct Peer {
     /// Highest round this peer claimed or this node accepted for outbound routing.
     seen_round: Option<Round>,
+    /// Pending inbound certificate work, kept until it settles or the peer disconnects.
+    slot: Option<Slot>,
 }
 
 impl Peer {
@@ -144,7 +146,6 @@ where
         context: ContextCell::new(context),
         config,
         peers: HashMap::new(),
-        slots: HashMap::new(),
         settled_frames: recent,
         latest: None,
         pending: OptionFuture::none(),
@@ -159,16 +160,11 @@ pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbo
     context: ContextCell<TContext>,
     config: Config<K, P, M>,
 
-    /// Active logical `tempo/1` peers.
+    /// Active logical `tempo/1` peers and their certificate slots.
     ///
-    /// Publication scans every entry, so the actor relies on the RLPx network's
-    /// peer limit to keep this map small.
+    /// Publication and scheduling scan every entry, so the actor relies on the
+    /// RLPx network's peer limit to keep this map small.
     peers: HashMap<PeerKey, Peer>,
-    /// At most one certificate slot per active peer.
-    ///
-    /// Scheduling and cleanup scan every entry. This map is no larger than
-    /// `peers` and relies on the same peer limit.
-    slots: HashMap<PeerKey, Slot>,
     settled_frames: SettledFrames,
     latest: Option<Published>,
 
@@ -231,7 +227,10 @@ where
                     return;
                 }
 
-                let mut state = Peer { seen_round: None };
+                let mut state = Peer {
+                    seen_round: None,
+                    slot: None,
+                };
 
                 if let Some(latest) = &self.latest {
                     match state.offer(
@@ -255,7 +254,6 @@ where
             }
             PeerEvent::Down(peer) => {
                 if self.peers.remove(&peer).is_some() {
-                    self.slots.remove(&peer);
                     self.metrics.peers.set(self.peers.len() as i64);
                     self.update_slot_metrics();
                 }
@@ -304,32 +302,36 @@ where
         // Once verification starts, the certificate is locked until it is
         // settled or removed. This prevents a peer from replacing a quarantined
         // certificate before the missing scheme arrives and verification can retry.
-        if let Some(current) = self.slots.get_mut(&peer) {
-            if current.state != SlotState::Ready {
-                self.metrics.dropped_locked_replacement.inc();
-                return;
-            }
-            if round <= current.certificate.round() {
-                return;
-            }
+        let state = self.peers.get_mut(&peer).expect("peer was checked above");
+        let inserted = match state.slot.as_mut() {
+            Some(current) => {
+                if current.state != SlotState::Ready {
+                    self.metrics.dropped_locked_replacement.inc();
+                    return;
+                }
+                if round <= current.certificate.round() {
+                    return;
+                }
 
-            current.certificate = certificate;
-            current.id = id;
-            self.try_dispatch();
-            return;
+                current.certificate = certificate;
+                current.id = id;
+                false
+            }
+            None => {
+                let ready_ticket = Self::issue_ready_ticket(&mut self.next_ready_ticket);
+                state.slot = Some(Slot {
+                    certificate,
+                    id,
+                    state: SlotState::Ready,
+                    ready_ticket,
+                });
+                true
+            }
+        };
+
+        if inserted {
+            self.update_slot_metrics();
         }
-
-        let ready_ticket = self.issue_ready_ticket();
-        self.slots.insert(
-            peer,
-            Slot {
-                certificate,
-                id,
-                state: SlotState::Ready,
-                ready_ticket,
-            },
-        );
-        self.update_slot_metrics();
         self.try_dispatch();
     }
 
@@ -377,23 +379,27 @@ where
     /// Releases live quarantines covered by an authenticated boundary scheme.
     fn release_quarantines(&mut self, installed: Epoch) {
         let mut releasable: Vec<(ReadyTicket, PeerKey, Epoch)> = self
-            .slots
+            .peers
             .iter()
-            .filter_map(|(peer, slot)| match slot.state {
-                SlotState::NeedsScheme(epoch) if epoch <= installed => {
-                    Some((slot.ready_ticket, *peer, epoch))
+            .filter_map(|(peer, state)| {
+                let slot = state.slot.as_ref()?;
+                match slot.state {
+                    SlotState::NeedsScheme(epoch) if epoch <= installed => {
+                        Some((slot.ready_ticket, *peer, epoch))
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
             .collect();
         releasable.sort_unstable_by_key(|(ticket, peer, _)| (*ticket, *peer));
         let released = !releasable.is_empty();
 
         for (_, peer, epoch) in releasable {
-            let ready_ticket = self.issue_ready_ticket();
+            let ready_ticket = Self::issue_ready_ticket(&mut self.next_ready_ticket);
             let slot = self
-                .slots
+                .peers
                 .get_mut(&peer)
+                .and_then(|state| state.slot.as_mut())
                 .expect("selected quarantine has a slot");
 
             debug!(
@@ -428,8 +434,16 @@ where
             .latest_verified_view
             .set(round.view().get() as i64);
 
-        self.slots
-            .retain(|_, slot| slot.certificate.round() > round);
+        // Verified progress settles pending work from every peer at this round or below.
+        for state in self.peers.values_mut() {
+            if state
+                .slot
+                .as_ref()
+                .is_some_and(|slot| slot.certificate.round() <= round)
+            {
+                state.slot = None;
+            }
+        }
         self.update_slot_metrics();
     }
 
@@ -457,7 +471,11 @@ where
         }
 
         let (pending, certificate) = {
-            let slot = self.slots.get_mut(&peer).expect("selected peer has a slot");
+            let slot = self
+                .peers
+                .get_mut(&peer)
+                .and_then(|state| state.slot.as_mut())
+                .expect("selected peer has a slot");
             debug_assert_eq!(slot.state, SlotState::Ready);
             slot.state = SlotState::Judging;
             let round = slot.certificate.round();
@@ -484,21 +502,19 @@ where
     /// The actor does not select the highest round because the value is not yet
     /// verified. A peer could claim a large round and starve all other peers.
     fn next_candidate(&self) -> Option<PeerKey> {
-        self.slots
+        self.peers
             .iter()
-            .filter_map(|(peer, slot)| {
+            .filter_map(|(peer, state)| {
+                let slot = state.slot.as_ref()?;
                 (slot.state == SlotState::Ready).then_some((slot.ready_ticket, *peer))
             })
             .min()
             .map(|(_, peer)| peer)
     }
 
-    fn issue_ready_ticket(&mut self) -> ReadyTicket {
-        let ticket = self.next_ready_ticket;
-        self.next_ready_ticket = self
-            .next_ready_ticket
-            .checked_add(1)
-            .expect("ready ticket space exhausted");
+    fn issue_ready_ticket(next_ready_ticket: &mut ReadyTicket) -> ReadyTicket {
+        let ticket = *next_ready_ticket;
+        *next_ready_ticket = ticket.checked_add(1).expect("ready ticket space exhausted");
         ticket
     }
 
@@ -564,12 +580,20 @@ where
     /// A terminal judgement settles all identical copies. A missing scheme is
     /// not terminal, so that outcome does not call this method.
     fn forget(&mut self, id: FrameId) {
-        self.slots.retain(|_, slot| slot.id != id);
+        for state in self.peers.values_mut() {
+            if state.slot.as_ref().is_some_and(|slot| slot.id == id) {
+                state.slot = None;
+            }
+        }
         self.update_slot_metrics();
     }
 
     fn quarantine(&mut self, pending: &Pending, required: Epoch) {
-        let Some(slot) = self.slots.get_mut(&pending.peer) else {
+        let Some(slot) = self
+            .peers
+            .get_mut(&pending.peer)
+            .and_then(|state| state.slot.as_mut())
+        else {
             return;
         };
         if slot.id != pending.id || slot.state != SlotState::Judging {
@@ -589,15 +613,17 @@ where
     }
 
     fn update_slot_metrics(&self) {
-        // The peer count is bounded and thus does not pose a performance concern here.
-        let quarantined_cnt = self
-            .slots
-            .values()
-            .filter(|slot| matches!(slot.state, SlotState::NeedsScheme(_)))
-            .count() as i64;
+        let mut slots = 0;
+        let mut quarantined = 0;
+        for slot in self.peers.values().filter_map(|state| state.slot.as_ref()) {
+            slots += 1;
+            if matches!(slot.state, SlotState::NeedsScheme(_)) {
+                quarantined += 1;
+            }
+        }
 
-        self.metrics.slots.set(self.slots.len() as i64);
-        self.metrics.quarantined.set(quarantined_cnt);
+        self.metrics.slots.set(slots);
+        self.metrics.quarantined.set(quarantined);
     }
 
     fn penalize(&mut self, peer: PeerKey) {
