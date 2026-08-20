@@ -539,10 +539,11 @@ fn native_multisig_simulation_hint_for_config(
     })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct MultisigSimulationSelection {
     gas: u64,
-    approvals: Vec<MultisigSimulationApproval>,
+    owner_indices: [usize; MAX_MULTISIG_SIGNATURES],
+    len: usize,
 }
 
 fn select_native_multisig_simulation_approvals(
@@ -556,23 +557,25 @@ fn select_native_multisig_simulation_approvals(
     let mut states = vec![vec![None; threshold]; MAX_MULTISIG_SIGNATURES + 1];
     states[0][0] = Some(MultisigSimulationSelection {
         gas: 0,
-        approvals: Vec::new(),
+        owner_indices: [0; MAX_MULTISIG_SIGNATURES],
+        len: 0,
     });
     let mut best: Option<MultisigSimulationSelection> = None;
 
-    for (owner, approval) in config.owners.iter().zip(owner_approvals) {
+    for (owner_index, (owner, approval)) in config.owners.iter().zip(&owner_approvals).enumerate() {
         // Walk backwards so this owner cannot be selected more than once.
         for count in (0..MAX_MULTISIG_SIGNATURES).rev() {
             for weight in (0..threshold).rev() {
-                let Some(selection) = states[count][weight].clone() else {
+                let Some(selection) = states[count][weight] else {
                     continue;
                 };
                 let next_count = count + 1;
                 let mut candidate = selection;
                 candidate.gas = candidate
                     .gas
-                    .saturating_add(native_multisig_simulation_approval_gas(&approval));
-                candidate.approvals.push(approval.clone());
+                    .saturating_add(native_multisig_simulation_approval_gas(approval));
+                candidate.owner_indices[count] = owner_index;
+                candidate.len = next_count;
 
                 let next_weight = weight.saturating_add(usize::from(owner.weight));
                 if next_weight >= threshold {
@@ -593,7 +596,13 @@ fn select_native_multisig_simulation_approvals(
         }
     }
 
-    best.map(|selection| selection.approvals).ok_or_else(|| {
+    best.map(|selection| {
+        selection.owner_indices[..selection.len]
+            .iter()
+            .map(|&index| owner_approvals[index].clone())
+            .collect()
+    })
+    .ok_or_else(|| {
         let reason = signature_count.map_or_else(
             || "native multisig config cannot satisfy its threshold".to_string(),
             |count| format!("native multisig threshold cannot be satisfied by {count} signatures"),
