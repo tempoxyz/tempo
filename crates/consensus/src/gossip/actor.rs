@@ -4,10 +4,7 @@
 //! publishes certificates after marshal confirms they are durable. It uses the
 //! runtime clock so scheduling and rate limits work in deterministic tests.
 
-use std::{
-    collections::{HashMap, VecDeque},
-    num::NonZeroU32,
-};
+use std::{collections::HashMap, num::NonZeroU32};
 
 use alloy_primitives::{B256, Bytes, keccak256};
 use commonware_consensus::{
@@ -27,7 +24,7 @@ use super::{
 };
 use crate::utils::OptionFuture;
 
-/// Hash of the exact frame bytes used to track settled or published frames.
+/// Hash of the exact frame bytes used to match duplicate peer slots.
 ///
 /// Different certificates can name the same block. A key based on the block
 /// would let a forged certificate suppress a valid certificate for that block.
@@ -65,8 +62,13 @@ struct Peer {
 }
 
 impl Peer {
+    fn has_seen(&self, round: Round) -> bool {
+        self.seen_round.is_some_and(|seen| seen >= round)
+    }
+
     fn observe(&mut self, round: Round) {
-        self.seen_round = Some(self.seen_round.map_or(round, |seen| seen.max(round)));
+        debug_assert!(!self.has_seen(round));
+        self.seen_round = Some(round);
     }
 
     /// Offers a certificate if the peer has not seen its round or a later one.
@@ -81,7 +83,7 @@ impl Peer {
         round: Round,
         frame: &Bytes,
     ) -> Result<bool, mpsc::error::TrySendError<Bytes>> {
-        if self.seen_round.is_some_and(|seen| seen >= round) {
+        if self.has_seen(round) {
             return Ok(false);
         }
 
@@ -115,8 +117,6 @@ pub(crate) struct Config<K, P, M = crate::alias::marshal::Mailbox> {
     /// Each signature check runs on the driver task, which also acknowledges
     /// blocks to marshal. This limit bounds how much a flood can delay block import.
     pub(crate) verify_rate: NonZeroU32,
-    /// Frames remembered as already settled or published.
-    pub(crate) recent_frames: usize,
     /// The consensus layer's end of the `tempo/1` transport.
     pub(crate) transport: TransportHandle,
     /// Marshal notifications that trigger durable publication and scheme retries.
@@ -138,7 +138,6 @@ where
 {
     let metrics = Metrics::init(&context);
     let quota = Quota::per_second(config.verify_rate);
-    let recent = SettledFrames::with_capacity(config.recent_frames);
     let limiter_context = context.child("verify_limiter");
 
     Actor {
@@ -146,7 +145,6 @@ where
         context: ContextCell::new(context),
         config,
         peers: HashMap::new(),
-        settled_frames: recent,
         latest: None,
         pending: OptionFuture::none(),
         budget_wakeup: OptionFuture::none(),
@@ -165,7 +163,6 @@ pub(crate) struct Actor<TContext: Clock, K, P, M = crate::alias::marshal::Mailbo
     /// Publication and scheduling scan every entry, so the actor relies on the
     /// RLPx network's peer limit to keep this map small.
     peers: HashMap<PeerKey, Peer>,
-    settled_frames: SettledFrames,
     latest: Option<Published>,
 
     pending: OptionFuture<BoxFuture<'static, PendingJudgement>>,
@@ -269,16 +266,6 @@ where
             return;
         }
 
-        let id = keccak256(&frame);
-        if let Some(round) = self.settled_frames.round(&id) {
-            self.peers
-                .get_mut(&peer)
-                .expect("peer was checked above")
-                .observe(round);
-            self.metrics.dropped_replay.inc();
-            return;
-        }
-
         let Some(certificate) = decode(&frame) else {
             self.metrics.dropped_malformed.inc();
             self.penalize(peer);
@@ -286,15 +273,19 @@ where
         };
 
         let round = certificate.round();
-        self.peers
-            .get_mut(&peer)
-            .expect("peer was checked above")
-            .observe(round);
+        let state = self.peers.get_mut(&peer).expect("peer was checked above");
+        if state.has_seen(round) {
+            self.metrics.dropped_replay.inc();
+            return;
+        }
+        state.observe(round);
 
         if round <= self.latest_verified_round {
             self.metrics.dropped_stale.inc();
             return;
         }
+
+        let id = keccak256(&frame);
 
         // A higher-round replacement keeps the slot's ticket because the ticket
         // tracks how long the peer has waited, not the age of the certificate.
@@ -307,9 +298,6 @@ where
             Some(current) => {
                 if current.state != SlotState::Ready {
                     self.metrics.dropped_locked_replacement.inc();
-                    return;
-                }
-                if round <= current.certificate.round() {
                     return;
                 }
 
@@ -366,9 +354,6 @@ where
             }
         }
 
-        let id = keccak256(&frame);
-        self.settled_frames.insert(id, round);
-        self.forget(id);
         self.latest = Some(Published {
             round,
             frame: frame.clone(),
@@ -524,23 +509,20 @@ where
             // the same slot again on every loop and consume the full budget.
             debug!("no judgement for certificate; treating it as settled");
             self.metrics.unanswered.inc();
-            self.settled_frames.insert(pending.id, pending.round);
-            self.forget(pending.id);
+            let _peers = self.remove_frame_slots(pending.id);
             return;
         };
 
         match result {
             Ok(()) => {
                 self.advance_latest_verified_round(pending.round);
-                self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.settled.inc();
-                self.forget(pending.id);
             }
             Err(CertificateError::Invalid) => {
-                self.settled_frames.insert(pending.id, pending.round);
                 self.metrics.invalid.inc();
-                self.forget(pending.id);
-                self.penalize(pending.peer);
+                for peer in self.remove_frame_slots(pending.id) {
+                    self.penalize(peer);
+                }
             }
             Err(CertificateError::NeedsScheme { epoch }) => {
                 // `NeedsScheme` is provisional.
@@ -575,17 +557,20 @@ where
         self.metrics.relay_dropped.inc_by(full);
     }
 
-    /// Removes every slot that holds the same frame bytes.
+    /// Removes every slot that holds the same frame bytes and returns the owning peers.
     ///
     /// A terminal judgement settles all identical copies. A missing scheme is
     /// not terminal, so that outcome does not call this method.
-    fn forget(&mut self, id: FrameId) {
-        for state in self.peers.values_mut() {
+    fn remove_frame_slots(&mut self, id: FrameId) -> Vec<PeerKey> {
+        let mut removed = Vec::new();
+        for (peer, state) in &mut self.peers {
             if state.slot.as_ref().is_some_and(|slot| slot.id == id) {
                 state.slot = None;
+                removed.push(*peer);
             }
         }
         self.update_slot_metrics();
+        removed
     }
 
     fn quarantine(&mut self, pending: &Pending, required: Epoch) {
@@ -634,38 +619,4 @@ where
 
 fn decode(frame: &Bytes) -> Option<Certificate> {
     wire::decode(frame).ok()
-}
-
-/// Bounded cache of settled or published frames and their rounds.
-struct SettledFrames {
-    seen: HashMap<FrameId, Round>,
-    order: VecDeque<FrameId>,
-    capacity: usize,
-}
-
-impl SettledFrames {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            seen: HashMap::with_capacity(capacity),
-            order: VecDeque::with_capacity(capacity),
-            capacity: capacity.max(1),
-        }
-    }
-
-    fn round(&self, id: &FrameId) -> Option<Round> {
-        self.seen.get(id).copied()
-    }
-
-    fn insert(&mut self, id: FrameId, round: Round) {
-        if self.seen.insert(id, round).is_some() {
-            return;
-        }
-
-        self.order.push_back(id);
-        if self.order.len() > self.capacity
-            && let Some(evicted) = self.order.pop_front()
-        {
-            self.seen.remove(&evicted);
-        }
-    }
 }

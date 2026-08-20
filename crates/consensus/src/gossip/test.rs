@@ -292,7 +292,6 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
         context.child("gossip"),
         super::Config {
             verify_rate,
-            recent_frames: 64,
             transport,
             mailbox: receiver,
             peer_control: peer_control.clone(),
@@ -410,28 +409,55 @@ fn rate_limited_churn_preserves_admission_order() {
 fn terminal_outcome_settles_frame_for_every_peer() {
     deterministic::Runner::default().start(|mut context| async move {
         let mut rig = start(&mut context);
-        rig.sink.always(Err(CertificateError::Invalid));
         rig.connect(peer(1));
         rig.connect(peer(2));
 
-        // Both peers relay the very same certificate.
+        // Hold the first judgment open so both peers retain the same frame in
+        // their own slots.
         let shared = rig.frame(7);
         rig.send(peer(1), shared.clone()).await;
+        wait_until(&context, || rig.sink.requests().len() == 1).await;
         rig.send(peer(2), shared).await;
+        wait_until(&context, || metric(&context, "gossip_slots") == 2).await;
 
-        wait_until(&context, || !rig.sink.requests().is_empty()).await;
-        context.sleep(Duration::from_millis(30)).await;
+        rig.sink.release(Err(CertificateError::Invalid));
+        wait_until(&context, || rig.peer_control.penalized().len() == 2).await;
 
         assert_eq!(
             rig.sink.requests().len(),
             1,
             "the same bytes are only judged once",
         );
-        assert_eq!(
-            rig.peer_control.penalized().len(),
-            1,
-            "only the judged source is penalized",
-        );
+        let mut penalized = rig.peer_control.penalized();
+        penalized.sort_unstable();
+        assert_eq!(penalized, vec![peer(1), peer(2)]);
+        assert_eq!(metric(&context, "gossip_slots"), 0);
+    });
+}
+
+/// A live peer can only advance its claimed round. Replaying the same round or
+/// an older one does not consume another driver judgment.
+#[test_traced]
+fn inbound_rounds_are_strictly_increasing_per_peer() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let mut rig = start(&mut context);
+        rig.sink.always(Err(CertificateError::Invalid));
+        rig.connect(peer(1));
+
+        rig.send(peer(1), rig.frame(10)).await;
+        wait_until(&context, || rig.peer_control.penalized().len() == 1).await;
+        rig.send(peer(1), rig.frame(10)).await;
+        rig.send(peer(1), rig.frame(9)).await;
+        wait_until(&context, || {
+            metric(&context, "gossip_dropped_replay_total") == 2
+        })
+        .await;
+
+        assert_eq!(rig.sink.requests(), vec![round(10)]);
+
+        rig.send(peer(1), rig.frame(11)).await;
+        wait_until(&context, || rig.sink.requests().len() == 2).await;
+        assert_eq!(rig.sink.requests(), vec![round(10), round(11)]);
     });
 }
 

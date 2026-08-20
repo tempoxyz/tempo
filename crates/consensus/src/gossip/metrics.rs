@@ -78,8 +78,10 @@ impl Metrics {
                 "dropped_disconnected_peer",
                 "frames received after their logical peer disconnected",
             ),
-            dropped_replay: context
-                .counter("dropped_replay", "frames already settled or published"),
+            dropped_replay: context.counter(
+                "dropped_replay",
+                "frames at or below the peer's highest seen round",
+            ),
             dropped_malformed: context.counter("dropped_malformed", "frames that did not decode"),
             dropped_stale: context.counter(
                 "dropped_stale",
