@@ -1663,8 +1663,8 @@ impl Metrics {
     }
 }
 
-/// A wrapper around [`marshal::ancestry::AncestorStream`] wrapped in
-/// an option to make it easier to work with select macros.
+/// A wrapper around an ancestry stream held in an option to make it easier to
+/// use with select macros.
 ///
 /// Invariant: the inner stream and its matching original request are set and
 /// cleared together.
