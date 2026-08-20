@@ -306,7 +306,7 @@ async fn install_consensus_archive(
 
     prepare_consensus_directory(consensus_dir, force).wrap_err_with(|| {
         format!(
-            "failed to prepare consensus directory at {}",
+            "failed to prepare consensus directory at `{}`",
             consensus_dir.display()
         )
     })?;
