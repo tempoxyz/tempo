@@ -300,11 +300,18 @@ impl TempoPoolUpdates {
             || !self.key_authorization_witness_burns.is_empty()
     }
 
-    fn affects_multisig_transaction(&self, transaction: &TempoPooledTransaction) -> bool {
+    pub(crate) fn affects_multisig_transaction(
+        &self,
+        transaction: &TempoPooledTransaction,
+    ) -> bool {
         (!self.multisig_config_changes.is_empty()
             && transaction.depends_on_multisig_config(&self.multisig_config_changes))
             || (!self.multisig_initializations.is_empty()
                 && transaction.uses_multisig_restricted_account(&self.multisig_initializations))
+    }
+
+    pub(crate) fn has_multisig_updates(&self) -> bool {
+        !self.multisig_config_changes.is_empty() || !self.multisig_initializations.is_empty()
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -692,47 +699,6 @@ where
             }
         }
 
-        if !updates.multisig_config_changes.is_empty()
-            || !updates.multisig_initializations.is_empty()
-        {
-            let hashes: Vec<TxHash> = {
-                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                all_txs
-                    .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| updates.affects_multisig_transaction(&tx.transaction))
-                    .map(|tx| *tx.hash())
-                    .collect()
-            };
-            if !hashes.is_empty() {
-                let removed_txs = pool.remove_transactions(hashes);
-                let count = removed_txs.len();
-
-                for tx in &removed_txs {
-                    removed_this_iteration.insert(*tx.hash());
-                }
-
-                metrics.multisig_revalidated.increment(count as u64);
-
-                let pool_clone = pool.clone();
-                tokio::spawn(async move {
-                    let txs = removed_txs
-                        .into_iter()
-                        .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
-                        .collect();
-                    let results = pool_clone.add_transactions_with_origins(txs).await;
-                    let success = results.iter().filter(|result| result.is_ok()).count();
-                    debug!(
-                        target: "txpool",
-                        total = count,
-                        success,
-                        reason = "native multisig state update",
-                        "Re-validated transactions"
-                    );
-                });
-            }
-        }
-
         // 5. Evict expired and invalidated transactions in one pool traversal.
         let invalidation_start = Instant::now();
         debug!(
@@ -750,6 +716,7 @@ where
             multisig_initializations = updates.multisig_initializations.len(),
             "Processing transaction invalidation events"
         );
+        let mut multisig_revalidated = Vec::new();
         let evicted = {
             let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             pool.evict_invalidated_transactions_from(
@@ -758,12 +725,35 @@ where
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash())),
                 Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
+                Some(&mut multisig_revalidated),
             )
         };
         metrics
             .transactions_invalidated
             .increment(evicted.len() as u64);
         removed_txs.push(evicted);
+
+        if !multisig_revalidated.is_empty() {
+            let count = multisig_revalidated.len();
+            metrics.multisig_revalidated.increment(count as u64);
+
+            let pool_clone = pool.clone();
+            tokio::spawn(async move {
+                let txs = multisig_revalidated
+                    .into_iter()
+                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                    .collect();
+                let results = pool_clone.add_transactions_with_origins(txs).await;
+                let success = results.iter().filter(|result| result.is_ok()).count();
+                debug!(
+                    target: "txpool",
+                    total = count,
+                    success,
+                    reason = "native multisig state update",
+                    "Re-validated transactions"
+                );
+            });
+        }
         metrics
             .invalidation_eviction_duration_seconds
             .record(invalidation_start.elapsed());
