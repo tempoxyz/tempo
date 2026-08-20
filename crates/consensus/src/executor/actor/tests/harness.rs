@@ -14,6 +14,7 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
+    hash::Hash,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -139,13 +140,32 @@ struct ElState {
     finalized: Option<BlockNumHash>,
 }
 
+struct ScriptedResults<K, T>(Mutex<HashMap<K, VecDeque<Result<T, &'static str>>>>);
+
+impl<K, T> ScriptedResults<K, T>
+where
+    K: Eq + Hash,
+{
+    fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+
+    fn push(&self, key: K, result: Result<T, &'static str>) {
+        self.0.lock().entry(key).or_default().push_back(result);
+    }
+
+    fn pop(&self, key: &K) -> Option<Result<T, &'static str>> {
+        self.0.lock().get_mut(key).and_then(VecDeque::pop_front)
+    }
+}
+
 struct FakeExecutionInner {
     genesis: B256,
     state: Mutex<ElState>,
     calls: Mutex<Vec<ElCall>>,
     /// Scripted new-payload outcomes keyed by block hash, consumed in order.
     /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
-    payload_overrides: Mutex<HashMap<B256, VecDeque<Result<PayloadStatusEnum, &'static str>>>>,
+    payload_overrides: ScriptedResults<B256, PayloadStatusEnum>,
     /// Validator sets received with new-payload requests, keyed by block hash.
     payload_validator_sets: Mutex<Vec<(Digest, Option<Vec<B256>>)>>,
     /// Payload attributes received with forkchoice-update requests.
@@ -153,9 +173,9 @@ struct FakeExecutionInner {
     /// Scripted FCU outcomes consumed in order before default behavior.
     fcu_overrides: Mutex<VecDeque<Result<PayloadStatusEnum, &'static str>>>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
-    canonical_hash_overrides: Mutex<HashMap<u64, VecDeque<Result<Option<B256>, &'static str>>>>,
+    canonical_hash_overrides: ScriptedResults<u64, Option<B256>>,
     /// Scripted block lookup outcomes keyed by digest.
-    block_overrides: Mutex<HashMap<B256, VecDeque<Result<Option<Block>, &'static str>>>>,
+    block_overrides: ScriptedResults<B256, Option<Block>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -217,12 +237,12 @@ impl FakeExecution {
                     finalized: None,
                 }),
                 calls: Mutex::new(Vec::new()),
-                payload_overrides: Mutex::new(HashMap::new()),
+                payload_overrides: ScriptedResults::new(),
                 payload_validator_sets: Mutex::new(Vec::new()),
                 payload_attributes: Mutex::new(Vec::new()),
                 fcu_overrides: Mutex::new(VecDeque::new()),
-                canonical_hash_overrides: Mutex::new(HashMap::new()),
-                block_overrides: Mutex::new(HashMap::new()),
+                canonical_hash_overrides: ScriptedResults::new(),
+                block_overrides: ScriptedResults::new(),
                 reject_all_fcus: AtomicBool::new(false),
                 suppress_payload_ids: AtomicBool::new(false),
                 omit_payload_job: AtomicBool::new(false),
@@ -273,12 +293,7 @@ impl FakeExecution {
         digest: Digest,
         outcome: Result<PayloadStatusEnum, &'static str>,
     ) {
-        self.inner
-            .payload_overrides
-            .lock()
-            .entry(digest.0)
-            .or_default()
-            .push_back(outcome);
+        self.inner.payload_overrides.push(digest.0, outcome);
     }
 
     /// Scripts the outcome of the next forkchoice update, whatever its target.
@@ -295,12 +310,7 @@ impl FakeExecution {
         height: u64,
         outcome: Result<Option<B256>, &'static str>,
     ) {
-        self.inner
-            .canonical_hash_overrides
-            .lock()
-            .entry(height)
-            .or_default()
-            .push_back(outcome);
+        self.inner.canonical_hash_overrides.push(height, outcome);
     }
 
     /// Scripts the outcome of the next block lookup for `digest`.
@@ -309,12 +319,7 @@ impl FakeExecution {
         digest: Digest,
         outcome: Result<Option<Block>, &'static str>,
     ) {
-        self.inner
-            .block_overrides
-            .lock()
-            .entry(digest.0)
-            .or_default()
-            .push_back(outcome);
+        self.inner.block_overrides.push(digest.0, outcome);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -486,13 +491,7 @@ impl ExecutionLayer for FakeExecution {
     }
 
     fn canonical_block_hash(&self, height: u64) -> eyre::Result<Option<B256>> {
-        if let Some(outcome) = self
-            .inner
-            .canonical_hash_overrides
-            .lock()
-            .get_mut(&height)
-            .and_then(VecDeque::pop_front)
-        {
+        if let Some(outcome) = self.inner.canonical_hash_overrides.pop(&height) {
             return outcome.map_err(Report::msg).wrap_err_with(|| {
                 format!("scripted canonical block lookup failed at height `{height}`")
             });
@@ -501,13 +500,7 @@ impl ExecutionLayer for FakeExecution {
     }
 
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>> {
-        if let Some(outcome) = self
-            .inner
-            .block_overrides
-            .lock()
-            .get_mut(&digest.0)
-            .and_then(VecDeque::pop_front)
-        {
+        if let Some(outcome) = self.inner.block_overrides.pop(&digest.0) {
             return outcome
                 .map_err(Report::msg)
                 .wrap_err_with(|| format!("scripted block lookup failed for `{digest}"));
@@ -532,12 +525,7 @@ impl ExecutionLayer for FakeExecution {
             .lock()
             .push((Digest(digest), validator_set));
 
-        let scripted = self
-            .inner
-            .payload_overrides
-            .lock()
-            .get_mut(&digest)
-            .and_then(VecDeque::pop_front);
+        let scripted = self.inner.payload_overrides.pop(&digest);
         let outcome = scripted.unwrap_or_else(|| {
             Ok(if self.inner.state.lock().blocks.contains_key(&parent) {
                 PayloadStatusEnum::Valid
@@ -669,13 +657,63 @@ impl ExecutionLayer for FakeExecution {
     }
 }
 
+struct MarshalSubscription {
+    digest: Digest,
+    notarized_in: Round,
+    sender: oneshot::Sender<Arc<Block>>,
+}
+
+struct MarshalSubscriptions(Mutex<Vec<MarshalSubscription>>);
+
+impl MarshalSubscriptions {
+    fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    fn subscribe(&self, digest: Digest, notarized_in: Round) -> oneshot::Receiver<Arc<Block>> {
+        let (sender, receiver) = oneshot::channel();
+        self.0.lock().push(MarshalSubscription {
+            digest,
+            notarized_in,
+            sender,
+        });
+        receiver
+    }
+
+    fn open(&self) -> Vec<(Digest, Round)> {
+        let mut subscriptions = self.0.lock();
+        subscriptions.retain(|subscription| !subscription.sender.is_closed());
+        subscriptions
+            .iter()
+            .map(|subscription| (subscription.digest, subscription.notarized_in))
+            .collect()
+    }
+
+    fn fulfill(&self, digest: Digest, block: Block) -> bool {
+        self.take(digest)
+            .is_some_and(|subscription| subscription.sender.send(Arc::new(block)).is_ok())
+    }
+
+    fn discard(&self, digest: Digest) -> bool {
+        self.take(digest).is_some()
+    }
+
+    fn take(&self, digest: Digest) -> Option<MarshalSubscription> {
+        let mut subscriptions = self.0.lock();
+        let position = subscriptions
+            .iter()
+            .position(|subscription| subscription.digest == digest)?;
+        Some(subscriptions.swap_remove(position))
+    }
+}
+
 struct FakeMarshalInner {
     /// Finalized blocks served through `get_block`, keyed by height.
     blocks: Mutex<HashMap<u64, Block>>,
     /// Finalization info served through `get_info`, keyed by height.
     infos: Mutex<HashMap<u64, Digest>>,
     /// Open digest subscriptions the test can fulfill or drop.
-    subscriptions: Mutex<Vec<(Digest, Round, oneshot::Sender<Arc<Block>>)>>,
+    subscriptions: MarshalSubscriptions,
     /// Every subscription ever made, in order.
     subscribe_log: Mutex<Vec<(Digest, Round)>>,
     get_block_log: Mutex<Vec<u64>>,
@@ -693,7 +731,7 @@ impl FakeMarshal {
             inner: Arc::new(FakeMarshalInner {
                 blocks: Mutex::new(HashMap::new()),
                 infos: Mutex::new(HashMap::new()),
-                subscriptions: Mutex::new(Vec::new()),
+                subscriptions: MarshalSubscriptions::new(),
                 subscribe_log: Mutex::new(Vec::new()),
                 get_block_log: Mutex::new(Vec::new()),
             }),
@@ -715,12 +753,7 @@ impl FakeMarshal {
     /// Subscriptions whose receiver the actor dropped are pruned: they are
     /// no longer open.
     pub(super) fn open_subscriptions(&self) -> Vec<(Digest, Round)> {
-        let mut subscriptions = self.inner.subscriptions.lock();
-        subscriptions.retain(|(_, _, sender)| !sender.is_closed());
-        subscriptions
-            .iter()
-            .map(|(digest, round, _)| (*digest, *round))
-            .collect()
+        self.inner.subscriptions.open()
     }
 
     /// Every subscription ever opened, in order.
@@ -737,23 +770,13 @@ impl FakeMarshal {
     ///
     /// Returns false if no subscription for the digest is open.
     pub(super) fn fulfill_subscription(&self, digest: Digest, block: Block) -> bool {
-        let mut subscriptions = self.inner.subscriptions.lock();
-        let Some(position) = subscriptions.iter().position(|(d, ..)| *d == digest) else {
-            return false;
-        };
-        let (_, _, sender) = subscriptions.swap_remove(position);
-        sender.send(Arc::new(block)).is_ok()
+        self.inner.subscriptions.fulfill(digest, block)
     }
 
     /// Drops the open subscription for `digest`, simulating marshal giving
     /// up on the block. Returns false if none is open.
     pub(super) fn drop_subscription(&self, digest: Digest) -> bool {
-        let mut subscriptions = self.inner.subscriptions.lock();
-        let Some(position) = subscriptions.iter().position(|(d, ..)| *d == digest) else {
-            return false;
-        };
-        subscriptions.swap_remove(position);
-        true
+        self.inner.subscriptions.discard(digest)
     }
 }
 
@@ -780,12 +803,7 @@ impl Marshal for FakeMarshal {
         notarized_in: Round,
     ) -> oneshot::Receiver<Arc<Block>> {
         self.inner.subscribe_log.lock().push((digest, notarized_in));
-        let (sender, receiver) = oneshot::channel();
-        self.inner
-            .subscriptions
-            .lock()
-            .push((digest, notarized_in, sender));
-        receiver
+        self.inner.subscriptions.subscribe(digest, notarized_in)
     }
 }
 
