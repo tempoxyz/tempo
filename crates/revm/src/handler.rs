@@ -1223,6 +1223,7 @@ where
                                 &multisig_precompile,
                                 signature,
                                 root_owner_count,
+                                is_rpc_simulation,
                                 1,
                             )?,
                         );
@@ -1819,7 +1820,7 @@ where
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
             let auth_signer = key_auth
-                .recover_signer()
+                .recover_authorizing_account()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
@@ -2499,7 +2500,7 @@ where
                 }
 
                 if !cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    let auth_signer = key_auth.recover_authorizing_account().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
 
@@ -2545,7 +2546,7 @@ where
                 }
 
                 if cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    let auth_signer = key_auth.recover_authorizing_account().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
                     if auth_signer != tx.caller && key_auth.account.is_none() {
@@ -3226,9 +3227,12 @@ fn native_multisig_config_validation_gas_for_signature<DB: Database>(
     multisig: &NativeMultisig,
     signature: &MultisigSignature,
     registered_owner_count: Option<usize>,
+    is_rpc_simulation: bool,
     depth: usize,
 ) -> Result<u64, EVMError<DB::Error, TempoInvalidTransaction>> {
-    let mut gas = if signature.simulation_config_owner_count().is_none() {
+    let has_simulation_hint =
+        is_rpc_simulation && signature.simulation_config_owner_count().is_some();
+    let mut gas = if !has_simulation_hint {
         registered_owner_count
             .map(native_multisig_complete_config_validation_gas)
             .unwrap_or_default()
@@ -3251,7 +3255,9 @@ fn native_multisig_config_validation_gas_for_signature<DB: Database>(
             }
             .into());
         }
-        let nested_owner_count = if nested.simulation_config_owner_count().is_none() {
+        let nested_has_simulation_hint =
+            is_rpc_simulation && nested.simulation_config_owner_count().is_some();
+        let nested_owner_count = if !nested_has_simulation_hint {
             Some(
                 multisig
                     .load_registered_header(nested.account())
@@ -3266,6 +3272,7 @@ fn native_multisig_config_validation_gas_for_signature<DB: Database>(
             multisig,
             nested,
             nested_owner_count,
+            is_rpc_simulation,
             depth + 1,
         )?);
     }

@@ -5532,6 +5532,41 @@ fn test_t11_rpc_simulation_skips_registered_multisig_owner_verification() {
 }
 
 #[test]
+fn test_t11_signed_transaction_ignores_multisig_simulation_hint() {
+    let config = native_multisig_config();
+    let account = config.account().unwrap();
+    let signature = MultisigSignature::new(account, vec![Bytes::from_static(&[0xaa; 65])], None)
+        .with_simulation_config_owner_count(config.owners.len())
+        .unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(signature),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+        tx_env.inner.kind = TxKind::Call(Address::random());
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let mut init_gas = InitialAndFloorGas::default();
+    assert!(
+        test.handler
+            .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+            .is_err()
+    );
+    assert_eq!(
+        init_gas.initial_regular_gas,
+        native_multisig_complete_config_validation_gas(config.owners.len()),
+        "non-serialized simulation hints must not suppress transaction gas"
+    );
+}
+
+#[test]
 fn test_t11_registered_multisig_checks_state_gas_before_owner_signatures() {
     let config = native_multisig_config();
     let owner_count = config.owners.len();
@@ -5958,6 +5993,7 @@ fn registered_multisig_auth_config(
     version: u64,
 ) -> NativeMultisigAuthConfig<'static> {
     NativeMultisigAuthConfig::Registered(RegisteredMultisigConfig {
+        account: config.account().expect("valid test config"),
         threshold: config.threshold,
         version,
         owners: config.owners.clone(),
