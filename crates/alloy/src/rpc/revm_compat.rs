@@ -99,7 +99,7 @@ impl TempoTransactionRequest {
                 calls.push(Call {
                     to,
                     value: inner.value.unwrap_or_default(),
-                    input: inner.input.clone().into_input().unwrap_or_default(),
+                    input: inner.input.into_input().unwrap_or_default(),
                 });
             }
 
