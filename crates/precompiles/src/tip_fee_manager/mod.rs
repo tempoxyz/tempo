@@ -292,12 +292,13 @@ impl TipFeeManager {
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
-        StorageCtx.set_tip1060_storage_credit_minting(false);
 
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
             return Ok(());
         }
+        // Placed after zero-check to avoid setting global flag on no-op calls.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
         self.collected_fees[validator][token].write(U256::ZERO)?;
 
         // Transfer fees to validator
