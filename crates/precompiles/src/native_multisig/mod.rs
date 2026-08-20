@@ -263,9 +263,7 @@ impl NativeMultisig {
         owners: Vec<INativeMultisig::MultisigOwner>,
     ) -> Result<()> {
         let tx_origin = self.tx_origin.t_read()?;
-        if StorageCtx
-            .tx_kind()
-            .is_some_and(|kind| kind != TxKind::Call(NATIVE_MULTISIG_ADDRESS))
+        if StorageCtx.tx_kind() != Some(TxKind::Call(NATIVE_MULTISIG_ADDRESS))
             || tx_origin.is_zero()
             || tx_origin != msg_sender
         {
@@ -763,25 +761,29 @@ mod tests {
     }
 
     #[test]
-    fn update_config_rejects_indirect_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
-            .with_tx_kind(TxKind::Call(Address::repeat_byte(0x77)));
+    fn update_config_rejects_missing_or_indirect_tx_target() -> eyre::Result<()> {
         let config = init_config();
         let account = config.account().unwrap();
 
-        StorageCtx::enter(&mut storage, || {
-            let mut multisig = NativeMultisig::new();
-            multisig.initialize()?;
-            multisig.store_initial_config(account, &config)?;
-            multisig.set_tx_origin(account)?;
-            assert!(matches!(
-                multisig.update_multisig_config(account, 2, abi_owners()),
-                Err(TempoPrecompileError::NativeMultisigError(
-                    NativeMultisigError::UnauthorizedCaller(_)
-                ))
-            ));
-            Ok::<_, TempoPrecompileError>(())
-        })?;
+        for mut storage in [
+            HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11),
+            HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+                .with_tx_kind(TxKind::Call(Address::repeat_byte(0x77))),
+        ] {
+            StorageCtx::enter(&mut storage, || {
+                let mut multisig = NativeMultisig::new();
+                multisig.initialize()?;
+                multisig.store_initial_config(account, &config)?;
+                multisig.set_tx_origin(account)?;
+                assert!(matches!(
+                    multisig.update_multisig_config(account, 2, abi_owners()),
+                    Err(TempoPrecompileError::NativeMultisigError(
+                        NativeMultisigError::UnauthorizedCaller(_)
+                    ))
+                ));
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+        }
 
         Ok(())
     }
