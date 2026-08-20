@@ -1,0 +1,111 @@
+{
+  "generated_at": "2026-08-19T20:40:00Z",
+  "source": {
+    "repository": "https://github.com/ethereum/execution-specs",
+    "revision": "ce0509a90bdf7bdff68a90ba00b4ce956144e450",
+    "fork": "Prague",
+    "gas_target_millions": 10,
+    "selected_compute_cases": 1137
+  },
+  "target": {
+    "image": "docker.io/tempoxyz/tempo:latest",
+    "image_digest": "sha256:99f2b51e2400b7aceb9c31c944cad8777d170092c3a6b62013c4a63d3c53e680",
+    "client_version": "tempo/v1.13.0-f557cbb/aarch64-unknown-linux-gnu"
+  },
+  "verified": {
+    "unique_tests": 925,
+    "percent": 81.35444151275286,
+    "failed_replays": 0,
+    "measured_gas": 9243276158,
+    "server_execution_ns": 13869467000,
+    "http_round_trip_ns": 16718700113,
+    "aggregate_mgas_per_second": 666.4478280239608
+  },
+  "latest_full_repetition": {
+    "raw_suite_executions": 962,
+    "raw_passed": 962,
+    "raw_failed": 0,
+    "unique_tests": 928,
+    "deduplicated_measured_gas": 9252272518,
+    "deduplicated_server_execution_ns": 14330888000,
+    "deduplicated_http_round_trip_ns": 16703546501,
+    "deduplicated_mgas_per_second": 645.6175303302908,
+    "tempo_image": "docker.io/tempoxyz/tempo:latest",
+    "run_ids": [
+      "1787172533_13fe9a40_tempo",
+      "1787172541_2858a1f3_tempo",
+      "1787172551_2cacf1b9_tempo",
+      "1787172579_e76196af_tempo",
+      "1787172591_1a898832_tempo",
+      "1787172596_8deb4621_tempo",
+      "1787172605_f28dedcc_tempo",
+      "1787172625_aa200bda_tempo",
+      "1787172646_4d9af0c7_tempo",
+      "1787172653_dcc72b6b_tempo",
+      "1787172661_db4088c5_tempo",
+      "1787172682_94d5c8a1_tempo",
+      "1787172702_9207aced_tempo",
+      "1787172709_71fcf87d_tempo",
+      "1787172713_873b5270_tempo",
+      "1787172717_8f2f3c65_tempo"
+    ]
+  },
+  "merged_suite_run": {
+    "id": "1787173140_0395b56c_tempo",
+    "suite": "tempo-complete-benchmark-suite",
+    "suite_entries": 962,
+    "passed": 962,
+    "failed": 0,
+    "segments": 16,
+    "container_recreations": 15,
+    "unique_tests_after_keccak_deduplication": 928,
+    "measured_gas": 9592272518,
+    "server_execution_ns": 13808279000,
+    "http_round_trip_ns": 15705747223,
+    "aggregate_mgas_per_second": 694.6754565141681
+  },
+  "families": {
+    "instruction": { "selected": 773, "verified": 693 },
+    "precompile": { "selected": 228, "verified": 223 },
+    "scenario": { "selected": 136, "verified": 9 }
+  },
+  "runs": [
+    { "id": "1787168923_87b4c1a6_tempo", "suite": "eest-prague-arithmetic-10m", "suite_hash": "a35bccd89405b3ef", "passed": 61, "failed": 0 },
+    { "id": "1787169116_ada5e8ae_tempo", "suite": "eest-prague-bitwise-context-flow-10m", "suite_hash": "edae01448fd670be", "passed": 38, "failed": 0 },
+    { "id": "1787169556_078fd5b5_tempo", "suite": "eest-prague-stack-memory-10m", "suite_hash": "4e66abe132f36885", "passed": 195, "failed": 0 },
+    { "id": "1787170139_bba9f34f_tempo", "suite": "eest-prague-instruction-core-10m", "suite_hash": "266a34deb877e4ac", "passed": 68, "failed": 0, "aggregate_unique_tests_used": 34, "note": "34 Keccak cases superseded by complete isolated Keccak run" },
+    { "id": "1787171598_05e40b17_tempo", "suite": "eest-prague-comparison-10m", "suite_hash": "1e8c56d330a1bffa", "passed": 6, "failed": 0 },
+    { "id": "1787171974_2b4fb4fe_tempo", "suite": "eest-prague-keccak-10m", "suite_hash": "8ea58bef17053123", "passed": 35, "failed": 0 },
+    { "id": "1787170409_40284a39_tempo", "suite": "eest-prague-precompile-basic-10m", "suite_hash": "79d03cee9a398ec1", "passed": 104, "failed": 0 },
+    { "id": "1787170698_66830f25_tempo", "suite": "eest-prague-precompile-modexp-10m", "suite_hash": "6050d02132249483", "passed": 119, "failed": 0 },
+    { "id": "1787171041_00e2850f_tempo", "suite": "eest-prague-call-context-10m", "suite_hash": "1a6f32ec44ca47fc", "passed": 142, "failed": 0 },
+    { "id": "1787171372_a613e307_tempo", "suite": "eest-prague-log-10m", "suite_hash": "1f864f8ba4c657d5", "passed": 140, "failed": 0 },
+    { "id": "1787171475_00ea6769_tempo", "suite": "eest-prague-storage-10m", "suite_hash": "f11919671e7c586a", "passed": 24, "failed": 0 },
+    { "id": "1787171564_467220a4_tempo", "suite": "eest-prague-system-10m", "suite_hash": "d4ca813713245e30", "passed": 18, "failed": 0 },
+    { "id": "1787171645_a95b756f_tempo", "suite": "eest-prague-scenarios-small-10m", "suite_hash": "c9883a0a5b6e910e", "passed": 9, "failed": 0 }
+  ],
+  "precompiles": {
+    "selected": 228,
+    "verified": 223,
+    "failed_replays": 0,
+    "by_file": {
+      "alt_bn128": { "selected": 36, "verified": 36 },
+      "blake2f": { "selected": 9, "verified": 9 },
+      "bls12_381": { "selected": 29, "verified": 28, "upstream_skipped": 1 },
+      "ecrecover": { "selected": 1, "verified": 1 },
+      "identity": { "selected": 8, "verified": 8 },
+      "modexp": { "selected": 119, "verified": 119 },
+      "p256verify": { "selected": 4, "verified": 0, "upstream_skipped": 4 },
+      "point_evaluation": { "selected": 2, "verified": 2 },
+      "ripemd160": { "selected": 10, "verified": 10 },
+      "sha256": { "selected": 10, "verified": 10 }
+    }
+  },
+  "not_exported": {
+    "total": 212,
+    "instruction": 80,
+    "precompile": 5,
+    "scenario": 127,
+    "future_fork_and_stateful_excluded_from_denominator": true
+  }
+}

@@ -2,11 +2,17 @@
 use std::net::SocketAddr;
 
 use crate::{
-    bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
-    generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
+    bootstrap_shadowfork::BootstrapShadowfork,
+    check_abi::CheckAbi,
+    generate_benchmark_suite::{GenerateBenchmarkSuite, ImportBenchmarkoorSuite},
+    generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis,
+    generate_hardfork::AddHardfork,
+    generate_localnet::GenerateLocalnet,
+    generate_shadowfork::GenerateShadowfork,
+    generate_state_bloat::GenerateStateBloat,
+    get_dkg_outcome::GetDkgOutcome,
+    identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -16,6 +22,7 @@ use eyre::Context;
 
 mod bootstrap_shadowfork;
 mod check_abi;
+mod generate_benchmark_suite;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_hardfork;
@@ -38,6 +45,13 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to get identity transitions"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
+        Action::GenerateBenchmarkSuite(args) => args
+            .run()
+            .await
+            .wrap_err("failed generating Benchmarkoor suite"),
+        Action::ImportBenchmarkoorSuite(args) => {
+            args.run().wrap_err("failed importing Benchmarkoor suite")
+        }
         Action::AddHardfork(args) => args.run().wrap_err("failed adding hardfork plumbing"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -78,6 +92,10 @@ enum Action {
     GetDkgOutcome(GetDkgOutcome),
     GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),
+    /// Export blocks from a Tempo node as a Benchmarkoor Engine API suite.
+    GenerateBenchmarkSuite(GenerateBenchmarkSuite),
+    /// Convert a standard Engine API Benchmarkoor suite into Tempo block RLP.
+    ImportBenchmarkoorSuite(ImportBenchmarkoorSuite),
     AddHardfork(AddHardfork),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),

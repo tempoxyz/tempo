@@ -1,0 +1,141 @@
+{
+  "format": "tempo-engine-suite/v1",
+  "name": "eest-prague-add-10m",
+  "description": "EEST Prague ADD worst-case workload regenerated on Tempo at a 10M gas target",
+  "origin": {
+    "kind": "eest",
+    "repository": "https://github.com/ethereum/execution-specs",
+    "revision": "ce0509a90bdf7bdff68a90ba00b4ce956144e450",
+    "generator": "EEST execute remote + Tempo TIP-20 adapter + tempo-xtask export",
+    "seed": "0xe590f237b4c6d4872b2003046ea885cad5bbb2b107f558ae5d387a9aad960e70"
+  },
+  "chain": {
+    "name": "tempo",
+    "chain_id": 1337,
+    "hardfork": "dev-all",
+    "genesis": "genesis.json"
+  },
+  "metadata": {
+    "gas_target_millions": "10",
+    "measurement": "server_execution_ns",
+    "source_filter": "opcode_ADD and not ADDMOD",
+    "source_fork": "Prague",
+    "source_rpc": "http://127.0.0.1:18545",
+    "source_test": "tests/benchmark/compute/instruction/test_arithmetic.py"
+  },
+  "defaults": {
+    "wait_for_persistence": true,
+    "wait_for_caches": true,
+    "expected_status": "VALID"
+  },
+  "tests": [
+    {
+      "name": "eest-prague-add-10m",
+      "description": "EEST Prague ADD worst-case workload regenerated on Tempo at a 10M gas target",
+      "tags": [
+        "eest",
+        "ethereum-derived",
+        "tempo-normalized",
+        "arithmetic",
+        "add"
+      ],
+      "metadata": {},
+      "setup": [
+        {
+          "rlp_file": "blocks/1.rlp",
+          "bal_file": "blocks/1.bal",
+          "wait_for_caches": true,
+          "block_number": 1,
+          "block_hash": "0x7cefa8b5414958dccf0209a7918737cc041a712e58069de1ee58441f3f153664",
+          "gas_used": 0,
+          "transaction_count": 0,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0x7cefa8b5414958dccf0209a7918737cc041a712e58069de1ee58441f3f153664",
+              "headBlockHash": "0x7cefa8b5414958dccf0209a7918737cc041a712e58069de1ee58441f3f153664",
+              "safeBlockHash": "0x7cefa8b5414958dccf0209a7918737cc041a712e58069de1ee58441f3f153664"
+            }
+          ],
+          "block_number": 1,
+          "block_hash": "0x7cefa8b5414958dccf0209a7918737cc041a712e58069de1ee58441f3f153664",
+          "expected_status": "VALID"
+        },
+        {
+          "rlp_file": "blocks/2.rlp",
+          "bal_file": "blocks/2.bal",
+          "wait_for_caches": true,
+          "block_number": 2,
+          "block_hash": "0x4318a7eb94f4d2ba092c9ca64c35b9f09193b70fe63ae3717122e282e2c7532b",
+          "gas_used": 0,
+          "transaction_count": 0,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0x4318a7eb94f4d2ba092c9ca64c35b9f09193b70fe63ae3717122e282e2c7532b",
+              "headBlockHash": "0x4318a7eb94f4d2ba092c9ca64c35b9f09193b70fe63ae3717122e282e2c7532b",
+              "safeBlockHash": "0x4318a7eb94f4d2ba092c9ca64c35b9f09193b70fe63ae3717122e282e2c7532b"
+            }
+          ],
+          "block_number": 2,
+          "block_hash": "0x4318a7eb94f4d2ba092c9ca64c35b9f09193b70fe63ae3717122e282e2c7532b",
+          "expected_status": "VALID"
+        },
+        {
+          "rlp_file": "blocks/3.rlp",
+          "bal_file": "blocks/3.bal",
+          "wait_for_caches": true,
+          "block_number": 3,
+          "block_hash": "0xc62b4a2955b454b4f206cfdce1309040d841fcc2b445449aad364097c50209df",
+          "gas_used": 26038990,
+          "transaction_count": 2,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0xc62b4a2955b454b4f206cfdce1309040d841fcc2b445449aad364097c50209df",
+              "headBlockHash": "0xc62b4a2955b454b4f206cfdce1309040d841fcc2b445449aad364097c50209df",
+              "safeBlockHash": "0xc62b4a2955b454b4f206cfdce1309040d841fcc2b445449aad364097c50209df"
+            }
+          ],
+          "block_number": 3,
+          "block_hash": "0xc62b4a2955b454b4f206cfdce1309040d841fcc2b445449aad364097c50209df",
+          "expected_status": "VALID"
+        }
+      ],
+      "test": [
+        {
+          "rlp_file": "blocks/4.rlp",
+          "bal_file": "blocks/4.bal",
+          "wait_for_caches": true,
+          "block_number": 4,
+          "block_hash": "0xa3af8b03ea145089eeb1144a7cdaf570a95e8a23d71ef8968f71bb61c75335da",
+          "gas_used": 10000000,
+          "transaction_count": 1,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0xa3af8b03ea145089eeb1144a7cdaf570a95e8a23d71ef8968f71bb61c75335da",
+              "headBlockHash": "0xa3af8b03ea145089eeb1144a7cdaf570a95e8a23d71ef8968f71bb61c75335da",
+              "safeBlockHash": "0xa3af8b03ea145089eeb1144a7cdaf570a95e8a23d71ef8968f71bb61c75335da"
+            }
+          ],
+          "block_number": 4,
+          "block_hash": "0xa3af8b03ea145089eeb1144a7cdaf570a95e8a23d71ef8968f71bb61c75335da",
+          "expected_status": "VALID"
+        }
+      ]
+    }
+  ]
+}

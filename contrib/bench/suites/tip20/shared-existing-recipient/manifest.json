@@ -1,0 +1,137 @@
+{
+  "format": "tempo-engine-suite/v1",
+  "name": "tip20-shared-existing-recipient",
+  "description": "Ten direct TIP-20 transfers from distinct senders to one existing recipient",
+  "origin": {
+    "kind": "tempo-native",
+    "repository": "https://github.com/tempoxyz/tempo",
+    "revision": "a41e3184a2f1a50a4a0b60fcdd536c1a4cc2dae0",
+    "generator": "tempo-xtask generate-benchmark-suite",
+    "seed": "20260819"
+  },
+  "chain": {
+    "name": "tempo",
+    "chain_id": 1337,
+    "hardfork": "dev-all",
+    "genesis": "genesis.json"
+  },
+  "metadata": {
+    "measurement": "server_execution_ns",
+    "source_rpc": "http://127.0.0.1:18545"
+  },
+  "defaults": {
+    "wait_for_persistence": true,
+    "wait_for_caches": true,
+    "expected_status": "VALID"
+  },
+  "tests": [
+    {
+      "name": "tip20-shared-existing-recipient",
+      "description": "Ten direct TIP-20 transfers from distinct senders to one existing recipient",
+      "tags": [
+        "tempo-native",
+        "tip20",
+        "transfer",
+        "existing-recipient",
+        "shared-recipient"
+      ],
+      "metadata": {},
+      "setup": [
+        {
+          "rlp_file": "blocks/1.rlp",
+          "bal_file": "blocks/1.bal",
+          "wait_for_caches": true,
+          "block_number": 1,
+          "block_hash": "0xfe2f718881054ced02ecaf8265a74a2551ecae05c301fb90f468bff3f6976068",
+          "gas_used": 0,
+          "transaction_count": 0,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0xfe2f718881054ced02ecaf8265a74a2551ecae05c301fb90f468bff3f6976068",
+              "headBlockHash": "0xfe2f718881054ced02ecaf8265a74a2551ecae05c301fb90f468bff3f6976068",
+              "safeBlockHash": "0xfe2f718881054ced02ecaf8265a74a2551ecae05c301fb90f468bff3f6976068"
+            }
+          ],
+          "block_number": 1,
+          "block_hash": "0xfe2f718881054ced02ecaf8265a74a2551ecae05c301fb90f468bff3f6976068",
+          "expected_status": "VALID"
+        },
+        {
+          "rlp_file": "blocks/2.rlp",
+          "bal_file": "blocks/2.bal",
+          "wait_for_caches": true,
+          "block_number": 2,
+          "block_hash": "0xc204ef1d78dd228adabd7e128633ca85d0203c6d8cbbba8f91950590f1412d4b",
+          "gas_used": 0,
+          "transaction_count": 0,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0xc204ef1d78dd228adabd7e128633ca85d0203c6d8cbbba8f91950590f1412d4b",
+              "headBlockHash": "0xc204ef1d78dd228adabd7e128633ca85d0203c6d8cbbba8f91950590f1412d4b",
+              "safeBlockHash": "0xc204ef1d78dd228adabd7e128633ca85d0203c6d8cbbba8f91950590f1412d4b"
+            }
+          ],
+          "block_number": 2,
+          "block_hash": "0xc204ef1d78dd228adabd7e128633ca85d0203c6d8cbbba8f91950590f1412d4b",
+          "expected_status": "VALID"
+        },
+        {
+          "rlp_file": "blocks/3.rlp",
+          "bal_file": "blocks/3.bal",
+          "wait_for_caches": true,
+          "block_number": 3,
+          "block_hash": "0x05fdba0ecac9284a4682c8895325658788ef2eed37a9c1014cdcfe436961f27f",
+          "gas_used": 0,
+          "transaction_count": 0,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0x05fdba0ecac9284a4682c8895325658788ef2eed37a9c1014cdcfe436961f27f",
+              "headBlockHash": "0x05fdba0ecac9284a4682c8895325658788ef2eed37a9c1014cdcfe436961f27f",
+              "safeBlockHash": "0x05fdba0ecac9284a4682c8895325658788ef2eed37a9c1014cdcfe436961f27f"
+            }
+          ],
+          "block_number": 3,
+          "block_hash": "0x05fdba0ecac9284a4682c8895325658788ef2eed37a9c1014cdcfe436961f27f",
+          "expected_status": "VALID"
+        }
+      ],
+      "test": [
+        {
+          "rlp_file": "blocks/4.rlp",
+          "bal_file": "blocks/4.bal",
+          "wait_for_caches": true,
+          "block_number": 4,
+          "block_hash": "0x4bf5890208289243e365979f08b069a7054869c6182c89d0df4c32e08b46fd6b",
+          "gas_used": 3168760,
+          "transaction_count": 10,
+          "expected_status": "VALID"
+        },
+        {
+          "method": "reth_forkchoiceUpdated",
+          "params": [
+            {
+              "finalizedBlockHash": "0x4bf5890208289243e365979f08b069a7054869c6182c89d0df4c32e08b46fd6b",
+              "headBlockHash": "0x4bf5890208289243e365979f08b069a7054869c6182c89d0df4c32e08b46fd6b",
+              "safeBlockHash": "0x4bf5890208289243e365979f08b069a7054869c6182c89d0df4c32e08b46fd6b"
+            }
+          ],
+          "block_number": 4,
+          "block_hash": "0x4bf5890208289243e365979f08b069a7054869c6182c89d0df4c32e08b46fd6b",
+          "expected_status": "VALID"
+        }
+      ]
+    }
+  ]
+}

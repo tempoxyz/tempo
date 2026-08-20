@@ -1,0 +1,35 @@
+{
+  "source_tests": 910,
+  "converted_tests": 903,
+  "skipped_tests": 7,
+  "issues": [
+    {
+      "test": "000736/tests_benchmark_compute_instruction_test_system.py__test_selfdestruct_created[fork_Prague-benchmark-blockchain_test_engine_x-value_bearing_False]-gas-value_100M.txt",
+      "error": "converting measured step: payload parent 0x72b0c82da646805813c2221e741d6e49461959f8f9bea577a5535d2bc7d18e4e is not the genesis or a preceding payload; non-linear suites are not supported"
+    },
+    {
+      "test": "000737/tests_benchmark_compute_instruction_test_system.py__test_selfdestruct_created[fork_Prague-benchmark-blockchain_test_engine_x-value_bearing_True]-gas-value_100M.txt",
+      "error": "converting measured step: payload parent 0x5e0cf7043818803f3c2862732af0042d7ed3ad527508fff52a523c22ca6477c0 is not the genesis or a preceding payload; non-linear suites are not supported"
+    },
+    {
+      "test": "000740/tests_benchmark_compute_instruction_test_system.py__test_selfdestruct_initcode[fork_Prague-benchmark-blockchain_test_engine_x-value_bearing_False]-gas-value_100M.txt",
+      "error": "converting measured step: payload parent 0x4f6fd7386fdee9d99908e98b3c3d7998d8b23c799973de6be45f63a79bdc0fe7 is not the genesis or a preceding payload; non-linear suites are not supported"
+    },
+    {
+      "test": "000741/tests_benchmark_compute_instruction_test_system.py__test_selfdestruct_initcode[fork_Prague-benchmark-blockchain_test_engine_x-value_bearing_True]-gas-value_100M.txt",
+      "error": "converting measured step: payload parent 0x331391fbf1e0db8af15ae03b31f1b9cf7f2971d01c8af7bab2a12c0f7d3b509d is not the genesis or a preceding payload; non-linear suites are not supported"
+    },
+    {
+      "test": "000747/tests_benchmark_compute_instruction_test_tx_context.py__test_blobhash[fork_Prague-benchmark-blockchain_test_engine_x-one blob and accessed]-gas-value_100M.txt",
+      "error": "converting measured step: unsupported transaction in Ethereum compatibility suite: unexpected tx type"
+    },
+    {
+      "test": "000748/tests_benchmark_compute_instruction_test_tx_context.py__test_blobhash[fork_Prague-benchmark-blockchain_test_engine_x-one blob but access non-existent index]-gas-value_100M.txt",
+      "error": "converting measured step: unsupported transaction in Ethereum compatibility suite: unexpected tx type"
+    },
+    {
+      "test": "000749/tests_benchmark_compute_instruction_test_tx_context.py__test_blobhash[fork_Prague-benchmark-blockchain_test_engine_x-six blobs, access latest]-gas-value_100M.txt",
+      "error": "converting measured step: unsupported transaction in Ethereum compatibility suite: unexpected tx type"
+    }
+  ]
+}
