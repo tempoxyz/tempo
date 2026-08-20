@@ -37,7 +37,9 @@ use commonware_runtime::{
     Clock, Handle, IoBufs, Supervisor as _, deterministic::Context,
     telemetry::metrics::histogram::Timed,
 };
-use commonware_utils::{Acknowledgement as _, N3f1, acknowledgement::Exact, ordered};
+use commonware_utils::{
+    Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
+};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
@@ -54,8 +56,8 @@ pub(super) struct TestDkg {
     context: Context,
     partition_prefix: String,
     me: PrivateKey,
-    epoch_strategy: FixedEpocher,
     last_finalized_height: Height,
+    initial_state: Option<State>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -67,13 +69,33 @@ pub(super) struct TestDkg {
 }
 
 impl TestDkg {
-    pub(super) async fn new(
+    pub(super) const INITIAL_EPOCH: Epoch = Epoch::new(1);
+    const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).unwrap();
+
+    pub(super) fn epoch_strategy() -> FixedEpocher {
+        FixedEpocher::new(Self::EPOCH_LENGTH)
+    }
+
+    pub(super) async fn new(context: Context, partition_prefix: impl Into<String>) -> Self {
+        Self::from_state(context, partition_prefix, None).await
+    }
+
+    pub(super) async fn with_initial_state(
+        mut context: Context,
+        partition_prefix: impl Into<String>,
+    ) -> Self {
+        let (initial_state, _) = dkg_state(&mut context, Self::INITIAL_EPOCH, 4, false);
+        Self::from_state(context, partition_prefix, initial_state).await
+    }
+
+    pub(super) async fn from_state(
         context: Context,
         partition_prefix: impl Into<String>,
-        initial_state: Option<State>,
+        initial_state: impl Into<Option<State>>,
     ) -> Self {
         let partition_prefix = partition_prefix.into();
-        let storage = if let Some(state) = initial_state {
+        let initial_state = initial_state.into();
+        let storage = if let Some(state) = initial_state.clone() {
             Some(
                 state::builder()
                     .partition_prefix(&partition_prefix)
@@ -92,8 +114,8 @@ impl TestDkg {
             context,
             partition_prefix,
             me: PrivateKey::from_seed(0),
-            epoch_strategy: FixedEpocher::new(NonZeroU64::new(10).unwrap()),
             last_finalized_height: Height::new(9),
+            initial_state,
             storage,
             mailbox: None,
             handle: None,
@@ -105,13 +127,14 @@ impl TestDkg {
         }
     }
 
-    pub(super) fn with_me(mut self, me: PrivateKey) -> Self {
-        self.me = me;
-        self
+    pub(super) fn initial_state(&self) -> &State {
+        self.initial_state
+            .as_ref()
+            .expect("DKG state was not initialized by the harness")
     }
 
-    pub(super) fn with_epoch_strategy(mut self, epoch_strategy: FixedEpocher) -> Self {
-        self.epoch_strategy = epoch_strategy;
+    pub(super) fn with_me(mut self, me: PrivateKey) -> Self {
+        self.me = me;
         self
     }
 
@@ -148,7 +171,7 @@ impl TestDkg {
         let (actor, mailbox) = init(
             self.context.child("actor"),
             Config {
-                epoch_strategy: self.epoch_strategy.clone(),
+                epoch_strategy: Self::epoch_strategy(),
                 epoch_manager: self.epoch_manager.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.me.clone(),
@@ -162,6 +185,7 @@ impl TestDkg {
         )
         .await
         .unwrap();
+
         self.mailbox = Some(mailbox);
         self.handle = Some(match &self.network {
             Some(network) => actor.start(network.register(self.me.public_key())),
@@ -597,27 +621,19 @@ pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
     header
 }
 
-pub(super) fn dkg_state(rng: &mut impl CryptoRng, epoch: Epoch) -> State {
-    let fixture = crate::test_utils::dkg_fixture(rng, epoch);
-    State {
-        epoch: fixture.outcome.epoch,
-        seed: Summary::random(rng),
-        output: fixture.outcome.output,
-        share: ShareState::Plaintext(None),
-        players: fixture.outcome.next_players,
-        is_full_dkg: fixture.outcome.is_next_full_dkg,
-    }
-}
-
-pub(super) fn full_dkg_state(
+pub(super) fn dkg_state(
     rng: &mut impl CryptoRng,
     epoch: Epoch,
     players: usize,
+    is_full_dkg: bool,
 ) -> (State, Vec<PrivateKey>) {
+    // TestDkg uses the seed-0 key by default, so every generated state includes
+    // that actor as a participant regardless of the ceremony mode.
     let keys = (0..players as u64)
         .map(PrivateKey::from_seed)
         .collect::<Vec<_>>();
-    let players = ordered::Set::from_iter_dedup(keys.iter().map(|key| key.public_key()));
+    let players = ordered::Set::try_from_iter(keys.iter().map(|key| key.public_key()))
+        .expect("test players should be unique");
     let (output, _) = dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
         .expect("test DKG");
 
@@ -628,7 +644,7 @@ pub(super) fn full_dkg_state(
             output,
             share: ShareState::Plaintext(None),
             players,
-            is_full_dkg: true,
+            is_full_dkg,
         },
         keys,
     )
@@ -650,7 +666,7 @@ pub(super) fn acked_recovery_fixture(
 ) -> AckedRecoveryFixture {
     // A single validator is enough to exercise the ACK/dealing invariant while
     // keeping the cryptographic setup small. It acts as both dealer and player.
-    let (ceremony_state, keys) = full_dkg_state(rng, ceremony_epoch, 1);
+    let (ceremony_state, keys) = dkg_state(rng, ceremony_epoch, 1, true);
     let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
     let local_key = keys[0].clone();
     let local_public_key = local_key.public_key();
