@@ -170,6 +170,7 @@ pub(super) fn create_mock_native_multisig_sig(
 
     MultisigSignature::from_decoded(account, signatures, Some(init.clone()))
         .map(TempoSignature::Multisig)
+        .map_err(|error| error.as_str())
 }
 
 pub(super) fn create_mock_native_multisig_sig_for_account(
@@ -186,6 +187,7 @@ pub(super) fn create_mock_native_multisig_sig_for_account(
         None,
     )
     .map(TempoSignature::Multisig)
+    .map_err(|error| error.as_str())
 }
 
 pub(super) fn create_mock_native_multisig_sig_from_hint(
