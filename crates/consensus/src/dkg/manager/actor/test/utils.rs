@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     io,
+    num::{NonZeroU64, NonZeroUsize},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,8 +15,8 @@ use alloy_consensus::Header;
 use commonware_actor::{Feedback, Unreliable};
 use commonware_codec::Encode as _;
 use commonware_consensus::{
-    Heightable as _,
-    marshal::core::DigestFallback,
+    Heightable as _, Reporter as _,
+    marshal::{Update, core::DigestFallback},
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -32,8 +33,11 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_parallel::Sequential;
-use commonware_runtime::{Clock, IoBufs, telemetry::metrics::histogram::Timed};
-use commonware_utils::{N3f1, ordered};
+use commonware_runtime::{
+    Clock, Handle, IoBufs, Supervisor as _, deterministic::Context,
+    telemetry::metrics::histogram::Timed,
+};
+use commonware_utils::{Acknowledgement as _, N3f1, acknowledgement::Exact, ordered};
 use futures::{StreamExt as _, channel::mpsc};
 use rand_core::CryptoRng;
 use reth_node_core::primitives::SealedBlock;
@@ -41,9 +45,197 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoHeader};
 
 use super::super::{
+    super::{Config, Mailbox, init},
     Block, Digest, EpochManager, ExecutionLayer, Marshal, State,
-    state::{Round, ShareState},
+    state::{self, Round, ShareState},
 };
+
+pub(super) struct TestDkg {
+    context: Context,
+    partition_prefix: String,
+    me: PrivateKey,
+    epoch_strategy: FixedEpocher,
+    last_finalized_height: Height,
+    storage: Option<state::Storage<Context>>,
+    mailbox: Option<Mailbox>,
+    handle: Option<Handle<()>>,
+    sender: RecordingSender,
+    network: Option<TestNetwork>,
+    pub(super) execution_node: StubExecutionProvider,
+    pub(super) marshal: StubMarshal,
+    pub(super) epoch_manager: StubEpochManager,
+}
+
+impl TestDkg {
+    pub(super) async fn new(
+        context: Context,
+        partition_prefix: impl Into<String>,
+        initial_state: Option<State>,
+    ) -> Self {
+        let partition_prefix = partition_prefix.into();
+        let storage = if let Some(state) = initial_state {
+            Some(
+                state::builder()
+                    .partition_prefix(&partition_prefix)
+                    .init_unverified(context.child("storage"))
+                    .await
+                    .unwrap()
+                    .init_verified(state)
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+
+        Self {
+            context,
+            partition_prefix,
+            me: PrivateKey::from_seed(0),
+            epoch_strategy: FixedEpocher::new(NonZeroU64::new(10).unwrap()),
+            last_finalized_height: Height::new(9),
+            storage,
+            mailbox: None,
+            handle: None,
+            sender: RecordingSender::default(),
+            network: None,
+            execution_node: StubExecutionProvider::default(),
+            marshal: StubMarshal::default(),
+            epoch_manager: StubEpochManager::default(),
+        }
+    }
+
+    pub(super) fn with_me(mut self, me: PrivateKey) -> Self {
+        self.me = me;
+        self
+    }
+
+    pub(super) fn with_epoch_strategy(mut self, epoch_strategy: FixedEpocher) -> Self {
+        self.epoch_strategy = epoch_strategy;
+        self
+    }
+
+    pub(super) fn with_last_finalized_height(mut self, height: Height) -> Self {
+        self.last_finalized_height = height;
+        self
+    }
+
+    pub(super) fn with_execution_node(mut self, execution_node: StubExecutionProvider) -> Self {
+        self.execution_node = execution_node;
+        self
+    }
+
+    pub(super) fn with_network(mut self, network: TestNetwork) -> Self {
+        self.network = Some(network);
+        self
+    }
+
+    pub(super) fn storage(&self) -> &state::Storage<Context> {
+        self.storage
+            .as_ref()
+            .expect("DKG storage is not open while the actor is running")
+    }
+
+    pub(super) fn storage_mut(&mut self) -> &mut state::Storage<Context> {
+        self.storage
+            .as_mut()
+            .expect("DKG storage is not open while the actor is running")
+    }
+
+    pub(super) async fn start(&mut self) {
+        assert!(self.handle.is_none(), "DKG actor is already running");
+        drop(self.storage.take());
+        let (actor, mailbox) = init(
+            self.context.child("actor"),
+            Config {
+                epoch_strategy: self.epoch_strategy.clone(),
+                epoch_manager: self.epoch_manager.clone(),
+                namespace: crate::config::NAMESPACE.to_vec(),
+                me: self.me.clone(),
+                mailbox_size: NonZeroUsize::new(1).unwrap(),
+                marshal: self.marshal.clone(),
+                last_finalized_height: self.last_finalized_height,
+                partition_prefix: self.partition_prefix.clone(),
+                execution_node: self.execution_node.clone(),
+                initial_share: None,
+            },
+        )
+        .await
+        .unwrap();
+        self.mailbox = Some(mailbox);
+        self.handle = Some(match &self.network {
+            Some(network) => actor.start(network.register(self.me.public_key())),
+            None => actor.start((self.sender.clone(), InertReceiver)),
+        });
+    }
+
+    pub(super) fn mailbox(&self) -> &Mailbox {
+        self.mailbox.as_ref().expect("DKG actor is not running")
+    }
+
+    pub(super) fn sender(&self) -> &RecordingSender {
+        &self.sender
+    }
+
+    pub(super) async fn report_finalized_header(&mut self, header: TempoHeader) {
+        let (acknowledgement, waiter) = Exact::handle();
+        assert!(
+            self.mailbox
+                .as_mut()
+                .expect("DKG actor is not running")
+                .report(Update::Block(Arc::new(block(header)), acknowledgement))
+                .accepted()
+        );
+        waiter
+            .await
+            .expect("finalized block should be acknowledged");
+    }
+
+    pub(super) async fn has_dealer_log(&self, epoch: Epoch) -> bool {
+        self.mailbox()
+            .get_dealer_log(epoch)
+            .await
+            .unwrap()
+            .is_some()
+    }
+
+    pub(super) async fn stop(&mut self) {
+        self.mailbox.take();
+        if let Some(handle) = self.handle.take() {
+            handle.await.expect("DKG actor should stop");
+        }
+        self.reopen_storage().await;
+    }
+
+    pub(super) async fn wait_for_exit(&mut self) {
+        let handle = self.handle.take().expect("DKG actor is not running");
+        handle.await.expect("DKG actor should stop");
+        self.mailbox.take();
+        self.reopen_storage().await;
+    }
+
+    async fn reopen_storage(&mut self) {
+        let unverified = state::builder()
+            .partition_prefix(&self.partition_prefix)
+            .init_unverified(self.context.child("storage"))
+            .await
+            .unwrap();
+        self.storage = if let Some(state) = unverified.state().cloned() {
+            Some(unverified.init_verified(state).await.unwrap())
+        } else {
+            None
+        };
+    }
+}
+
+impl Drop for TestDkg {
+    fn drop(&mut self) {
+        self.mailbox.take();
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct InertReceiver;
