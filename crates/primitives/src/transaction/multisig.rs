@@ -1,10 +1,10 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::TempoSignature};
-use crate::TempoAddressExt;
+use crate::{TempoAddressExt, is_evm_precompile};
 use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Address, B256, Bytes, address, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::Encodable as _;
 use core::{
     hash::{Hash, Hasher},
@@ -75,8 +75,6 @@ pub const MAX_MULTISIG_NESTING_DEPTH: usize = 2;
 pub const MAX_MULTISIG_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
-
-const P256VERIFY_ADDRESS: Address = address!("0x0000000000000000000000000000000000000100");
 
 /// Native multisig config validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1070,11 +1068,6 @@ pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool 
         && !is_evm_precompile(account, spec)
 }
 
-fn is_evm_precompile(account: Address, spec: TempoHardfork) -> bool {
-    (account.as_slice()[..19] == [0; 19] && (1..=0x11).contains(&account.as_slice()[19]))
-        || (spec.is_t1c() && account == P256VERIFY_ADDRESS)
-}
-
 /// Computes the digest that native multisig owners approve.
 pub fn multisig_digest(inner_digest: B256, account: Address, config_version: u64) -> B256 {
     let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8];
@@ -1174,10 +1167,13 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::{
-        KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
-        tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
-        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
+    use crate::{
+        P256VERIFY_ADDRESS,
+        transaction::{
+            KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+            tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+            tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
+        },
     };
     use alloy_rlp::{Decodable, Encodable};
     use p256::{

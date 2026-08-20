@@ -58,6 +58,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
 #[cfg(test)]
+use tempo_primitives::P256VERIFY_ADDRESS;
+
+#[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
@@ -1159,12 +1162,11 @@ mod tests {
     #[test]
     fn test_p256verify_availability_across_t1c_boundary() {
         let has_p256 = |spec: TempoHardfork| -> bool {
-            // P256VERIFY lives at address 0x100 (256), added in Osaka
-            let p256_addr = Address::from_word(U256::from(256).into());
-
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(spec);
-            test_tempo_precompiles(&cfg).get(&p256_addr).is_some()
+            test_tempo_precompiles(&cfg)
+                .get(&P256VERIFY_ADDRESS)
+                .is_some()
         };
 
         // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
