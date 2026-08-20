@@ -698,6 +698,13 @@ impl MultisigSignature {
 
     /// Validates only the stateless signature payload shape.
     pub fn validate_shape(&self) -> Result<(), &'static str> {
+        self.validate_shape_at_depth(1)
+    }
+
+    fn validate_shape_at_depth(&self, depth: usize) -> Result<(), &'static str> {
+        if depth > MAX_MULTISIG_NESTING_DEPTH {
+            return Err("native multisig nesting depth exceeded");
+        }
         if self.account().is_zero() {
             return Err("multisig account cannot be zero");
         }
@@ -717,7 +724,13 @@ impl MultisigSignature {
                 TempoSignature::Keychain(_) => {
                     return Err("keychain signatures cannot authorize native multisig owners");
                 }
-                TempoSignature::Primitive(_) | TempoSignature::Multisig(_) => {}
+                TempoSignature::Multisig(nested) => {
+                    if nested.init().is_some() {
+                        return Err("nested multisig owner signatures cannot bootstrap accounts");
+                    }
+                    nested.validate_shape_at_depth(depth + 1)?;
+                }
+                TempoSignature::Primitive(_) => {}
             }
         }
         Ok(())
@@ -1086,6 +1099,16 @@ mod tests {
         PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes()
     }
 
+    fn bootstrap_multisig_signature() -> MultisigSignature {
+        let config = sorted_secp_config(&[(indexed_owner(2), 1)], 1);
+        MultisigSignature::from_decoded(
+            config.account().unwrap(),
+            vec![TempoSignature::Primitive(PrimitiveSignature::default())],
+            Some(config),
+        )
+        .unwrap()
+    }
+
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256, Address) {
         let signing_key = P256SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
@@ -1335,6 +1358,43 @@ mod tests {
         assert_eq!(
             MultisigSignature::from_decoded(account, vec![approval], None),
             Err("keychain signatures cannot authorize native multisig owners")
+        );
+    }
+
+    #[test]
+    fn multisig_shape_rejects_nested_bootstrap_approval() {
+        assert_eq!(
+            MultisigSignature::from_decoded(
+                indexed_owner(1),
+                vec![TempoSignature::Multisig(bootstrap_multisig_signature())],
+                None,
+            ),
+            Err("nested multisig owner signatures cannot bootstrap accounts")
+        );
+    }
+
+    #[test]
+    fn multisig_shape_rejects_programmatic_excess_nesting() {
+        let leaf = MultisigSignature::from_decoded(
+            indexed_owner(3),
+            vec![TempoSignature::Primitive(PrimitiveSignature::default())],
+            None,
+        )
+        .unwrap();
+        let middle = MultisigSignature::from_decoded(
+            indexed_owner(2),
+            vec![TempoSignature::Multisig(leaf)],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            MultisigSignature::from_decoded(
+                indexed_owner(1),
+                vec![TempoSignature::Multisig(middle)],
+                None,
+            ),
+            Err("native multisig nesting depth exceeded")
         );
     }
 
@@ -1613,6 +1673,21 @@ mod tests {
     }
 
     #[test]
+    fn multisig_signature_decode_rejects_nested_bootstrap_approval() {
+        let mut encoded = vec![SIGNATURE_TYPE_MULTISIG];
+        encoded.extend(encoded_multisig_without_init_slot(
+            indexed_owner(1),
+            vec![
+                TempoSignature::Multisig(bootstrap_multisig_signature())
+                    .to_bytes()
+                    .to_vec(),
+            ],
+        ));
+
+        assert!(TempoSignature::from_bytes(&encoded).is_err());
+    }
+
+    #[test]
     fn init_multisig_decode_bounds_owner_count() {
         let config = InitMultisig {
             salt: B256::ZERO,
@@ -1826,6 +1901,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("native multisig nesting depth exceeded"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn multisig_signature_json_rejects_nested_bootstrap_approval() {
+        let json = serde_json::json!({
+            "account": indexed_owner(1),
+            "signatures": [TempoSignature::Multisig(bootstrap_multisig_signature())],
+        });
+
+        assert!(serde_json::from_value::<TempoSignature>(json).is_err());
     }
 
     #[cfg(feature = "serde")]
