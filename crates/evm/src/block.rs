@@ -254,17 +254,15 @@ where
         let [factory, portal, verifier, messenger] =
             initial_zone_factory_state(INITIAL_FACTORY_OWNER);
 
-        {
-            let db = self.inner.evm.db_mut();
-            let factory_info = db
-                .basic(factory.address)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            // Genesis allocations are authoritative, and the marker also records a completed
-            // post-genesis installation.
-            if !factory_info.is_empty_code_hash() {
-                return Ok(());
-            }
+        let db = self.inner.evm.db_mut();
+        let factory_info = db
+            .basic(factory.address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        // Genesis allocations are authoritative, and the marker also records a completed
+        // post-genesis installation.
+        if !factory_info.is_empty_code_hash() {
+            return Ok(());
         }
 
         self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
