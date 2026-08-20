@@ -42,7 +42,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
@@ -540,9 +540,11 @@ impl Default for TempoConsensusBuilder {
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
-    Node: FullNodeTypes<Types = TempoNode>,
+    Node: FullNodeTypes<
+        Types: NodeTypes<ChainSpec: TempoConsensusSpec + Clone, Primitives = TempoPrimitives>,
+    >,
 {
-    type Consensus = TempoConsensus;
+    type Consensus = TempoConsensus<<Node::Types as NodeTypes>::ChainSpec>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(TempoConsensus::new_with_bal_hashes(
