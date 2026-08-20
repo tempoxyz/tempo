@@ -19,7 +19,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, StorageCtx, packing},
 };
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, TxKind, U256};
 
 const STORED_MULTISIG_HEADER_BYTES: usize = 10;
 const STORED_MULTISIG_OWNER_BYTES: usize = 21;
@@ -68,6 +68,7 @@ pub struct RegisteredMultisigHeader {
 /// Registered configuration fields needed during transaction authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredMultisigConfig {
+    pub account: Address,
     pub threshold: u8,
     pub version: u64,
     pub owners: Vec<MultisigOwner>,
@@ -220,6 +221,7 @@ impl NativeMultisig {
                 .map(|stored| {
                     let StoredMultisigConfig { config, version } = stored;
                     Some(RegisteredMultisigConfig {
+                        account,
                         threshold: config.threshold,
                         version,
                         owners: config.owners,
@@ -261,7 +263,12 @@ impl NativeMultisig {
         owners: Vec<INativeMultisig::MultisigOwner>,
     ) -> Result<()> {
         let tx_origin = self.tx_origin.t_read()?;
-        if tx_origin.is_zero() || tx_origin != msg_sender {
+        if StorageCtx
+            .tx_kind()
+            .is_some_and(|kind| kind != TxKind::Call(NATIVE_MULTISIG_ADDRESS))
+            || tx_origin.is_zero()
+            || tx_origin != msg_sender
+        {
             return Err(NativeMultisigError::unauthorized_caller().into());
         }
         // Config updates are authorized only by the current native multisig owner threshold. Native
@@ -284,7 +291,7 @@ impl NativeMultisig {
             .checked_add(1)
             .ok_or_else(NativeMultisigError::invalid_config)?;
         let event_owners = owners.clone();
-        let init_config = abi_config_to_init(threshold, owners)?;
+        let init_config = abi_config_to_init(msg_sender, threshold, owners)?;
 
         self.write_stored_config(msg_sender, &init_config, &stored.config.owners, version)?;
         self.emit_event(NativeMultisigEvent::multisig_config_updated(
@@ -323,7 +330,7 @@ impl NativeMultisig {
                     threshold,
                     owners,
                 };
-                if config.validate().is_err() {
+                if config.validate_for_account(account).is_err() {
                     return Err(NativeMultisigError::invalid_config().into());
                 }
                 for owner in &config.owners {
@@ -480,6 +487,7 @@ impl From<StoredMultisigOwner> for MultisigOwner {
 }
 
 fn abi_config_to_init(
+    account: Address,
     threshold: u8,
     owners: Vec<INativeMultisig::MultisigOwner>,
 ) -> Result<InitMultisig> {
@@ -489,15 +497,17 @@ fn abi_config_to_init(
         threshold,
         owners,
     };
-    config.validate().map_err(map_multisig_config_error)?;
+    config
+        .validate_for_account(account)
+        .map_err(map_multisig_config_error)?;
     Ok(config)
 }
 
 fn map_multisig_config_error(err: MultisigConfigError) -> TempoPrecompileError {
     match err {
-        MultisigConfigError::EmptyOwners | MultisigConfigError::ZeroOwner => {
-            NativeMultisigError::invalid_owner().into()
-        }
+        MultisigConfigError::EmptyOwners
+        | MultisigConfigError::ZeroOwner
+        | MultisigConfigError::AccountIsOwner => NativeMultisigError::invalid_owner().into(),
         MultisigConfigError::TooManyOwners => NativeMultisigError::too_many_owners().into(),
         MultisigConfigError::ZeroThreshold | MultisigConfigError::ThresholdExceedsWeight => {
             NativeMultisigError::invalid_threshold().into()
@@ -746,6 +756,30 @@ mod tests {
             let stored = multisig.get_multisig_config(account)?;
             assert_eq!(stored.version, 2);
             assert_eq!(stored.threshold, 2);
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_config_rejects_indirect_call() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11)
+            .with_tx_kind(TxKind::Call(Address::repeat_byte(0x77)));
+        let config = init_config();
+        let account = config.account().unwrap();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, &config)?;
+            multisig.set_tx_origin(account)?;
+            assert!(matches!(
+                multisig.update_multisig_config(account, 2, abi_owners()),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::UnauthorizedCaller(_)
+                ))
+            ));
             Ok::<_, TempoPrecompileError>(())
         })?;
 
@@ -1137,6 +1171,21 @@ mod tests {
 
             assert!(matches!(
                 multisig.update_multisig_config(account, 1, Vec::new()),
+                Err(TempoPrecompileError::NativeMultisigError(
+                    NativeMultisigError::InvalidOwner(_)
+                ))
+            ));
+            assert_config_unchanged(&multisig, account)?;
+
+            assert!(matches!(
+                multisig.update_multisig_config(
+                    account,
+                    1,
+                    vec![INativeMultisig::MultisigOwner {
+                        owner: account,
+                        weight: 1,
+                    }],
+                ),
                 Err(TempoPrecompileError::NativeMultisigError(
                     NativeMultisigError::InvalidOwner(_)
                 ))
