@@ -326,16 +326,12 @@ pub struct Args {
     /// This bounds work on the follower driver. The same task acknowledges
     /// blocks to marshal, so the limit also bounds how much a certificate flood
     /// can delay block import.
-    #[arg(long = "consensus.gossip.verify-rate", default_value_t = 32)]
-    pub gossip_verify_rate: u32,
+    #[arg(long = "consensus.gossip.verify-rate", default_value = "32")]
+    pub gossip_verify_rate: NonZeroU32,
 
     /// Frames accepted per second from a single connection.
     #[arg(long = "consensus.gossip.peer-frame-rate", default_value = "8")]
     pub gossip_peer_frame_rate: NonZeroU32,
-
-    /// Frames remembered as already settled or published.
-    #[arg(long = "consensus.gossip.recent-frames", default_value_t = 4_096)]
-    pub gossip_recent_frames: usize,
 
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
