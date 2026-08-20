@@ -808,16 +808,21 @@ impl<'de> Visitor<'de> for TempoSignatureVisitor {
         }
 
         let signatures = signatures.ok_or_else(|| M::Error::missing_field("signatures"))?;
-        match (account, init) {
+        let signature = match (account, init) {
             (Some(account), None) => MultisigSignature::from_decoded(account, signatures, None),
             (None, Some(init)) => {
                 let account = init.account().map_err(M::Error::custom)?;
                 MultisigSignature::from_decoded(account, signatures, Some(init))
             }
-            _ => Err("multisig signature requires exactly one of account or init"),
-        }
-        .map(TempoSignature::Multisig)
-        .map_err(M::Error::custom)
+            _ => {
+                return Err(M::Error::custom(
+                    "multisig signature requires exactly one of account or init",
+                ));
+            }
+        };
+        signature
+            .map(TempoSignature::Multisig)
+            .map_err(M::Error::custom)
     }
 }
 

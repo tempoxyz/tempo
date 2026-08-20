@@ -129,6 +129,82 @@ impl core::fmt::Display for MultisigConfigError {
     }
 }
 
+/// Native multisig signature construction and shape validation error.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultisigSignatureError {
+    /// The bootstrap config is invalid.
+    InvalidConfig(MultisigConfigError),
+    /// The claimed account does not match the bootstrap config.
+    InitAccountMismatch,
+    /// The signature exceeds [`MAX_MULTISIG_NESTING_DEPTH`].
+    NestingDepthExceeded,
+    /// The claimed multisig account is zero.
+    ZeroAccount,
+    /// The owner approval list is empty.
+    EmptySignatures,
+    /// The owner approval list exceeds [`MAX_MULTISIG_SIGNATURES`].
+    TooManySignatures,
+    /// An encoded owner approval is empty.
+    EmptyOwnerSignature,
+    /// An encoded primitive owner approval exceeds [`MAX_MULTISIG_OWNER_SIGNATURE_BYTES`].
+    OwnerSignatureTooLarge,
+    /// An encoded owner approval is not a valid [`TempoSignature`].
+    InvalidOwnerSignature,
+    /// A keychain signature was supplied as an owner approval.
+    KeychainOwnerSignature,
+    /// A nested multisig owner approval contains a bootstrap config.
+    NestedBootstrap,
+    /// A registered-account signature contains a bootstrap config.
+    UnexpectedInit,
+}
+
+impl MultisigSignatureError {
+    /// Returns the stable validation message for this error.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidConfig(error) => error.as_str(),
+            Self::InitAccountMismatch => "multisig init does not derive account",
+            Self::NestingDepthExceeded => "native multisig nesting depth exceeded",
+            Self::ZeroAccount => "multisig account cannot be zero",
+            Self::EmptySignatures => "multisig signatures cannot be empty",
+            Self::TooManySignatures => "too many multisig signatures",
+            Self::EmptyOwnerSignature => "multisig owner signature cannot be empty",
+            Self::OwnerSignatureTooLarge => "multisig owner signature too large",
+            Self::InvalidOwnerSignature => "invalid multisig owner signature",
+            Self::KeychainOwnerSignature => {
+                "keychain signatures cannot authorize native multisig owners"
+            }
+            Self::NestedBootstrap => "nested multisig owner signatures cannot bootstrap accounts",
+            Self::UnexpectedInit => "multisig_init is only allowed when bootstrapping an account",
+        }
+    }
+}
+
+impl core::fmt::Display for MultisigSignatureError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<MultisigConfigError> for MultisigSignatureError {
+    fn from(error: MultisigConfigError) -> Self {
+        Self::InvalidConfig(error)
+    }
+}
+
+impl From<MultisigSignatureError> for &'static str {
+    fn from(error: MultisigSignatureError) -> Self {
+        error.as_str()
+    }
+}
+
+impl From<MultisigSignatureError> for String {
+    fn from(error: MultisigSignatureError) -> Self {
+        error.as_str().to_string()
+    }
+}
+
 /// Native multisig quorum validation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MultisigQuorumError {
@@ -529,11 +605,14 @@ pub enum MultisigAddress {
 }
 
 impl MultisigAddress {
-    fn from_parts(account: Address, init: Option<InitMultisig>) -> Result<Self, &'static str> {
+    fn from_parts(
+        account: Address,
+        init: Option<InitMultisig>,
+    ) -> Result<Self, MultisigSignatureError> {
         if let Some(init) = init {
-            let init_account = init.account().map_err(MultisigConfigError::as_str)?;
+            let init_account = init.account()?;
             if init_account != account {
-                return Err("multisig init does not derive account");
+                return Err(MultisigSignatureError::InitAccountMismatch);
             }
             Ok(Self::Init(init))
         } else {
@@ -603,7 +682,7 @@ impl From<MultisigSignature> for MultisigSignatureSerde {
 
 #[cfg(feature = "serde")]
 impl TryFrom<MultisigSignatureSerde> for MultisigSignature {
-    type Error = &'static str;
+    type Error = MultisigSignatureError;
 
     fn try_from(value: MultisigSignatureSerde) -> Result<Self, Self::Error> {
         match value {
@@ -627,7 +706,7 @@ impl MultisigSignature {
         account: Address,
         signatures: Vec<Bytes>,
         init: Option<InitMultisig>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, MultisigSignatureError> {
         let signatures = signatures
             .into_iter()
             .map(decode_multisig_owner_signature)
@@ -639,7 +718,7 @@ impl MultisigSignature {
         account: Address,
         signatures: Vec<TempoSignature>,
         init: Option<InitMultisig>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, MultisigSignatureError> {
         let address = MultisigAddress::from_parts(account, init)?;
         Self::from_validated_address(address, signatures)
     }
@@ -647,12 +726,12 @@ impl MultisigSignature {
     fn from_decoded_address(
         address: MultisigAddress,
         signatures: Vec<TempoSignature>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, MultisigSignatureError> {
         // Guarantee the init config is valid at construction (decode/serde) time so that every
         // constructed `MultisigSignature` upholds the invariant `MultisigAddress::account()` relies
         // on. Without this, an invalid init config reaches the infallible `account()` and panics.
         if let MultisigAddress::Init(init) = &address {
-            init.account().map_err(MultisigConfigError::as_str)?;
+            init.account()?;
         }
         Self::from_validated_address(address, signatures)
     }
@@ -660,7 +739,7 @@ impl MultisigSignature {
     fn from_validated_address(
         address: MultisigAddress,
         signatures: Vec<TempoSignature>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, MultisigSignatureError> {
         let signature = Self {
             address,
             signatures,
@@ -691,42 +770,42 @@ impl MultisigSignature {
     }
 
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
-    pub fn recover_account(&self) -> Result<Address, &'static str> {
+    pub fn recover_account(&self) -> Result<Address, MultisigSignatureError> {
         self.validate_shape()?;
         Ok(self.account())
     }
 
     /// Validates only the stateless signature payload shape.
-    pub fn validate_shape(&self) -> Result<(), &'static str> {
+    pub fn validate_shape(&self) -> Result<(), MultisigSignatureError> {
         self.validate_shape_at_depth(1)
     }
 
-    fn validate_shape_at_depth(&self, depth: usize) -> Result<(), &'static str> {
+    fn validate_shape_at_depth(&self, depth: usize) -> Result<(), MultisigSignatureError> {
         if depth > MAX_MULTISIG_NESTING_DEPTH {
-            return Err("native multisig nesting depth exceeded");
+            return Err(MultisigSignatureError::NestingDepthExceeded);
         }
         if self.account().is_zero() {
-            return Err("multisig account cannot be zero");
+            return Err(MultisigSignatureError::ZeroAccount);
         }
         if self.signatures.is_empty() {
-            return Err("multisig signatures cannot be empty");
+            return Err(MultisigSignatureError::EmptySignatures);
         }
         if self.signatures.len() > MAX_MULTISIG_SIGNATURES {
-            return Err("too many multisig signatures");
+            return Err(MultisigSignatureError::TooManySignatures);
         }
         for signature in &self.signatures {
             match signature {
                 TempoSignature::Primitive(signature)
                     if signature.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES =>
                 {
-                    return Err("multisig owner signature too large");
+                    return Err(MultisigSignatureError::OwnerSignatureTooLarge);
                 }
                 TempoSignature::Keychain(_) => {
-                    return Err("keychain signatures cannot authorize native multisig owners");
+                    return Err(MultisigSignatureError::KeychainOwnerSignature);
                 }
                 TempoSignature::Multisig(nested) => {
                     if nested.init().is_some() {
-                        return Err("nested multisig owner signatures cannot bootstrap accounts");
+                        return Err(MultisigSignatureError::NestedBootstrap);
                     }
                     nested.validate_shape_at_depth(depth + 1)?;
                 }
@@ -740,10 +819,10 @@ impl MultisigSignature {
     ///
     /// Registered accounts are already bound to native multisig storage, so the derived-account
     /// check can be skipped on the steady-state path.
-    pub fn validate_registered_shape(&self) -> Result<(), &'static str> {
+    pub fn validate_registered_shape(&self) -> Result<(), MultisigSignatureError> {
         self.validate_shape()?;
         if self.init().is_some() {
-            return Err("multisig_init is only allowed when bootstrapping an account");
+            return Err(MultisigSignatureError::UnexpectedInit);
         }
         Ok(())
     }
@@ -928,7 +1007,8 @@ impl MultisigSignature {
         }
 
         *buf = rest;
-        Self::from_decoded_address(address, signatures).map_err(alloy_rlp::Error::Custom)
+        Self::from_decoded_address(address, signatures)
+            .map_err(|error| alloy_rlp::Error::Custom(error.as_str()))
     }
 }
 
@@ -1008,16 +1088,19 @@ pub fn multisig_signature_count_for_threshold(
     Err(MultisigQuorumError::WeightBelowThreshold)
 }
 
-fn decode_multisig_owner_signature(signature: Bytes) -> Result<TempoSignature, &'static str> {
+fn decode_multisig_owner_signature(
+    signature: Bytes,
+) -> Result<TempoSignature, MultisigSignatureError> {
     if signature.is_empty() {
-        return Err("multisig owner signature cannot be empty");
+        return Err(MultisigSignatureError::EmptyOwnerSignature);
     }
     if signature.len() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES
         && signature[0] != SIGNATURE_TYPE_MULTISIG
     {
-        return Err("multisig owner signature too large");
+        return Err(MultisigSignatureError::OwnerSignatureTooLarge);
     }
-    TempoSignature::from_bytes(&signature).map_err(|_| "invalid multisig owner signature")
+    TempoSignature::from_bytes(&signature)
+        .map_err(|_| MultisigSignatureError::InvalidOwnerSignature)
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -1357,7 +1440,7 @@ mod tests {
 
         assert_eq!(
             MultisigSignature::from_decoded(account, vec![approval], None),
-            Err("keychain signatures cannot authorize native multisig owners")
+            Err(MultisigSignatureError::KeychainOwnerSignature)
         );
     }
 
@@ -1369,7 +1452,7 @@ mod tests {
                 vec![TempoSignature::Multisig(bootstrap_multisig_signature())],
                 None,
             ),
-            Err("nested multisig owner signatures cannot bootstrap accounts")
+            Err(MultisigSignatureError::NestedBootstrap)
         );
     }
 
@@ -1394,7 +1477,7 @@ mod tests {
                 vec![TempoSignature::Multisig(middle)],
                 None,
             ),
-            Err("native multisig nesting depth exceeded")
+            Err(MultisigSignatureError::NestingDepthExceeded)
         );
     }
 
@@ -1617,7 +1700,7 @@ mod tests {
             Some(config),
         );
 
-        assert_eq!(signature, Err("multisig init does not derive account"));
+        assert_eq!(signature, Err(MultisigSignatureError::InitAccountMismatch));
     }
 
     #[test]
@@ -1734,7 +1817,10 @@ mod tests {
             None,
         );
 
-        assert_eq!(signature, Err("multisig owner signature too large"));
+        assert_eq!(
+            signature,
+            Err(MultisigSignatureError::OwnerSignatureTooLarge)
+        );
     }
 
     #[test]
