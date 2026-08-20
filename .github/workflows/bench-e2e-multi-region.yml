@@ -23,6 +23,10 @@ on:
         type: string
         required: false
         default: ""
+      benchmark-ref:
+        type: string
+        required: false
+        default: "main"
       duration:
         type: string
         required: false
@@ -67,6 +71,14 @@ on:
         type: boolean
         required: false
         default: true
+      valscope:
+        type: boolean
+        required: false
+        default: true
+      rpc-path-comparison:
+        type: boolean
+        required: false
+        default: false
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -83,6 +95,10 @@ on:
       VICTORIALOGS_URL:
         required: false
       VICTORIAMETRICS_URL:
+        required: false
+      VALSCOPE_CONTROL_URL:
+        required: false
+      VALSCOPE_INTERNAL_TOKEN:
         required: false
   workflow_dispatch:
     inputs:
@@ -198,9 +214,14 @@ on:
         required: true
         default: true
       valscope:
-        description: Generate and publish ValScope static reports.
+        description: Register live ValScope targets for each benchmark phase.
         type: boolean
         required: true
+        default: true
+      rpc-path-comparison:
+        description: Compare runner-to-SSM RPC with a dedicated in-VPC load generator.
+        type: boolean
+        required: false
         default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
@@ -232,11 +253,6 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
 
 permissions:
   actions: read
@@ -254,6 +270,7 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       BENCH_REPO_DIR: tempo-multi-region-benchmark
+      BENCH_REPO_REF: ${{ github.event_name == 'workflow_dispatch' && '57e8aa0cc94aa61b70d43ebe35d9d77ee5c3bdc5' || inputs['benchmark-ref'] || 'main' }}
       TERRAFORM_DIR: ${{ (inputs.cloud || 'aws') == 'gcp' && 'tempo-multi-region-benchmark/terraform/gcp' || 'tempo-multi-region-benchmark/terraform' }}
       BENCHMARK_ID: bench-e2e-multi-region-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_RESULTS_DIR: tempo-bench-e2e-multi-region-results
@@ -281,7 +298,8 @@ jobs:
       BENCH_INPUT_TOKEN_COUNT: ${{ inputs['token-count'] || '4' }}
       BENCH_INPUT_PROFILING: ${{ inputs.profiling || 'off' }}
       BENCH_INPUT_OTLP: ${{ format('{0}', github.event_name != 'workflow_dispatch' || inputs.otlp) }}
-      BENCH_INPUT_VALSCOPE: ${{ github.event_name == 'workflow_dispatch' && (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_INPUT_VALSCOPE: ${{ (inputs.valscope == true || inputs.valscope == 'true') && 'true' || 'false' }}
+      BENCH_RPC_PATH_COMPARISON: ${{ inputs['rpc-path-comparison'] == true || inputs['rpc-path-comparison'] == 'true' }}
       BENCH_INPUT_BASELINE_ARGS: ${{ inputs['baseline-args'] || '' }}
       BENCH_INPUT_FEATURE_ARGS: ${{ inputs['feature-args'] || '' }}
       BENCH_INPUT_GAS_LIMIT: ${{ inputs['gas-limit'] || '5000000000' }}
@@ -289,10 +307,12 @@ jobs:
       BENCH_INPUT_NO_CACHE: ${{ github.event_name == 'workflow_dispatch' && (inputs['no-cache'] == true || inputs['no-cache'] == 'true') && 'true' || 'false' }}
       BENCH_INPUT_BENCH_ARGS: ${{ inputs['bench-args'] || '' }}
       BENCH_INPUT_RUN_PAIRS: ${{ inputs['run-pairs'] || (github.event_name == 'pull_request' && '1') || '3' }}
-      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || 'feature-1' }}
+      BENCH_INPUT_CLICKHOUSE_RUN: ${{ inputs['clickhouse-run'] || (inputs['rpc-path-comparison'] && 'baseline-1') || 'feature-1' }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
 
     steps:
       - name: Fetch GitHub token via STS
@@ -320,6 +340,25 @@ jobs:
 
             core.setFailed(`@${username} is not a member of ${org}`);
 
+      - name: Validate ValScope configuration
+        if: env.BENCH_INPUT_VALSCOPE == 'true'
+        env:
+          BENCH_LOGS_URL: ${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}
+          BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+        run: |
+          required=(
+            VALSCOPE_CONTROL_URL
+            VALSCOPE_INTERNAL_TOKEN
+            BENCH_LOGS_URL
+            BENCH_METRICS_URL
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required when ValScope is enabled"
+              exit 1
+            fi
+          done
+
       - name: Fetch ClickHouse metric allowlist
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -346,7 +385,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          ref: ${{ env.BENCH_REPO_REF }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
