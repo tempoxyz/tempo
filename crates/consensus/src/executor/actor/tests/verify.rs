@@ -229,23 +229,28 @@ fn newer_round_supersedes_a_queued_request() {
 }
 
 #[test_traced]
-fn abandoned_request_still_leaves_the_body_for_convergence() {
+fn cancellation_before_verification_delivery_still_leaves_the_body_for_convergence() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
 
-        // Queue the validation, then abandon it before taking the verdict
-        // (consensus moved on from the view). Dropping the future drops the
-        // response receiver.
+        // Start validation, then abandon it after newPayload has been issued
+        // but before its paced result is delivered (consensus moved on from
+        // the view). Dropping the future drops the response receiver.
         let verify = h.verify(round(1), b1);
         futures::pin_mut!(verify);
         let sleep = h.run_for(Duration::from_millis(1));
         futures::pin_mut!(sleep);
-        if let Either::Left(_) = futures::future::select(verify, sleep).await {
-            panic!("verification resolved before it could be abandoned");
-        }
+        let verify = match futures::future::select(verify, sleep).await {
+            Either::Left(_) => panic!("verification resolved before it could be abandoned"),
+            Either::Right(((), verify)) => verify,
+        };
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        drop(verify);
         h.run_for(Duration::from_millis(50)).await;
 
         // The recorded body still serves convergence: no fetch is needed

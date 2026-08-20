@@ -58,6 +58,65 @@ fn backfills_to_the_floor_from_marshal() {
 }
 
 #[test_traced]
+fn backfill_then_converges_onto_a_notarized_extension() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let b3 = make_block(3, 3, b2.digest());
+        let b4 = make_block(4, 4, b3.digest());
+        let (d1, d2, d3, d4) = (b1.digest(), b2.digest(), b3.digest(), b4.digest());
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        marshal.add_block(b2);
+
+        let h = Harness::builder()
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 2,
+                finalized_tip: (round(2), 2, d2),
+                ..Default::default()
+            })
+            .start(&context);
+
+        // Startup first moves the local head and finality to the floor. The
+        // tree's pending head remains anchored at the network finalized tip,
+        // so normal notarized convergence can extend from that boundary.
+        h.wait_until(|| h.execution.finalized() == Some((2, d2)))
+            .await;
+        assert_eq!(h.execution.head(), d2);
+
+        // Report a pending head two blocks above the backfilled boundary.
+        // Supplying only that block first makes the actor discover and fetch
+        // the missing ancestor before forwarding both blocks bottom-up.
+        h.report_pending_head(5, 4, d4);
+        h.wait_until(|| h.marshal.fulfill_subscription(d4, b4.clone()))
+            .await;
+        h.wait_until(|| h.marshal.fulfill_subscription(d3, b3.clone()))
+            .await;
+        h.wait_until(|| h.execution.head() == d4).await;
+
+        assert_eq!(h.marshal.get_block_log(), vec![1, 2]);
+        assert_eq!(
+            h.marshal.subscribe_log(),
+            vec![(d4, round(4)), (d3, round(3))],
+        );
+        assert_eq!(h.execution.new_payloads(), vec![d1, d2, d3, d4]);
+        assert_eq!(
+            h.execution.fcus(),
+            vec![
+                (d1, d1, false),
+                (d2, d2, false),
+                (d3, d2, false),
+                (d4, d2, false),
+            ],
+            "notarized convergence must preserve the backfilled finalized boundary",
+        );
+        assert_eq!(h.execution.finalized(), Some((2, d2)));
+    });
+}
+
+#[test_traced]
 fn backfill_falls_back_to_the_execution_layer_for_missing_blocks() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
@@ -202,6 +261,29 @@ fn canonical_hash_read_error_fails_initialization() {
         assert!(
             error.contains("database unavailable"),
             "unexpected error: {error}",
+        );
+    });
+}
+
+#[test_traced]
+fn finalized_tip_below_the_floor_fails_initialization() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+
+        let result = Harness::builder()
+            .harness_options(HarnessOptions {
+                finalized_floor: 2,
+                finalized_tip: (round(1), 1, b1.digest()),
+                ..Default::default()
+            })
+            .try_start(&context);
+
+        let Err(error) = result else {
+            panic!("actor initialization should reject a finalized tip below its floor");
+        };
+        assert_eq!(
+            format!("{error:#}"),
+            "failed initializing actor: finalized tip height `1` is below the finalized floor `2`",
         );
     });
 }

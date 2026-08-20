@@ -229,6 +229,11 @@ where
             fcu_heartbeat_interval,
             public_key,
         } = config;
+        ensure!(
+            finalized_tip.1 >= finalized_floor,
+            "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",
+            finalized_tip.1,
+        );
         let metrics = Metrics::init(&context);
 
         let execution_finalized_num_hash = execution_node

@@ -12,6 +12,7 @@ use crate::consensus::Digest;
 
 mod harness;
 
+mod arbitration;
 mod backfill;
 mod build;
 mod convergence;
