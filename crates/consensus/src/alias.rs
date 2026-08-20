@@ -197,6 +197,17 @@ pub(crate) mod marshal {
         )
         .await;
 
+        if let Some(marshal_stored_height) = marshal_stored_height {
+            ensure!(
+                finalized_tip.1 >= marshal_stored_height,
+                "finalizations archive is inconsistent with the node's consensus metadata: \
+                archive tip height `{}` is below stored marshal height `{marshal_stored_height}`; \
+                have you overwritten consensus storage from a stale snapshot? delete consensus \
+                storage and try again",
+                finalized_tip.1,
+            );
+        }
+
         let startup_floor_height = finalized_floor.0;
         let last_finalized_height = marshal_stored_height.map_or(startup_floor_height, |height| {
             height.max(startup_floor_height)
