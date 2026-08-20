@@ -115,14 +115,14 @@ impl Read for Message {
 
 pub(crate) struct Actor<
     TContext,
-    P = Arc<tempo_node::TempoFullNode>,
-    M = crate::alias::marshal::Mailbox,
-    E = crate::epoch::manager::Mailbox,
+    TExecutionLayer = Arc<tempo_node::TempoFullNode>,
+    TMarshal = crate::alias::marshal::Mailbox,
+    TEpochManager = crate::epoch::manager::Mailbox,
 > where
     TContext: BufferPooler + Clock + commonware_runtime::Metrics + Storage,
 {
     /// The actor configuration passed in when constructing the actor.
-    config: super::Config<P, M, E>,
+    config: super::Config<TExecutionLayer, TMarshal, TEpochManager>,
 
     /// The runtime context passed in when constructing the actor.
     context: ContextCell<TContext>,
@@ -139,15 +139,16 @@ pub(crate) struct Actor<
     pending_finalized_blocks: FuturesOrdered<Ready<(Span, Block, Exact)>>,
 }
 
-impl<TContext, P, M, E> Actor<TContext, P, M, E>
+impl<TContext, TExecutionLayer, TMarshal, TEpochManager>
+    Actor<TContext, TExecutionLayer, TMarshal, TEpochManager>
 where
     TContext: BufferPooler + Clock + CryptoRng + commonware_runtime::Metrics + Spawner + Storage,
-    P: ExecutionLayer + 'static,
-    M: Marshal + 'static,
-    E: EpochManager + 'static,
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
+    TEpochManager: EpochManager,
 {
     pub(super) async fn new(
-        config: super::Config<P, M, E>,
+        config: super::Config<TExecutionLayer, TMarshal, TEpochManager>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -291,7 +292,7 @@ where
             })?;
 
         let ancestry_ctx = Arc::new(self.context.child("ancestry_stream"));
-        let mut ancestry_stream = AncestorStream::<M::Ancestry>::new();
+        let mut ancestry_stream = AncestorStream::<TMarshal::Ancestry>::new();
 
         info_span!("start_dkg", epoch = %state.epoch).in_scope(|| {
             info!(
@@ -1500,14 +1501,14 @@ fn latest_boundary_at_or_before_height() {
     }
 }
 
-async fn read_outcome_from_boundary<P, M>(
-    node: &P,
-    marshal: &M,
+async fn read_outcome_from_boundary<TExecutionLayer, TMarshal>(
+    node: &TExecutionLayer,
+    marshal: &TMarshal,
     boundary: Height,
 ) -> eyre::Result<OnchainDkgOutcome>
 where
-    P: ExecutionLayer,
-    M: Marshal,
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
 {
     let header = get_header(node, marshal, boundary)
         .await
@@ -1520,10 +1521,14 @@ where
 }
 
 #[instrument(skip_all, fields(%height))]
-async fn get_header<P, M>(node: &P, marshal: &M, height: Height) -> eyre::Result<TempoHeader>
+async fn get_header<TExecutionLayer, TMarshal>(
+    node: &TExecutionLayer,
+    marshal: &TMarshal,
+    height: Height,
+) -> eyre::Result<TempoHeader>
 where
-    P: ExecutionLayer,
-    M: Marshal,
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
 {
     match node.finalized_header(height) {
         Ok(Some(header)) => return Ok(header),

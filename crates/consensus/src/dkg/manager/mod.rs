@@ -33,15 +33,18 @@ use crate::{
 
 use ingress::{Command, Message};
 
-pub(crate) async fn init<TContext, P, M, E>(
+pub(crate) async fn init<TContext, TExecutionLayer, TMarshal, TEpochManager>(
     context: TContext,
-    config: Config<P, M, E>,
-) -> eyre::Result<(Actor<TContext, P, M, E>, Mailbox)>
+    config: Config<TExecutionLayer, TMarshal, TEpochManager>,
+) -> eyre::Result<(
+    Actor<TContext, TExecutionLayer, TMarshal, TEpochManager>,
+    Mailbox,
+)>
 where
     TContext: BufferPooler + Clock + CryptoRng + Metrics + Spawner + Storage,
-    P: ExecutionLayer + 'static,
-    M: Marshal + 'static,
-    E: EpochManager + 'static,
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
+    TEpochManager: EpochManager,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -53,10 +56,10 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<P, M, E> {
+pub(crate) struct Config<TExecutionLayer, TMarshal, TEpochManager> {
     pub(crate) epoch_strategy: FixedEpocher,
 
-    pub(crate) epoch_manager: E,
+    pub(crate) epoch_manager: TEpochManager,
 
     /// The namespace the dkg manager will use when sending messages during
     /// a dkg ceremony.
@@ -68,7 +71,7 @@ pub(crate) struct Config<P, M, E> {
 
     /// The mailbox to the marshal actor. Used to determine if an epoch
     /// can be started at startup.
-    pub(crate) marshal: M,
+    pub(crate) marshal: TMarshal,
 
     /// The finalized floor reported by marshal at startup. Used to choose the
     /// boundary block that seeds the initial DKG state.
@@ -79,7 +82,7 @@ pub(crate) struct Config<P, M, E> {
     pub(crate) partition_prefix: String,
 
     /// Execution-layer state used to initialize DKG and determine future ceremonies.
-    pub(crate) execution_node: P,
+    pub(crate) execution_node: TExecutionLayer,
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
@@ -90,7 +93,7 @@ pub(crate) struct Config<P, M, E> {
 /// During initialization, these reads provide the initial validator set and
 /// public polynomial. During normal operation, they provide the validator
 /// configuration used at the end of each epoch.
-pub(crate) trait ExecutionLayer: Clone + Send + Sync {
+pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
 
@@ -114,7 +117,7 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync {
 }
 
 /// Marshal operations used by the DKG manager.
-pub(crate) trait Marshal: Clone + Send + Sync {
+pub(crate) trait Marshal: Clone + Send + Sync + 'static {
     /// Stream of blocks from a requested tip through its ancestry.
     type Ancestry: Stream<Item = Arc<Block>> + Send + Unpin + 'static;
 
@@ -139,7 +142,7 @@ pub(crate) trait Marshal: Clone + Send + Sync {
 }
 
 /// Epoch transitions emitted by the DKG manager.
-pub(crate) trait EpochManager: Send + Sync {
+pub(crate) trait EpochManager: Send + Sync + 'static {
     /// Starts consensus for `epoch` with the DKG output and participant set.
     ///
     /// A present `share` makes the local validator a signer; without one, it
