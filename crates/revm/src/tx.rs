@@ -444,21 +444,37 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
 }
 
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
-    fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &AASigned, sender: Address, encoded: Bytes) -> Self {
+        let mut tx_env = Self::from_recovered_tx(tx, sender);
+        tx_env.maybe_mark_rpc_block_simulation(&encoded);
+        tx_env
     }
 }
 
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, encoded: Bytes) -> Self {
+        let mut tx_env = Self::from_recovered_tx(tx, sender);
+        tx_env.maybe_mark_rpc_block_simulation(&encoded);
+        tx_env
+    }
+}
+
+impl TempoTxEnv {
+    /// Marks the empty envelope Reth intentionally uses for `eth_simulateV1` transactions.
+    ///
+    /// Real signed transactions always have a non-empty EIP-2718 encoding. Reth uses an empty
+    /// encoding only for block simulations so execution layers can omit envelope-derived costs.
+    fn maybe_mark_rpc_block_simulation(&mut self, encoded: &Bytes) {
+        if encoded.is_empty() {
+            self.execution_context = ExecutionContext::Simulation;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
-    use alloy_evm::FromRecoveredTx;
+    use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
     use core::num::NonZeroU64;
     use proptest::prelude::*;
@@ -646,6 +662,74 @@ mod tests {
         assert_eq!(
             tx_env.channel_open_context_hash(),
             Some(encoded_payload_context)
+        );
+    }
+
+    #[test]
+    fn test_empty_encoded_tx_marks_rpc_block_simulation() {
+        let account = Address::repeat_byte(0xAA);
+        let make_signed = |nonce| {
+            let tx = tempo_primitives::transaction::TempoTransaction {
+                chain_id: 1,
+                gas_limit: 100_000,
+                calls: vec![create_call(TxKind::Call(Address::repeat_byte(0x42)))],
+                nonce,
+                ..Default::default()
+            };
+            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
+            AASigned::new_unhashed(tx, signature)
+        };
+        let signed = make_signed(0);
+        let envelope = TempoTxEnvelope::AA(signed.clone());
+        let expected_identifier = envelope.unique_tx_identifier(account);
+
+        let tx_env = TempoTxEnv::from_encoded_tx(&envelope, account, Bytes::new());
+
+        assert_eq!(tx_env.execution_context(), ExecutionContext::Simulation);
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(expected_identifier)
+        );
+
+        let next_envelope = TempoTxEnvelope::AA(make_signed(1));
+        let next_tx_env = TempoTxEnv::from_encoded_tx(&next_envelope, account, Bytes::new());
+        assert_eq!(
+            next_tx_env.execution_context(),
+            ExecutionContext::Simulation
+        );
+        assert_ne!(
+            next_tx_env.channel_open_context_hash(),
+            tx_env.channel_open_context_hash(),
+            "distinct simulated transactions must retain distinct replay identities"
+        );
+
+        let tx_env = TempoTxEnv::from_encoded_tx(
+            &envelope,
+            account,
+            Bytes::from_static(b"signed transaction"),
+        );
+        assert_eq!(
+            tx_env.execution_context(),
+            ExecutionContext::Transaction {
+                tx_hash: *envelope.tx_hash()
+            }
+        );
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(expected_identifier)
+        );
+
+        let direct_aa_env = TempoTxEnv::from_encoded_tx(&signed, account, Bytes::new());
+        assert_eq!(
+            direct_aa_env.execution_context(),
+            ExecutionContext::Simulation,
+            "bare AA and envelope conversions must agree on the empty simulation encoding"
+        );
+        assert_eq!(
+            direct_aa_env.channel_open_context_hash(),
+            Some(expected_identifier)
         );
     }
 

@@ -4,7 +4,7 @@ permissions: {}
 
 on:
   schedule:
-    - cron: "0 8 * * 1"
+    - cron: "36 7 * * *"
   workflow_dispatch:
     inputs:
       digest:
@@ -24,7 +24,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/tempoxyz/tempo
-  DEFAULT_SOAK_DAYS: ${{ vars.CANARY_SOAK_DAYS || '3' }}
+  DEFAULT_SOAK_DAYS: ${{ vars.CANARY_SOAK_DAYS || '1' }}
 
 jobs:
   promote:

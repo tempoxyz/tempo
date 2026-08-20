@@ -22,25 +22,23 @@ use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     marshal::core::DigestFallback,
-    simplex::Plan,
-    types::{Epoch, Epocher as _, FixedEpocher, HeightDelta, Round, View},
+    simplex::{Plan, types::Context},
+    types::{Epocher as _, FixedEpocher, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
+    ContextCell, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
     telemetry::metrics::{Counter, MetricsExt as _},
 };
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::future::try_join;
 use rand_core::{CryptoRng, Rng};
-use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_node::TempoFullNode;
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockReader as _, BlockSource};
@@ -212,7 +210,7 @@ where
 
                 self.context.child("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(*verify, context)
+                    move |_| inner.handle_verify(*verify)
                 });
             }
         }
@@ -275,6 +273,23 @@ impl Inner<Init> {
             leader,
             started_at: propose_start,
         } = request;
+
+        // Report the parent we are asked to build on as the pending head,
+        // so that the executor can get started on bringing the execution
+        // layer to the right state. On the happy path there should always
+        // be enough headroom between this and the eventual request to build
+        // a block.
+        //
+        // If the EL is not (yet) in the correct state to build a block the
+        // build will fail fast.
+        debug!("reporting notarized tip");
+        if let Err(error) = self.executor.report_pending_head(Context {
+            round,
+            leader: leader.clone(),
+            parent: (parent_view, parent_digest),
+        }) {
+            warn!(%error, "failed reporting the proposal parent as the pending head");
+        }
 
         let proposal_block = {
             let mut proposal = Box::pin(async {
@@ -403,11 +418,7 @@ impl Inner<Init> {
         ),
         err(level = Level::INFO),
     )]
-    async fn handle_verify<TContext: Pacer>(
-        self,
-        verify: Verify,
-        context: TContext,
-    ) -> eyre::Result<()> {
+    async fn handle_verify(self, verify: Verify) -> eyre::Result<()> {
         let Verify {
             parent,
             payload,
@@ -415,11 +426,7 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
-        let VerifyResult {
-            result,
-            block,
-            parent,
-        } = select!(
+        let VerifyResult { result, block } = select!(
             () = response.closed() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
@@ -427,7 +434,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, proposer, round) => {
+            res = self.clone().verify(parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         )?;
@@ -436,7 +443,7 @@ impl Inner<Init> {
             warn!("received dropped channel before verification result could be returned");
         }
         // Keep large block drops out of the pre-response path.
-        drop((block, parent));
+        drop(block);
 
         Ok(())
     }
@@ -497,38 +504,6 @@ impl Inner<Init> {
             }
             info!("parent is last height of epoch; re-proposing parent");
             return Ok((parent, None));
-        }
-
-        let is_genesis_parent = parent.height().is_zero()
-            || parent_epoch_info.last() == parent.height()
-                && parent_epoch_info.epoch().next() == round.epoch();
-
-        // Send the proposal parent to execution layer to cover edge cases when
-        // we were not asked to to verify it (and hence are missing it in the
-        // EL).
-        //
-        // If proposing the first block of an epoch, its parent
-        // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
-        if !is_genesis_parent
-            && verify_block(
-                context,
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-            .is_none()
-        {
-            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -638,7 +613,7 @@ impl Inner<Init> {
         let payload = self
             .state
             .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)?
+            .build_proposal(round, parent.height(), parent.digest(), attrs)?
             .await
             .wrap_err(
                 "executor dropped the payload channel: the build failed (the \
@@ -705,32 +680,29 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn verify<TContext: Pacer>(
+    async fn verify(
         self,
-        context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<VerifyResult> {
-        let (block, parent) = try_join(
-            subscribe(&self.execution_node, round, payload, &self.marshal),
-            subscribe(
-                &self.execution_node,
-                Round::new(round.epoch(), parent_view),
-                parent_digest,
-                &self.marshal,
-            ),
-        )
-        .await
-        .wrap_err("failed getting required blocks")?;
+        // Report the parent we are asked to verify against as the pending
+        // head, so that the executor keeps driving the execution layer
+        // towards it even if this verification is aborted.
+        if let Err(error) = self.executor.report_pending_head(Context {
+            round,
+            leader: proposer.clone(),
+            parent: (parent_view, parent_digest),
+        }) {
+            warn!(%error, "failed reporting the verify parent as the pending head");
+        }
+
+        let block = subscribe(&self.execution_node, round, payload, &self.marshal)
+            .await
+            .wrap_err("failed getting proposal block")?;
 
         // Can only repropose at the end of an epoch.
-        //
-        // NOTE: fetching block and parent twice (in the case block == parent)
-        // seems wasteful, but both run concurrently, should finish almost
-        // immediately, and happen very rarely. It's better to optimize for the
-        // general case.
         if payload == parent_digest {
             let epoch_info = self
                 .epoch_strategy
@@ -743,13 +715,11 @@ impl Inner<Init> {
                 return Ok(VerifyResult {
                     result: true,
                     block: None,
-                    parent: Some(parent),
                 });
             } else {
                 return Ok(VerifyResult {
                     result: false,
                     block: Some(block),
-                    parent: Some(parent),
                 });
             }
         }
@@ -768,32 +738,13 @@ impl Inner<Init> {
             return Ok(VerifyResult {
                 result: false,
                 block: Some(block),
-                parent: Some(parent),
             });
         }
 
-        if let Err(error) = self
-            .state
-            .executor
-            .canonicalize_head(parent.height(), parent.digest())
-            .await
-        {
-            tracing::warn!(
-                %error,
-                parent.height = %parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent; trying to go on",
-            );
-        }
-
         let validation_duration = verify_block(
-            &context,
-            round.epoch(),
+            round,
             &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            &self.state.executor,
             &block,
             parent_digest,
             &self.scheme_provider,
@@ -814,33 +765,21 @@ impl Inner<Init> {
         }
         let is_good = validation_duration.is_some();
 
-        let block_height = block.height();
-        let block_digest = block.digest();
-
         if is_good {
-            // Persist the block in the marshal actor and execution layer.
+            // Persist the verified block in the marshal actor.
             if !self.marshal.verified(round, block).await {
                 bail!("marshal actor refused to persist verified block");
             }
 
-            // FIXME: move this into the certification step?
-            self.state
-                .executor
-                .canonicalize_head(block_height, block_digest)
-                .await
-                .wrap_err("failed making the verified proposal the head of the canonical chain")?;
-
             return Ok(VerifyResult {
                 result: true,
                 block: None,
-                parent: Some(parent),
             });
         }
 
         Ok(VerifyResult {
             result: false,
             block: Some(block),
-            parent: Some(parent),
         })
     }
 }
@@ -899,42 +838,27 @@ struct VerifyResult {
     result: bool,
     /// The proposed block when it was not moved into the verified marshal state.
     block: Option<Block>,
-    /// The parent block fetched to verify the proposal.
-    parent: Option<Block>,
 }
 
-/// Verifies `block` given its `parent` against the execution layer.
+/// Validates `block` against the execution layer through the executor
+/// actor, which serializes the new-payload request with all other
+/// execution-layer work and records the block's body for the
+/// notarized-chain convergence.
 ///
-/// Returns EL validation duration when validation reached the execution layer
-/// and succeeded, or `None` if the block is invalid. Returns an error if
-/// validation was not possible, for example if communication with the execution
-/// layer failed.
-///
-/// Reason the reason for why a block was not valid is communicated as a
-/// tracing event.
-#[instrument(
-    skip_all,
-    fields(
-        %epoch,
-        epoch_length,
-        block.parent_digest = %block.parent_digest(),
-        block.digest = %block.digest(),
-        block.height = %block.height(),
-        block.timestamp = block.timestamp(),
-        parent.digest = %parent_digest,
-    )
-)]
-async fn verify_block<TContext: Pacer>(
-    context: &TContext,
-    epoch: Epoch,
+/// Returns the EL validation duration when validation reached the execution
+/// layer and succeeded, or `None` if the block is invalid. Returns an error
+/// if validation was not possible, for example if the execution layer does
+/// not know the block's parent or the request was superseded by a
+/// newer-round request.
+async fn verify_block(
+    round: Round,
     epoch_strategy: &FixedEpocher,
-    engine: ConsensusEngineHandle<TempoPayloadTypes>,
+    executor: &crate::executor::Mailbox,
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
 ) -> eyre::Result<Option<Duration>> {
-    use alloy_rpc_types_engine::PayloadStatusEnum;
-
+    let epoch = round.epoch();
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
@@ -962,40 +886,10 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let execution_data = TempoExecutionData {
-        block: block.execution_block().clone(),
-        block_access_list: block.block_access_list().cloned(),
-        validator_set,
-    };
-    let validation_start = Instant::now();
-    let payload_status = engine
-        .new_payload(execution_data)
-        .pace(context, Duration::from_millis(50))
+
+    executor
+        .verify_block(round, block.clone(), validator_set)
         .await
-        .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
-    match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
-        PayloadStatusEnum::Invalid { validation_error } => {
-            info!(
-                validation_error,
-                "execution layer returned that the block was invalid"
-            );
-            Ok(None)
-        }
-        PayloadStatusEnum::Accepted => {
-            bail!(
-                "failed validating block because payload was accepted, meaning \
-                that this was not actually executed by the execution layer for some reason"
-            );
-        }
-        PayloadStatusEnum::Syncing => {
-            bail!(
-                "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus \
-                layer but not the execution layer"
-            );
-        }
-    }
 }
 
 #[instrument(skip_all, err(Display))]

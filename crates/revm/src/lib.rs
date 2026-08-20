@@ -17,6 +17,7 @@ pub mod gas_credits;
 pub mod gas_params;
 pub mod handler;
 mod instructions;
+mod signature_gas;
 mod tx;
 
 pub use error::{TempoHaltReason, TempoInvalidTransaction};
