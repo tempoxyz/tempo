@@ -117,6 +117,19 @@ fn tempo_authorization(authority: Address) -> RecoveredTempoAuthorization {
     )
 }
 
+fn tempo_keychain_authorization(authority: Address) -> RecoveredTempoAuthorization {
+    RecoveredTempoAuthorization::new_unchecked(
+        TempoSignedAuthorization::new_unchecked(
+            authorization(authority),
+            TempoSignature::Keychain(KeychainSignature::new(
+                authority,
+                PrimitiveSignature::default(),
+            )),
+        ),
+        RecoveredAuthority::Valid(authority),
+    )
+}
+
 fn store_native_multisig_account(test: &mut TestHandlerEvm, config: &InitMultisig) {
     let account = config.account().unwrap();
     StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
@@ -3723,6 +3736,33 @@ mod keychain {
     }
 
     #[test]
+    fn test_t11_ordinary_key_authorization_charges_one_registry_read() {
+        let (signer, user) = generate_keypair();
+        let access_key = Address::random();
+        let signed = sign_key_auth(
+            &signer,
+            KeyAuthorization::unrestricted(1337, SignatureType::Secp256k1, access_key),
+        );
+        let (mut evm, h) = make_evm(
+            user,
+            access_key,
+            Some(signed),
+            TempoHardfork::T11,
+            None,
+            false,
+        );
+        let gas_params = tempo_gas_params(TempoHardfork::T11);
+        let expected =
+            gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
+        let mut init_gas = InitialAndFloorGas::default();
+
+        h.validate_against_state_and_deduct_caller(&mut evm, &mut init_gas)
+            .expect("ordinary access-key authorization should pass");
+
+        assert_eq!(init_gas.initial_regular_gas, expected);
+    }
+
+    #[test]
     fn test_keychain_version_rejection() {
         let caller = Address::random();
 
@@ -4900,7 +4940,9 @@ fn test_t11_primitive_transaction_skips_native_multisig_storage() {
 }
 
 #[test]
-fn test_t11_fee_payer_multisig_registry_read_is_metered() {
+fn test_t11_primitive_fee_payer_skips_native_multisig_storage() {
+    let config = native_multisig_config();
+    let fee_payer = config.account().unwrap();
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
@@ -4914,24 +4956,29 @@ fn test_t11_fee_payer_multisig_registry_read_is_metered() {
     };
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = Address::repeat_byte(0x11);
-        tx_env.fee_payer = Some(Some(Address::repeat_byte(0x22)));
+        tx_env.fee_payer = Some(Some(fee_payer));
     });
+    store_native_multisig_account(&mut test, &config);
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
 
-    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
-        + test.gas_params().cold_storage_additional_cost();
     let mut init_gas = InitialAndFloorGas::default();
     test.handler
         .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
-        .expect("ordinary fee payer should pass");
+        .expect("primitive fee payer is accepted under the collision assumption");
 
-    assert_eq!(
-        init_gas.initial_regular_gas, cold_storage_read_gas,
-        "fee payer should charge one cold multisig registry read"
+    assert_eq!(init_gas.initial_regular_gas, 0);
+    let actions = actions.take().expect("storage actions are enabled");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "primitive fee payer must not read native multisig storage: {actions:?}"
     );
 }
 
 #[test]
-fn test_t11_auth_list_multisig_registry_reads_are_metered() {
+fn test_t11_primitive_auth_list_skips_native_multisig_storage() {
     let authorities = [Address::repeat_byte(0x22), Address::repeat_byte(0x33)];
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -4948,23 +4995,120 @@ fn test_t11_auth_list_multisig_registry_reads_are_metered() {
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = Address::repeat_byte(0x11);
     });
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
+
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("ordinary authorization-list authorities should pass");
+
+    assert_eq!(init_gas.initial_regular_gas, 0);
+    let actions = actions.take().expect("storage actions are enabled");
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "primitive authorization-list authorities must not read native multisig storage: {actions:?}"
+    );
+}
+
+#[test]
+fn test_t11_keychain_auth_list_registry_read_is_metered() {
+    let authority = Address::repeat_byte(0x22);
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![tempo_keychain_authorization(authority)],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+    });
 
     let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
         + test.gas_params().cold_storage_additional_cost();
     let mut init_gas = InitialAndFloorGas::default();
     test.handler
         .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
-        .expect("ordinary authorization-list authorities should pass");
+        .expect("ordinary keychain authority should pass");
 
-    assert_eq!(
-        init_gas.initial_regular_gas,
-        authorities.len() as u64 * cold_storage_read_gas,
-        "each distinct authority should charge one cold multisig registry read"
+    assert_eq!(init_gas.initial_regular_gas, cold_storage_read_gas);
+}
+
+#[test]
+fn test_t11_keychain_auth_list_rejects_registered_multisig_authority() {
+    let config = native_multisig_config();
+    let authority = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![tempo_keychain_authorization(authority)],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+    });
+    store_native_multisig_account(&mut test, &config);
+
+    let result = test.validate_against_state_and_deduct_caller();
+    assert!(
+        matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
+            )) if reason.contains("authorization-list authority")
+        ),
+        "registered multisig keychain authority should be rejected"
     );
 }
 
 #[test]
-fn test_t11_aa_auth_list_rejects_native_multisig_authority() {
+fn test_t11_auth_list_rejects_multisig_signature_statelessly() {
+    let account = Address::repeat_byte(0x22);
+    let authorization = RecoveredTempoAuthorization::new_unchecked(
+        TempoSignedAuthorization::new_unchecked(
+            authorization(account),
+            TempoSignature::Multisig(MultisigSignature::new(
+                account,
+                vec![PrimitiveSignature::default().to_bytes()],
+                None,
+            )),
+        ),
+        RecoveredAuthority::Valid(account),
+    );
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![authorization],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = Address::repeat_byte(0x11);
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
+        )) if reason.contains("not allowed in authorization lists")
+    ));
+}
+
+#[test]
+fn test_t11_primitive_aa_auth_list_does_not_gate_registered_address() {
     let config = native_multisig_config();
     let authority = config.account().unwrap();
     let aa_env = TempoBatchCallEnv {
@@ -4983,21 +5127,22 @@ fn test_t11_aa_auth_list_rejects_native_multisig_authority() {
         tx_env.inner.caller = Address::random();
     });
     store_native_multisig_account(&mut test, &config);
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
 
-    let result = test.validate_against_state_and_deduct_caller();
+    test.validate_against_state_and_deduct_caller()
+        .expect("primitive authority is accepted under the collision assumption");
+    let actions = actions.take().expect("storage actions are enabled");
     assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
-            )) if reason.contains("authorization-list authority")
-        ),
-        "native multisig authorization-list authority should be rejected (state-dependent)"
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "primitive authority must not read native multisig storage: {actions:?}"
     );
 }
 
 #[test]
-fn test_t11_standard_auth_list_rejects_native_multisig_authority() {
+fn test_t11_standard_auth_list_does_not_gate_registered_address() {
     let config = native_multisig_config();
     let authority = config.account().unwrap();
     let mut test = TestHandlerEvm::tx(TempoHardfork::T11, |tx_env| {
@@ -5006,16 +5151,17 @@ fn test_t11_standard_auth_list_rejects_native_multisig_authority() {
         tx_env.inner.authorization_list = vec![Either::Right(recovered_authorization(authority))];
     });
     store_native_multisig_account(&mut test, &config);
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
 
-    let result = test.validate_against_state_and_deduct_caller();
+    test.validate_against_state_and_deduct_caller()
+        .expect("standard primitive authority is accepted under the collision assumption");
+    let actions = actions.take().expect("storage actions are enabled");
     assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
-            )) if reason.contains("authorization-list authority")
-        ),
-        "native multisig standard authorization-list authority should be rejected (state-dependent)"
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "standard primitive authority must not read native multisig storage: {actions:?}"
     );
 }
 

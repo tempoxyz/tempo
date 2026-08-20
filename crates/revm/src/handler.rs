@@ -14,7 +14,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
         result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
-        transaction::{AccessListItem, AccessListItemTr, AuthorizationTr},
+        transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::{
         cfg::{GasId, GasParams, gas::GasTracker},
@@ -1066,10 +1066,11 @@ where
         let key_authorization_key_id = tempo_tx_env
             .and_then(|aa| aa.key_authorization.as_ref())
             .map(|key_auth| key_auth.key_id);
-        let has_authorization_list = tempo_tx_env.map_or_else(
-            || tx.authorization_list_len() != 0,
-            |aa| !aa.tempo_authorization_list.is_empty(),
-        );
+        let has_keychain_authorization_list_entry = tempo_tx_env.is_some_and(|aa| {
+            aa.tempo_authorization_list
+                .iter()
+                .any(|auth| auth.signature().is_keychain())
+        });
         let outer_keychain_signature = tempo_tx_env.is_some_and(|aa| aa.signature.is_keychain());
         let validates_caller_multisig = outer_multisig_signature.is_some()
             || key_authorization_multisig_signature
@@ -1091,8 +1092,7 @@ where
         let requires_native_multisig_state = outer_multisig_signature.is_some()
             || key_authorization_multisig_signature.is_some()
             || key_authorization_key_id.is_some()
-            || tx.has_fee_payer_signature()
-            || has_authorization_list
+            || has_keychain_authorization_list_entry
             || keychain_caller_has_code;
 
         if spec.is_t11() && requires_native_multisig_state {
@@ -1117,18 +1117,6 @@ where
                                     .to_string(),
                         }
                         .into());
-                    }
-
-                    if tx.has_fee_payer_signature()
-                        && multisig_precompile
-                            .is_multisig_account(fee_payer)
-                            .map_err(NativeMultisigAuthError::from)
-                            .map_err(map_native_multisig_error::<DB>)?
-                    {
-                        let error = TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
-                            account: fee_payer,
-                        };
-                        return Err(error.into());
                     }
 
                     if let Some(key_id) = key_authorization_key_id
@@ -1171,13 +1159,11 @@ where
                     };
 
                     if let Some(tempo_tx_env) = tempo_tx_env {
-                        for auth in &tempo_tx_env.tempo_authorization_list {
-                            if let Some(authority) = auth.authority() {
-                                ensure_authority_not_multisig(authority)?;
-                            }
-                        }
-                    } else {
-                        for auth in tx.authorization_list() {
+                        for auth in tempo_tx_env
+                            .tempo_authorization_list
+                            .iter()
+                            .filter(|auth| auth.signature().is_keychain())
+                        {
                             if let Some(authority) = auth.authority() {
                                 ensure_authority_not_multisig(authority)?;
                             }

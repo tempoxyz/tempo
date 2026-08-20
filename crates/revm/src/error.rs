@@ -261,13 +261,6 @@ pub enum TempoInvalidTransaction {
         reason: String,
     },
 
-    /// Native multisig accounts cannot sponsor other transactions via fee-payer signatures.
-    #[error("native multisig account {account} cannot be used as a fee payer")]
-    NativeMultisigFeePayerNotAllowed {
-        /// Native multisig account.
-        account: Address,
-    },
-
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -360,7 +353,6 @@ impl TempoInvalidTransaction {
             | Self::KeychainValidationFailed { .. }
             | Self::NativeMultisigNotActive
             | Self::NativeMultisigValidationFailed { .. }
-            | Self::NativeMultisigFeePayerNotAllowed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
