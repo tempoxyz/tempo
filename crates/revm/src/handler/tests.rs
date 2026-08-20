@@ -31,8 +31,8 @@ use tempo_precompiles::{
 use tempo_primitives::transaction::{
     Call, InitMultisig, KeyAuthorization, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
     MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigOwner,
-    MultisigSignature, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization, derive_p256_address, multisig_digest,
+    MultisigSignature, MultisigSignatureError, PrimitiveSignature, RecoveredTempoAuthorization,
+    TempoSignature, TempoSignedAuthorization, derive_p256_address, multisig_digest,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -6344,7 +6344,10 @@ fn native_multisig_authorization_rejects_oversized_owner_approval_before_decode(
     );
 
     assert!(
-        matches!(signature, Err("multisig owner signature too large")),
+        matches!(
+            signature,
+            Err(MultisigSignatureError::OwnerSignatureTooLarge)
+        ),
         "oversized owner approval should be rejected before constructing a multisig signature"
     );
 }
