@@ -513,15 +513,19 @@ where
         // latest-state point reads (engine validation misses, txpool, RPC)
         // must come from the flat store. Install the canonical-tip read hook
         // that reth's latest-state provider consults. Correctness: these
-        // reads sit underneath the engine's in-memory overlay of unpersisted
-        // blocks, which shadows every key written after the last persisted
-        // block — so ANY served anchor at or after the last persisted block
-        // is exact: keys touched since the anchor are shadowed by the
-        // overlay, untouched keys are identical across anchors. That makes
-        // a slightly-lagging published tip state safe, which is what lets
-        // the readers below run without locks or provider calls. The tip
-        // anchor (not "newest flat state") keeps not-yet-canonical candidate
-        // blocks out of the served state.
+        // reads sit underneath the engine's in-memory overlay of UNPERSISTED
+        // blocks, and reth's persistence (headers/receipts still persist in
+        // this mode) evicts blocks from that overlay within a few blocks of
+        // the tip. An anchor older than the eviction horizon therefore has a
+        // HOLE: keys written between the anchor and the persist height read
+        // stale values (measured at 100G: the follower 37 blocks behind →
+        // the validator executed candidates on stale state → wrong bundles
+        // → "mismatched block state root" rejections → view churn). The
+        // fast path below is used ONLY when the published anchor IS the
+        // current canonical tip; anything else takes the blocking resolve —
+        // bounded backpressure instead of stale reads. The tip anchor (not
+        // "newest flat state") also keeps not-yet-canonical candidate blocks
+        // out of the served state.
         if std::env::var("TEMPO_NO_STATE_KV").is_ok_and(|v| v == "1" || v == "all") {
             let provider = ctx.node.provider().clone();
             let chain_spec = chain_spec;
@@ -541,6 +545,16 @@ where
             // on that lock and throttled transaction ingestion.)
             let published: Arc<arc_swap::ArcSwapOption<TipState>> =
                 Arc::new(arc_swap::ArcSwapOption::empty());
+            // The current canonical tip root, stored by the updater thread
+            // BEFORE its (potentially slow) resolve. Readers compare the
+            // published anchor against this: equal → lock-free fast path;
+            // anything else → the blocking resolve below. B256::ZERO = not
+            // yet known (pre-first-commit bootstrap).
+            let current_tip: Arc<arc_swap::ArcSwap<B256>> =
+                Arc::new(arc_swap::ArcSwap::from_pointee(B256::ZERO));
+            // Serializes slow-path resolves so a stale window doesn't spawn
+            // a thundering herd of identical resolve loops.
+            let slow_lock: Arc<std::sync::Mutex<()>> = Arc::new(std::sync::Mutex::new(()));
             // Resolve the flat-side view of one canonical tip root.
             let resolve_for = {
                 let chain_spec = chain_spec.clone();
@@ -588,6 +602,7 @@ where
                 use reth_provider::CanonStateSubscriptions as _;
                 let mut canon_rx = ctx.node.provider().subscribe_to_canonical_state();
                 let published = published.clone();
+                let current_tip = current_tip.clone();
                 let resolve_for = resolve_for.clone();
                 std::thread::Builder::new()
                     .name("flat-tip-reads".into())
@@ -595,6 +610,12 @@ where
                         match canon_rx.blocking_recv() {
                             Ok(notif) => {
                                 let tip_root = notif.tip().header().state_root();
+                                // Publish the tip FIRST: from this instant
+                                // readers stop trusting the previous anchor
+                                // (its overlay coverage may already be
+                                // evicted) and block on the slow path until
+                                // the fresh state lands.
+                                current_tip.store(Arc::new(tip_root));
                                 match resolve_for(tip_root) {
                                     Ok(state) => published.store(Some(state)),
                                     Err(e) => {
@@ -613,25 +634,40 @@ where
                     })
                     .expect("spawn flat-tip-reads updater");
             }
-            // Reader-side accessor: lock-free load, with a one-time provider
-            // resolve as the bootstrap before the first canonical commit.
+            // Reader-side accessor. Fast path: the published anchor IS the
+            // current canonical tip — one lock-free load, no provider calls.
+            // Slow path (anchor stale, updater mid-resolve or failing, or
+            // pre-first-commit bootstrap): resolve the current tip under a
+            // lock — readers block rather than read around the overlay's
+            // eviction horizon (see the correctness note above).
             let resolve = {
                 let published = published.clone();
+                let current_tip = current_tip.clone();
                 move || -> Result<Arc<TipState>, reth_errors::ProviderError> {
-                    if let Some(state) = published.load_full() {
+                    let tip = **current_tip.load();
+                    if let Some(state) = published.load_full()
+                        && state.0 == tip
+                    {
                         return Ok(state);
                     }
-                    use reth_provider::BlockReaderIdExt as _;
-                    let tip_root = provider
-                        .latest_header()?
-                        .ok_or_else(|| flat_err("no canonical head for flat tip read"))?
-                        .state_root();
-                    let state = resolve_for(tip_root)?;
-                    // Racing bootstraps/updater stores are all valid anchors
-                    // (see the correctness note above); last write wins.
-                    if published.load().is_none() {
-                        published.store(Some(state.clone()));
+                    let _g = slow_lock.lock().map_err(|_| flat_err("tip resolve poisoned"))?;
+                    // Re-check under the lock: the updater (or the previous
+                    // slow-path holder) may have published while we waited.
+                    let mut tip = **current_tip.load();
+                    if let Some(state) = published.load_full()
+                        && state.0 == tip
+                    {
+                        return Ok(state);
                     }
+                    if tip == B256::ZERO {
+                        use reth_provider::BlockReaderIdExt as _;
+                        tip = provider
+                            .latest_header()?
+                            .ok_or_else(|| flat_err("no canonical head for flat tip read"))?
+                            .state_root();
+                    }
+                    let state = resolve_for(tip)?;
+                    published.store(Some(state.clone()));
                     Ok(state)
                 }
             };
