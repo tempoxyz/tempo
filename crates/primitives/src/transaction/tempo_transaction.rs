@@ -664,13 +664,15 @@ impl TempoTransaction {
     /// Decodes the inner `TempoTransaction` fields from the fee-payer service encoding.
     ///
     /// Inverse of the field encoding produced by [`Self::encode_for_fee_payer_service`]: the fee
-    /// payer signature field must carry the single-byte `0x00` sponsorship placeholder, which
-    /// decodes to [`FEE_PAYER_SIGNATURE_MARKER`]. All other fields decode exactly like
-    /// [`Self::rlp_decode_fields`]; in particular the fee token stays optional, since the service
-    /// encoding leaves it empty for the sponsor to fill.
+    /// payer signature field must carry a sponsorship request, which decodes to
+    /// [`FEE_PAYER_SIGNATURE_MARKER`]. Sponsorship is requested either with the single-byte
+    /// `0x00` placeholder or with the bare sender address used by multisig finalize flows; the
+    /// address is returned alongside the fields when present. All other fields decode exactly
+    /// like [`Self::rlp_decode_fields`]; in particular the fee token stays optional, since the
+    /// service encoding leaves it empty for the sponsor to fill.
     pub(crate) fn rlp_decode_fields_for_fee_payer_service(
         buf: &mut &[u8],
-    ) -> alloy_rlp::Result<Self> {
+    ) -> alloy_rlp::Result<(Self, Option<Address>)> {
         let chain_id = Decodable::decode(buf)?;
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
@@ -694,13 +696,20 @@ impl TempoTransaction {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
-        let fee_payer_signature = if let Some(first) = buf.first() {
+        // `0x80 + 20` is the RLP string header of a 20-byte address item.
+        const ADDRESS_ITEM_HEADER: u8 = EMPTY_STRING_CODE + Address::len_bytes() as u8;
+        let (fee_payer_signature, explicit_sender) = if let Some(first) = buf.first() {
             if *first == 0x00 {
                 buf.advance(1);
-                Some(FEE_PAYER_SIGNATURE_MARKER)
+                (Some(FEE_PAYER_SIGNATURE_MARKER), None)
+            } else if *first == ADDRESS_ITEM_HEADER {
+                (
+                    Some(FEE_PAYER_SIGNATURE_MARKER),
+                    Some(Address::decode(buf)?),
+                )
             } else {
                 return Err(alloy_rlp::Error::Custom(
-                    "fee payer service encoding requires the 0x00 fee payer signature placeholder",
+                    "fee payer service encoding requires the 0x00 fee payer signature placeholder or a sender address",
                 ));
             }
         } else {
@@ -742,7 +751,7 @@ impl TempoTransaction {
         // Validate the transaction
         tx.validate().map_err(alloy_rlp::Error::Custom)?;
 
-        Ok(tx)
+        Ok((tx, explicit_sender))
     }
 
     /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).

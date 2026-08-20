@@ -217,13 +217,18 @@ impl AASigned {
     /// Decodes a signed transaction from the fee-payer service encoding.
     ///
     /// Inverse of [`Self::encode_for_fee_payer_service`]: the fee payer signature field must
-    /// carry the `0x00` sponsorship placeholder, which decodes to
-    /// [`FEE_PAYER_SIGNATURE_MARKER`](super::FEE_PAYER_SIGNATURE_MARKER), matching how fee payer
-    /// services deserialize the placeholder to a pending fee payer signature. The sender
-    /// signature and all other fields decode exactly like the standard encoding, so a sponsor
-    /// can fill the sponsor-owned fields (fee token and fee payer signature) and re-encode the
-    /// transaction with [`Encodable2718::encode_2718`].
-    pub fn decode_for_fee_payer_service(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+    /// request sponsorship, which decodes to
+    /// [`FEE_PAYER_SIGNATURE_MARKER`](super::FEE_PAYER_SIGNATURE_MARKER). Matching `ox`/`viem`
+    /// deserialization, sponsorship is requested either with the `0x00` placeholder or with a
+    /// bare sender address in the signature slot; the latter is used by multisig finalize flows
+    /// where the sender cannot be recovered from the (still incomplete) sender signature, and is
+    /// returned as the second tuple element. The sender signature and all other fields decode
+    /// exactly like the standard encoding, so a sponsor can fill the sponsor-owned fields (fee
+    /// token and fee payer signature) and re-encode the transaction with
+    /// [`Encodable2718::encode_2718`].
+    pub fn decode_for_fee_payer_service(
+        buf: &mut &[u8],
+    ) -> alloy_rlp::Result<(Self, Option<Address>)> {
         match buf.split_first() {
             Some((&TEMPO_TX_TYPE_ID, rest)) => *buf = rest,
             Some(_) => {
@@ -244,8 +249,8 @@ impl AASigned {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
-        // Decode transaction fields with the fee payer signature placeholder
-        let tx = TempoTransaction::rlp_decode_fields_for_fee_payer_service(buf)?;
+        // Decode transaction fields with the fee payer signature sponsorship request
+        let (tx, explicit_sender) = TempoTransaction::rlp_decode_fields_for_fee_payer_service(buf)?;
 
         // Decode signature bytes
         let sig_bytes: Bytes = Decodable::decode(buf)?;
@@ -259,7 +264,7 @@ impl AASigned {
         // Parse signature
         let signature = TempoSignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
-        Ok(Self::new_unhashed(tx, signature))
+        Ok((Self::new_unhashed(tx, signature), explicit_sender))
     }
 
     /// Splits the transaction into parts.
@@ -652,8 +657,13 @@ mod tests {
         let (signed, _) = signed_pair_for_tx(tx);
 
         let encoded = service_encoded(&signed);
-        let decoded = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+        let (decoded, explicit_sender) =
+            AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
 
+        assert_eq!(
+            explicit_sender, None,
+            "placeholder form carries no explicit sender"
+        );
         assert_eq!(decoded.tx(), signed.tx());
         assert_eq!(decoded.signature(), signed.signature());
         assert_eq!(*decoded.hash(), *signed.hash());
@@ -664,6 +674,39 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_for_fee_payer_service_accepts_sender_address_form() {
+        let mut tx = make_tx();
+        tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        let (signed, _) = signed_pair_for_tx(tx);
+        let sender = signed.recover_signer().unwrap();
+
+        // ox/viem also serialize sponsorship requests with the bare sender address in the fee
+        // payer signature slot; build that wire form with the address encoding closure.
+        let payload_length = signed
+            .tx()
+            .rlp_encoded_fields_length(|_| sender.length(), true)
+            + signed.signature().length();
+        let mut encoded = vec![TEMPO_TX_TYPE_ID];
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        signed
+            .tx()
+            .rlp_encode_fields(&mut encoded, |_, out| sender.encode(out), true);
+        signed.signature().encode(&mut encoded);
+
+        let (decoded, explicit_sender) =
+            AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+
+        assert_eq!(explicit_sender, Some(sender));
+        assert_eq!(decoded.tx(), signed.tx());
+        assert_eq!(decoded.signature(), signed.signature());
+        assert_eq!(*decoded.hash(), *signed.hash());
+    }
+
+    #[test]
     fn test_decode_for_fee_payer_service_normalizes_sponsor_owned_fields() {
         let mut tx = make_tx();
         tx.fee_token = Some(Address::repeat_byte(0x20));
@@ -671,7 +714,7 @@ mod tests {
         let (signed, _) = signed_pair_for_tx(tx.clone());
 
         let encoded = service_encoded(&signed);
-        let decoded = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+        let (decoded, _) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
 
         // The service encoding strips the two sponsor-owned fields.
         tx.fee_token = None;
@@ -740,7 +783,7 @@ mod tests {
         let (signed, _) = signed_pair_for_tx(tx);
 
         let encoded = service_encoded(&signed);
-        let decoded = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+        let (decoded, _) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
 
         assert_eq!(decoded.tx(), signed.tx());
         assert_eq!(decoded.signature(), signed.signature());
@@ -755,7 +798,7 @@ mod tests {
         let sender = signed.recover_signer().unwrap();
 
         let encoded = service_encoded(&signed);
-        let decoded = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+        let (decoded, _) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
 
         // The sponsor fills the sponsor-owned fields: the fee token it pays with and its fee
         // payer signature over the digest, which commits to the fee token.
@@ -794,7 +837,7 @@ mod tests {
         assert_eq!(
             err,
             alloy_rlp::Error::Custom(
-                "fee payer service encoding requires the 0x00 fee payer signature placeholder"
+                "fee payer service encoding requires the 0x00 fee payer signature placeholder or a sender address"
             )
         );
 
@@ -806,7 +849,7 @@ mod tests {
         assert_eq!(
             err,
             alloy_rlp::Error::Custom(
-                "fee payer service encoding requires the 0x00 fee payer signature placeholder"
+                "fee payer service encoding requires the 0x00 fee payer signature placeholder or a sender address"
             )
         );
 
@@ -1201,7 +1244,8 @@ mod tests {
 
             let mut encoded = Vec::new();
             signed.encode_for_fee_payer_service(&mut encoded);
-            let decoded = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+            let (decoded, explicit_sender) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+            prop_assert_eq!(explicit_sender, None);
 
             // The service encoding strips the sponsor-owned fields; everything else round-trips.
             let expected = TempoTransaction {
