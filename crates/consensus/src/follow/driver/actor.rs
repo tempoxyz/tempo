@@ -89,7 +89,6 @@ where
         mailbox: rx,
         startup_execution_boundary,
         current_epoch,
-        hinted_epoch: None,
         verifier,
         latest_verified_round: Round::zero(),
     };
@@ -102,7 +101,6 @@ pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
-    hinted_epoch: Option<Epoch>,
     verifier: FinalizationVerifier,
     latest_verified_round: Round,
 }
@@ -308,11 +306,7 @@ where
         Ok(())
     }
 
-    async fn hint_current_epoch_boundary(&mut self) {
-        if self.hinted_epoch == Some(self.current_epoch) {
-            return;
-        }
-
+    async fn hint_current_epoch_boundary(&self) {
         // A failed built-in identity may mean it has rotated. Ask marshal for
         // the local epoch boundary, which contains the next scheme. Do not take
         // the height from the certificate because an unauthenticated peer could
@@ -323,12 +317,13 @@ where
             .last(self.current_epoch)
             .expect("strategy is valid for all heights and epochs");
 
-        self.hinted_epoch = Some(self.current_epoch);
         debug!(
             current_epoch = %self.current_epoch,
             %boundary_height,
             "hinting current epoch boundary after the network identity fallback failed",
         );
+        // NOTE: Repeated hints are intentional. The follow resolver coalesces
+        // active requests for the same boundary height.
         self.config.marshal.hint_finalized(boundary_height).await;
     }
 
