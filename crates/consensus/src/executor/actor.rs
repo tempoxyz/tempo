@@ -398,7 +398,6 @@ where
     )]
     fn set_execution_task(&mut self, mut task: ExecutionTask) {
         task.span = Span::current();
-        task.started_at = Some(Instant::now());
         assert!(
             self.execution_task.replace(task).is_none(),
             "invariant violation: must not replace an in-flight execution task"
@@ -1025,7 +1024,7 @@ struct ExecutionTask {
     task_type: ExecutionTaskType,
     on_top_of: LocalState,
     span: Span,
-    started_at: Option<Instant>,
+    started_at: Instant,
     fut: BoxFuture<'static, ExecutionTaskOutcome>,
 }
 
@@ -1038,7 +1037,7 @@ impl ExecutionTask {
             task_type,
             on_top_of,
             span: Span::none(),
-            started_at: None,
+            started_at: Instant::now(),
             fut: fut.boxed(),
         }
     }
@@ -1079,9 +1078,7 @@ impl Future for ExecutionTask {
             task_type: self.task_type,
             on_top_of: self.on_top_of,
             span,
-            started_at: self.started_at.expect(
-                "invariant violation: execution task must have a start timestamp before polling",
-            ),
+            started_at: self.started_at,
             outcome,
         })
     }
