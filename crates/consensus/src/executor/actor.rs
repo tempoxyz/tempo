@@ -421,6 +421,7 @@ where
         &mut self,
         finished: ExecutionTaskFinished,
     ) -> eyre::Result<()> {
+        info!("execution task finished");
         let ExecutionTaskFinished { outcome, .. } = finished;
         match outcome {
             ExecutionTaskOutcome::Completed {
@@ -462,7 +463,6 @@ where
                 return Err(error.wrap_err("execution task failed"));
             }
         }
-        info!("execution task finished");
         Ok(())
     }
 
