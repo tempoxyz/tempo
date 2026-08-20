@@ -3,7 +3,7 @@ use crate::{
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
-use alloy::primitives::{Address, B256, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Log, LogData, TxKind, U256};
 use alloy_evm::EvmInternals;
 use bitflags::bitflags;
 use revm::{
@@ -348,6 +348,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals
             .block_env_downcast_ref::<TempoBlockEnv>()
             .expect("EvmPrecompileStorageProvider requires TempoBlockEnv")
+    }
+
+    fn tx_kind(&self) -> Option<TxKind> {
+        Some(self.internals.tx_env().kind())
     }
 
     #[inline]

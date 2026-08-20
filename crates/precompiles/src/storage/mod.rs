@@ -21,7 +21,7 @@ pub mod packing;
 pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
-use alloy::primitives::{Address, B256, LogData, Signature, U256};
+use alloy::primitives::{Address, B256, LogData, Signature, TxKind, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
     interpreter::gas::{KECCAK256, KECCAK256WORD},
@@ -49,6 +49,9 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the full Tempo block environment.
     fn block_env(&self) -> &TempoBlockEnv;
+
+    /// Returns the current top-level transaction call target when the provider models one.
+    fn tx_kind(&self) -> Option<TxKind>;
 
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;

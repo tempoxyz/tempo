@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, B256, Bytes, LogData, U256},
+    primitives::{Address, B256, Bytes, LogData, TxKind, U256},
     sol_types::SolInterface,
 };
 use alloy_evm::{Database, EvmInternals};
@@ -151,6 +151,11 @@ impl StorageCtx {
     /// Executes a closure with access to the current Tempo block environment.
     pub fn with_block_env<R>(&self, f: impl FnOnce(&TempoBlockEnv) -> R) -> R {
         Self::with_storage(|s| f(s.block_env()))
+    }
+
+    /// Returns the current top-level transaction call target.
+    pub fn tx_kind(&self) -> Option<TxKind> {
+        Self::with_storage(|s| s.tx_kind())
     }
 
     /// Returns the epoch containing `height`.

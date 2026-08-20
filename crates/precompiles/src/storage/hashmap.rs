@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256, LogData, U256};
+use alloy::primitives::{Address, B256, LogData, TxKind, U256};
 use revm::{
     context::{BlockEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::GasParams,
@@ -25,6 +25,7 @@ pub struct HashMapStorageProvider {
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     block_env: TempoBlockEnv,
+    tx_kind: Option<TxKind>,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -78,6 +79,7 @@ impl HashMapStorageProvider {
                 },
                 ..Default::default()
             },
+            tx_kind: None,
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
@@ -104,6 +106,12 @@ impl HashMapStorageProvider {
         self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
+
+    /// Returns self with the top-level transaction target overridden.
+    pub fn with_tx_kind(mut self, tx_kind: TxKind) -> Self {
+        self.tx_kind = Some(tx_kind);
+        self
+    }
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
@@ -113,6 +121,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn block_env(&self) -> &TempoBlockEnv {
         &self.block_env
+    }
+
+    fn tx_kind(&self) -> Option<TxKind> {
+        self.tx_kind
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {

@@ -48,8 +48,10 @@ impl NativeMultisigAuthConfig<'_> {
     fn matches_signature(&self, signature: &MultisigSignature) -> bool {
         match (self, signature.init()) {
             (Self::Inline(expected), Some(actual)) => *expected == actual,
-            (Self::BootstrapCompanion(_), None) => true,
-            (Self::Registered(_), None) => true,
+            (Self::BootstrapCompanion(expected), None) => expected
+                .account()
+                .is_ok_and(|account| account == signature.account()),
+            (Self::Registered(expected), None) => expected.account == signature.account(),
             _ => false,
         }
     }
@@ -102,14 +104,16 @@ impl NativeMultisigAuthConfig<'_> {
             Self::Inline(config) | Self::BootstrapCompanion(config) => config
                 .validate()
                 .map(|_| ())
-                .map_err(|err| NativeMultisigAuthError::validation_failed(err.as_str())),
+                .map_err(|err| NativeMultisigAuthError::invalid_transaction(err.as_str())),
             Self::Registered(_) => Ok(()),
         }
     }
 
     fn quorum_error(&self, err: MultisigQuorumError) -> NativeMultisigAuthError {
         match err {
-            MultisigQuorumError::SignerNotOwner | MultisigQuorumError::WeightBelowThreshold => {
+            MultisigQuorumError::SignerNotOwner | MultisigQuorumError::WeightBelowThreshold
+                if matches!(self, Self::Registered(_)) =>
+            {
                 NativeMultisigAuthError::validation_failed(err.as_str())
             }
             MultisigQuorumError::ExcessSignatures | MultisigQuorumError::SignersNotAscending
@@ -119,6 +123,8 @@ impl NativeMultisigAuthConfig<'_> {
             }
             MultisigQuorumError::EmptySignatures
             | MultisigQuorumError::TooManySignatures
+            | MultisigQuorumError::SignerNotOwner
+            | MultisigQuorumError::WeightBelowThreshold
             | MultisigQuorumError::ExcessSignatures
             | MultisigQuorumError::SignersNotAscending
             | MultisigQuorumError::WeightOverflow => {
@@ -254,7 +260,7 @@ impl NativeMultisig {
 mod tests {
     use alloy::primitives::{Address, B256, Signature};
     use tempo_primitives::transaction::{
-        InitMultisig, MultisigOwner, MultisigSignature, TempoSignature,
+        InitMultisig, MultisigOwner, MultisigQuorumError, MultisigSignature, TempoSignature,
     };
 
     use super::{NativeMultisigAuthConfig, NativeMultisigAuthError, RegisteredMultisigConfig};
@@ -282,6 +288,7 @@ mod tests {
         let registered_signature =
             MultisigSignature::from_decoded(account, approvals, None).unwrap();
         let registered_config = NativeMultisigAuthConfig::Registered(RegisteredMultisigConfig {
+            account,
             threshold: init.threshold,
             version: 1,
             owners: init.owners.clone(),
@@ -294,10 +301,19 @@ mod tests {
         };
 
         for result in [
-            verify(&inline_signature, registered_config),
+            verify(&inline_signature, registered_config.clone()),
             verify(
                 &registered_signature,
                 NativeMultisigAuthConfig::Inline(&init),
+            ),
+            verify(
+                &registered_signature,
+                NativeMultisigAuthConfig::Registered(RegisteredMultisigConfig {
+                    account: Address::repeat_byte(0x22),
+                    threshold: init.threshold,
+                    version: 1,
+                    owners: init.owners.clone(),
+                }),
             ),
         ] {
             assert_eq!(
@@ -312,5 +328,26 @@ mod tests {
             NativeMultisigAuthConfig::BootstrapCompanion(&init)
                 .matches_signature(&registered_signature)
         );
+    }
+
+    #[test]
+    fn payload_fixed_quorum_failures_are_invalid_transactions() {
+        let init = init_config();
+        let inline = NativeMultisigAuthConfig::Inline(&init);
+        let registered = NativeMultisigAuthConfig::Registered(RegisteredMultisigConfig {
+            account: init.account().unwrap(),
+            threshold: init.threshold,
+            version: 1,
+            owners: init.owners.clone(),
+        });
+
+        assert!(matches!(
+            inline.quorum_error(MultisigQuorumError::WeightBelowThreshold),
+            NativeMultisigAuthError::InvalidTransaction(_)
+        ));
+        assert!(matches!(
+            registered.quorum_error(MultisigQuorumError::WeightBelowThreshold),
+            NativeMultisigAuthError::ValidationFailed(_)
+        ));
     }
 }
