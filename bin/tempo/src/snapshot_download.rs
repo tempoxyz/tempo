@@ -32,7 +32,7 @@ pub(crate) struct Args {
     /// Skip encoding consensus state. This will pass-through directly to Reth.
     #[arg(
         long,
-        default_value_t = true,
+        default_value_t = false,
         default_missing_value = "true",
         hide = true,
         num_args = 0..=1,
@@ -480,6 +480,29 @@ mod tests {
         let help = Args::command().render_long_help().to_string();
 
         assert!(!help.contains("--skip-consensus"));
+    }
+
+    #[test]
+    fn help_documents_force_removing_consensus_directory() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains(
+            "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+        ));
+    }
+
+    #[test]
+    fn args_defaults_to_include_consensus() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--manifest-url",
+            "https://snap/manifest.json",
+            "--datadir",
+            "/d",
+        ])
+        .unwrap();
+
+        assert!(!args.skip_consensus);
     }
 
     #[test]
