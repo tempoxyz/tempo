@@ -190,6 +190,36 @@ run_install '
 '
 ok "bootstrap verification gating"
 
+INSTALL_HOME="$TMP_ROOT/install-home"
+CUSTOM_BIN="$TMP_ROOT/custom bin"
+FAKE_TEMPOUP="$TMP_ROOT/fake-tempoup"
+mkdir -p "$INSTALL_HOME"
+cat > "$FAKE_TEMPOUP" <<'FAKE_TEMPOUP'
+#!/usr/bin/env bash
+exit 0
+FAKE_TEMPOUP
+chmod +x "$FAKE_TEMPOUP"
+
+HOME="$INSTALL_HOME" TEMPO_BIN_DIR="$CUSTOM_BIN" FAKE_TEMPOUP="$FAKE_TEMPOUP" SHELL=/bin/bash \
+    run_install '
+    curl() {
+        while [[ $# -gt 0 ]]; do
+            if [[ "$1" == "-o" ]]; then
+                cp "$FAKE_TEMPOUP" "$2"
+                return
+            fi
+            shift
+        done
+        return 1
+    }
+    main --help
+'
+
+CUSTOM_PATH="$(HOME="$INSTALL_HOME" PATH=/usr/bin:/bin bash -c '. "$HOME/.tempo/env"; printf "%s" "$PATH"')"
+[[ "$CUSTOM_PATH" == "$CUSTOM_BIN:/usr/bin:/bin" ]] || fail "custom TEMPO_BIN_DIR was not persisted"
+log_contains "$INSTALL_HOME/.tempo/env.fish" "fish_add_path -g \"$CUSTOM_BIN\""
+ok "custom TEMPO_BIN_DIR persists in shell environment files"
+
 ROLLBACK_DIR="$TMP_ROOT/rollback-upgrade"
 mkdir -p "$ROLLBACK_DIR"
 printf 'old tempo\n' > "$ROLLBACK_DIR/tempo"
