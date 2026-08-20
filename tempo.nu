@@ -507,15 +507,13 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
     let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
 
-    # Try cache first
-    if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
-        return
-    }
-
     # BENCH_LOCAL_TARGET_ROOT (schelk-less local iteration): worktrees are
     # removed and re-added every run, so their cargo targets would rebuild
     # cold each time (CI avoids this via the MinIO binary cache). Symlink the
-    # worktree's target to a per-worktree persistent dir instead. Unset in CI.
+    # worktree's target to a per-worktree persistent dir instead. Unset in
+    # CI. MUST run before try-cache-download: mc creates target/ as a real
+    # directory for its download destination, which would shadow the symlink
+    # and send the whole build to the worktree's filesystem.
     let local_target_root = ($env.BENCH_LOCAL_TARGET_ROOT? | default "")
     if $local_target_root != "" {
         let tdir = $"($local_target_root)/($worktree_dir | path basename)"
@@ -524,6 +522,12 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
             ^ln -s $tdir $"($worktree_dir)/target"
         }
     }
+
+    # Try cache first
+    if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
+        return
+    }
+
     print $"Building tempo for ($ref) in ($worktree_dir)..."
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
