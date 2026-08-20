@@ -203,10 +203,9 @@ impl<TUpstream> Config<TUpstream> {
                     context.child("gossip"),
                     crate::gossip::ActorConfig {
                         verify_rate: gossip_config.verify_rate,
-                        recent_frames: gossip_config.recent_frames,
                         transport: gossip_config.transport,
                         mailbox: receiver,
-                        peer_control: Arc::new(self.execution_node.network.clone()),
+                        peer_control: self.execution_node.network.clone(),
                         driver: driver_mailbox.clone(),
                         marshal: marshal_mailbox,
                     },
@@ -264,7 +263,8 @@ where
     feed_mailbox: feed::Mailbox,
     broadcast: buffered::Mailbox<PublicKey, Block>,
     gossip_mailbox: Option<crate::gossip::Mailbox>,
-    gossip_actor: Option<crate::gossip::Actor<TContext, driver::Mailbox>>,
+    gossip_actor:
+        Option<crate::gossip::Actor<TContext, driver::Mailbox, crate::gossip::NetworkPeerControl>>,
     upstream: TUpstreamActor,
 }
 

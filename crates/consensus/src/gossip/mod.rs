@@ -6,7 +6,7 @@
 //! The driver owns the epoch schemes, so only the driver can verify a
 //! certificate.
 
-use std::future::Future;
+use std::{future::Future, num::NonZeroU32};
 
 mod actor;
 mod ingress;
@@ -33,10 +33,15 @@ pub struct Config {
     /// The consensus layer's end of the `tempo/1` transport.
     pub transport: tempo_node::gossip::TransportHandle,
     /// Maximum driver judgements per second across all peers.
-    pub verify_rate: u32,
-    /// Frames remembered as already settled or published.
-    pub recent_frames: usize,
+    pub verify_rate: NonZeroU32,
 }
+
+pub(crate) type NetworkPeerControl = reth_ethereum::network::NetworkHandle<
+    reth_ethereum::network::primitives::BasicNetworkPrimitives<
+        tempo_primitives::TempoPrimitives,
+        tempo_primitives::TempoTxEnvelope,
+    >,
+>;
 
 /// A finalization certificate as it travels over `tempo/1`.
 pub(crate) type Certificate = Finalization<Scheme<PublicKey, MinSig>, Digest>;
