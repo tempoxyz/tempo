@@ -462,6 +462,7 @@ where
                 return Err(error.wrap_err("execution task failed"));
             }
         }
+        info!("execution task finished");
         Ok(())
     }
 
