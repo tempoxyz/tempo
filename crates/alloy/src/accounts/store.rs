@@ -31,8 +31,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature, SelectorRule,
-        SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        Call, CallScope, KeyAuthorization, KeychainSignature, MultisigSignature,
+        PrimitiveSignature, SelectorRule, SignedKeyAuthorization, TempoSignature,
+        TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -1798,7 +1799,15 @@ struct PersistedSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: PersistedKeyType,
-    signature: PersistedPrimitiveSignature,
+    signature: PersistedAuthorizationSignature,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum PersistedAuthorizationSignature {
+    Primitive(PersistedPrimitiveSignature),
+    Keychain(KeychainSignature),
+    Multisig(MultisigSignature),
 }
 
 #[derive(Clone, Deserialize)]
@@ -1994,7 +2003,17 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        let signature: PrimitiveSignature = signature.try_into()?;
+        let signature = match signature {
+            PersistedAuthorizationSignature::Primitive(signature) => {
+                TempoSignature::Primitive(signature.try_into()?)
+            }
+            PersistedAuthorizationSignature::Keychain(signature) => {
+                TempoSignature::Keychain(signature)
+            }
+            PersistedAuthorizationSignature::Multisig(signature) => {
+                TempoSignature::Multisig(signature)
+            }
+        };
         Ok(Self::new(authorization, signature))
     }
 }
@@ -2390,14 +2409,7 @@ struct WritableAccessKey {
     limits: Option<Vec<WritableTokenLimit>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scopes: Option<Vec<WritableScope>>,
-    key_authorization: WritableKeyAuthorization,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum WritableKeyAuthorization {
-    Structured(Box<WritableSignedKeyAuthorization>),
-    Rlp(String),
+    key_authorization: WritableSignedKeyAuthorization,
 }
 
 #[derive(Clone, Serialize)]
@@ -2436,7 +2448,7 @@ struct WritableSignedKeyAuthorization {
     account: Option<Address>,
     #[serde(rename = "type")]
     key_type: &'static str,
-    signature: WritablePrimitiveSignature,
+    signature: WritableAuthorizationSignature,
 }
 
 #[derive(Serialize)]
@@ -2458,6 +2470,14 @@ enum WritablePrimitiveSignature {
         public_key: WritablePublicKey,
         metadata: WritableWebAuthnMetadata,
     },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WritableAuthorizationSignature {
+    Primitive(WritablePrimitiveSignature),
+    Keychain(KeychainSignature),
+    Multisig(MultisigSignature),
 }
 
 #[derive(Serialize)]
@@ -2602,23 +2622,28 @@ fn writable_access_key(
             .collect()
     });
     let scopes = writable_scopes(authorization);
-    let key_authorization = if let Some(signature) = authorization.signature.as_primitive() {
-        WritableKeyAuthorization::Structured(Box::new(WritableSignedKeyAuthorization {
-            address: authorization.key_id,
-            chain_id: writable_bigint(U256::from(authorization.chain_id)),
-            expiry: authorization.expiry.map(NonZeroU64::get),
-            limits: limits.clone(),
-            scopes: scopes.clone(),
-            witness: authorization.witness,
-            is_admin: authorization.is_admin,
-            account: authorization.account,
-            key_type: "secp256k1",
-            signature: writable_signature(signature)?,
-        }))
-    } else {
-        let mut encoded = Vec::new();
-        alloy_rlp::Encodable::encode(authorization, &mut encoded);
-        WritableKeyAuthorization::Rlp(alloy_primitives::hex::encode_prefixed(encoded))
+    let signature = match &authorization.signature {
+        TempoSignature::Primitive(signature) => {
+            WritableAuthorizationSignature::Primitive(writable_signature(signature)?)
+        }
+        TempoSignature::Keychain(signature) => {
+            WritableAuthorizationSignature::Keychain(signature.clone())
+        }
+        TempoSignature::Multisig(signature) => {
+            WritableAuthorizationSignature::Multisig(signature.clone())
+        }
+    };
+    let key_authorization = WritableSignedKeyAuthorization {
+        address: authorization.key_id,
+        chain_id: writable_bigint(U256::from(authorization.chain_id)),
+        expiry: authorization.expiry.map(NonZeroU64::get),
+        limits: limits.clone(),
+        scopes: scopes.clone(),
+        witness: authorization.witness,
+        is_admin: authorization.is_admin,
+        account: authorization.account,
+        key_type: "secp256k1",
+        signature,
     };
 
     Ok(WritableAccessKey {
@@ -3596,9 +3621,12 @@ mod tests {
             .unwrap();
 
         let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert!(
-            written["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"].is_string()
+        let persisted = &written["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"];
+        assert_eq!(
+            persisted["signature"]["account"],
+            serde_json::to_value(account).unwrap()
         );
+        assert!(persisted["signature"]["signatures"].is_array());
         let stored = TempoAccountsStore::open(&path)
             .unwrap()
             .access_keys()
