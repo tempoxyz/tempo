@@ -1806,6 +1806,10 @@ where
 
             if aa_env.signature.is_multisig()
                 || aa_env
+                    .key_authorization
+                    .as_ref()
+                    .is_some_and(|authorization| authorization.signature.is_multisig())
+                || aa_env
                     .tempo_authorization_list
                     .iter()
                     .any(|authorization| authorization.signature().is_multisig())
