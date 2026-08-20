@@ -1,9 +1,18 @@
-use alloy_primitives::{Address, FixedBytes, hex};
+use alloy_primitives::{Address, FixedBytes, address, hex};
 use tempo_contracts::{TempoHardfork, precompiles::SYSTEM_PRECOMPILES};
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 pub const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+
+/// RIP-7212 P-256 signature verification precompile address.
+pub const P256VERIFY_ADDRESS: Address = address!("0x0000000000000000000000000000000000000100");
+
+/// Returns `true` if `addr` is reserved for an EVM precompile at `spec`.
+pub fn is_evm_precompile(addr: Address, spec: TempoHardfork) -> bool {
+    (addr.as_slice()[..19] == [0; 19] && (1..=0x11).contains(&addr.as_slice()[19]))
+        || (spec.is_t1c() && addr == P256VERIFY_ADDRESS)
+}
 
 /// Returns `true` if `addr` has the TIP-20 token prefix.
 ///
