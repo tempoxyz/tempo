@@ -700,7 +700,6 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         Self::validate_endpoints(&call.ingress, &call.egress)?;
 
-        self.require_unique_ingress(&call.ingress)?;
         self.verify_validator_signature(
             SignatureKind::Rotate,
             &call.publicKey,
@@ -2646,7 +2645,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rotate_validator_rejects_same_ingress() -> eyre::Result<()> {
+    fn test_rotate_validator_same_ingress_succeeds() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator = Address::random();
@@ -2673,19 +2672,80 @@ mod tests {
                 SignatureKind::Rotate,
             );
             vc.storage.set_block_number(300);
-            assert!(
-                vc.rotate_validator(
-                    owner,
-                    IValidatorConfigV2::rotateValidatorCall {
-                        idx: 0,
-                        publicKey: new_pubkey,
-                        ingress: "192.168.1.1:8000".to_string(),
-                        egress: "192.168.1.1".to_string(),
-                        signature: new_sig.into(),
-                    },
-                )
-                .is_err()
+            vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    idx: 0,
+                    publicKey: new_pubkey,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "192.168.1.1".to_string(),
+                    signature: new_sig.into(),
+                },
+            )?;
+
+            // Key rotated successfully, ingress unchanged
+            assert_eq!(vc.validator_by_address(validator)?.publicKey, new_pubkey);
+            assert_eq!(
+                vc.validator_by_address(validator)?.ingress,
+                "192.168.1.1:8000"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rotate_validator_rejects_ingress_taken_by_another_validator() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator_a = Address::random();
+        let validator_b = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+
+            vc.storage.set_block_number(200);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(
+                    validator_a,
+                    "192.168.1.1:8000",
+                    "192.168.1.1",
+                    Address::random(),
+                ),
+            )?;
+
+            vc.storage.set_block_number(201);
+            vc.add_validator(
+                owner,
+                make_valid_add_call(
+                    validator_b,
+                    "10.0.0.1:8000",
+                    "10.0.0.1",
+                    Address::random(),
+                ),
+            )?;
+
+            // Rotate validator B to validator A's ingress — should fail
+            let (new_pubkey, new_sig) = make_test_keypair_and_signature(
+                validator_b,
+                "192.168.1.1:8000",
+                "10.0.0.1",
+                SignatureKind::Rotate,
+            );
+            vc.storage.set_block_number(300);
+            let result = vc.rotate_validator(
+                owner,
+                IValidatorConfigV2::rotateValidatorCall {
+                    idx: 1,
+                    publicKey: new_pubkey,
+                    ingress: "192.168.1.1:8000".to_string(),
+                    egress: "10.0.0.1".to_string(),
+                    signature: new_sig.into(),
+                },
+            );
+            assert!(result.is_err(), "should reject ingress already used by another validator");
+
             Ok(())
         })
     }
