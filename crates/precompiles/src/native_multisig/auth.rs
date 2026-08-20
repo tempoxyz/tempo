@@ -21,6 +21,7 @@ impl From<TempoPrecompileError> for NativeMultisigAuthError {
     fn from(err: TempoPrecompileError) -> Self {
         match err {
             TempoPrecompileError::Fatal(err) => Self::Fatal(err),
+            err if err.is_system_error() => Self::Fatal(err.to_string()),
             err => Self::ValidationFailed(err.to_string()),
         }
     }
@@ -264,7 +265,7 @@ mod tests {
     };
 
     use super::{NativeMultisigAuthConfig, NativeMultisigAuthError, RegisteredMultisigConfig};
-    use crate::native_multisig::NativeMultisig;
+    use crate::{error::TempoPrecompileError, native_multisig::NativeMultisig};
 
     fn init_config() -> InitMultisig {
         InitMultisig {
@@ -348,6 +349,14 @@ mod tests {
         assert!(matches!(
             registered.quorum_error(MultisigQuorumError::WeightBelowThreshold),
             NativeMultisigAuthError::ValidationFailed(_)
+        ));
+    }
+
+    #[test]
+    fn system_precompile_errors_remain_fatal() {
+        assert!(matches!(
+            NativeMultisigAuthError::from(TempoPrecompileError::OutOfGas),
+            NativeMultisigAuthError::Fatal(_)
         ));
     }
 }
