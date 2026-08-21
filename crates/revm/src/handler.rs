@@ -1066,11 +1066,6 @@ where
         let key_authorization_key_id = tempo_tx_env
             .and_then(|aa| aa.key_authorization.as_ref())
             .map(|key_auth| key_auth.key_id);
-        let has_keychain_authorization_list_entry = tempo_tx_env.is_some_and(|aa| {
-            aa.tempo_authorization_list
-                .iter()
-                .any(|auth| auth.signature().is_keychain())
-        });
         let outer_keychain_signature = tempo_tx_env.is_some_and(|aa| aa.signature.is_keychain());
         let validates_caller_multisig = outer_multisig_signature.is_some()
             || key_authorization_multisig_signature
@@ -1092,7 +1087,6 @@ where
         let requires_native_multisig_state = outer_multisig_signature.is_some()
             || key_authorization_multisig_signature.is_some()
             || key_authorization_key_id.is_some()
-            || has_keychain_authorization_list_entry
             || keychain_caller_has_code;
 
         if spec.is_t11() && requires_native_multisig_state {
@@ -1131,43 +1125,6 @@ where
                             ),
                         }
                         .into());
-                    }
-
-                    let ensure_authority_not_multisig = |authority| -> Result<
-                        (),
-                        EVMError<DB::Error, TempoInvalidTransaction>,
-                    > {
-                        if multisig_precompile
-                            .is_multisig_account(authority)
-                            .map_err(NativeMultisigAuthError::from)
-                            .map_err(map_native_multisig_error::<DB>)?
-                        {
-                            // Whether an authority is a native multisig account is read from
-                            // storage, so this rejection depends on chain state and can flip
-                            // after signing/relay. Classify it as a state-dependent validation
-                            // failure (not a bad transaction) so honest relays are not penalized.
-                            // The deterministic payload-only checks in validate_env stay
-                            // NativeMultisigInvalidTransaction.
-                            let error = TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                reason: format!(
-                                    "native multisig account {authority} cannot be used as an authorization-list authority"
-                                ),
-                            };
-                            return Err(error.into());
-                        }
-                        Ok(())
-                    };
-
-                    if let Some(tempo_tx_env) = tempo_tx_env {
-                        for auth in tempo_tx_env
-                            .tempo_authorization_list
-                            .iter()
-                            .filter(|auth| auth.signature().is_keychain())
-                        {
-                            if let Some(authority) = auth.authority() {
-                                ensure_authority_not_multisig(authority)?;
-                            }
-                        }
                     }
 
                     Ok::<(), EVMError<DB::Error, TempoInvalidTransaction>>(())

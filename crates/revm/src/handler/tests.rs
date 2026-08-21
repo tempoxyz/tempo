@@ -5020,34 +5020,7 @@ fn test_t11_primitive_auth_list_skips_native_multisig_storage() {
 }
 
 #[test]
-fn test_t11_keychain_auth_list_registry_read_is_metered() {
-    let authority = Address::repeat_byte(0x22);
-    let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::default()),
-        aa_calls: vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
-        tempo_authorization_list: vec![tempo_keychain_authorization(authority)],
-        ..Default::default()
-    };
-    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
-        tx_env.inner.caller = Address::repeat_byte(0x11);
-    });
-
-    let cold_storage_read_gas = test.gas_params().warm_storage_read_cost()
-        + test.gas_params().cold_storage_additional_cost();
-    let mut init_gas = InitialAndFloorGas::default();
-    test.handler
-        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
-        .expect("ordinary keychain authority should pass");
-
-    assert_eq!(init_gas.initial_regular_gas, cold_storage_read_gas);
-}
-
-#[test]
-fn test_t11_keychain_auth_list_rejects_registered_multisig_authority() {
+fn test_t11_keychain_auth_list_skips_native_multisig_storage() {
     let config = native_multisig_config();
     let authority = config.account().unwrap();
     let aa_env = TempoBatchCallEnv {
@@ -5064,16 +5037,21 @@ fn test_t11_keychain_auth_list_rejects_registered_multisig_authority() {
         tx_env.inner.caller = Address::repeat_byte(0x11);
     });
     store_native_multisig_account(&mut test, &config);
+    let actions = StorageActions::enabled();
+    test.evm = test.evm.with_actions(actions.clone());
 
-    let result = test.validate_against_state_and_deduct_caller();
+    let mut init_gas = InitialAndFloorGas::default();
+    test.handler
+        .validate_against_state_and_deduct_caller(&mut test.evm, &mut init_gas)
+        .expect("keychain authorization-list entries are skipped");
+
+    assert_eq!(init_gas.initial_regular_gas, 0);
+    let actions = actions.take().expect("storage actions are enabled");
     assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigValidationFailed { reason }
-            )) if reason.contains("authorization-list authority")
-        ),
-        "registered multisig keychain authority should be rejected"
+        actions
+            .iter()
+            .all(|action| action.address() != NATIVE_MULTISIG_ADDRESS),
+        "skipped keychain authorization-list entries must not read native multisig storage: {actions:?}"
     );
 }
 
