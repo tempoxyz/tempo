@@ -158,6 +158,10 @@ pub enum MultisigSignatureError {
     NestedBootstrap,
     /// A registered-account signature contains a bootstrap config.
     UnexpectedInit,
+    /// The simulation-only stored owner count is outside its valid range.
+    InvalidSimulationOwnerCount,
+    /// A bootstrap signature carries a simulation-only stored owner count.
+    BootstrapSimulationOwnerCount,
 }
 
 impl MultisigSignatureError {
@@ -178,6 +182,10 @@ impl MultisigSignatureError {
             }
             Self::NestedBootstrap => "nested multisig owner signatures cannot bootstrap accounts",
             Self::UnexpectedInit => "multisig_init is only allowed when bootstrapping an account",
+            Self::InvalidSimulationOwnerCount => "invalid multisig simulation owner count",
+            Self::BootstrapSimulationOwnerCount => {
+                "bootstrap multisig signatures cannot have a stored config owner count"
+            }
         }
     }
 }
@@ -778,12 +786,12 @@ impl MultisigSignature {
     pub fn with_simulation_config_owner_count(
         mut self,
         owner_count: usize,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, MultisigSignatureError> {
         if owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
-            return Err("invalid multisig simulation owner count");
+            return Err(MultisigSignatureError::InvalidSimulationOwnerCount);
         }
         if self.init().is_some() {
-            return Err("bootstrap multisig signatures cannot have a stored config owner count");
+            return Err(MultisigSignatureError::BootstrapSimulationOwnerCount);
         }
         self.simulation_config_owner_count = Some(owner_count);
         Ok(self)

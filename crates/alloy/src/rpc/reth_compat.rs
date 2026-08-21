@@ -1,4 +1,7 @@
-use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
+use crate::rpc::{
+    TempoHeaderResponse, TempoTransactionRequest,
+    revm_compat::create_mock_native_multisig_sig_for_request,
+};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
 use alloy_primitives::Signature;
@@ -10,17 +13,21 @@ use reth_rpc_convert::{
 use reth_rpc_eth_types::EthApiError;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{SignatureType, TempoHeader, TempoTxEnvelope, TempoTxType};
 use tempo_revm::TempoTxEnv;
+
+#[cfg(test)]
+use tempo_primitives::TempoSignature;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
             TempoTxType::AA => {
+                let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
+                let signature = create_mock_native_multisig_sig_for_request(&self, &key_type)
+                    .map_err(|err| ValueError::new(self.clone(), err))?
+                    .unwrap_or_default();
                 let tx = self.build_aa()?;
-
-                // Create an empty signature for the transaction.
-                let signature = TempoSignature::default();
 
                 Ok(tx.into_signed(signature).into())
             }
@@ -38,6 +45,9 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    multisig_init,
+                    multisig_signature_count,
+                    multisig_simulation_hint,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -57,6 +67,9 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_init,
+                            multisig_signature_count,
+                            multisig_simulation_hint,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -76,6 +89,9 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_init,
+                            multisig_signature_count,
+                            multisig_simulation_hint,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -139,7 +155,10 @@ mod tests {
     use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::{
         SignatureType, TempoTransaction,
-        transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
+        transaction::{
+            Call, FEE_PAYER_SIGNATURE_MARKER, InitMultisig, MultisigOwner,
+            tt_signature::PrimitiveSignature,
+        },
     };
 
     fn call_request(target: Address) -> TransactionRequest {
@@ -188,6 +207,103 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_embeds_multisig_init_in_signature() {
+        let init = InitMultisig {
+            salt: B256::repeat_byte(0x55),
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: address!("0x1111111111111111111111111111111111111111"),
+                weight: 1,
+            }],
+        };
+        let account = init.account().expect("valid config");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            multisig_init: Some(init.clone()),
+            ..Default::default()
+        };
+
+        let tx_env = req
+            .try_into_tx_env(&EvmEnv::default())
+            .expect("try_into_tx_env");
+        let aa_env = tx_env.tempo_tx_env.expect("tempo_tx_env");
+        let multisig_sig = aa_env
+            .signature
+            .as_multisig()
+            .expect("mock native multisig signature");
+
+        assert_eq!(multisig_sig.init(), Some(&init));
+        assert_eq!(multisig_sig.account(), account);
+        assert_eq!(multisig_sig.signature_count(), 1);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_uses_existing_multisig_signature_count_hint() {
+        let init = InitMultisig {
+            salt: B256::repeat_byte(0x66),
+            threshold: 2,
+            owners: vec![
+                MultisigOwner {
+                    owner: address!("0x1111111111111111111111111111111111111111"),
+                    weight: 1,
+                },
+                MultisigOwner {
+                    owner: address!("0x2222222222222222222222222222222222222222"),
+                    weight: 1,
+                },
+            ],
+        };
+        let account = init.account().expect("valid config");
+        let target = address!("0x3333333333333333333333333333333333333333");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(7),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            multisig_signature_count: Some(2),
+            key_type: Some(SignatureType::P256),
+            ..Default::default()
+        };
+
+        let tx_env = req
+            .try_into_tx_env(&EvmEnv::default())
+            .expect("try_into_tx_env");
+        let aa_env = tx_env.tempo_tx_env.expect("tempo_tx_env");
+        let multisig_sig = aa_env
+            .signature
+            .as_multisig()
+            .expect("mock native multisig signature");
+
+        assert_eq!(multisig_sig.init(), None);
+        assert_eq!(multisig_sig.account(), account);
+        assert_eq!(multisig_sig.signature_count(), 2);
+        assert!(
+            multisig_sig
+                .signatures()
+                .iter()
+                .all(|sig| sig.encoded_length() > 65)
+        );
     }
 
     #[test]
