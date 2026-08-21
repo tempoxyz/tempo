@@ -60,6 +60,11 @@ struct PackedChannelState {
     settled: U96,
     deposit: U96,
     close_requested_at: u32,
+    /// Whether TIP-1028 should see the logical payer during capture.
+    ///
+    /// This field occupies previously unused bytes in the packed slot. Channels created before
+    /// T11 decode it as false and retain the reserve sender accepted when they were funded.
+    uses_logical_receive_policy_sender: bool,
 }
 
 impl PackedChannelState {
@@ -71,6 +76,15 @@ impl PackedChannelState {
     /// Returns the payer's close request timestamp, if the close timer is active.
     fn close_requested_at(self) -> Option<u32> {
         (self.close_requested_at != 0).then_some(self.close_requested_at)
+    }
+
+    /// Returns the sender presented to the payee's TIP-1028 receive policy.
+    fn receive_policy_sender(self, payer: Address) -> Address {
+        if self.uses_logical_receive_policy_sender {
+            payer
+        } else {
+            TIP20_CHANNEL_RESERVE_ADDRESS
+        }
     }
 
     /// Converts packed native storage to the public Solidity ABI shape.
@@ -186,6 +200,7 @@ impl TIP20ChannelReserve {
                 settled: U96::ZERO,
                 deposit,
                 close_requested_at: 0,
+                uses_logical_receive_policy_sender: self.storage.spec().is_t11(),
             },
         )?;
         self.opened_this_tx[channel_id].t_write(true)?;
@@ -249,7 +264,7 @@ impl TIP20ChannelReserve {
                 self.address,
                 payee,
                 U256::from(delta),
-                call.descriptor.payer,
+                state.receive_policy_sender(call.descriptor.payer),
             )?;
 
             state.settled = cumulative;
@@ -318,7 +333,10 @@ impl TIP20ChannelReserve {
             if self.storage.spec().is_t11() {
                 let payee = Recipient::resolve(call.descriptor.payee)?.target;
                 token.ensure_transfer_authorized(msg_sender, payee)?;
-                token.ensure_receive_policy_authorized(msg_sender, payee)?;
+                token.ensure_receive_policy_authorized(
+                    state.receive_policy_sender(msg_sender),
+                    payee,
+                )?;
                 token.channel_reserve_transfer(
                     msg_sender,
                     Recipient::direct(self.address),
@@ -450,7 +468,7 @@ impl TIP20ChannelReserve {
                     self.address,
                     payee,
                     U256::from(delta),
-                    call.descriptor.payer,
+                    state.receive_policy_sender(call.descriptor.payer),
                 )?;
             }
             if !refund.is_zero() {
@@ -1515,6 +1533,118 @@ mod tests {
                     })?
                     .deposit,
                 U96::from(100)
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t11_grandfathers_pre_t11_receive_policy_sender() -> eyre::Result<()> {
+        assert_eq!(
+            <PackedChannelState as crate::storage::StorableType>::SLOTS,
+            1
+        );
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        let payer_signer = PrivateKeySigner::random();
+        let payer = payer_signer.address();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            // This payee accepts the reserve but not the individual payer, matching the policy
+            // under which pre-T11 channel captures were funded.
+            install_receive_sender_blacklist(payee, payer)?;
+
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let channel_id = reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            StorageCtx.set_spec(TempoHardfork::T11);
+
+            // Post-activation top-ups and captures retain the reserve sender for this channel.
+            reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor: descriptor.clone(),
+                    additionalDeposit: U96::from(20),
+                },
+            )?;
+
+            let cumulative = U96::from(40);
+            let digest =
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: cumulative,
+                })?;
+            let signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+            reserve.settle(
+                payee,
+                ITIP20ChannelReserve::settleCall {
+                    descriptor: descriptor.clone(),
+                    cumulativeAmount: cumulative,
+                    signature,
+                },
+            )?;
+
+            let close_cumulative = U96::from(60);
+            let close_digest =
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: close_cumulative,
+                })?;
+            let close_signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
+            reserve.close(
+                payee,
+                ITIP20ChannelReserve::closeCall {
+                    descriptor,
+                    cumulativeAmount: close_cumulative,
+                    captureAmount: close_cumulative,
+                    signature: close_signature,
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                U256::from(940u128)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payee })?,
+                U256::from(60u128)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: TIP20_CHANNEL_RESERVE_ADDRESS,
+                })?,
+                U256::ZERO
             );
 
             Ok(())
