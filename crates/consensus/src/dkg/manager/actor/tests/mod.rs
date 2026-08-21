@@ -76,10 +76,10 @@ fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
 }
 
 #[test]
-fn healing_discards_stale_state_on_startup() {
+fn startup_discards_stale_state_on_startup() {
     Runner::default().start(|mut context| async move {
         let (current_state, _) = dkg_state(&mut context, Epoch::new(1).next(), 4, false);
-        let mut harness = Harness::builder(context.child("test"), "healing_discards_stale_state")
+        let mut harness = Harness::builder(context.child("test"), "startup_discards_stale_state")
             .epoch_length(10)
             .initial_epoch(1)
             // Exercise stale-state replacement as an observer, without
@@ -97,7 +97,8 @@ fn healing_discards_stale_state_on_startup() {
 
         harness.start().await;
 
-        // A mailbox round-trip ensures startup healing and epoch entry have completed.
+        // A mailbox round-trip ensures startup healing and epoch entry have completed as
+        // heal() completes priot to starting the event loop
         assert!(!harness.has_dealer_log(current_state.epoch).await);
 
         assert_ne!(current_state.output, stale_state.output);
@@ -119,14 +120,14 @@ fn healing_discards_stale_state_on_startup() {
 }
 
 #[test]
-fn healing_recovers_an_acked_share_from_persisted_dealings() {
+fn startup_recovers_an_acked_share_from_persisted_dealings() {
     Runner::default().start(|mut context| async move {
         let ceremony_epoch = Epoch::new(1);
         let execution = StubExecutionProvider::default();
 
         let fixture = acked_recovery_fixture(&mut context, ceremony_epoch);
         let mut harness =
-            Harness::builder(context.child("test"), "healing_recovers_persisted_dealings")
+            Harness::builder(context.child("test"), "startup_recovers_persisted_dealings")
                 .epoch_length(10)
                 .initial_state(fixture.ceremony_state.clone())
                 .execution(execution)
@@ -176,7 +177,7 @@ fn healing_recovers_an_acked_share_from_persisted_dealings() {
 }
 
 #[test]
-fn healing_skips_reading_previous_epoch_after_a_failed_ceremony() {
+fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
     Runner::default().start(|mut context| async move {
         let ceremony_epoch = Epoch::new(1);
         let (ceremony_state, keys) = dkg_state(&mut context, ceremony_epoch, 1, true);
@@ -184,7 +185,7 @@ fn healing_skips_reading_previous_epoch_after_a_failed_ceremony() {
         carried_state.epoch = ceremony_epoch.next();
         carried_state.is_full_dkg = false;
 
-        let mut harness = Harness::builder(context.child("test"), "healing_skips_failed_ceremony")
+        let mut harness = Harness::builder(context.child("test"), "startup_skips_failed_ceremony")
             .epoch_length(10)
             .initial_state(ceremony_state.clone())
             .me(keys[0].clone())
@@ -227,7 +228,7 @@ fn healing_skips_reading_previous_epoch_after_a_failed_ceremony() {
 }
 
 #[test]
-fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
+fn startup_prepopulates_to_a_non_boundary_finalized_floor() {
     Runner::default().start(|mut context| async move {
         let (current_state, _) = dkg_state(&mut context, Epoch::new(1).next(), 4, false);
         let mut harness =
@@ -240,18 +241,14 @@ fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
                 .await;
 
         let boundary = harness.epoch_strategy.last(Epoch::new(1)).unwrap();
-        let first = harness.epoch_strategy.first(Epoch::new(1).next()).unwrap();
-        let prepopulation_heights = (0..3)
-            .map(|offset| Height::new(first.get() + offset))
-            .collect::<Vec<_>>();
-
         harness
             .execution
             .add_header(outcome_header(boundary, &current_state));
 
-        for height in &prepopulation_heights {
-            harness.execution.add_header(header(*height));
-        }
+        // Add a few headers into the epoch.
+        harness.execution.add_header(header(Height::new(20)));
+        harness.execution.add_header(header(Height::new(21)));
+        harness.execution.add_header(header(Height::new(22)));
 
         harness.start().await;
 
@@ -266,9 +263,10 @@ fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
             }]
         );
 
-        let mut expected_reads = vec![boundary];
-        expected_reads.extend(prepopulation_heights);
-        assert_eq!(harness.execution.reads(), expected_reads);
+        assert_eq!(
+            harness.execution.reads(),
+            [boundary, Height::new(20), Height::new(21), Height::new(22)]
+        );
     });
 }
 
