@@ -69,7 +69,6 @@ pub(super) struct TestDkg {
 }
 
 impl TestDkg {
-    pub(super) const INITIAL_EPOCH: Epoch = Epoch::new(1);
     const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).unwrap();
 
     pub(super) fn epoch_strategy() -> FixedEpocher {
@@ -83,8 +82,9 @@ impl TestDkg {
     pub(super) async fn with_initial_state(
         mut context: Context,
         partition_prefix: impl Into<String>,
+        epoch: u64,
     ) -> Self {
-        let (initial_state, _) = dkg_state(&mut context, Self::INITIAL_EPOCH, 4, false);
+        let (initial_state, _) = dkg_state(&mut context, Epoch::new(epoch), 4, false);
         Self::from_state(context, partition_prefix, initial_state).await
     }
 

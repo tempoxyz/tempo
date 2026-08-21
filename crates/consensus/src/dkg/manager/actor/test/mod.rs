@@ -5,7 +5,7 @@ mod utils;
 use std::time::Duration;
 
 use alloy_primitives::B256;
-use commonware_consensus::types::Height;
+use commonware_consensus::types::{Epoch, Height};
 use commonware_cryptography::ed25519::PrivateKey;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use futures::channel::oneshot;
@@ -40,7 +40,7 @@ fn exhausted_ancestry_releases_pending_outcome_request() {
 #[test]
 fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
     Runner::default().start(|mut context| async move {
-        let (state, _) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH, 4, true);
+        let (state, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
         let mut actor = TestDkg::new(context.child("test"), "exhausted_ancestry").await;
         actor
             .execution_node
@@ -73,9 +73,9 @@ fn actor_fails_outcome_request_when_ancestry_is_exhausted() {
 #[test]
 fn healing_discards_stale_state_on_startup() {
     Runner::default().start(|mut context| async move {
-        let (current_state, _) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH.next(), 4, false);
+        let (current_state, _) = dkg_state(&mut context, Epoch::new(1).next(), 4, false);
         let mut actor =
-            TestDkg::with_initial_state(context.child("test"), "healing_discards_stale_state")
+            TestDkg::with_initial_state(context.child("test"), "healing_discards_stale_state", 1)
                 .await
                 // Exercise stale-state replacement as an observer, without
                 // recovering a share from the previous epoch.
@@ -114,7 +114,7 @@ fn healing_discards_stale_state_on_startup() {
 fn healing_recovers_an_acked_share_from_persisted_dealings() {
     Runner::default().start(|mut context| async move {
         let epoch_strategy = TestDkg::epoch_strategy();
-        let ceremony_epoch = TestDkg::INITIAL_EPOCH;
+        let ceremony_epoch = Epoch::new(1);
         let execution_node = StubExecutionProvider::default();
 
         let fixture = acked_recovery_fixture(
@@ -176,7 +176,7 @@ fn healing_recovers_an_acked_share_from_persisted_dealings() {
 fn healing_skips_reading_previous_epoch_after_a_failed_ceremony() {
     Runner::default().start(|mut context| async move {
         let epoch_strategy = TestDkg::epoch_strategy();
-        let ceremony_epoch = TestDkg::INITIAL_EPOCH;
+        let ceremony_epoch = Epoch::new(1);
         let (ceremony_state, keys) = dkg_state(&mut context, ceremony_epoch, 1, true);
         let mut carried_state = ceremony_state.clone();
         carried_state.epoch = ceremony_epoch.next();
@@ -228,9 +228,9 @@ fn healing_skips_reading_previous_epoch_after_a_failed_ceremony() {
 fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
     Runner::default().start(|mut context| async move {
         let epoch_strategy = TestDkg::epoch_strategy();
-        let (current_state, _) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH.next(), 4, false);
-        let boundary = epoch_strategy.last(TestDkg::INITIAL_EPOCH).unwrap();
-        let first = epoch_strategy.first(TestDkg::INITIAL_EPOCH.next()).unwrap();
+        let (current_state, _) = dkg_state(&mut context, Epoch::new(1).next(), 4, false);
+        let boundary = epoch_strategy.last(Epoch::new(1)).unwrap();
+        let first = epoch_strategy.first(Epoch::new(1).next()).unwrap();
         let prepopulation_heights = (0..3)
             .map(|offset| Height::new(first.get() + offset))
             .collect::<Vec<_>>();
@@ -239,6 +239,7 @@ fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
         let mut actor = TestDkg::with_initial_state(
             context.child("test"),
             "healing_prepopulates_non_boundary_floor",
+            1,
         )
         .await
         .with_me(PrivateKey::from_seed(u64::MAX))
@@ -275,9 +276,10 @@ fn healing_prepopulates_to_a_non_boundary_finalized_floor() {
 fn prepopulation_replays_only_missing_headers() {
     Runner::default().start(|context| async move {
         let mut actor =
-            TestDkg::with_initial_state(context.child("test"), "prepopulation_missing_range")
+            TestDkg::with_initial_state(context.child("test"), "prepopulation_missing_range", 1)
                 .await
                 .with_last_finalized_height(Height::new(12));
+
         let initial_epoch = actor.initial_state().epoch;
         actor.execution_node.add_header(header(Height::new(10)));
         actor.execution_node.add_header(header(Height::new(11)));
@@ -291,7 +293,7 @@ fn prepopulation_replays_only_missing_headers() {
         assert_eq!(
             actor
                 .storage()
-                .get_latest_finalized_block_for_epoch(&TestDkg::INITIAL_EPOCH)
+                .get_latest_finalized_block_for_epoch(&Epoch::new(1))
                 .map(|(height, _)| *height),
             Some(Height::new(12))
         );
@@ -315,9 +317,10 @@ fn prepopulation_replays_only_missing_headers() {
 #[test]
 fn prepopulation_skips_replay_when_dkg_state_is_ahead() {
     Runner::default().start(|context| async move {
-        let mut actor = TestDkg::with_initial_state(context.child("test"), "prepopulation_ahead")
-            .await
-            .with_last_finalized_height(Height::new(8));
+        let mut actor =
+            TestDkg::with_initial_state(context.child("test"), "prepopulation_ahead", 1)
+                .await
+                .with_last_finalized_height(Height::new(8));
 
         let state = actor.initial_state().clone();
 
@@ -344,7 +347,7 @@ fn prepopulation_skips_replay_when_dkg_state_is_ahead() {
 fn prepopulation_fails_when_required_header_is_unavailable() {
     Runner::default().start(|context| async move {
         let mut actor =
-            TestDkg::with_initial_state(context.child("test"), "prepopulation_missing_header")
+            TestDkg::with_initial_state(context.child("test"), "prepopulation_missing_header", 1)
                 .await
                 .with_last_finalized_height(Height::new(10));
 
@@ -360,9 +363,9 @@ fn prepopulation_fails_when_required_header_is_unavailable() {
 #[test]
 fn epoch_shares_only_distributed_in_the_first_half() {
     Runner::default().start(|mut context| async move {
-        let (state, _) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH, 4, true);
+        let (state, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
 
-        let mut actor = TestDkg::new(context.child("test"), "epoch_phase_transitions").await;
+        let mut actor = TestDkg::new(context.child("test"), "epoch_shares_distributed").await;
         actor
             .execution_node
             .add_header(outcome_header(Height::new(9), &state));
@@ -436,7 +439,7 @@ fn epoch_shares_only_distributed_in_the_first_half() {
 #[test]
 fn acked_dealer_messages_not_re_exchanged_after_restart() {
     Runner::default().start(|mut context| async move {
-        let (state, keys) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH, 4, true);
+        let (state, keys) = dkg_state(&mut context, Epoch::new(1), 4, true);
         let first = keys[0].clone();
         let second = keys[1].clone();
         let first_public = first.public_key();
@@ -555,7 +558,7 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
 #[test]
 fn outcome_requests_use_reshare_fallback_and_require_next_players() {
     Runner::default().start(|mut context| async move {
-        let (state, _) = dkg_state(&mut context, TestDkg::INITIAL_EPOCH, 4, true);
+        let (state, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
         let mut actor = TestDkg::new(context.child("test"), "outcome_execution_dependencies").await;
 
         actor.execution_node.fail_next_full_dkg_epoch();
