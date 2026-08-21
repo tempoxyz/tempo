@@ -638,17 +638,8 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
-        let block_build_stop_reason = 'block_fill: loop {
-            if cancel.is_interrupted() {
-                if cancel.is_cancelled() {
-                    return Ok(BuildOutcome::Cancelled);
-                }
-                // Ensure a finalization request cannot starve a transaction that is already
-                // waiting in the pool when the first build attempt is resolved.
-                if pool_transactions_included > 0 {
-                    break BlockBuildStopReason::FinalizationRequested;
-                }
-            }
+        let block_build_stop_reason = loop {
+            check_cancel!();
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
@@ -689,6 +680,9 @@ where
 
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
+                    if cancel.is_finalization_requested() {
+                        break BlockBuildStopReason::FinalizationRequested;
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -748,14 +742,7 @@ where
                 continue;
             }
 
-            if cancel.is_interrupted() {
-                if cancel.is_cancelled() {
-                    return Ok(BuildOutcome::Cancelled);
-                }
-                if pool_transactions_included > 0 {
-                    break 'block_fill BlockBuildStopReason::FinalizationRequested;
-                }
-            }
+            check_cancel!();
             if is_payment {
                 payment_transactions += 1;
             }
