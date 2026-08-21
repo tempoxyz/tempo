@@ -669,7 +669,7 @@ pub(super) fn dkg_state(
     epoch: Epoch,
     players: usize,
     is_full_dkg: bool,
-) -> (State, Vec<PrivateKey>) {
+) -> (State, Vec<PrivateKey>, Vec<Share>) {
     // Harness uses the seed-0 key by default, so every generated state includes
     // that actor as a participant regardless of the ceremony mode.
     let keys = (0..players as u64)
@@ -677,8 +677,13 @@ pub(super) fn dkg_state(
         .collect::<Vec<_>>();
     let players = ordered::Set::try_from_iter(keys.iter().map(|key| key.public_key()))
         .expect("test players should be unique");
-    let (output, _) = dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
-        .expect("test DKG");
+    let (output, shares) =
+        dkg::deal::<MinSig, _, N3f1>(&mut *rng, Default::default(), players.clone())
+            .expect("test DKG");
+    let shares = keys
+        .iter()
+        .map(|key| shares.get_value(&key.public_key()).unwrap().clone())
+        .collect();
 
     (
         State {
@@ -690,6 +695,7 @@ pub(super) fn dkg_state(
             is_full_dkg,
         },
         keys,
+        shares,
     )
 }
 
@@ -709,7 +715,7 @@ pub(super) fn acked_recovery_fixture(
 ) -> AckedRecoveryFixture {
     // A single validator is enough to exercise the ACK/dealing invariant while
     // keeping the cryptographic setup small. It acts as both dealer and player.
-    let (ceremony_state, keys) = dkg_state(rng, ceremony_epoch, 1, true);
+    let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 1, true);
     let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
     let local_key = keys[0].clone();
     let local_public_key = local_key.public_key();
