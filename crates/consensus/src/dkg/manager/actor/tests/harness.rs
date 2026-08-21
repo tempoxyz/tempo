@@ -70,7 +70,7 @@ pub(super) struct Harness {
 enum InitialState {
     None,
     Epoch(Epoch),
-    State(State),
+    State(Box<State>),
 }
 
 pub(super) struct HarnessBuilder {
@@ -100,7 +100,7 @@ impl HarnessBuilder {
     }
 
     pub(super) fn initial_state(mut self, state: State) -> Self {
-        self.initial_state = InitialState::State(state);
+        self.initial_state = InitialState::State(Box::new(state));
         self
     }
 
@@ -128,7 +128,7 @@ impl HarnessBuilder {
         let initial_state = match self.initial_state {
             InitialState::None => None,
             InitialState::Epoch(epoch) => Some(dkg_state(&mut self.context, epoch, 4, false).0),
-            InitialState::State(state) => Some(state),
+            InitialState::State(state) => Some(*state),
         };
         let storage = if let Some(state) = initial_state.clone() {
             Some(
