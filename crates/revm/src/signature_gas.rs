@@ -41,5 +41,7 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
         TempoSignature::Keychain(keychain_sig) => {
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
+        // Native multisig transactions are rejected before intrinsic gas is calculated.
+        TempoSignature::Multisig(_) => 0,
     }
 }

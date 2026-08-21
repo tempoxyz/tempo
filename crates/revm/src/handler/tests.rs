@@ -24,8 +24,8 @@ use tempo_precompiles::{
     tip_fee_manager::TipFeeManager,
 };
 use tempo_primitives::transaction::{
-    Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization,
+    Call, InitMultisig, MultisigOwner, MultisigSignature, PrimitiveSignature,
+    RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -4476,4 +4476,40 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
     assert_eq!(result.gas().remaining(), tx_gas_limit - expected_spent);
     assert_eq!(result.gas().state_gas_spent(), 0);
     assert_eq!(result.gas().reservoir(), 0);
+}
+
+#[test]
+fn native_multisig_execution_remains_inactive() {
+    let config = InitMultisig {
+        salt: B256::ZERO,
+        threshold: 1,
+        owners: vec![MultisigOwner {
+            owner: Address::repeat_byte(0x11),
+            weight: 1,
+        }],
+    };
+    let account = config.account().unwrap();
+    let aa_env = TempoBatchCallEnv {
+        signature: TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            vec![Bytes::from_static(&[0xaa; 65])],
+            Some(config),
+        )),
+        aa_calls: vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
+        tx_env.inner.caller = account;
+    });
+
+    assert!(matches!(
+        test.validate_env(),
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::NativeMultisigNotActive
+        ))
+    ));
 }

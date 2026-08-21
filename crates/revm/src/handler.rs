@@ -1800,6 +1800,15 @@ where
             )
             .map_err(TempoInvalidTransaction::from)?;
 
+            if aa_env.signature.is_multisig()
+                || aa_env
+                    .tempo_authorization_list
+                    .iter()
+                    .any(|authorization| authorization.signature().is_multisig())
+            {
+                return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
+            }
+
             // Access-key CREATE is a cheap structural rejection that does not depend on any
             // per-call scope walk or state mutation. Rejecting it here keeps validation work
             // constant and avoids entering CREATE execution paths that require special protocol-
