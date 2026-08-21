@@ -123,6 +123,7 @@ panic = "abort"
 incremental = false
 
 [workspace.dependencies]
+aws-lc-rs = { version = "1.16.2", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
@@ -291,6 +292,7 @@ minisign = "0.8"
 minisign-verify = "0.2"
 once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }
 p256 = { version = "0.13", default-features = false }
+p384 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 parking_lot = "0.12.5"
 prometheus-client = "0.24.0"
 sysinfo = { version = "0.38.4", default-features = false, features = ["disk", "system"] }
@@ -307,6 +309,8 @@ serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc", "raw_value"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
+minicbor = { version = "2.1.1", features = ["alloc", "std"] }
+x509-cert = { version = "0.2.5", features = ["std"] }
 tar = "0.4.46"
 tempfile = "3.24.0"
 thiserror = "2.0.18"

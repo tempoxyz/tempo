@@ -30,6 +30,9 @@ alloy-primitives = { workspace = true, features = ["map-foldhash"] }
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true
+aws-lc-rs.workspace = true
+minicbor.workspace = true
+x509-cert.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -48,10 +51,13 @@ alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
 p256.workspace = true
+p384.workspace = true
 rand_08.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { workspace = true, features = ["oid"] }
+x509-cert = { workspace = true, features = ["builder"] }
 tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
 tempo-revm.workspace = true
