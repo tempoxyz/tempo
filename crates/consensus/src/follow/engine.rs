@@ -80,9 +80,13 @@ pub struct Config<TUpstream> {
 
 impl<TUpstream> Config<TUpstream> {
     /// Initialize all components and return an [`Engine`] ready to start.
+    ///
+    /// Gossip is separate from follower settings because it owns a transport
+    /// receiver that was registered before the node launched.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
+        gossip_config: Option<crate::gossip::Config>,
     ) -> eyre::Result<Engine<TContext, TUpstream>>
     where
         TContext: Clock
@@ -145,6 +149,13 @@ impl<TUpstream> Config<TUpstream> {
             },
         );
 
+        // Create the channel first. The driver needs its sender, while the
+        // gossip actor cannot be built until the driver provides its capability.
+        let (gossip_mailbox, gossip_receiver) = gossip_config
+            .as_ref()
+            .map(|_| crate::gossip::channel())
+            .unzip();
+
         let (feed_actor, feed_mailbox) = feed::init(
             context.child("feed"),
             marshal_mailbox.clone(),
@@ -177,13 +188,29 @@ impl<TUpstream> Config<TUpstream> {
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 executor: executor_mailbox.clone(),
-                gossip: None,
+                gossip: gossip_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
         .wrap_err("failed initializing driver actor")?;
+
+        let gossip_actor = gossip_config
+            .zip(gossip_receiver)
+            .map(|(gossip_config, receiver)| {
+                crate::gossip::init(
+                    context.child("gossip"),
+                    crate::gossip::ActorConfig {
+                        verify_rate: gossip_config.verify_rate,
+                        transport: gossip_config.transport,
+                        mailbox: receiver,
+                        peer_control: self.execution_node.network.clone(),
+                        driver: driver_mailbox.clone(),
+                        marshal: marshal_mailbox,
+                    },
+                )
+            });
 
         Ok(Engine {
             context: ContextCell::new(context),
@@ -199,10 +226,15 @@ impl<TUpstream> Config<TUpstream> {
             feed: feed_actor,
             feed_mailbox,
             broadcast,
+            gossip_mailbox,
+            gossip_actor,
             upstream: self.upstream,
         })
     }
 }
+
+type FollowExecutionProvider =
+    BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>>;
 
 pub struct Engine<TContext, TUpstreamActor>
 where
@@ -213,10 +245,9 @@ where
     _execution_node: Arc<TempoFullNode>,
     driver: driver::Driver<
         TContext,
-        BlockchainProvider<
-            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
-        >,
+        FollowExecutionProvider,
         crate::alias::marshal::Mailbox,
+        executor::Mailbox,
     >,
     driver_mailbox: driver::Mailbox,
     resolver: resolver::Mailbox,
@@ -224,15 +255,16 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
     executor: executor::Actor<
         TContext,
-        BlockchainProvider<
-            NodeTypesWithDBAdapter<TempoNode, reth_ethereum::provider::db::DatabaseEnv>,
-        >,
+        FollowExecutionProvider,
         ConsensusEngineHandle<TempoPayloadTypes>,
     >,
     executor_mailbox: executor::Mailbox,
     feed: feed::Actor<TContext>,
     feed_mailbox: feed::Mailbox,
     broadcast: buffered::Mailbox<PublicKey, Block>,
+    gossip_mailbox: Option<crate::gossip::Mailbox>,
+    gossip_actor:
+        Option<crate::gossip::Actor<TContext, driver::Mailbox, crate::gossip::NetworkPeerControl>>,
     upstream: TUpstreamActor,
 }
 
@@ -268,6 +300,8 @@ where
             feed,
             feed_mailbox,
             broadcast,
+            gossip_mailbox,
+            gossip_actor,
             ..
         } = self;
 
@@ -278,13 +312,23 @@ where
             marshal.start(
                 Reporters::from((
                     executor_mailbox.clone(),
-                    Reporters::from((driver_mailbox.to_marshal_reporter(), feed_mailbox)),
+                    Reporters::from((
+                        driver_mailbox.to_marshal_reporter(),
+                        Reporters::<_, feed::Mailbox, crate::gossip::Mailbox>::from((
+                            feed_mailbox,
+                            gossip_mailbox,
+                        )),
+                    )),
                 )),
                 broadcast,
                 (resolver_rx, resolver),
             ),
             upstream.start(driver_mailbox.to_event_reporter()),
         ];
+        let actors = actors
+            .into_iter()
+            .chain(gossip_actor.map(crate::gossip::Actor::start))
+            .collect::<Vec<_>>();
 
         // TODO: report which actor failed and why.
         if FuturesUnordered::from_iter(actors).next().await.is_some() {

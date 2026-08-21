@@ -61,8 +61,7 @@ impl Metrics {
             shed: context.counter("shed", "judgements delayed by the verify budget"),
             unanswered: context.counter(
                 "unanswered",
-                "certificates the driver never judged, which on a publish-only node \
-                 means gossip ingest was enabled without anything able to verify",
+                "certificates whose judgement channel closed without a result",
             ),
             relayed: context.counter("relayed", "durable certificate frames offered to peers"),
             relay_dropped: context.counter(

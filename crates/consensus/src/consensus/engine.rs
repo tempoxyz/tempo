@@ -100,9 +100,14 @@ where
         self
     }
 
+    /// Initializes the engine.
+    ///
+    /// Gossip is separate from the cloneable builder because its transport
+    /// receiver can be moved only once.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
+        gossip_config: Option<crate::gossip::Config>,
     ) -> eyre::Result<Engine<TContext, TBlocker, TPeerManager>>
     where
         TContext: Clock
@@ -234,11 +239,34 @@ where
             })
         });
 
+        // Validator gossip is publish-only. Marshal sends stored tips to the
+        // actor, and the transport discards inbound frames.
+        let (gossip_mailbox, gossip_receiver) = gossip_config
+            .as_ref()
+            .map(|_| crate::gossip::channel())
+            .unzip();
+
         let (feed, feed_mailbox) = crate::feed::init(
             context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
+
+        let gossip_actor = gossip_config
+            .zip(gossip_receiver)
+            .map(|(gossip_config, receiver)| {
+                crate::gossip::init(
+                    context.child("gossip"),
+                    crate::gossip::ActorConfig {
+                        verify_rate: gossip_config.verify_rate,
+                        transport: gossip_config.transport,
+                        mailbox: receiver,
+                        peer_control: execution_node.network.clone(),
+                        driver: crate::gossip::PublishOnlySink,
+                        marshal: marshal_mailbox.clone(),
+                    },
+                )
+            });
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.child("application"),
@@ -321,6 +349,8 @@ where
 
             feed,
             feed_mailbox,
+            gossip_mailbox,
+            gossip_actor,
 
             subblocks,
         })
@@ -378,6 +408,15 @@ where
 
     feed: crate::feed::Actor<TContext>,
     feed_mailbox: crate::feed::Mailbox,
+    gossip_mailbox: Option<crate::gossip::Mailbox>,
+    /// Publish-only certificate gossip for validators.
+    gossip_actor: Option<
+        crate::gossip::Actor<
+            TContext,
+            crate::gossip::PublishOnlySink,
+            crate::gossip::NetworkPeerControl,
+        >,
+    >,
 
     subblocks: Option<subblocks::Actor<TContext>>,
 }
@@ -544,7 +583,13 @@ where
                     self.executor_mailbox,
                     Reporters::from((
                         self.dkg_manager_mailbox.clone(),
-                        Reporters::from((self.peer_manager_mailbox, self.feed_mailbox)),
+                        Reporters::from((
+                            self.peer_manager_mailbox,
+                            Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                                self.feed_mailbox,
+                                self.gossip_mailbox,
+                            )),
+                        )),
                     )),
                 )),
             )),
@@ -557,6 +602,7 @@ where
                 .start(votes_channel, certificates_channel, resolver_channel);
 
         let feed = self.feed.start();
+        let gossip_task = self.gossip_actor.map(crate::gossip::Actor::start);
 
         let dkg_manager = self.dkg_manager.start(dkg_channel);
 
@@ -570,6 +616,10 @@ where
             dkg_manager,
             peer_manager,
         ];
+
+        if let Some(gossip_task) = gossip_task {
+            tasks.push(gossip_task);
+        }
 
         if let Some(subblocks) = self.subblocks {
             tasks.push(

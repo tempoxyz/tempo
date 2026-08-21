@@ -109,6 +109,11 @@ impl TempoArgs {
     pub fn has_consensus_engine(&self, dev: bool) -> bool {
         !dev && !self.is_following_uncertified()
     }
+
+    /// Whether the node should register the `tempo/1` subprotocol.
+    pub fn has_gossip(&self, dev: bool) -> bool {
+        self.consensus.gossip_enabled && self.has_consensus_engine(dev)
+    }
 }
 
 /// Command line arguments for configuring Pyroscope continuous profiling.

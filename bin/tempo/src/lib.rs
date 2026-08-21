@@ -303,8 +303,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let is_node = matches!(cli.command, Commands::Node(_));
 
-    let (args_and_node_handle_tx, args_and_node_handle_rx) =
-        oneshot::channel::<(TempoFullNode, TempoArgs)>();
+    let (consensus_startup_tx, consensus_startup_rx) = oneshot::channel::<(
+        TempoFullNode,
+        TempoArgs,
+        Option<tempo_node::gossip::TransportHandle>,
+    )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -319,7 +322,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err(
+        let (node, args, gossip_transport) = consensus_startup_rx.blocking_recv().wrap_err(
             "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
         )?;
@@ -402,6 +405,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.follow_upstream_request_timeout.into_duration(),
                     Arc::new(node),
                     cl_feed_state_clone,
+                    gossip_transport,
                 ))
             } else {
                 Either::Right(run_consensus_stack(
@@ -409,6 +413,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.consensus,
                     Arc::new(node),
                     cl_feed_state_clone,
+                    gossip_transport,
                 ))
             };
 
@@ -450,6 +455,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        // Register before launch because each RLPx session negotiates its
+        // subprotocols during the handshake. The startup channel passes the
+        // consensus half of the transport to the consensus thread.
+        let (gossip_protocol_handler, gossip_transport) =
+            if args.has_gossip(builder.config().dev.dev) {
+                let (protocol_handler, transport) = tempo_node::gossip::init(
+                    args.consensus.gossip_transport(args.follow.is_some()),
+                    builder.task_executor(),
+                );
+                (Some(protocol_handler), Some(transport))
+            } else {
+                (None, None)
+            };
+
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
@@ -498,10 +517,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(overrides.apply_tempo_node(TempoNode::new(
-                &args.node_args,
-                validator_key,
-            )))
+            .node(overrides.apply_tempo_node({
+                let node = TempoNode::new(&args.node_args, validator_key);
+                match gossip_protocol_handler {
+                    Some(protocol_handler) => {
+                        node.with_finalization_cert_gossip(protocol_handler)
+                    }
+                    None => node,
+                }
+            }))
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
@@ -594,7 +618,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = args_and_node_handle_tx.send((node, args));
+        let _ = consensus_startup_tx.send((node, args, gossip_transport));
 
         // TODO: emit these inside a span
         tokio::select! {
@@ -641,8 +665,8 @@ mod tests {
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode,
-        snapshot_download,
+        TempoArgs, TempoChainSpec, TempoCli, apply_tempo_cli_overrides, defaults,
+        follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::{
@@ -659,11 +683,15 @@ mod tests {
     }
 
     fn parse_follow(args: &[&str]) -> Option<FollowMode> {
+        parse_node_args(args).follow
+    }
+
+    fn parse_node_args(args: &[&str]) -> TempoArgs {
         let cli = TempoCli::try_parse_from(args).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        node_cmd.ext.follow
+        node_cmd.ext
     }
 
     fn apply_node_overrides(args: &[&str]) -> Arc<TempoChainSpec> {
@@ -812,6 +840,80 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn gossip_is_opt_in_and_requires_a_consensus_engine() {
+        init_defaults_once();
+
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+            ])
+            .has_gossip(false)
+        );
+        assert!(!parse_node_args(&["tempo", "node", "--follow"]).has_gossip(false));
+        assert!(
+            parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--consensus.gossip.enabled",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            parse_node_args(&["tempo", "node", "--follow", "--consensus.gossip.enabled",])
+                .has_gossip(false)
+        );
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--consensus.gossip.enabled",
+            ])
+            .has_gossip(false)
+        );
+        assert!(
+            !parse_node_args(&["tempo", "node", "--dev", "--consensus.gossip.enabled",])
+                .has_gossip(true)
+        );
+        assert!(
+            !parse_node_args(&[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--consensus.gossip.enabled=false",
+            ])
+            .has_gossip(false)
+        );
+    }
+
+    #[test]
+    fn gossip_ingest_follows_node_mode() {
+        init_defaults_once();
+
+        let validator = parse_node_args(&[
+            "tempo",
+            "node",
+            "--consensus.signing-key",
+            "unused-signing-key",
+            "--consensus.gossip.enabled",
+        ]);
+        assert!(validator.has_gossip(false));
+        assert!(!validator.consensus.gossip_transport(false).ingest);
+
+        let follower =
+            parse_node_args(&["tempo", "node", "--follow", "--consensus.gossip.enabled"]);
+        assert!(follower.has_gossip(false));
+        assert!(follower.consensus.gossip_transport(true).ingest);
     }
 
     #[test]

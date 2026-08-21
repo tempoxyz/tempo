@@ -18,7 +18,7 @@ use commonware_consensus::{
     types::{Epoch, Height, Round, View},
 };
 use commonware_macros::test_traced;
-use commonware_runtime::{Clock as _, Metrics as _, Runner as _, Supervisor as _, deterministic};
+use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use parking_lot::Mutex;
 use tempo_node::gossip::{self, Frame, PeerControl, PeerEvent, TransportSender};
 use tokio::sync::{mpsc, oneshot};
@@ -290,7 +290,7 @@ fn start_with(context: &mut deterministic::Context, verify_rate: NonZeroU32) -> 
     let (mailbox, receiver) = super::channel();
     let actor = super::init(
         context.child("gossip"),
-        super::Config {
+        super::ActorConfig {
             verify_rate,
             transport,
             mailbox: receiver,
@@ -982,8 +982,8 @@ fn durable_publication_skips_peer_with_newer_claim() {
     });
 }
 
-/// A certificate produced locally or received by RPC is offered to each peer
-/// that has not claimed the same round or a later one.
+/// A stored certificate is offered to each peer that has not claimed the same
+/// round or a later one.
 #[test_traced]
 fn publishing_an_unseen_frame_reaches_every_peer() {
     deterministic::Runner::default().start(|mut context| async move {
