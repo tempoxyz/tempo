@@ -28,6 +28,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
 pub mod zone_factory;
+pub mod zone_verifier;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
@@ -50,6 +51,7 @@ use crate::{
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
     zone_factory::ZoneFactory,
+    zone_verifier::ZoneVerifier,
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -211,6 +213,8 @@ pub fn extend_tempo_precompiles(
             Some(CurrentCommittee::create_precompile(&env))
         } else if *address == ZONE_FACTORY_ADDRESS && env.cfg.spec.is_t10() {
             Some(ZoneFactory::create_precompile(&env))
+        } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t11() {
+            Some(ZoneVerifier::create_precompile(&env))
         } else {
             None
         }
@@ -307,6 +311,13 @@ impl ZoneFactory {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ZoneFactory", env: env, |input| { Self::new() })
+    }
+}
+
+impl ZoneVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ZoneVerifier", env: env, |input| { Self::new() })
     }
 }
 
@@ -1124,6 +1135,27 @@ mod tests {
         assert!(
             precompiles.get(&zone_factory::portal_address(1)).is_none(),
             "ZonePortal storage handles must not be registered as precompiles"
+        );
+    }
+
+    #[test]
+    fn test_zone_verifier_registered_at_t11_only() {
+        let mut t10 = CfgEnv::<TempoHardfork>::default();
+        t10.set_spec_and_mainnet_gas_params(TempoHardfork::T10);
+        assert!(
+            test_tempo_precompiles(&t10)
+                .get(&ZONE_VERIFIER_ADDRESS)
+                .is_none(),
+            "the permissive EVM runtime must remain active through T10"
+        );
+
+        let mut t11 = CfgEnv::<TempoHardfork>::default();
+        t11.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
+        assert!(
+            test_tempo_precompiles(&t11)
+                .get(&ZONE_VERIFIER_ADDRESS)
+                .is_some(),
+            "the native verifier must shadow the runtime at T11"
         );
     }
 
