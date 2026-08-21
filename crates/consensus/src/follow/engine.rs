@@ -178,6 +178,8 @@ impl<TUpstream> Config<TUpstream> {
                 network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox,
+                executor: executor_mailbox.clone(),
+                gossip: None,
                 epoch_strategy: epoch_strategy.clone(),
             },
         )

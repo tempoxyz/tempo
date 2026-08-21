@@ -1,8 +1,8 @@
 use alloy_consensus::BlockHeader as _;
 use commonware_consensus::{
-    Heightable as _, marshal,
+    Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
-    types::{Epoch, Epocher as _, Height},
+    types::{Epoch, Epocher as _, Height, Round},
 };
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
@@ -12,20 +12,24 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
 
-use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
+use super::{Config, ExecutionProvider, Executor, Mailbox, Marshal, ingress::Message};
 use crate::{
     consensus::Block,
-    finalization_verifier::{Error as VerificationError, FinalizationVerifier},
+    finalization_verifier::{
+        CertificateVerificationError, Error as VerificationError, FinalizationVerifier,
+    },
+    gossip::{Certificate, CertificateError},
 };
 
-pub(super) fn try_init<TContext, P, M>(
+pub(super) fn try_init<TContext, P, M, E>(
     context: TContext,
-    config: Config<P, M>,
-) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
+    config: Config<P, M, E>,
+) -> eyre::Result<super::Initialized<TContext, P, M, E>>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    E: Executor + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
@@ -86,24 +90,27 @@ where
         startup_execution_boundary,
         current_epoch,
         verifier,
+        latest_verified_round: Round::zero(),
     };
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext, P, M> {
+pub(crate) struct Driver<TContext, P, M, E = crate::follow::executor::Mailbox> {
     context: ContextCell<TContext>,
-    config: Config<P, M>,
+    config: Config<P, M, E>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     startup_execution_boundary: Height,
     current_epoch: Epoch,
     verifier: FinalizationVerifier,
+    latest_verified_round: Round,
 }
 
-impl<C, P, M> Driver<C, P, M>
+impl<C, P, M, E> Driver<C, P, M, E>
 where
     C: Clock + Rng + CryptoRng + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    E: Executor + 'static,
 {
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
         spawn_cell!(self.context, self.run())
@@ -133,6 +140,10 @@ where
                         }
                         Message::Finalized(update) => {
                             self.process_update(update).await;
+                        }
+                        Message::Certificate { certificate, response } => {
+                            let result = self.process_certificate(*certificate).await;
+                            let _ = response.send(result);
                         }
                     }
                 }
@@ -212,45 +223,120 @@ where
             .decode_and_verify(&mut self.context, &certified)
         {
             Ok(finalization) => finalization,
-            Err(error @ VerificationError::VerificationFailed) => {
+            Err(
+                error @ VerificationError::CertificateVerification(
+                    CertificateVerificationError::FallbackVerificationFailed,
+                ),
+            ) => {
                 debug!(%error, "failed to verify finalization certificate");
-
-                // This network may have rotated identity, so hint the boundary of
-                // the node's current epoch to unblock syncing through the next
-                // onchain scheme.
-                let boundary_height = self
-                    .config
-                    .epoch_strategy
-                    .last(self.current_epoch)
-                    .expect("strategy is valid for all heights and epochs");
-
-                debug!(
-                    current_epoch = %self.current_epoch,
-                    %boundary_height,
-                    "hinting current epoch boundary after finalization verification failed",
-                );
-
-                self.config.marshal.hint_finalized(boundary_height).await;
-
+                self.hint_current_epoch_boundary().await;
                 return Ok(());
             }
+            Err(VerificationError::CertificateVerification(
+                CertificateVerificationError::Invalid,
+            )) => return Ok(()),
             Err(error) => return Err(Report::new(error)),
         };
 
         let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
 
         let round = finalization.round();
-        let activity = Activity::Finalization(finalization);
+        self.latest_verified_round = self.latest_verified_round.max(round);
 
         let _ = self.config.marshal.certified(round, consensus_block).await;
-        self.config.marshal.report(activity).await;
+        self.config
+            .marshal
+            .report(Activity::Finalization(finalization))
+            .await;
+
         Ok(())
+    }
+
+    /// Verifies a gossiped certificate and applies it if valid.
+    #[instrument(skip_all, fields(round = %certificate.round(), digest = %certificate.proposal.payload))]
+    async fn process_certificate(
+        &mut self,
+        certificate: Certificate,
+    ) -> eyre::Result<(), CertificateError> {
+        if certificate.round() <= self.latest_verified_round {
+            return Ok(());
+        }
+
+        match self
+            .verifier
+            .verify_certificate(&mut self.context, &certificate)
+        {
+            Ok(()) => {}
+            Err(CertificateVerificationError::Invalid) => {
+                debug!(
+                    epoch = %certificate.epoch(),
+                    digest = %certificate.proposal.payload,
+                    "certificate failed verification against a registered scheme",
+                );
+                return Err(CertificateError::Invalid);
+            }
+            Err(CertificateVerificationError::IdentityUnavailable { .. }) => {
+                return Err(CertificateError::NeedsScheme {
+                    epoch: certificate.epoch(),
+                });
+            }
+            Err(CertificateVerificationError::FallbackVerificationFailed) => {
+                debug!(
+                    epoch = %certificate.epoch(),
+                    digest = %certificate.proposal.payload,
+                    "certificate failed verification against the network identity fallback",
+                );
+                self.hint_current_epoch_boundary().await;
+                return Err(CertificateError::NeedsScheme {
+                    epoch: certificate.epoch(),
+                });
+            }
+        }
+
+        let round = certificate.round();
+        let digest = certificate.proposal.payload;
+
+        self.latest_verified_round = self.latest_verified_round.max(round);
+        self.config
+            .marshal
+            .report(Activity::Finalization(certificate))
+            .await;
+
+        self.config.executor.finalization(round, digest);
+        Ok(())
+    }
+
+    async fn hint_current_epoch_boundary(&self) {
+        // A failed built-in identity may mean it has rotated. Ask marshal for
+        // the local epoch boundary, which contains the next scheme. Do not take
+        // the height from the certificate because an unauthenticated peer could
+        // make the node fetch any height.
+        let boundary_height = self
+            .config
+            .epoch_strategy
+            .last(self.current_epoch)
+            .expect("strategy is valid for all heights and epochs");
+
+        debug!(
+            current_epoch = %self.current_epoch,
+            %boundary_height,
+            "hinting current epoch boundary after the network identity fallback failed",
+        );
+        // NOTE: Repeated hints are intentional. The follow resolver coalesces
+        // active requests for the same boundary height.
+        self.config.marshal.hint_finalized(boundary_height).await;
     }
 
     #[instrument(skip_all)]
     async fn process_update(&mut self, update: marshal::Update<Block>) {
-        let marshal::Update::Block(block, ack) = update else {
-            return;
+        // Marshal sends its startup tip and each finalization it stores. These
+        // durable tips recover the latest verified round and provide later progress.
+        let (block, ack) = match update {
+            marshal::Update::Tip(round, _, _) => {
+                self.latest_verified_round = self.latest_verified_round.max(round);
+                return;
+            }
+            marshal::Update::Block(block, ack) => (block, ack),
         };
 
         let epoch_info = self
@@ -279,8 +365,15 @@ where
             }
 
             self.current_epoch = self.current_epoch.max(onchain_outcome.epoch);
+
+            if let Some(gossip) = &self.config.gossip {
+                gossip.boundary_scheme_installed(onchain_outcome.epoch);
+            }
         }
 
+        // Always acknowledge last. Marshal waits for every consumer before it
+        // sends the next update. Dropping the acknowledgement means shutdown,
+        // so an early return would stop block delivery.
         ack.acknowledge();
     }
 }

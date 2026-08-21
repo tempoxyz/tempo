@@ -1,9 +1,10 @@
 //! Follower finalization driver.
 //!
-//! Validates finalized blocks received from upstream and reports them to marshal.
-//! Marshal's finalized tip updates independently drive the consensus feed.
+//! Validates finalized blocks received from upstream and certificates received
+//! through gossip, then reports verified finalizations to marshal. Marshal's
+//! finalized-tip updates independently drive the consensus feed.
 
-use std::future::Future;
+use std::{future::Future, sync::LazyLock};
 
 use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
@@ -41,7 +42,13 @@ pub(super) use ingress::Mailbox;
 
 type ConsensusActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-pub(super) struct Config<P, M> {
+// Follow mode uses an opaque resolver that ignores peer targets, but Commonware
+// requires a non-empty target list. Reusing one placeholder lets overflow
+// coalesce repeated hints without accumulating random public keys.
+static FOLLOW_HINT_TARGET: LazyLock<PublicKey> =
+    LazyLock::new(|| PrivateKey::random(rand::rng()).public_key());
+
+pub(super) struct Config<P, M, E = crate::follow::executor::Mailbox> {
     pub(super) execution_provider: P,
     pub(super) scheme_provider: SchemeProvider,
     pub(super) network_identity: NetworkIdentity,
@@ -49,18 +56,25 @@ pub(super) struct Config<P, M> {
     pub(super) last_finalized_height: Height,
 
     pub(super) marshal: M,
+    pub(super) executor: E,
+    /// Gossip actor notified after authenticated boundary schemes are installed.
+    pub(super) gossip: Option<crate::gossip::Mailbox>,
 
     pub(super) epoch_strategy: FixedEpocher,
 }
 
-pub(super) fn try_init<TContext, P, M>(
+/// A driver and its mailbox.
+pub(super) type Initialized<TContext, P, M, E> = (Driver<TContext, P, M, E>, Mailbox);
+
+pub(super) fn try_init<TContext, P, M, E>(
     context: TContext,
-    config: Config<P, M>,
-) -> eyre::Result<(Driver<TContext, P, M>, Mailbox)>
+    config: Config<P, M, E>,
+) -> eyre::Result<Initialized<TContext, P, M, E>>
 where
     TContext: Clock + Spawner,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
+    E: Executor + 'static,
 {
     actor::try_init(context, config)
 }
@@ -69,6 +83,12 @@ where
 pub(super) trait ExecutionProvider: Send + Sync {
     fn finalized_block_number(&self) -> eyre::Result<u64>;
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>>;
+}
+
+/// Execution updates requested by the follower driver.
+pub(super) trait Executor: Send + Sync {
+    /// Uses a certificate's block as the forkchoice target.
+    fn finalization(&self, round: Round, digest: Digest);
 }
 
 /// Marshal operations used by the follower driver.
@@ -93,6 +113,12 @@ where
     }
 }
 
+impl Executor for crate::follow::executor::Mailbox {
+    fn finalization(&self, round: Round, digest: Digest) {
+        Self::finalization(self, round, digest);
+    }
+}
+
 impl Marshal for crate::alias::marshal::Mailbox {
     fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
         let mailbox = self.clone();
@@ -102,8 +128,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send {
         let mailbox = self.clone();
         async move {
-            // Stub out a random target
-            let target = PrivateKey::random(rand::rng()).public_key();
+            let target = (*FOLLOW_HINT_TARGET).clone();
             mailbox.hint_finalized(height, NonEmptyVec::new(target));
         }
     }

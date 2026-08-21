@@ -14,6 +14,7 @@ pub mod feed;
 pub mod finalization_verifier;
 pub mod finalized_header_stream;
 pub mod follow;
+pub(crate) mod gossip;
 pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
