@@ -1259,9 +1259,7 @@ mod tests {
         executor.start(|mut context| async move {
             let state = make_test_state(&mut context, 0);
             let mut bytes = state.encode();
-
             let decoded = State::read_cfg(&mut bytes, &NZU32!(u32::MAX)).unwrap();
-
             assert_eq!(state, decoded);
         });
     }
@@ -1288,7 +1286,6 @@ mod tests {
             state.is_full_dkg.write(&mut bytes);
 
             let decoded = State::read_cfg(&mut bytes.as_slice(), &NZU32!(u32::MAX)).unwrap();
-
             assert_eq!(state, decoded);
         });
     }
@@ -1296,10 +1293,8 @@ mod tests {
     #[track_caller]
     fn assert_roundtrip(original: &ShareState) {
         use commonware_codec::Encode as _;
-
         let encoded = original.encode();
         let decoded = ShareState::read_cfg(&mut encoded.as_ref(), &()).unwrap();
-
         assert_eq!(original, &decoded);
     }
 
@@ -1322,7 +1317,6 @@ mod tests {
             dkg::deal::<MinSig, _, N3f1>(&mut rng, Mode::NonZeroCounter, pubkeys).unwrap();
 
         let share = shares.into_iter().next().unwrap().1;
-
         assert_roundtrip(&ShareState::Plaintext(Some(share)));
     }
 

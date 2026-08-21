@@ -51,7 +51,6 @@ where
     let actor = Actor::new(config, context, rx)
         .await
         .wrap_err("failed initializing actor")?;
-
     let mailbox = Mailbox::new(tx);
     Ok((actor, mailbox))
 }
