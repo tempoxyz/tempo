@@ -998,6 +998,29 @@ pub struct GenerateSigningKey {
     force: bool,
 }
 
+/// Opens `output` for writing a signing key, refusing to overwrite an existing file unless
+/// `force` is set, and restricting the created file to owner read/write on Unix.
+///
+/// This applies regardless of whether the key material that ends up in the file is encrypted:
+/// an unencrypted key is only as protected as this file's permissions, and even an encrypted
+/// key benefits from not being world-readable ciphertext.
+fn open_signing_key_file(output: &Path, force: bool) -> std::io::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(!force)
+        .create(force)
+        .truncate(force);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+
+    options.open(output)
+}
+
 impl GenerateSigningKey {
     fn run(self) -> eyre::Result<()> {
         let Self {
@@ -1024,12 +1047,7 @@ impl GenerateSigningKey {
             warn_unencrypted_signing_key_deprecation();
         }
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        open_signing_key_file(&output, force)
             .map_err(Report::new)
             .and_then(|f| match passphrase {
                 Some(passphrase) => signing_key
@@ -1138,12 +1156,7 @@ impl EncryptSigningKey {
             )
         })?;
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        open_signing_key_file(&output, force)
             .map_err(Report::new)
             .and_then(|f| {
                 signing_key
@@ -1578,6 +1591,23 @@ mod tests {
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     const TEST_INGRESS: &str = "127.0.0.1:8000";
     const TEST_EGRESS: &str = "127.0.0.1";
+
+    #[cfg(unix)]
+    #[test]
+    fn open_signing_key_file_restricts_permissions_to_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing-key");
+
+        let file = open_signing_key_file(&path, false).unwrap();
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o600,
+            "signing key file must not be group- or world-readable"
+        );
+    }
 
     #[test]
     fn parse_p2p_proxy_defaults() {
