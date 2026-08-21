@@ -52,7 +52,7 @@ use crate::consensus::{Digest, block::Block};
 
 mod state;
 #[cfg(test)]
-mod test;
+mod tests;
 use state::{Dealer, Player, Round, ShareState, State};
 
 use super::{
