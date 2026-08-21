@@ -15,6 +15,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
 pub mod zone_factory;
+pub mod zone_verifier;
 
 pub use account_keychain::*;
 pub use address_registry::*;
@@ -33,6 +34,7 @@ pub use tip403_registry::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
 pub use zone_factory::*;
+pub use zone_verifier::*;
 
 use alloy_primitives::{Address, address};
 use tempo_hardfork::TempoHardfork;
@@ -78,4 +80,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
+    (ZONE_VERIFIER_ADDRESS, TempoHardfork::T11),
 ];
