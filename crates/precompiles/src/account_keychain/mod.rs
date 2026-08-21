@@ -11,6 +11,7 @@ pub mod dispatch;
 use std::collections::HashSet;
 
 use alloy::sol_types::SolCall;
+use alloy_rlp::Decodable;
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent, ITIP20};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
@@ -19,11 +20,12 @@ pub use tempo_contracts::precompiles::{
         burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
         getRemainingLimitWithPeriodCall, getTransactionKeyCall,
         isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
-        setAllowedCallsCall, updateSpendingLimitCall,
+        updateSpendingLimitCall,
     },
     authorizeKeyCall, authorizeKeyWithWitnessCall, getAllowedCallsReturn, getRemainingLimitReturn,
+    legacySetAllowedCallsCall, setAllowedCallsCall,
 };
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, transaction::CallScope as RlpCallScope};
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -562,25 +564,43 @@ impl AccountKeychain {
     }
 
     /// Root/admin-only create-or-replace updates for one or more target call scopes.
-    pub fn set_allowed_calls(
+    pub fn set_allowed_calls_rlp(
         &mut self,
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t3() {
+        let mut encoded_scopes = call.scopes.as_ref();
+        let scopes = Vec::<RlpCallScope>::decode(&mut encoded_scopes)
+            .map_err(|_| AccountKeychainError::invalid_call_scope())?;
+        if !encoded_scopes.is_empty() {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
+        let scopes: Vec<CallScope> = scopes.into_iter().map(Into::into).collect();
+        if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
         }
 
+        self.set_allowed_calls_decoded(msg_sender, call.keyId, scopes)
+    }
+
+    fn set_allowed_calls_decoded(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        scopes: Vec<CallScope>,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t3() {
+            return Err(AccountKeychainError::invalid_call_scope().into());
+        }
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        let key = self.load_active_key(msg_sender, key_id, current_timestamp)?;
         if key.is_admin {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
-        let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
-        let scopes = call.scopes;
+        let key_hash = Self::spending_limit_key(msg_sender, key_id);
 
         if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
@@ -593,6 +613,15 @@ impl AccountKeychain {
         }
 
         self.key_scopes[key_hash].is_scoped.write(true)
+    }
+
+    /// Pre-T11 ABI-encoded create-or-replace updates for target call scopes.
+    pub fn set_allowed_calls(
+        &mut self,
+        msg_sender: Address,
+        call: legacySetAllowedCallsCall,
+    ) -> Result<()> {
+        self.set_allowed_calls_decoded(msg_sender, call.keyId, call.scopes)
     }
 
     /// Root/admin-only removal of one target call scope.
@@ -1572,7 +1601,10 @@ mod tests {
     use alloy::primitives::{Address, B256, TxKind, U256};
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use tempo_contracts::precompiles::{
+        DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType,
+        legacySetAllowedCallsCall as setAllowedCallsCall,
+    };
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
