@@ -189,8 +189,7 @@ impl TxBuilder {
         self
     }
 
-    /// Build an AA transaction.
-    pub(crate) fn build(self) -> TempoPooledTransaction {
+    fn into_aa_transaction(self) -> TempoTransaction {
         let calls = self.calls.unwrap_or_else(|| {
             vec![Call {
                 to: self.kind,
@@ -199,7 +198,7 @@ impl TxBuilder {
             }]
         });
 
-        let tx = TempoTransaction {
+        TempoTransaction {
             chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
@@ -214,15 +213,59 @@ impl TxBuilder {
             access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
             key_authorization: self.key_authorization,
-        };
+        }
+    }
 
+    fn build_aa_with_signature(
+        tx: TempoTransaction,
+        signature: TempoSignature,
+        sender: Address,
+    ) -> TempoPooledTransaction {
+        let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, signature).into();
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
+    }
+
+    /// Build an AA transaction.
+    pub(crate) fn build(self) -> TempoPooledTransaction {
+        let sender = self.sender;
+        let tx = self.into_aa_transaction();
         let signature =
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(tx, signature);
-        let envelope: TempoTxEnvelope = aa_signed.into();
+        Self::build_aa_with_signature(tx, signature, sender)
+    }
 
-        let recovered = Recovered::new_unchecked(envelope, self.sender);
-        TempoPooledTransaction::new(recovered)
+    /// Build an AA transaction with a native multisig outer signature for `account`.
+    ///
+    /// The sender equals `account`, matching how native multisig transactions execute.
+    pub(crate) fn build_multisig(self, account: Address) -> TempoPooledTransaction {
+        use tempo_primitives::transaction::MultisigSignature;
+
+        let tx = self.into_aa_transaction();
+        let owner_signature = PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
+        let signature =
+            TempoSignature::Multisig(MultisigSignature::new(account, vec![owner_signature], None));
+        Self::build_aa_with_signature(tx, signature, account)
+    }
+
+    /// Build an AA transaction whose outer multisig `parent` has a single nested multisig owner
+    /// approval from `child` (a 1-level-deep nested native multisig authorization).
+    pub(crate) fn build_multisig_nested(
+        self,
+        parent: Address,
+        child: Address,
+    ) -> TempoPooledTransaction {
+        use tempo_primitives::transaction::MultisigSignature;
+
+        let tx = self.into_aa_transaction();
+        let child_owner = PrimitiveSignature::Secp256k1(Signature::test_signature()).to_bytes();
+        let child_sig =
+            TempoSignature::Multisig(MultisigSignature::new(child, vec![child_owner], None));
+        let parent_sig = TempoSignature::Multisig(MultisigSignature::new(
+            parent,
+            vec![child_sig.to_bytes()],
+            None,
+        ));
+        Self::build_aa_with_signature(tx, parent_sig, parent)
     }
 
     /// Build an AA transaction with a V2 keychain signature.
@@ -247,30 +290,7 @@ impl TxBuilder {
         use alloy_signer::SignerSync;
         use tempo_primitives::transaction::tt_signature::KeychainSignature;
 
-        let calls = self.calls.unwrap_or_else(|| {
-            vec![Call {
-                to: self.kind,
-                value: self.value,
-                input: Default::default(),
-            }]
-        });
-
-        let tx = TempoTransaction {
-            chain_id: self.chain_id,
-            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
-            max_fee_per_gas: self.max_fee_per_gas,
-            gas_limit: self.gas_limit,
-            calls,
-            nonce_key: self.nonce_key,
-            nonce: self.nonce,
-            fee_token: self.fee_token,
-            fee_payer_signature: None,
-            valid_after: self.valid_after,
-            valid_before: self.valid_before,
-            access_list: self.access_list,
-            tempo_authorization_list: self.authorization_list.unwrap_or_default(),
-            key_authorization: self.key_authorization,
-        };
+        let tx = self.into_aa_transaction();
 
         // Create a temp AASigned to get the signature hash
         let temp_sig =
@@ -278,19 +298,16 @@ impl TxBuilder {
         let unsigned = AASigned::new_unhashed(tx.clone(), temp_sig);
         let sig_hash = unsigned.signature_hash();
 
-        let (effective_hash, keychain_sig) = match version {
+        let keychain_sig = match version {
             KeychainVersion::V1 => {
                 // V1: sign raw sig_hash directly
                 let signature = access_key_signer
                     .sign_hash_sync(&sig_hash)
                     .expect("signing failed");
-                (
-                    sig_hash,
-                    TempoSignature::Keychain(KeychainSignature::new_v1(
-                        user_address,
-                        PrimitiveSignature::Secp256k1(signature),
-                    )),
-                )
+                TempoSignature::Keychain(KeychainSignature::new_v1(
+                    user_address,
+                    PrimitiveSignature::Secp256k1(signature),
+                ))
             }
             KeychainVersion::V2 => {
                 // V2: sign keccak256(0x04 || sig_hash || user_address)
@@ -298,16 +315,12 @@ impl TxBuilder {
                 let signature = access_key_signer
                     .sign_hash_sync(&hash)
                     .expect("signing failed");
-                (
-                    hash,
-                    TempoSignature::Keychain(KeychainSignature::new(
-                        user_address,
-                        PrimitiveSignature::Secp256k1(signature),
-                    )),
-                )
+                TempoSignature::Keychain(KeychainSignature::new(
+                    user_address,
+                    PrimitiveSignature::Secp256k1(signature),
+                ))
             }
         };
-        let _ = effective_hash;
 
         let signed_tx = AASigned::new_unhashed(tx, keychain_sig);
         let envelope: TempoTxEnvelope = signed_tx.into();
