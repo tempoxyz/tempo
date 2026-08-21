@@ -609,6 +609,15 @@ where
                     .spawn(move || loop {
                         match canon_rx.blocking_recv() {
                             Ok(notif) => {
+                                // Height 0: in bloat mode the genesis header
+                                // carries the pre-dump alloc root, which the
+                                // flat can never serve — storing it would
+                                // wedge every reader on a doomed resolve.
+                                // The reader bootstrap below anchors on the
+                                // flat's own (post-dump) state instead.
+                                if notif.tip().header().number() == 0 {
+                                    continue;
+                                }
                                 let tip_root = notif.tip().header().state_root();
                                 // Publish the tip FIRST: from this instant
                                 // readers stop trusting the previous anchor
@@ -661,10 +670,46 @@ where
                     }
                     if tip == B256::ZERO {
                         use reth_provider::BlockReaderIdExt as _;
-                        tip = provider
+                        let header = provider
                             .latest_header()?
-                            .ok_or_else(|| flat_err("no canonical head for flat tip read"))?
-                            .state_root();
+                            .ok_or_else(|| flat_err("no canonical head for flat tip read"))?;
+                        if header.number() == 0 {
+                            // Genesis: in bloat mode the header carries the
+                            // pre-dump alloc root, which the flat can never
+                            // serve — anchor on the flat's own (post-dump)
+                            // state, the same alias rule the shadow's
+                            // unwind_to applies. Storing the anchor as the
+                            // current tip keeps the fast path usable until
+                            // the first real commit overwrites it.
+                            let shadow = tempo_flatmpt::shadow(|| {
+                                (
+                                    tempo_flatmpt::genesis_to_ops(chain_spec.inner.genesis()),
+                                    chain_spec.inner.genesis_header().state_root(),
+                                )
+                            })
+                            .expect("flat root mode is on");
+                            let deadline = std::time::Instant::now()
+                                + std::time::Duration::from_secs(10);
+                            loop {
+                                if let Some(g) =
+                                    shadow.try_read_for(std::time::Duration::from_millis(2))
+                                {
+                                    let root = B256::from(g.current_root());
+                                    let snap = g.snapshot();
+                                    drop(g);
+                                    let state = Arc::new((root, snap, Vec::new()));
+                                    current_tip.store(Arc::new(root));
+                                    published.store(Some(state.clone()));
+                                    return Ok(state);
+                                }
+                                if std::time::Instant::now() > deadline {
+                                    return Err(flat_err(
+                                        "flat store busy while anchoring at genesis",
+                                    ));
+                                }
+                            }
+                        }
+                        tip = header.state_root();
                     }
                     let state = resolve_for(tip)?;
                     published.store(Some(state.clone()));
