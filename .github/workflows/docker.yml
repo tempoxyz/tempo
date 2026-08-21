@@ -235,12 +235,20 @@ jobs:
             "$TEMPO_XTASK_TAGS"
             "$TEMPO_PARTIAL_PERSISTENCE_TAGS"
           )
+          sign_failures=0
           for tags in "${images[@]}"; do
             while IFS= read -r image; do
               [ -n "$image" ] || continue
-              sign_image "$image"
+              if ! sign_image "$image"; then
+                sign_failures=$((sign_failures + 1))
+              fi
             done <<< "$tags"
           done
+
+          if [ "$sign_failures" -ne 0 ]; then
+            echo "Failed to sign $sign_failures image reference(s)" >&2
+            exit 1
+          fi
 
       - name: Publish event (sha tag)
         id: publish-sha-event

@@ -106,7 +106,7 @@ Tempo has several SDKs to help you get started building on Tempo:
 For local development and CI, run the [bootstrapped localnet container](./docs/localnet.md):
 
 ```bash
-docker run --rm -p 8545:8545 ghcr.io/tempoxyz/tempo-localnet:latest
+docker run --rm -p 127.0.0.1:8545:8545 ghcr.io/tempoxyz/tempo-localnet:latest
 ```
 
 Want to contribute?

@@ -11,7 +11,7 @@ group "default" {
 }
 
 group "nightly" {
-  targets = ["tempo", "tempo-sidecar", "tempo-xtask", "tempo-partial-persistence"]
+  targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask", "tempo-partial-persistence"]
 }
 
 target "docker-metadata" {}
