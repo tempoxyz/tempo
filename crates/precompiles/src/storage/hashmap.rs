@@ -349,6 +349,10 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
         self.non_creditable_slots.is_non_creditable_slot(owner, key)
     }
+
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]

@@ -1258,7 +1258,7 @@ fn test_key_authorization_gas_with_limits() {
 }
 
 #[test]
-fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
+fn test_t11_key_authorization_matches_tip1016_sstore_costs() {
     use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
 
     let key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
@@ -1266,18 +1266,26 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
             alloy_primitives::Signature::test_signature(),
         ));
 
-    // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+    // TIP-1016 activates with T11: the table inherits the T7 (TIP-1060) 5k
+    // residual as the SSTORE regular component and moves the 245k creditable
+    // portion into state gas.
+    let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
 
     let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
     let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
     let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
     let (regular_gas, state_gas) =
-        calculate_key_authorization_gas(&key_auth, &gas_params, TempoHardfork::T4);
+        calculate_key_authorization_gas(&key_auth, &gas_params, TempoHardfork::T11);
     let helper_sstore_regular = regular_gas - sig_gas - sload - 2_000 - scope_extra_gas;
 
-    assert_eq!(helper_sstore_regular, 20_000);
-    assert_eq!(state_gas, 230_000);
+    assert_eq!(
+        helper_sstore_regular, 5_000,
+        "T11 charges only the TIP-1060 residual in regular gas, as on T7"
+    );
+    assert_eq!(
+        state_gas, STORAGE_CREDIT_VALUE,
+        "T11 charges the creditable portion as state gas, exactly once"
+    );
 }
 
 #[test]
@@ -1902,10 +1910,10 @@ fn test_t3_scope_validation_empty_calls_returns_custom_error() {
 
     let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
     let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-    let mut remaining_gas = 100_000;
+    let mut gas = GasTracker::new(100_000, 100_000, 0);
 
     let err = handler
-        .prevalidate_keychain_call_scopes(&mut evm, &[], &mut remaining_gas, 0)
+        .prevalidate_keychain_call_scopes(&mut evm, &[], &mut gas)
         .expect_err("empty calls should return an error instead of panicking");
 
     match err {
@@ -3656,8 +3664,7 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
 
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        cfg.gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
         cfg.enable_amsterdam_eip8037 = true;
     });
 
@@ -3808,8 +3815,7 @@ fn test_state_gas_tx_gas_limit_above_cap_allowed() {
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(30_000_000);
         cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        cfg.gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
     });
 
     // validate_env should pass even though gas_limit > cap
@@ -3871,8 +3877,7 @@ fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(CAP);
         cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        cfg.gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
     });
 
     // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
@@ -3937,8 +3942,7 @@ fn test_subblock_paused_fee_token_halts_as_fee_payment_failure() {
     let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
         cfg.tx_gas_limit_cap = Some(30_000_000);
         cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        cfg.gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
     });
 
     let err = EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused {
@@ -4159,7 +4163,7 @@ fn test_state_gas_multi_call_corrected_gas_success_preserves_state_gas() {
 #[test]
 fn test_state_gas_aa_auth_list_nonce_zero() {
     // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
-    let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+    let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T11);
 
     let aa_env = TempoBatchCallEnv {
         signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(

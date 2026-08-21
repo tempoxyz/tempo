@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use crate::{TempoBlockExecutor, TempoTxResult};
+use crate::{TempoBlockExecutor, TempoTxResult, block::tempo_block_regular_gas_used};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{BlockExecutionError, BlockExecutor, ExecutableTx},
@@ -67,7 +67,7 @@ where
         let cfg = self.inner.evm.cfg_env().clone();
         let gas = result.gas();
         let block_gas_used = if cfg.enable_amsterdam_eip8037 {
-            gas.block_regular_gas_used()
+            tempo_block_regular_gas_used(gas)
         } else {
             gas.tx_gas_used()
         };

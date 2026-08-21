@@ -52,7 +52,7 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
-use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
+use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params};
 
 pub use tempo_revm::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
@@ -179,20 +179,11 @@ impl ConfigureEvm for TempoEvmConfig {
 
         // Apply TIP-1000 gas params for T1 hardfork.
         //
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The flag is currently left at its default
-        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
-        // state gas split everywhere it is checked downstream.
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
+        // TIP-1016 (EIP-8037 state gas split) activates with the T11 hardfork: the T11
+        // gas table carries the regular/state split and `enable_amsterdam_eip8037` turns
+        // on the split everywhere it is checked downstream.
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
@@ -235,19 +226,10 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
-        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
-        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
-        // (see `evm_env_for_block` for details).
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
+        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 activates with the
+        // T11 hardfork (see `evm_env_for_block` for details).
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        cfg_env.enable_amsterdam_eip8037 = spec.is_t11();
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
         Ok(EvmEnv {
@@ -415,21 +397,23 @@ mod tests {
         assert_eq!(evm_env.block_env.proposer_public_key, Some(proposer));
     }
 
-    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
+    /// Test that evm_env sets the per-hardfork tx gas limit cap: the TIP-1000
+    /// 30M cap for T1A..T10 and the EIP-7825 Osaka cap once T11 (TIP-1016)
+    /// moves state creation gas into the reservoir.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
-    fn test_evm_env_t1_gas_cap() {
+    fn test_evm_env_tx_gas_cap() {
         use tempo_chainspec::spec::DEV;
 
-        // DEV chainspec has T1 activated at timestamp 0
+        // DEV chainspec has every hardfork, including T11, activated at timestamp 0.
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 100,
-                timestamp: 1000, // After T1 activation
+                timestamp: 1000,
                 gas_limit: 30_000_000,
                 base_fee_per_gas: Some(1000),
                 ..Default::default()
@@ -440,16 +424,25 @@ mod tests {
             ..Default::default()
         };
 
-        // Verify we're in T1
-        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t1());
+        // Verify we're in T11
+        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t11());
 
         let evm_env = evm_config.evm_env(&header).unwrap();
 
-        // Verify TIP-1000 gas limit cap is set
+        // T11 (TIP-1016): back to the EIP-7825 Osaka cap; a tx's total
+        // gas_limit may exceed it because state gas lives in the reservoir.
         assert_eq!(
             evm_env.cfg_env.tx_gas_limit_cap,
+            Some(16_777_216),
+            "TIP-1016 uses the EIP-7825 Osaka cap from T11"
+        );
+        assert!(evm_env.cfg_env.enable_amsterdam_eip8037);
+
+        // T1A..T10: the TIP-1000 30M cap.
+        assert_eq!(
+            TempoHardfork::T1A.tx_gas_limit_cap(),
             Some(tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP),
-            "TIP-1000 requires 30M gas limit cap for T1 hardfork"
+            "TIP-1000 requires the 30M gas limit cap from T1A"
         );
     }
 

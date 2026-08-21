@@ -454,12 +454,13 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Use a gas limit high enough for token setup (~5M per token) but low enough
-    // to cause overflow when many transactions are injected.
-    // With T1 gas costs, we need at least 5M for token creation.
-    // 15M allows setup but forces overflow when 330 transactions are submitted.
+    // Use a gas limit high enough for token setup (the setup txs request 5M gas)
+    // but low enough to cause overflow when many transactions are injected.
+    // Since T11 (TIP-1016) storage creation is charged as state gas, exempt from
+    // the block gas limit: the 330 txs consume ~11M execution gas, so 8M forces
+    // overflow while every 5M-gas setup tx still fits in a block.
     let mut setup = crate::utils::TestNodeBuilder::new()
-        .with_gas_limit("0xE4E1C0") // 15,000,000 gas
+        .with_gas_limit("0x7A1200") // 8,000,000 gas
         .build_with_node_access()
         .await?;
 

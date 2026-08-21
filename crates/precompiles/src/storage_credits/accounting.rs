@@ -12,10 +12,9 @@ use super::{CreditMode, StorageCredits, TransientState};
 use crate::storage::{FromWord, SstoreTransitionFlags};
 use alloy::primitives::{Address, U256};
 use revm::{
-    context_interface::cfg::GasParams,
+    context_interface::cfg::{GasId, GasParams},
     interpreter::{InstructionResult, SStoreResult, StateLoad, gas::GasTracker},
 };
-use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
 
 /// Error mapping required by storage credit accounting.
@@ -44,11 +43,21 @@ pub trait StorageCreditsBackend {
     /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
+    /// Charges `cost` regular execution gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
     #[inline]
-    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
+    fn charge_execution_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         self.gas_tracker()
             .record_regular_cost(cost)
+            .then_some(())
+            .ok_or_else(Self::Error::out_of_gas)
+    }
+
+    /// Charges `cost` state gas (TIP-1016 reservoir first, spilling into regular gas),
+    /// returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
+    #[inline]
+    fn charge_state_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
+        self.gas_tracker()
+            .record_state_cost(cost)
             .then_some(())
             .ok_or_else(Self::Error::out_of_gas)
     }
@@ -86,6 +95,10 @@ pub trait StorageCreditsBackend {
     fn tip1060_storage_credit_minting_enabled(&self) -> bool {
         true
     }
+
+    /// Returns whether EIP-8037 (TIP-1016) is active, i.e. whether the creditable portion of
+    /// a storage creation is charged as state gas instead of regular execution gas.
+    fn amsterdam_eip8037_enabled(&self) -> bool;
 }
 
 #[inline]
@@ -102,12 +115,28 @@ fn store_credit_state<B: StorageCreditsBackend>(
 ///
 /// When provided, `key` lets the hook skip minting a credit for the single transaction-local slot
 /// whose clear must not mint a credit for the storage-owning account.
+///
+/// When [`amsterdam_eip8037_enabled`](StorageCreditsBackend::amsterdam_eip8037_enabled), gas
+/// charged by this hook is accounted as TIP-1016 state gas
+/// ([`charge_state_gas`](StorageCreditsBackend::charge_state_gas)) instead of regular
+/// execution gas ([`charge_execution_gas`](StorageCreditsBackend::charge_execution_gas)).
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
     key: Option<U256>,
     caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<(), B::Error> {
+    let charge_creation = |backend: &mut B| {
+        let cost = backend.gas_params().get(GasId::sstore_set_state_gas());
+        if backend.amsterdam_eip8037_enabled() {
+            backend.charge_state_gas(cost)
+        } else {
+            backend.charge_execution_gas(cost)
+        }
+    };
+
+    // Before TIP-1016 storage_state_gas was used to charge execution gas.
+
     let sstore_flags = SstoreTransitionFlags::from(caller_state_load);
 
     // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
@@ -124,7 +153,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     // Load the persistent storage credit balance for the storage-owning account.
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
-    backend.charge_gas(warm_storage_read_cost)?;
+    backend.charge_execution_gas(warm_storage_read_cost)?;
 
     let account_slot = StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
@@ -132,7 +161,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let storage_credit_state_load =
         backend.sload(STORAGE_CREDITS_ADDRESS, account_slot, skip_cold)?;
     if storage_credit_state_load.is_cold {
-        backend.charge_gas(additional_cold_cost)?;
+        backend.charge_execution_gas(additional_cold_cost)?;
     }
 
     let mut credit =
@@ -175,12 +204,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Direct | CreditMode::Preserve => {
                 // Direct without spendable credits, or Preserve, pays the creditable portion as gas.
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                charge_creation(backend)?;
             }
             CreditMode::Refund => {
                 // Charge the 245k creditable portion upfront and record a pending refund-eligible
                 // creation, settled at end-of-transaction.
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                charge_creation(backend)?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
                 store_credit_state(backend, account_slot, transient_state)?;
             }
@@ -198,7 +227,8 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         // Only when change happens charge additional gas.
         if flags.charges_clean_update() {
-            backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
+            backend
+                .charge_execution_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         };
     }
 

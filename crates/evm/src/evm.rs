@@ -385,7 +385,7 @@ mod tests {
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
-    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params};
 
     use super::*;
 
@@ -1729,14 +1729,16 @@ mod tests {
     // ==================== TIP-1000 EVM Configuration Tests ====================
 
     /// Helper to create EvmEnv with a specific hardfork spec.
+    ///
+    /// Mirrors production cfg wiring (`evm_env_for_block`): Tempo gas tables per
+    /// spec, with TIP-1016 (EIP-8037) activating on T11.
     fn evm_env_with_spec(
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
+        let mut cfg = CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        cfg.enable_amsterdam_eip8037 = spec.is_t11();
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(
-                spec,
-                tempo_gas_params_with_amsterdam(spec, false),
-            ),
+            cfg,
             TempoBlockEnv::default(),
         )
     }

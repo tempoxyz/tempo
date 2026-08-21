@@ -21,7 +21,8 @@ use revm::{
         journaled_state::JournalCheckpoint,
     },
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, post_execution,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, handle_reservoir_remaining_gas,
+        post_execution,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
         precompile_output_to_interpreter_result, validation,
     },
@@ -210,48 +211,39 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
         + RECIPIENT_SCOPE_GAS.saturating_mul(num_recipients)
 }
 
-/// Rewrites a failed batch step's gas accounting to match whole-transaction semantics.
+/// Rewrites a failed batch step's gas to the whole-transaction result it is
+/// surfaced as.
 ///
-/// `frame_result` initially only reflects the final failed step. For atomic AA batches we surface
-/// one top-level transaction result instead, so the gas field must be normalized to the full tx
-/// budget. Reverts preserve the exact gas spent across prior successful steps plus the failed step,
-/// while halts such as OOG consume the entire remaining transaction budget.
+/// The failed step's tracker is already settled per-call transaction-level
+/// gas: `last_frame_result` wrote the settled tracker (state gas rolled back,
+/// refunds dropped, halts fully spent, refundable CREATE state gas refilled)
+/// back into the frame result. Deliberately do NOT settle it into `batch_gas`
+/// via `handle_reservoir_remaining_gas` — that would re-settle an
+/// already-settled tracker and keep prior successful steps' refunds the batch
+/// revert just invalidated. Two corrections remain:
 ///
-/// NOTE: in AA batches, non-refundable state-gas charges that are known upfront, are already
-/// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure
-/// plus the batch's intrinsic EIP-8037 CREATE state gas (`create_state_refund`).
-fn normalize_failed_batch_result_gas(
-    frame_result: &mut FrameResult,
-    final_gas_limit: u64,
-    accumulated_state_gas_spent: i64,
-    create_state_refund: u64,
-) {
-    // Create new Gas with correct limit, because Gas does not have a set_limit method
-    // (the frame_result limit only covers the failed step).
-    let mut corrected_gas = Gas::new_spent_with_reservoir(final_gas_limit, 0);
-    if frame_result.instruction_result().is_revert() {
-        corrected_gas.erase_cost(frame_result.gas().remaining());
-    }
-    // No refunds when batch fails and all state is reverted.
-    corrected_gas.set_refund(0);
-    // No state gas spending for failed calls
-    corrected_gas.set_state_gas_spent(0);
-    // Reservoir and state gas are refunded on failure
-    corrected_gas.set_reservoir(
-        frame_result
-            .gas()
+/// - Roll back the state gas prior successful steps settled into `batch_gas`
+///   (the batch-wide checkpoint revert rolled back the state it paid for).
+///   This mirrors [`GasTracker::rollback_state_gas`] with the
+///   batch-accumulated counters: the reservoir-drawn portion restores the
+///   reservoir, and the spilled portion returns to `remaining` on revert
+///   only — an exceptional halt consumes it, matching the single-frame model
+///   where `spend_all` runs after the rollback.
+/// - Widen the tracker's limit — covering just the failed step — to the whole
+///   transaction budget.
+fn normalize_failed_batch_result_gas(frame_result: &mut FrameResult, batch_gas: &GasTracker) {
+    let is_revert = frame_result.instruction_result().is_revert();
+    let tracker = frame_result.gas_mut().tracker_mut();
+    tracker.set_reservoir(
+        tracker
             .reservoir()
-            .saturating_add_signed(accumulated_state_gas_spent)
-            .saturating_add_signed(frame_result.gas().state_gas_spent()),
+            .saturating_add_signed(batch_gas.state_gas_spent())
+            .saturating_sub(batch_gas.state_gas_spilled()),
     );
-    // The AA intrinsic gas charged `create_state_gas` upfront for every CREATE
-    // call in the batch, and the batch failure rolled every deployment back —
-    // including successfully deployed calls and calls that never ran. Refund
-    // the whole batch's charge to the reservoir; the reservoir reconstruction
-    // above already canceled the failed step's own `last_frame_result` refund,
-    // so this cannot double-count.
-    corrected_gas.refill_reservoir(create_state_refund);
-    *frame_result.gas_mut() = corrected_gas;
+    if is_revert {
+        tracker.erase_cost(batch_gas.state_gas_spilled());
+    }
+    tracker.set_limit(batch_gas.limit());
 }
 
 fn translate_allowed_calls_for_precompile(
@@ -288,9 +280,12 @@ fn translate_allowed_calls_for_precompile(
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
 ///
-/// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
-/// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
-/// per TIP-1016.
+/// Returns `(regular_gas, state_gas)`; the caller charges both.
+///
+/// The 245k creditable portion of each storage-creating SSTORE lives in
+/// `sstore_set_state_gas` on the T7+ tables and must be charged exactly once:
+/// on T7..T10 (TIP-1060, no EIP-8037 reservoir) it is added to regular gas, on
+/// T11+ (TIP-1016) it is reported as state gas.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
@@ -334,9 +329,10 @@ fn calculate_key_authorization_gas(
         }
 
         let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
-        if spec.is_t7() {
-            // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
-            // intrinsic-only, we must also add the creditable portion here.
+        if spec.is_t7() && !spec.is_t11() {
+            // T7..T10 expose only the SSTORE residual in the gas table. Since key-auth storage
+            // is intrinsic-only, we must also add the creditable portion here. On T11+ the
+            // creditable portion is charged as TIP-1016 state gas below instead.
             sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
         }
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
@@ -354,10 +350,17 @@ fn calculate_key_authorization_gas(
             regular_gas += call_scope_extra_gas(&key_auth.authorization);
         }
 
-        // TIP-1016: each storage-creating SSTORE also incurs state gas.
-        let state_gas = gas_params
-            .get(GasId::sstore_set_state_gas())
-            .saturating_mul(num_sstores);
+        // TIP-1016 (T11+): each storage-creating SSTORE incurs the creditable portion as
+        // state gas. Before T11 `sstore_set_state_gas` is charged as execution gas (above
+        // on T7..T10, via the full `sstore_set_without_load_cost` on T1B..T6), so reading
+        // it into state gas here would double-count it.
+        let state_gas = if spec.is_t11() {
+            gas_params
+                .get(GasId::sstore_set_state_gas())
+                .saturating_mul(num_sstores)
+        } else {
+            0
+        };
 
         (regular_gas, state_gas)
     } else {
@@ -427,8 +430,7 @@ where
         &self,
         evm: &mut TempoEvm<DB, I>,
         calls: &[tempo_primitives::transaction::Call],
-        remaining_gas: &mut u64,
-        reservoir: u64,
+        gas: &mut GasTracker,
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
         let spec = *evm.ctx().cfg().spec();
         if !spec.is_t3() {
@@ -473,8 +475,8 @@ where
         let actions = evm.actions.clone();
         let (validation, gas_used) = StorageCtx::enter_ctx_with_gas_limit(
             evm.ctx_mut(),
-            *remaining_gas,
-            reservoir,
+            gas.remaining(),
+            gas.reservoir(),
             actions,
             || {
                 let keychain = AccountKeychain::default();
@@ -492,13 +494,13 @@ where
 
         match validation {
             Ok(()) => {
-                *remaining_gas = remaining_gas.saturating_sub(gas_used);
+                gas.set_remaining(gas.remaining().saturating_sub(gas_used));
                 Ok(None)
             }
-            Err(err) => match err.into_precompile_result(gas_used, reservoir) {
+            Err(err) => match err.into_precompile_result(gas_used, gas.reservoir()) {
                 Ok(output) => {
                     let interpreter_result =
-                        precompile_output_to_interpreter_result(output, *remaining_gas);
+                        precompile_output_to_interpreter_result(output, gas.remaining());
 
                     let frame_result = if kind.is_call() {
                         FrameResult::Call(CallOutcome::new(interpreter_result, 0..0))
@@ -589,8 +591,8 @@ where
     fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
-        mut remaining_gas: u64,
-        mut reservoir: u64,
+        remaining_gas: u64,
+        reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
@@ -603,14 +605,6 @@ where
     {
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
-        let mut accumulated_gas_refund = 0i64;
-        let mut accumulated_state_gas_spent = 0i64;
-
-        // Intrinsic EIP-8037 CREATE state gas charged upfront for the whole
-        // batch (see `calculate_batch_intrinsic_gas`), refunded when the batch
-        // fails and every deployment is rolled back.
-        let create_state_refund = evm.ctx().cfg().gas_params().create_state_gas()
-            * calls.iter().filter(|call| call.to.is_create()).count() as u64;
 
         // Store original TxEnv values to restore after batch execution
         let original_kind = evm.ctx().tx().kind();
@@ -618,19 +612,34 @@ where
         let original_data = evm.ctx().tx().input().clone();
         let original_gas_limit = evm.ctx().tx().gas_limit();
 
+        // Batch-wide gas state: `remaining`/`reservoir` mirror the pre-call
+        // state for the next call, while `refunded`, `state_gas_spent` and
+        // `state_gas_spilled` accumulate across successful calls. The limit is
+        // the full transaction gas limit the final result is normalized to.
+        let mut batch_gas = GasTracker::new(original_gas_limit, remaining_gas, reservoir);
+
         let mut final_result = None;
 
+        // Whether a successful first-call CREATE deployed a contract. Its
+        // intrinsic `create_state_gas` (charged upfront in validation) must be
+        // refunded if a later step fails: the batch-wide checkpoint revert
+        // rolls the deployment back, so the transaction creates no account
+        // leaf. Deploy-nothing successes (`address == None`) and failing
+        // CREATEs are excluded — `last_frame_result` already refunded those
+        // via `FrameResult::refundable_state_gas`.
+        let mut first_create_deployed = false;
+
         if let Some(mut frame_result) =
-            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
+            self.prevalidate_keychain_call_scopes(evm, &calls, &mut batch_gas)?
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
-            normalize_failed_batch_result_gas(
-                &mut frame_result,
-                evm.ctx().tx().gas_limit(),
-                accumulated_state_gas_spent,
-                create_state_refund,
-            );
+            //
+            // The result's gas is already settled (`precompile_output_to_interpreter_result`
+            // consumes all gas on halt); with no accumulated state gas yet, the
+            // normalization only widens its limit from the prevalidation budget to the
+            // whole transaction budget it is surfaced as.
+            normalize_failed_batch_result_gas(&mut frame_result, &batch_gas);
             return Ok(frame_result);
         }
 
@@ -641,7 +650,7 @@ where
                 tx.inner.kind = call.to;
                 tx.inner.value = call.value;
                 tx.inner.data = call.input.clone();
-                tx.inner.gas_limit = remaining_gas;
+                tx.inner.gas_limit = batch_gas.remaining();
             }
 
             // Execute call with NO additional initial gas (already deducted upfront in validation)
@@ -649,7 +658,13 @@ where
             // The per-call transaction-level gas mirrors the pre-call state: the
             // call's budget is the batch's remaining gas (also its limit, matching
             // the temporary `tx.gas_limit` above) plus the current reservoir.
-            let mut call_gas = GasTracker::new(remaining_gas, remaining_gas, reservoir);
+            let mut call_gas =
+                GasTracker::new_used_gas(batch_gas.remaining(), 0, batch_gas.reservoir());
+            // The whole batch budget is handed to the call; the unused part
+            // flows back when `handle_reservoir_remaining_gas` settles the
+            // call's gas into `batch_gas` below. The failure path never reads
+            // `batch_gas.remaining()`.
+            batch_gas.set_remaining(0);
             let frame_result = execute_single(self, evm, &mut call_gas);
 
             // Restore original TxEnv immediately after execution, even if execution failed
@@ -694,25 +709,39 @@ where
                     }
                 }
 
-                normalize_failed_batch_result_gas(
-                    &mut frame_result,
-                    evm.ctx().tx().gas_limit(),
-                    accumulated_state_gas_spent,
-                    create_state_refund,
-                );
+                normalize_failed_batch_result_gas(&mut frame_result, &batch_gas);
+
+                // The checkpoint revert above rolled back the contract a
+                // successful first-call CREATE deployed; refund its intrinsic
+                // state charge exactly like `last_frame_result` refunds a
+                // reverting CREATE's (`refill_reservoir`, with a halt
+                // consuming the spilled portion the refill credits back).
+                if first_create_deployed {
+                    let charge = evm.ctx_ref().cfg().gas_params().create_state_gas();
+                    let is_halt = frame_result.instruction_result().is_halt();
+                    let tracker = frame_result.gas_mut().tracker_mut();
+                    tracker.refill_reservoir(charge);
+                    if is_halt {
+                        tracker.spend_all();
+                    }
+                }
 
                 return Ok(frame_result);
             }
 
-            // Call succeeded - accumulate gas usage, refunds, and state gas
-            accumulated_gas_refund =
-                accumulated_gas_refund.saturating_add(frame_result.gas().refunded());
-            accumulated_state_gas_spent =
-                accumulated_state_gas_spent.saturating_add(frame_result.gas().state_gas_spent());
+            if let FrameResult::Create(outcome) = &frame_result {
+                first_create_deployed = outcome.address.is_some();
+            }
 
-            // Update gas limit and reservoir to remaining values
-            remaining_gas = frame_result.gas().remaining();
-            reservoir = frame_result.gas().reservoir();
+            // Call succeeded - settle the call's gas into the batch tracker the
+            // same way a parent frame adopts a successful child frame's gas:
+            // unused regular gas flows back, the reservoir is adopted, and
+            // refunds / state gas accumulate.
+            handle_reservoir_remaining_gas(
+                frame_result.instruction_result(),
+                &mut batch_gas,
+                frame_result.gas_mut().tracker_mut(),
+            );
 
             final_result = Some(frame_result);
         }
@@ -724,13 +753,10 @@ where
         let mut result =
             final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
-        // Create new Gas with correct limit, because Gas does not have a set_limit method
-        // (the frame_result has the limit from just the last call)
-        let mut corrected_gas = Gas::new(evm.ctx().tx().gas_limit());
-        corrected_gas.set_remaining(result.gas().remaining());
-        corrected_gas.set_refund(accumulated_gas_refund);
-        corrected_gas.set_state_gas_spent(accumulated_state_gas_spent);
-        corrected_gas.set_reservoir(reservoir);
+        // Replace the last call's gas wholesale with the batch tracker
+        // (the frame_result has the limit from just the last call).
+        let mut corrected_gas = Gas::default();
+        *corrected_gas.tracker_mut() = batch_gas;
 
         *result.gas_mut() = corrected_gas;
 
@@ -2213,7 +2239,13 @@ where
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         let init_and_floor_gas = self.validate(evm)?;
         let mut gas = self.tx_gas(evm, &init_and_floor_gas);
-        self.pre_execution(evm, &mut gas)?;
+        // `pre_execution` leaves the EIP-2780 runtime gas phase checkpoint
+        // open for `execution` to settle. Validation never runs execution, so
+        // commit it here to discard the checkpoint. On `None` (runtime
+        // out-of-gas) `pre_execution` already reverted it.
+        if self.pre_execution(evm, &mut gas)?.is_some() {
+            evm.ctx().journal_mut().checkpoint_commit();
+        }
         let result = ValidationContext {
             fee_token: evm
                 .fee_token
