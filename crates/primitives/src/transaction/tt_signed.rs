@@ -214,6 +214,59 @@ impl AASigned {
         self.signature.encode(out);
     }
 
+    /// Decodes a signed transaction from the fee-payer service encoding.
+    ///
+    /// Inverse of [`Self::encode_for_fee_payer_service`]: the fee payer signature field must
+    /// request sponsorship, which decodes to
+    /// [`FEE_PAYER_SIGNATURE_MARKER`](super::FEE_PAYER_SIGNATURE_MARKER). Matching `ox`/`viem`
+    /// deserialization, sponsorship is requested either with the `0x00` placeholder or with a
+    /// bare sender address in the signature slot; the latter is used by multisig finalize flows
+    /// where the sender cannot be recovered from the (still incomplete) sender signature, and is
+    /// returned as the second tuple element. The sender signature and all other fields decode
+    /// exactly like the standard encoding, so a sponsor can fill the sponsor-owned fields (fee
+    /// token and fee payer signature) and re-encode the transaction with
+    /// [`Encodable2718::encode_2718`].
+    pub fn decode_for_fee_payer_service(
+        buf: &mut &[u8],
+    ) -> alloy_rlp::Result<(Self, Option<Address>)> {
+        match buf.split_first() {
+            Some((&TEMPO_TX_TYPE_ID, rest)) => *buf = rest,
+            Some(_) => {
+                return Err(alloy_rlp::Error::Custom(
+                    "fee payer service encoding must start with the Tempo transaction type",
+                ));
+            }
+            None => return Err(alloy_rlp::Error::InputTooShort),
+        }
+
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        let remaining = buf.len();
+
+        if header.payload_length > remaining {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        // Decode transaction fields with the fee payer signature sponsorship request
+        let (tx, explicit_sender) = TempoTransaction::rlp_decode_fields_for_fee_payer_service(buf)?;
+
+        // Decode signature bytes
+        let sig_bytes: Bytes = Decodable::decode(buf)?;
+
+        // Check that we consumed the expected amount
+        let consumed = remaining - buf.len();
+        if consumed != header.payload_length {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+
+        // Parse signature
+        let signature = TempoSignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
+
+        Ok((Self::new_unhashed(tx, signature), explicit_sender))
+    }
+
     /// Splits the transaction into parts.
     pub fn into_parts(self) -> (TempoTransaction, TempoSignature, B256) {
         let hash = *self.hash();
@@ -555,12 +608,16 @@ mod serde_impl {
 mod tests {
     use super::*;
     use crate::transaction::{
+        Authorization, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SignatureType,
+        TempoSignedAuthorization, TokenLimit,
         tempo_transaction::Call,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
         tt_signature::PrimitiveSignature,
     };
     use alloy_consensus::transaction::SignerRecoverable;
+    use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use core::num::NonZeroU64;
     use proptest::prelude::*;
@@ -585,6 +642,233 @@ mod tests {
             AASigned::new_unhashed(tx.clone(), signature.clone()),
             AASigned::new_unhashed(tx, signature),
         )
+    }
+
+    fn service_encoded(tx: &AASigned) -> Vec<u8> {
+        let mut buf = Vec::new();
+        tx.encode_for_fee_payer_service(&mut buf);
+        buf
+    }
+
+    #[test]
+    fn test_decode_for_fee_payer_service_roundtrips_sponsorship_request() {
+        let mut tx = make_tx();
+        tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        let (signed, _) = signed_pair_for_tx(tx);
+
+        let encoded = service_encoded(&signed);
+        let (decoded, explicit_sender) =
+            AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+
+        assert_eq!(
+            explicit_sender, None,
+            "placeholder form carries no explicit sender"
+        );
+        assert_eq!(decoded.tx(), signed.tx());
+        assert_eq!(decoded.signature(), signed.signature());
+        assert_eq!(*decoded.hash(), *signed.hash());
+        assert_eq!(
+            decoded.recover_signer().unwrap(),
+            signed.recover_signer().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_decode_for_fee_payer_service_accepts_sender_address_form() {
+        let mut tx = make_tx();
+        tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        let (signed, _) = signed_pair_for_tx(tx);
+        let sender = signed.recover_signer().unwrap();
+
+        // ox/viem also serialize sponsorship requests with the bare sender address in the fee
+        // payer signature slot; build that wire form with the address encoding closure.
+        let payload_length = signed
+            .tx()
+            .rlp_encoded_fields_length(|_| sender.length(), true)
+            + signed.signature().length();
+        let mut encoded = vec![TEMPO_TX_TYPE_ID];
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        signed
+            .tx()
+            .rlp_encode_fields(&mut encoded, |_, out| sender.encode(out), true);
+        signed.signature().encode(&mut encoded);
+
+        let (decoded, explicit_sender) =
+            AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+
+        assert_eq!(explicit_sender, Some(sender));
+        assert_eq!(decoded.tx(), signed.tx());
+        assert_eq!(decoded.signature(), signed.signature());
+        assert_eq!(*decoded.hash(), *signed.hash());
+    }
+
+    #[test]
+    fn test_decode_for_fee_payer_service_normalizes_sponsor_owned_fields() {
+        let mut tx = make_tx();
+        tx.fee_token = Some(Address::repeat_byte(0x20));
+        tx.fee_payer_signature = Some(Signature::test_signature());
+        let (signed, _) = signed_pair_for_tx(tx.clone());
+
+        let encoded = service_encoded(&signed);
+        let (decoded, _) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+
+        // The service encoding strips the two sponsor-owned fields.
+        tx.fee_token = None;
+        tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        assert_eq!(decoded.tx(), &tx);
+        assert_eq!(decoded.signature(), signed.signature());
+    }
+
+    #[test]
+    fn test_decode_for_fee_payer_service_roundtrips_all_fields() {
+        let key_authorization = KeyAuthorization {
+            chain_id: 42170,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::repeat_byte(0x77),
+            expiry: NonZeroU64::new(1_700_100_000),
+            limits: Some(vec![TokenLimit {
+                token: Address::repeat_byte(0x42),
+                limit: U256::from(1_000_000u64),
+                period: 86400,
+            }]),
+            allowed_calls: None,
+            witness: None,
+            is_admin: false,
+            account: None,
+        }
+        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let tx = TempoTransaction {
+            chain_id: 42170,
+            fee_token: None,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 50_000_000_000,
+            gas_limit: 1_000_000,
+            calls: vec![
+                Call {
+                    to: TxKind::Call(Address::repeat_byte(0x42)),
+                    value: U256::from(7u64),
+                    input: Bytes::from(vec![1, 2, 3]),
+                },
+                Call {
+                    to: TxKind::Call(Address::repeat_byte(0x43)),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+            ],
+            access_list: AccessList(vec![AccessListItem {
+                address: Address::repeat_byte(0x01),
+                storage_keys: vec![B256::ZERO],
+            }]),
+            nonce_key: U256::from(7u64),
+            nonce: 42,
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
+            valid_before: NonZeroU64::new(1_700_001_000),
+            valid_after: NonZeroU64::new(1_700_000_000),
+            key_authorization: Some(key_authorization),
+            tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::from(42170u64),
+                    address: Address::repeat_byte(0x99),
+                    nonce: 1,
+                },
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            )],
+        };
+        let (signed, _) = signed_pair_for_tx(tx);
+
+        let encoded = service_encoded(&signed);
+        let (decoded, _) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+
+        assert_eq!(decoded.tx(), signed.tx());
+        assert_eq!(decoded.signature(), signed.signature());
+        assert_eq!(*decoded.hash(), *signed.hash());
+    }
+
+    #[test]
+    fn test_decode_for_fee_payer_service_supports_sponsor_completion() {
+        let mut tx = make_tx();
+        tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        let (signed, _) = signed_pair_for_tx(tx);
+        let sender = signed.recover_signer().unwrap();
+
+        let encoded = service_encoded(&signed);
+        let (decoded, _) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+
+        // The sponsor fills the sponsor-owned fields: the fee token it pays with and its fee
+        // payer signature over the digest, which commits to the fee token.
+        let (mut tx, sender_signature, _) = decoded.into_parts();
+        tx.fee_token = Some(Address::repeat_byte(0x20));
+        let fee_payer = PrivateKeySigner::from_bytes(&B256::with_last_byte(2)).unwrap();
+        tx.fee_payer_signature = Some(
+            fee_payer
+                .sign_hash_sync(&tx.fee_payer_signature_hash(sender))
+                .unwrap(),
+        );
+        let sponsored = tx.into_signed(sender_signature);
+
+        // The completed transaction round-trips through the standard encoding with the sender
+        // signature intact.
+        let mut standard = Vec::new();
+        sponsored.encode_2718(&mut standard);
+        let sponsored = AASigned::decode_2718(&mut standard.as_slice()).unwrap();
+        assert_eq!(sponsored.recover_signer().unwrap(), sender);
+        assert_eq!(
+            sponsored.tx().recover_fee_payer(sender).unwrap(),
+            fee_payer.address()
+        );
+    }
+
+    #[test]
+    fn test_decode_for_fee_payer_service_rejects_other_encodings() {
+        let mut tx = make_tx();
+        tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        let (signed, _) = signed_pair_for_tx(tx);
+
+        // The standard encoding stores the marker as a real signature list, not the placeholder.
+        let mut standard = Vec::new();
+        signed.encode_2718(&mut standard);
+        let err = AASigned::decode_for_fee_payer_service(&mut standard.as_slice()).unwrap_err();
+        assert_eq!(
+            err,
+            alloy_rlp::Error::Custom(
+                "fee payer service encoding requires the 0x00 fee payer signature placeholder or a sender address"
+            )
+        );
+
+        // Unsponsored transactions (empty fee payer signature field) are rejected as well.
+        let (unsponsored, _) = signed_pair_for_tx(make_tx());
+        let mut standard = Vec::new();
+        unsponsored.encode_2718(&mut standard);
+        let err = AASigned::decode_for_fee_payer_service(&mut standard.as_slice()).unwrap_err();
+        assert_eq!(
+            err,
+            alloy_rlp::Error::Custom(
+                "fee payer service encoding requires the 0x00 fee payer signature placeholder or a sender address"
+            )
+        );
+
+        // Non-Tempo transaction type byte.
+        let err = AASigned::decode_for_fee_payer_service(&mut [0x02, 0xc0].as_ref()).unwrap_err();
+        assert_eq!(
+            err,
+            alloy_rlp::Error::Custom(
+                "fee payer service encoding must start with the Tempo transaction type"
+            )
+        );
+
+        // Empty and truncated input.
+        assert!(AASigned::decode_for_fee_payer_service(&mut [].as_ref()).is_err());
+        let encoded = service_encoded(&signed);
+        assert!(
+            AASigned::decode_for_fee_payer_service(&mut encoded[..encoded.len() - 2].as_ref())
+                .is_err()
+        );
     }
 
     fn arb_address() -> impl Strategy<Value = Address> {
@@ -951,6 +1235,26 @@ mod tests {
 
             prop_assert_eq!(helper_signer, individual_signer);
             prop_assert_eq!(helper_expiring_nonce_hash, None);
+        }
+
+        #[test]
+        fn proptest_fee_payer_service_encoding_roundtrips(tx in arb_tempo_tx()) {
+            prop_assume!(tx.validate().is_ok());
+            let (signed, _) = signed_pair_for_tx(tx.clone());
+
+            let mut encoded = Vec::new();
+            signed.encode_for_fee_payer_service(&mut encoded);
+            let (decoded, explicit_sender) = AASigned::decode_for_fee_payer_service(&mut encoded.as_slice()).unwrap();
+            prop_assert_eq!(explicit_sender, None);
+
+            // The service encoding strips the sponsor-owned fields; everything else round-trips.
+            let expected = TempoTransaction {
+                fee_token: None,
+                fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
+                ..tx
+            };
+            prop_assert_eq!(decoded.tx(), &expected);
+            prop_assert_eq!(decoded.signature(), signed.signature());
         }
     }
 }

@@ -661,6 +661,99 @@ impl TempoTransaction {
         Ok(tx)
     }
 
+    /// Decodes the inner `TempoTransaction` fields from the fee-payer service encoding.
+    ///
+    /// Inverse of the field encoding produced by [`Self::encode_for_fee_payer_service`]: the fee
+    /// payer signature field must carry a sponsorship request, which decodes to
+    /// [`FEE_PAYER_SIGNATURE_MARKER`]. Sponsorship is requested either with the single-byte
+    /// `0x00` placeholder or with the bare sender address used by multisig finalize flows; the
+    /// address is returned alongside the fields when present. All other fields decode exactly
+    /// like [`Self::rlp_decode_fields`]; in particular the fee token stays optional, since the
+    /// service encoding leaves it empty for the sponsor to fill.
+    pub(crate) fn rlp_decode_fields_for_fee_payer_service(
+        buf: &mut &[u8],
+    ) -> alloy_rlp::Result<(Self, Option<Address>)> {
+        let chain_id = Decodable::decode(buf)?;
+        let max_priority_fee_per_gas = Decodable::decode(buf)?;
+        let max_fee_per_gas = Decodable::decode(buf)?;
+        let gas_limit = Decodable::decode(buf)?;
+        let calls = Decodable::decode(buf)?;
+        let access_list = Decodable::decode(buf)?;
+        let nonce_key = Decodable::decode(buf)?;
+        let nonce = Decodable::decode(buf)?;
+
+        let valid_before = u64::decode(buf).map(NonZeroU64::new)?;
+        let valid_after = u64::decode(buf).map(NonZeroU64::new)?;
+
+        let fee_token = if let Some(first) = buf.first() {
+            if *first == EMPTY_STRING_CODE {
+                buf.advance(1);
+                None
+            } else {
+                TxKind::decode(buf)?.into_to()
+            }
+        } else {
+            return Err(alloy_rlp::Error::InputTooShort);
+        };
+
+        // `0x80 + 20` is the RLP string header of a 20-byte address item.
+        const ADDRESS_ITEM_HEADER: u8 = EMPTY_STRING_CODE + Address::len_bytes() as u8;
+        let (fee_payer_signature, explicit_sender) = if let Some(first) = buf.first() {
+            if *first == 0x00 {
+                buf.advance(1);
+                (Some(FEE_PAYER_SIGNATURE_MARKER), None)
+            } else if *first == ADDRESS_ITEM_HEADER {
+                (
+                    Some(FEE_PAYER_SIGNATURE_MARKER),
+                    Some(Address::decode(buf)?),
+                )
+            } else {
+                return Err(alloy_rlp::Error::Custom(
+                    "fee payer service encoding requires the 0x00 fee payer signature placeholder or a sender address",
+                ));
+            }
+        } else {
+            return Err(alloy_rlp::Error::InputTooShort);
+        };
+
+        let tempo_authorization_list = Decodable::decode(buf)?;
+
+        // Decode optional key_authorization field at the end, mirroring `rlp_decode_fields`:
+        // a KeyAuthorization is always an RLP list, anything else is trailing data of the
+        // enclosing encoding (the sender signature bytes in the AASigned context).
+        let key_authorization = if let Some(&first) = buf.first() {
+            if first >= 0xc0 {
+                Some(Decodable::decode(buf)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let tx = Self {
+            chain_id,
+            fee_token,
+            max_priority_fee_per_gas,
+            max_fee_per_gas,
+            gas_limit,
+            calls,
+            access_list,
+            nonce_key,
+            nonce,
+            fee_payer_signature,
+            valid_before,
+            valid_after,
+            key_authorization,
+            tempo_authorization_list,
+        };
+
+        // Validate the transaction
+        tx.validate().map_err(alloy_rlp::Error::Custom)?;
+
+        Ok((tx, explicit_sender))
+    }
+
     /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).
     pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
         has_sub_block_nonce_key_prefix(&self.nonce_key)
