@@ -355,6 +355,7 @@ env:
 permissions:
   contents: read
   id-token: write
+  statuses: write # zizmor: ignore[excessive-permissions] -- completes the benchmark gate for PR runs
 
 jobs:
   bench-e2e:
@@ -1261,4 +1262,24 @@ jobs:
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Benchmark cancelled. [View logs](${jobUrl})`,
+            });
+
+      - name: Complete benchmark gate
+        if: always() && env.BENCH_PR_HEAD_SHA
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const status = process.env.BENCH_JOB_STATUS;
+            const state = status === 'success' ? 'success' : status === 'cancelled' ? 'error' : 'failure';
+            const jobUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.BENCH_PR_HEAD_SHA,
+              state,
+              context: 'Benchmark run',
+              description: status === 'success' ? 'Benchmark completed for this revision' : `Benchmark ${status}`,
+              target_url: jobUrl,
             });

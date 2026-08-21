@@ -180,6 +180,7 @@ env:
 permissions:
   contents: read
   id-token: write
+  statuses: write # zizmor: ignore[excessive-permissions] -- completes the benchmark gate for PR runs
 
 jobs:
   bench-replay:
@@ -717,6 +718,26 @@ jobs:
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Replay benchmark failed. [View logs](${jobUrl})`,
+            });
+
+      - name: Complete benchmark gate
+        if: always() && env.BENCH_PR_HEAD_SHA
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          BENCH_JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const status = process.env.BENCH_JOB_STATUS;
+            const state = status === 'success' ? 'success' : status === 'cancelled' ? 'error' : 'failure';
+            const jobUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.BENCH_PR_HEAD_SHA,
+              state,
+              context: 'Benchmark run',
+              description: status === 'success' ? 'Benchmark completed for this revision' : `Benchmark ${status}`,
+              target_url: jobUrl,
             });
 
       - name: Send Slack notification (failure)

@@ -19,6 +19,7 @@ permissions:
   contents: read
   issues: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows
   pull-requests: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows
+  statuses: write # zizmor: ignore[excessive-permissions] -- required by reusable workflows to complete the benchmark gate
 
 jobs:
   tempo-bench-ack:
