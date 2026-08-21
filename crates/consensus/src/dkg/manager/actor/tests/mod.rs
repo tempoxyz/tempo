@@ -1,6 +1,6 @@
 //! Standalone DKG manager actor tests.
 
-mod utils;
+mod harness;
 
 use std::time::Duration;
 
@@ -10,13 +10,12 @@ use commonware_cryptography::{
     bls12381::primitives::group::{Private, Share},
     ed25519::PrivateKey,
 };
-use commonware_math::algebra::Random as _;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use commonware_utils::ordered::Quorum as _;
 use futures::channel::oneshot;
 
 use super::*;
-use utils::{
+use harness::{
     EpochEvent, Harness, StubExecutionProvider, TestNetwork, block, dkg_state, header,
     outcome_header, revealed_recovery_fixture,
 };
