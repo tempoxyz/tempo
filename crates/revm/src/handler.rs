@@ -64,7 +64,7 @@ use crate::{
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_credits,
-    signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
+    signature_gas::tempo_signature_verification_gas,
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -298,9 +298,9 @@ fn calculate_key_authorization_gas(
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> (u64, u64) {
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
-    // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
+    // tempo_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + tempo_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -1371,7 +1371,11 @@ where
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
-                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
+                let key_auth_sig_type: u8 = key_auth
+                    .signature
+                    .signature_type()
+                    .expect("non-primitive key authorization rejected in validate_env")
+                    .into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
@@ -1802,6 +1806,10 @@ where
 
             if aa_env.signature.is_multisig()
                 || aa_env
+                    .key_authorization
+                    .as_ref()
+                    .is_some_and(|authorization| authorization.signature.is_multisig())
+                || aa_env
                     .tempo_authorization_list
                     .iter()
                     .any(|authorization| authorization.signature().is_multisig())
@@ -1835,6 +1843,22 @@ where
                 auth.signature()
                     .validate_version(cfg.spec().is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
+            }
+            if let Some(key_auth) = &aa_env.key_authorization {
+                key_auth
+                    .signature
+                    .validate_version(cfg.spec().is_t1c())
+                    .map_err(TempoInvalidTransaction::from)?;
+                if key_auth.signature.is_keychain() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "key authorization signatures cannot use keychain encoding"
+                            .to_string(),
+                    }
+                    .into());
+                }
+                if key_auth.signature.is_multisig() {
+                    return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
+                }
             }
 
             let has_keychain_fields =
@@ -2014,7 +2038,7 @@ where
                         }
 
                         if key_auth.signature.signature_type()
-                            != keychain_sig.signature.signature_type()
+                            != Some(keychain_sig.signature.signature_type())
                         {
                             return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason:
