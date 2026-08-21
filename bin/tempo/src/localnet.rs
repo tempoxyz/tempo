@@ -289,7 +289,7 @@ async fn wait_for_receipt(
     .await
     {
         Ok(result) => result,
-        Err(_) => bail!("timed out waiting for bootstrap transaction {hash}"),
+        Err(_) => Err(eyre!("timed out waiting for bootstrap transaction {hash}")),
     }
 }
 
