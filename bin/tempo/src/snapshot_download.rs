@@ -46,7 +46,7 @@ pub(crate) struct Args {
     )]
     skip_consensus: bool,
 
-    /// Consensus storage directory. If not set, this will be derived from --datadir.
+    /// Consensus storage directory. If not set, this will be derived from Reth's resolved data dir.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     consensus_datadir: Option<PathBuf>,
 }
@@ -54,16 +54,18 @@ pub(crate) struct Args {
 pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
-    let datadir = matches
-        .get_raw("datadir")
-        .and_then(|mut v| v.next())
-        .map(PathBuf::from)
-        .expect("--datadir must be set");
-
     let manifest_url = matches.get_one::<String>("manifest_url").cloned();
     let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
     let chain_id = args.inner.env().chain.chain().id();
+    let datadir = args
+        .inner
+        .env()
+        .datadir
+        .clone()
+        .resolve_datadir(args.inner.env().chain.chain())
+        .data_dir()
+        .to_path_buf();
 
     runner.block_on(async move {
         let manifest_source = if args.skip_consensus {
@@ -657,6 +659,30 @@ mod tests {
         .unwrap();
 
         assert!(!args.skip_consensus);
+    }
+
+    #[test]
+    fn default_datadir_resolves_for_selected_chain() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--chain",
+            "moderato",
+            "--manifest-url",
+            "https://snap/manifest.json",
+        ])
+        .unwrap();
+
+        let datadir = args
+            .inner
+            .env()
+            .datadir
+            .clone()
+            .resolve_datadir(args.inner.env().chain.chain())
+            .data_dir()
+            .to_path_buf();
+
+        assert!(datadir.is_absolute());
+        assert!(!datadir.ends_with("default"));
     }
 
     #[test]
