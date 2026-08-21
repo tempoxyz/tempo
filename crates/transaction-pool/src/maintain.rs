@@ -307,7 +307,7 @@ impl TempoPoolUpdates {
         (!self.multisig_config_changes.is_empty()
             && transaction.depends_on_multisig_config(&self.multisig_config_changes))
             || (!self.multisig_initializations.is_empty()
-                && transaction.uses_multisig_restricted_account(&self.multisig_initializations))
+                && transaction.authorizes_multisig_access_key(&self.multisig_initializations))
     }
 
     pub(crate) fn has_multisig_updates(&self) -> bool {
@@ -846,32 +846,6 @@ mod tests {
         updates.multisig_config_changes.clear();
         updates.multisig_config_changes.insert(key_id);
         assert!(!updates.affects_multisig_transaction(&key_transaction));
-
-        use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::U256;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        let authority = PrivateKeySigner::random();
-        let authorization = Authorization {
-            chain_id: U256::from(42431),
-            address: Address::random(),
-            nonce: 0,
-        };
-        let signature = authority
-            .sign_hash_sync(&authorization.signature_hash())
-            .unwrap();
-        let authorization = tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(
-            authorization,
-            tempo_primitives::transaction::TempoSignature::Primitive(
-                tempo_primitives::transaction::PrimitiveSignature::Secp256k1(signature),
-            ),
-        );
-        let authorization_transaction = TxBuilder::aa(parent)
-            .authorization_list(vec![authorization])
-            .build();
-        updates.multisig_config_changes.clear();
-        updates.multisig_initializations.insert(authority.address());
-        assert!(updates.affects_multisig_transaction(&authorization_transaction));
     }
 
     mod pending_staleness_tracker_tests {

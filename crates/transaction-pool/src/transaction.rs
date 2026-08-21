@@ -21,7 +21,6 @@ use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::{PoolTransactionError, RawPoolTransactionError},
 };
-use revm::context::transaction::AuthorizationTr;
 use std::{
     convert::Infallible,
     fmt::Debug,
@@ -247,60 +246,12 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this transaction uses one of the accounts newly subject to native
-    /// multisig registry restrictions.
-    pub(crate) fn uses_multisig_restricted_account(&self, accounts: &AddressSet) -> bool {
-        let authorization_uses_restricted_account = || {
-            if let Some(tx_env) = self.cached_tx_env() {
-                if let Some(aa_env) = tx_env.tempo_tx_env.as_ref() {
-                    aa_env.tempo_authorization_list.iter().any(|authorization| {
-                        authorization
-                            .authority()
-                            .is_some_and(|authority| accounts.contains(&authority))
-                    })
-                } else {
-                    tx_env.inner.authorization_list.iter().any(|authorization| {
-                        authorization
-                            .authority()
-                            .is_some_and(|authority| accounts.contains(&authority))
-                    })
-                }
-            } else if let Some(aa_tx) = self.inner().as_aa() {
-                aa_tx
-                    .tx()
-                    .tempo_authorization_list
-                    .iter()
-                    .any(|authorization| {
-                        authorization
-                            .recover_authority()
-                            .is_ok_and(|authority| accounts.contains(&authority))
-                    })
-            } else {
-                self.inner()
-                    .authorization_list()
-                    .is_some_and(|authorizations| {
-                        authorizations.iter().any(|authorization| {
-                            authorization
-                                .recover_authority()
-                                .is_ok_and(|authority| accounts.contains(&authority))
-                        })
-                    })
-            }
-        };
-
-        if let Some(aa_tx) = self.inner().as_aa() {
-            let tx = aa_tx.tx();
-            tx.key_authorization
-                .as_ref()
-                .is_some_and(|authorization| accounts.contains(&authorization.authorization.key_id))
-                || (tx.fee_payer_signature.is_some()
-                    && self
-                        .fee_payer()
-                        .is_ok_and(|fee_payer| accounts.contains(&fee_payer)))
-                || authorization_uses_restricted_account()
-        } else {
-            authorization_uses_restricted_account()
-        }
+    /// Returns whether this transaction newly authorizes one of `accounts` as an access key.
+    pub(crate) fn authorizes_multisig_access_key(&self, accounts: &AddressSet) -> bool {
+        self.inner()
+            .as_aa()
+            .and_then(|tx| tx.tx().key_authorization.as_ref())
+            .is_some_and(|authorization| accounts.contains(&authorization.authorization.key_id))
     }
 
     /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
@@ -1033,6 +984,7 @@ mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
+    use alloy_eips::eip7702::Authorization;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1043,9 +995,9 @@ mod tests {
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
         KeyAuthorization, MultisigSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
-        TempoTransaction,
+        TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     };
 
@@ -1241,31 +1193,37 @@ mod tests {
     }
 
     #[test]
-    fn multisig_restriction_checks_reuse_cached_authorities() {
-        use alloy_eips::eip7702::Authorization;
-        use tempo_primitives::transaction::TempoSignedAuthorization;
+    fn multisig_initialization_tracks_only_access_key_targets() {
+        let account = Address::random();
+        let key_id = Address::random();
+        let key_authorization =
+            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, key_id)
+                .with_account(account)
+                .into_signed(TempoSignature::Primitive(PrimitiveSignature::default()));
+        let key_transaction = TxBuilder::aa(account)
+            .key_authorization(key_authorization)
+            .build();
+        assert!(key_transaction.authorizes_multisig_access_key(&AddressSet::from_iter([key_id])));
 
-        let authority = PrivateKeySigner::random();
-        let authorization = Authorization {
-            chain_id: U256::ONE,
-            nonce: 0,
-            address: Address::random(),
-        };
-        let signature = authority
-            .sign_hash_sync(&authorization.signature_hash())
-            .unwrap();
+        let authority = Address::random();
         let authorization = TempoSignedAuthorization::new_unchecked(
-            authorization,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            Authorization {
+                chain_id: U256::from(42431),
+                address: Address::random(),
+                nonce: 0,
+            },
+            TempoSignature::Keychain(KeychainSignature::new(
+                authority,
+                PrimitiveSignature::default(),
+            )),
         );
-        let transaction = TxBuilder::aa(Address::random())
+        let authorization_transaction = TxBuilder::aa(account)
             .authorization_list(vec![authorization])
             .build();
-        let restricted = AddressSet::from_iter([authority.address()]);
-
-        assert!(transaction.uses_multisig_restricted_account(&restricted));
-        let _ = transaction.tx_env();
-        assert!(transaction.uses_multisig_restricted_account(&restricted));
+        assert!(
+            !authorization_transaction
+                .authorizes_multisig_access_key(&AddressSet::from_iter([authority]))
+        );
     }
 
     #[test]
