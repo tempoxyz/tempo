@@ -55,6 +55,7 @@ use super::super::{
 pub(super) struct Harness {
     context: Context,
     partition_prefix: String,
+    pub(super) epoch_strategy: FixedEpocher,
     me: PrivateKey,
     last_finalized_height: Height,
     initial_state: Option<State>,
@@ -68,38 +69,82 @@ pub(super) struct Harness {
     pub(super) epoch_manager: StubEpochManager,
 }
 
-impl Harness {
-    const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).unwrap();
+enum InitialState {
+    None,
+    Epoch(Epoch),
+    State(State),
+}
 
-    pub(super) fn epoch_strategy() -> FixedEpocher {
-        FixedEpocher::new(Self::EPOCH_LENGTH)
+pub(super) struct HarnessBuilder {
+    context: Context,
+    partition_prefix: String,
+    epoch_strategy: FixedEpocher,
+    me: PrivateKey,
+    last_finalized_height: Height,
+    initial_state: InitialState,
+    execution: StubExecutionProvider,
+    marshal: StubMarshal,
+    epoch_manager: StubEpochManager,
+    network: Option<TestNetwork>,
+}
+
+impl HarnessBuilder {
+    pub(super) fn epoch_length(mut self, epoch_length: u64) -> Self {
+        self.epoch_strategy = FixedEpocher::new(
+            NonZeroU64::new(epoch_length).expect("epoch length must be non-zero"),
+        );
+        self
     }
 
-    pub(super) async fn new(context: Context, partition_prefix: impl Into<String>) -> Self {
-        Self::from_state(context, partition_prefix, None).await
+    pub(super) fn initial_epoch(mut self, epoch: u64) -> Self {
+        self.initial_state = InitialState::Epoch(Epoch::new(epoch));
+        self
     }
 
-    pub(super) async fn with_initial_state(
-        mut context: Context,
-        partition_prefix: impl Into<String>,
-        epoch: u64,
-    ) -> Self {
-        let (initial_state, _) = dkg_state(&mut context, Epoch::new(epoch), 4, false);
-        Self::from_state(context, partition_prefix, initial_state).await
+    pub(super) fn initial_state(mut self, state: State) -> Self {
+        self.initial_state = InitialState::State(state);
+        self
     }
 
-    pub(super) async fn from_state(
-        context: Context,
-        partition_prefix: impl Into<String>,
-        initial_state: impl Into<Option<State>>,
-    ) -> Self {
-        let partition_prefix = partition_prefix.into();
-        let initial_state = initial_state.into();
+    pub(super) fn me(mut self, me: PrivateKey) -> Self {
+        self.me = me;
+        self
+    }
+
+    pub(super) fn last_finalized_height(mut self, height: Height) -> Self {
+        self.last_finalized_height = height;
+        self
+    }
+
+    pub(super) fn last_finalized_epoch(mut self, epoch: Epoch) -> Self {
+        self.last_finalized_height = self
+            .epoch_strategy
+            .last(epoch)
+            .expect("test epoch must have a final height");
+        self
+    }
+
+    pub(super) fn execution(mut self, execution: StubExecutionProvider) -> Self {
+        self.execution = execution;
+        self
+    }
+
+    pub(super) fn network(mut self, network: TestNetwork) -> Self {
+        self.network = Some(network);
+        self
+    }
+
+    pub(super) async fn build(mut self) -> Harness {
+        let initial_state = match self.initial_state {
+            InitialState::None => None,
+            InitialState::Epoch(epoch) => Some(dkg_state(&mut self.context, epoch, 4, false).0),
+            InitialState::State(state) => Some(state),
+        };
         let storage = if let Some(state) = initial_state.clone() {
             Some(
                 state::builder()
-                    .partition_prefix(&partition_prefix)
-                    .init_unverified(context.child("storage"))
+                    .partition_prefix(&self.partition_prefix)
+                    .init_unverified(self.context.child("storage"))
                     .await
                     .unwrap()
                     .init_verified(state)
@@ -110,20 +155,38 @@ impl Harness {
             None
         };
 
-        Self {
-            context,
-            partition_prefix,
-            me: PrivateKey::from_seed(0),
-            last_finalized_height: Height::new(9),
+        Harness {
+            context: self.context,
+            partition_prefix: self.partition_prefix,
+            epoch_strategy: self.epoch_strategy,
+            me: self.me,
+            last_finalized_height: self.last_finalized_height,
             initial_state,
             storage,
             mailbox: None,
             handle: None,
             sender: RecordingSender::default(),
-            network: None,
+            network: self.network,
+            execution: self.execution,
+            marshal: self.marshal,
+            epoch_manager: self.epoch_manager,
+        }
+    }
+}
+
+impl Harness {
+    pub(super) fn builder(context: Context, partition_prefix: impl Into<String>) -> HarnessBuilder {
+        HarnessBuilder {
+            context,
+            partition_prefix: partition_prefix.into(),
+            epoch_strategy: FixedEpocher::new(NonZeroU64::new(10).unwrap()),
+            me: PrivateKey::from_seed(0),
+            last_finalized_height: Height::new(9),
+            initial_state: InitialState::None,
             execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
             epoch_manager: StubEpochManager::default(),
+            network: None,
         }
     }
 
@@ -131,26 +194,6 @@ impl Harness {
         self.initial_state
             .as_ref()
             .expect("DKG state was not initialized by the harness")
-    }
-
-    pub(super) fn with_me(mut self, me: PrivateKey) -> Self {
-        self.me = me;
-        self
-    }
-
-    pub(super) fn with_last_finalized_height(mut self, height: Height) -> Self {
-        self.last_finalized_height = height;
-        self
-    }
-
-    pub(super) fn with_execution(mut self, execution: StubExecutionProvider) -> Self {
-        self.execution = execution;
-        self
-    }
-
-    pub(super) fn with_network(mut self, network: TestNetwork) -> Self {
-        self.network = Some(network);
-        self
     }
 
     pub(super) fn storage(&self) -> &state::Storage<Context> {
@@ -171,7 +214,7 @@ impl Harness {
         let (actor, mailbox) = init(
             self.context.child("actor"),
             Config {
-                epoch_strategy: Self::epoch_strategy(),
+                epoch_strategy: self.epoch_strategy.clone(),
                 epoch_manager: self.epoch_manager.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.me.clone(),
@@ -656,12 +699,12 @@ pub(super) struct AckedRecoveryFixture {
     pub(super) local_key: PrivateKey,
     pub(super) local_dealing: (PublicKey, DealerPubMsg<MinSig>, DealerPrivMsg),
     pub(super) recovered_share: Share,
+    signed_log: SignedDealerLog<MinSig, PrivateKey>,
+    recovered_state: State,
 }
 
 pub(super) fn acked_recovery_fixture(
     rng: &mut impl CryptoRng,
-    execution: &StubExecutionProvider,
-    epoch_strategy: &FixedEpocher,
     ceremony_epoch: Epoch,
 ) -> AckedRecoveryFixture {
     // A single validator is enough to exercise the ACK/dealing invariant while
@@ -712,33 +755,44 @@ pub(super) fn acked_recovery_fixture(
         is_full_dkg: false,
     };
 
-    // Model the finalized chain seen on restart: the ceremony input at the
-    // preceding boundary, a dealer log during the ceremony, then its output.
-    let previous_epoch = ceremony_epoch
-        .previous()
-        .expect("recovery fixture requires a non-genesis ceremony epoch");
-    let ceremony_boundary = epoch_strategy
-        .last(previous_epoch)
-        .expect("test epoch must have a final height");
-    execution.add_header(outcome_header(ceremony_boundary, &ceremony_state));
-
-    let ceremony_start = epoch_strategy
-        .first(ceremony_epoch)
-        .expect("test epoch must have a first height");
-    let mut log_header = header(ceremony_start);
-    log_header.inner.extra_data = signed_log.encode().into();
-    execution.add_header(log_header);
-
-    let output_boundary = epoch_strategy
-        .last(ceremony_epoch)
-        .expect("test epoch must have a final height");
-    execution.add_header(outcome_header(output_boundary, &recovered_state));
-
     AckedRecoveryFixture {
         ceremony_state,
-        expected_output: recovered_state.output,
+        expected_output: recovered_state.output.clone(),
         local_key,
         local_dealing: (dealer_public_key, public_message, private_message),
         recovered_share,
+        signed_log,
+        recovered_state,
+    }
+}
+
+impl AckedRecoveryFixture {
+    pub(super) fn populate_execution(
+        &self,
+        execution: &StubExecutionProvider,
+        epoch_strategy: &FixedEpocher,
+    ) {
+        // Model the finalized chain seen on restart: the ceremony input at the
+        // preceding boundary, a dealer log during the ceremony, then its output.
+        let ceremony_epoch = self.ceremony_state.epoch;
+        let previous_epoch = ceremony_epoch
+            .previous()
+            .expect("recovery fixture requires a non-genesis ceremony epoch");
+        let ceremony_boundary = epoch_strategy
+            .last(previous_epoch)
+            .expect("test epoch must have a final height");
+        execution.add_header(outcome_header(ceremony_boundary, &self.ceremony_state));
+
+        let ceremony_start = epoch_strategy
+            .first(ceremony_epoch)
+            .expect("test epoch must have a first height");
+        let mut log_header = header(ceremony_start);
+        log_header.inner.extra_data = self.signed_log.encode().into();
+        execution.add_header(log_header);
+
+        let output_boundary = epoch_strategy
+            .last(ceremony_epoch)
+            .expect("test epoch must have a final height");
+        execution.add_header(outcome_header(output_boundary, &self.recovered_state));
     }
 }
