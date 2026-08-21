@@ -22,9 +22,7 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::feldman_desmedt::{
-            self as dkg, DealerPrivMsg, DealerPubMsg, Logs, Output, SignedDealerLog,
-        },
+        dkg::feldman_desmedt::{self as dkg, Logs, Output, SignedDealerLog},
         primitives::{group::Share, sharing::Sharing, variant::MinSig},
     },
     ed25519::{Batch, PrivateKey, PublicKey},
@@ -56,7 +54,7 @@ pub(super) struct Harness {
     context: Context,
     partition_prefix: String,
     pub(super) epoch_strategy: FixedEpocher,
-    me: PrivateKey,
+    identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: Option<State>,
     storage: Option<state::Storage<Context>>,
@@ -79,7 +77,7 @@ pub(super) struct HarnessBuilder {
     context: Context,
     partition_prefix: String,
     epoch_strategy: FixedEpocher,
-    me: PrivateKey,
+    identity: PrivateKey,
     last_finalized_height: Height,
     initial_state: InitialState,
     execution: StubExecutionProvider,
@@ -106,21 +104,13 @@ impl HarnessBuilder {
         self
     }
 
-    pub(super) fn me(mut self, me: PrivateKey) -> Self {
-        self.me = me;
+    pub(super) fn identity(mut self, identity: PrivateKey) -> Self {
+        self.identity = identity;
         self
     }
 
-    pub(super) fn last_finalized_height(mut self, height: Height) -> Self {
+    pub(super) fn finalized_floor(mut self, height: Height) -> Self {
         self.last_finalized_height = height;
-        self
-    }
-
-    pub(super) fn last_finalized_epoch(mut self, epoch: Epoch) -> Self {
-        self.last_finalized_height = self
-            .epoch_strategy
-            .last(epoch)
-            .expect("test epoch must have a final height");
         self
     }
 
@@ -159,7 +149,7 @@ impl HarnessBuilder {
             context: self.context,
             partition_prefix: self.partition_prefix,
             epoch_strategy: self.epoch_strategy,
-            me: self.me,
+            identity: self.identity,
             last_finalized_height: self.last_finalized_height,
             initial_state,
             storage,
@@ -180,7 +170,7 @@ impl Harness {
             context,
             partition_prefix: partition_prefix.into(),
             epoch_strategy: FixedEpocher::new(NonZeroU64::new(10).unwrap()),
-            me: PrivateKey::from_seed(0),
+            identity: PrivateKey::from_seed(0),
             last_finalized_height: Height::new(9),
             initial_state: InitialState::None,
             execution: StubExecutionProvider::default(),
@@ -202,12 +192,6 @@ impl Harness {
             .expect("DKG storage is not open while the actor is running")
     }
 
-    pub(super) fn storage_mut(&mut self) -> &mut state::Storage<Context> {
-        self.storage
-            .as_mut()
-            .expect("DKG storage is not open while the actor is running")
-    }
-
     pub(super) async fn start(&mut self) {
         assert!(self.handle.is_none(), "DKG actor is already running");
         drop(self.storage.take());
@@ -217,7 +201,7 @@ impl Harness {
                 epoch_strategy: self.epoch_strategy.clone(),
                 epoch_manager: self.epoch_manager.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
-                me: self.me.clone(),
+                me: self.identity.clone(),
                 mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
@@ -231,7 +215,7 @@ impl Harness {
 
         self.mailbox = Some(mailbox);
         self.handle = Some(match &self.network {
-            Some(network) => actor.start(network.register(self.me.public_key())),
+            Some(network) => actor.start(network.register(self.identity.public_key())),
             None => actor.start((self.sender.clone(), InertReceiver)),
         });
     }
@@ -699,56 +683,61 @@ pub(super) fn dkg_state(
     )
 }
 
-pub(super) struct AckedRecoveryFixture {
+pub(super) struct RevealedRecoveryFixture {
     pub(super) ceremony_state: State,
     pub(super) expected_output: Output<MinSig, PublicKey>,
-    pub(super) local_key: PrivateKey,
-    pub(super) local_dealing: (PublicKey, DealerPubMsg<MinSig>, DealerPrivMsg),
+    pub(super) identity: PrivateKey,
     pub(super) recovered_share: Share,
-    signed_log: SignedDealerLog<MinSig, PrivateKey>,
+    signed_logs: Vec<SignedDealerLog<MinSig, PrivateKey>>,
     recovered_state: State,
 }
 
-pub(super) fn acked_recovery_fixture(
+pub(super) fn revealed_recovery_fixture(
     rng: &mut impl CryptoRng,
     ceremony_epoch: Epoch,
-) -> AckedRecoveryFixture {
-    // A single validator is enough to exercise the ACK/dealing invariant while
-    // keeping the cryptographic setup small. It acts as both dealer and player.
-    let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 1, true);
+) -> RevealedRecoveryFixture {
+    let (ceremony_state, keys, _) = dkg_state(rng, ceremony_epoch, 4, true);
     let round = Round::from_state(&ceremony_state, crate::config::NAMESPACE);
-    let local_key = keys[0].clone();
-    let local_public_key = local_key.public_key();
-
-    let mut local_player = dkg::Player::new(round.info().clone(), local_key.clone()).unwrap();
-    let (mut dealer, public_message, private_messages) =
-        dkg::Dealer::start::<N3f1>(&mut *rng, round.info().clone(), local_key.clone(), None)
-            .unwrap();
-    let (_, private_message) = private_messages.into_iter().next().unwrap();
-
-    // Have the player accept the private dealing and ACK it. The test persists
-    // this dealing before restart, while the ACK is committed to the dealer log.
-    let dkg::Verdict::Valid(ack) = local_player.dealer_message::<N3f1>(
-        local_public_key.clone(),
-        public_message.clone(),
-        private_message.clone(),
-    ) else {
-        panic!("test dealing must be valid");
-    };
-    dealer.receive_player_ack(local_public_key, ack).unwrap();
-
-    // Finalize the dealer side to produce the on-chain log containing the ACK.
-    let signed_log: SignedDealerLog<MinSig, PrivateKey> = dealer.finalize::<N3f1>();
-    let (dealer_public_key, log) = signed_log
-        .clone()
-        .check(round.info())
-        .expect("test dealer log must verify");
-
-    // Finalize the live player once to derive the output and share that startup
-    // recovery must reconstruct after replaying the persisted dealing.
+    let identity = keys[0].clone();
     let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-    logs.record(dealer_public_key.clone(), log);
-    let (output, recovered_share) = local_player
+    let mut signed_logs = Vec::new();
+    for dealer_key in keys.iter().take(3) {
+        let dealer_public_key = dealer_key.public_key();
+        let (mut dealer, public_message, private_messages) =
+            dkg::Dealer::start::<N3f1>(&mut *rng, round.info().clone(), dealer_key.clone(), None)
+                .unwrap();
+
+        for (player_public_key, private_message) in private_messages {
+            if player_public_key == identity.public_key() {
+                continue;
+            }
+            let player_key = keys
+                .iter()
+                .find(|key| key.public_key() == player_public_key)
+                .unwrap();
+            let mut player = dkg::Player::new(round.info().clone(), player_key.clone()).unwrap();
+            let dkg::Verdict::Valid(ack) = player.dealer_message::<N3f1>(
+                dealer_public_key.clone(),
+                public_message.clone(),
+                private_message,
+            ) else {
+                panic!("test dealing must be valid");
+            };
+            dealer.receive_player_ack(player_public_key, ack).unwrap();
+        }
+
+        // The recovering player sends no ACK, so each dealer log reveals its dealing for it.
+        let signed_log: SignedDealerLog<MinSig, PrivateKey> = dealer.finalize::<N3f1>();
+        let (dealer, log) = signed_log
+            .clone()
+            .check(round.info())
+            .expect("test dealer log must verify");
+        logs.record(dealer, log);
+        signed_logs.push(signed_log);
+    }
+
+    let player = dkg::Player::new(round.info().clone(), identity.clone()).unwrap();
+    let (output, recovered_share) = player
         .finalize::<N3f1, Batch>(&mut *rng, logs, &Sequential)
         .unwrap();
 
@@ -761,44 +750,36 @@ pub(super) fn acked_recovery_fixture(
         is_full_dkg: false,
     };
 
-    AckedRecoveryFixture {
+    RevealedRecoveryFixture {
         ceremony_state,
         expected_output: recovered_state.output.clone(),
-        local_key,
-        local_dealing: (dealer_public_key, public_message, private_message),
+        identity,
         recovered_share,
-        signed_log,
+        signed_logs,
         recovered_state,
     }
 }
 
-impl AckedRecoveryFixture {
+impl RevealedRecoveryFixture {
     pub(super) fn populate_execution(
         &self,
         execution: &StubExecutionProvider,
         epoch_strategy: &FixedEpocher,
     ) {
-        // Model the finalized chain seen on restart: the ceremony input at the
-        // preceding boundary, a dealer log during the ceremony, then its output.
         let ceremony_epoch = self.ceremony_state.epoch;
-        let previous_epoch = ceremony_epoch
-            .previous()
-            .expect("recovery fixture requires a non-genesis ceremony epoch");
         let ceremony_boundary = epoch_strategy
-            .last(previous_epoch)
-            .expect("test epoch must have a final height");
+            .last(ceremony_epoch.previous().unwrap())
+            .unwrap();
         execution.add_header(outcome_header(ceremony_boundary, &self.ceremony_state));
 
-        let ceremony_start = epoch_strategy
-            .first(ceremony_epoch)
-            .expect("test epoch must have a first height");
-        let mut log_header = header(ceremony_start);
-        log_header.inner.extra_data = self.signed_log.encode().into();
-        execution.add_header(log_header);
+        let ceremony_start = epoch_strategy.first(ceremony_epoch).unwrap();
+        for (offset, signed_log) in self.signed_logs.iter().enumerate() {
+            let mut log_header = header(Height::new(ceremony_start.get() + offset as u64));
+            log_header.inner.extra_data = signed_log.encode().into();
+            execution.add_header(log_header);
+        }
 
-        let output_boundary = epoch_strategy
-            .last(ceremony_epoch)
-            .expect("test epoch must have a final height");
+        let output_boundary = epoch_strategy.last(ceremony_epoch).unwrap();
         execution.add_header(outcome_header(output_boundary, &self.recovered_state));
     }
 }

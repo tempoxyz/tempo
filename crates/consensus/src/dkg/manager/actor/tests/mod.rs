@@ -17,8 +17,8 @@ use futures::channel::oneshot;
 
 use super::*;
 use utils::{
-    EpochEvent, Harness, StubExecutionProvider, TestNetwork, acked_recovery_fixture, block,
-    dkg_state, header, outcome_header,
+    EpochEvent, Harness, StubExecutionProvider, TestNetwork, block, dkg_state, header,
+    outcome_header, revealed_recovery_fixture,
 };
 
 #[test]
@@ -88,8 +88,8 @@ fn startup_discards_stale_state_on_startup() {
             .initial_epoch(1)
             // Exercise stale-state replacement as an observer, without
             // recovering a share from the previous epoch.
-            .me(PrivateKey::from_seed(u64::MAX))
-            .last_finalized_height(Height::new(19))
+            .identity(PrivateKey::from_seed(u64::MAX))
+            .finalized_floor(Height::new(19))
             .build()
             .await;
 
@@ -124,50 +124,27 @@ fn startup_discards_stale_state_on_startup() {
 }
 
 #[test]
-fn startup_recovers_an_acked_share_from_persisted_dealings() {
+fn startup_recovers_a_share_from_revealed_dealings() {
     Runner::default().start(|mut context| async move {
         let ceremony_epoch = Epoch::new(1);
-        let execution = StubExecutionProvider::default();
+        let fixture = revealed_recovery_fixture(&mut context, ceremony_epoch);
 
-        let fixture = acked_recovery_fixture(&mut context, ceremony_epoch);
+        // Since the finalized floor is the boundary of epoch 1, it will try look through this epoch
+        // to see if the share was revealed onchain.
         let mut harness =
-            Harness::builder(context.child("test"), "startup_recovers_persisted_dealings")
+            Harness::builder(context.child("test"), "startup_recovers_revealed_share")
                 .epoch_length(10)
-                .initial_state(fixture.ceremony_state.clone())
-                .execution(execution)
-                .me(fixture.local_key.clone())
-                .last_finalized_epoch(ceremony_epoch)
+                .identity(fixture.identity.clone())
+                .finalized_floor(Height::new(19))
                 .build()
                 .await;
 
         fixture.populate_execution(&harness.execution, &harness.epoch_strategy);
 
-        let round = Round::from_state(&fixture.ceremony_state, crate::config::NAMESPACE);
-        let persisted = harness.storage_mut();
-        let mut player = persisted
-            .create_player_for_round(fixture.local_key.clone(), &round)
-            .unwrap()
-            .unwrap();
-
-        let (dealer, public_message, private_message) = &fixture.local_dealing;
-        player
-            .receive_dealing(
-                persisted,
-                round.epoch(),
-                dealer.clone(),
-                public_message.clone(),
-                private_message.clone(),
-            )
-            .await
-            .unwrap();
-
-        drop(player);
-
         harness.start().await;
 
         // A mailbox round-trip ensures startup recovery and epoch entry have completed.
         assert!(!harness.has_dealer_log(ceremony_epoch.next()).await);
-
         assert_eq!(
             harness.epoch_manager.events(),
             vec![EpochEvent::Enter {
@@ -192,12 +169,12 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
         let mut harness = Harness::builder(context.child("test"), "startup_skips_failed_ceremony")
             .epoch_length(10)
             .initial_state(ceremony_state.clone())
-            .me(keys[0].clone())
-            .last_finalized_epoch(ceremony_epoch)
+            .identity(keys[0].clone())
+            .finalized_floor(Height::new(19))
             .build()
             .await;
-        let last_finalized_height = harness.epoch_strategy.last(ceremony_epoch).unwrap();
 
+        let last_finalized_height = Height::new(19);
         let ceremony_boundary = harness
             .epoch_strategy
             .last(ceremony_epoch.previous().unwrap())
@@ -235,15 +212,19 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
 fn failed_dkg_outcomes_carry_share_forward() {
     Runner::default().start(|mut context| async move {
         let (mut state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, false);
-        let me = keys[0].clone();
-        let index = state.output.players().index(&me.public_key()).unwrap();
+        let identity = keys[0].clone();
+        let index = state
+            .output
+            .players()
+            .index(&identity.public_key())
+            .unwrap();
         let share = Share::new(index, Private::random(&mut context));
         state.share = ShareState::Plaintext(Some(share.clone()));
 
         let mut harness = Harness::builder(context.child("test"), "failed_dkg_carries_share")
             .epoch_length(10)
             .initial_state(state.clone())
-            .me(me)
+            .identity(identity)
             .build()
             .await;
         harness.execution.set_next_players(state.players.clone());
@@ -331,8 +312,8 @@ fn startup_prepopulates_to_a_non_boundary_finalized_floor() {
             Harness::builder(context.child("test"), "prepopulates_non_boundary_floor")
                 .epoch_length(10)
                 .initial_epoch(1)
-                .me(PrivateKey::from_seed(u64::MAX))
-                .last_finalized_height(Height::new(22))
+                .identity(PrivateKey::from_seed(u64::MAX))
+                .finalized_floor(Height::new(22))
                 .build()
                 .await;
 
@@ -372,7 +353,7 @@ fn prepopulation_replays_only_missing_headers() {
         let mut harness = Harness::builder(context.child("test"), "prepopulation_missing_range")
             .epoch_length(10)
             .initial_epoch(1)
-            .last_finalized_height(Height::new(12))
+            .finalized_floor(Height::new(12))
             .build()
             .await;
 
@@ -416,7 +397,7 @@ fn prepopulation_skips_replay_when_dkg_state_is_ahead() {
         let mut harness = Harness::builder(context.child("test"), "prepopulation_ahead")
             .epoch_length(10)
             .initial_epoch(1)
-            .last_finalized_height(Height::new(8))
+            .finalized_floor(Height::new(8))
             .build()
             .await;
 
@@ -447,7 +428,7 @@ fn prepopulation_fails_when_required_header_is_unavailable() {
         let mut harness = Harness::builder(context.child("test"), "prepopulation_missing_header")
             .epoch_length(10)
             .initial_epoch(1)
-            .last_finalized_height(Height::new(10))
+            .finalized_floor(Height::new(10))
             .build()
             .await;
 
@@ -558,14 +539,14 @@ fn two_actors_produce_the_same_new_dkg_output() {
         let network = TestNetwork::default();
         let mut first_harness = Harness::builder(context.child("first"), "new_output_first")
             .epoch_length(10)
-            .me(keys[0].clone())
+            .identity(keys[0].clone())
             .execution(execution.clone())
             .network(network.clone())
             .build()
             .await;
         let mut second_harness = Harness::builder(context.child("second"), "new_output_second")
             .epoch_length(10)
-            .me(keys[1].clone())
+            .identity(keys[1].clone())
             .execution(execution)
             .network(network)
             .build()
@@ -660,7 +641,7 @@ fn reshare_produces_new_shares() {
         let mut first_harness = Harness::builder(context.child("first"), "reshare_first")
             .epoch_length(10)
             .initial_state(first_state)
-            .me(keys[0].clone())
+            .identity(keys[0].clone())
             .execution(execution.clone())
             .network(network.clone())
             .build()
@@ -668,7 +649,7 @@ fn reshare_produces_new_shares() {
         let mut second_harness = Harness::builder(context.child("second"), "reshare_second")
             .epoch_length(10)
             .initial_state(second_state)
-            .me(keys[1].clone())
+            .identity(keys[1].clone())
             .execution(execution)
             .network(network)
             .build()
@@ -812,14 +793,14 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
         let network = TestNetwork::default();
         let mut first_harness = Harness::builder(context.child("first"), "actor_exchange_first")
             .epoch_length(10)
-            .me(first.clone())
+            .identity(first.clone())
             .execution(execution.clone())
             .network(network.clone())
             .build()
             .await;
         let mut second_harness = Harness::builder(context.child("second"), "actor_exchange_second")
             .epoch_length(10)
-            .me(second.clone())
+            .identity(second.clone())
             .execution(execution.clone())
             .network(network.clone())
             .build()
@@ -870,18 +851,18 @@ fn acked_dealer_messages_not_re_exchanged_after_restart() {
         let mut first_harness =
             Harness::builder(context.child("first_restart"), "actor_exchange_first")
                 .epoch_length(10)
-                .me(first)
+                .identity(first)
                 .execution(execution.clone())
-                .last_finalized_height(Height::new(10))
+                .finalized_floor(Height::new(10))
                 .network(network.clone())
                 .build()
                 .await;
         let mut second_harness =
             Harness::builder(context.child("second_restart"), "actor_exchange_second")
                 .epoch_length(10)
-                .me(second)
+                .identity(second)
                 .execution(execution)
-                .last_finalized_height(Height::new(10))
+                .finalized_floor(Height::new(10))
                 .network(network.clone())
                 .build()
                 .await;

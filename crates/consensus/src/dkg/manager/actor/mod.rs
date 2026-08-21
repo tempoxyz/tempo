@@ -500,8 +500,7 @@ where
     /// 1. The persisted state is up-to-date: it is used as-is.
     /// 2. The persisted state is stale: the state is re-initialized from the
     ///    chain, reusing the stale share if it still matches the on-chain
-    ///    outcome, or recovering it from persisted or revealed dealings
-    ///    otherwise.
+    ///    outcome, or recovering it from revealed dealings otherwise.
     /// 3. No state is persisted: like 2., but without a stale share to fall
     ///    back on.
     #[instrument(skip_all, err)]
@@ -537,7 +536,7 @@ where
             }
         };
         let initial_state = self
-            .establish_initial_state(&storage, share_candidate)
+            .establish_initial_state(share_candidate)
             .await
             .wrap_err("failed constructing initial state")?;
 
@@ -1257,14 +1256,10 @@ where
     /// two are only used if they match the polynomial of the on-chain
     /// outcome.
     #[instrument(skip_all, err)]
-    async fn establish_initial_state<TStorageContext>(
+    async fn establish_initial_state(
         &mut self,
-        storage: &state::Unverified<TStorageContext>,
         share_candidate: ShareState,
-    ) -> eyre::Result<State>
-    where
-        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
-    {
+    ) -> eyre::Result<State> {
         let latest_boundary = latest_boundary_at_or_before(
             &self.config.epoch_strategy,
             self.config.last_finalized_height,
@@ -1322,27 +1317,19 @@ where
         };
 
         if let state::ShareState::Plaintext(None) = &state.share
-            && let Ok(Some(share)) = self.maybe_recover_share(storage, &state).await
+            && let Ok(Some(share)) = self.maybe_recover_revealed_share(&state).await
         {
-            info!(epoch = %state.epoch, "recovered share from persisted or public dealings");
+            info!(epoch = %state.epoch, "recovered share from public dealings");
             state.share = state::ShareState::Plaintext(Some(share));
         }
 
         Ok(state)
     }
 
-    /// Attempts to reconstruct our current threshold share from dealings persisted during the
-    /// previous epoch and dealer logs finalized on-chain. Publicly revealed dealings in those logs
-    /// allow recovery when no persisted player state is available.
+    /// Attempts to reconstruct our current threshold share from dealer logs finalized during the
+    /// previous epoch.
     #[instrument(skip_all, fields(epoch = %state.epoch), err)]
-    async fn maybe_recover_share<TStorageContext>(
-        &mut self,
-        storage: &state::Unverified<TStorageContext>,
-        state: &State,
-    ) -> eyre::Result<Option<Share>>
-    where
-        TStorageContext: BufferPooler + commonware_runtime::Metrics + Clock + Storage,
-    {
+    async fn maybe_recover_revealed_share(&mut self, state: &State) -> eyre::Result<Option<Share>> {
         let public_key = self.config.me.public_key();
         if state.output.players().position(&public_key).is_none()
         // TODO: currently unreliable; use once fixed
@@ -1442,12 +1429,10 @@ where
             logs.record(dealer, log);
         }
 
-        let Some(player) = storage
-            .create_player_for_round(self.config.me.clone(), &round)
-            .wrap_err("failed creating player to recover share")?
-        else {
-            return Ok(None);
-        };
+        let player = state::Player::new(
+            dkg::Player::new(round.info().clone(), self.config.me.clone())
+                .wrap_err("failed creating player to recover revealed share")?,
+        );
 
         let (recovered_output, share) = match player.finalize(&mut self.context, logs, &Sequential)
         {
