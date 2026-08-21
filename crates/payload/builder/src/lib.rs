@@ -638,8 +638,13 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
-        let block_build_stop_reason = loop {
-            check_cancel!();
+        let block_build_stop_reason = 'block_fill: loop {
+            if cancel.is_interrupted() {
+                if cancel.is_cancelled() {
+                    return Ok(BuildOutcome::Cancelled);
+                }
+                break BlockBuildStopReason::FinalizationRequested;
+            }
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
@@ -739,7 +744,12 @@ where
                 continue;
             }
 
-            check_cancel!();
+            if cancel.is_interrupted() {
+                if cancel.is_cancelled() {
+                    return Ok(BuildOutcome::Cancelled);
+                }
+                break 'block_fill BlockBuildStopReason::FinalizationRequested;
+            }
             if is_payment {
                 payment_transactions += 1;
             }
