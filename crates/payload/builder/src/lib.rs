@@ -643,7 +643,11 @@ where
                 if cancel.is_cancelled() {
                     return Ok(BuildOutcome::Cancelled);
                 }
-                break BlockBuildStopReason::FinalizationRequested;
+                // Ensure a finalization request cannot starve a transaction that is already
+                // waiting in the pool when the first build attempt is resolved.
+                if pool_transactions_included > 0 {
+                    break BlockBuildStopReason::FinalizationRequested;
+                }
             }
 
             if let Some(build_budget) = payload_build_budget {
@@ -748,7 +752,9 @@ where
                 if cancel.is_cancelled() {
                     return Ok(BuildOutcome::Cancelled);
                 }
-                break 'block_fill BlockBuildStopReason::FinalizationRequested;
+                if pool_transactions_included > 0 {
+                    break 'block_fill BlockBuildStopReason::FinalizationRequested;
+                }
             }
             if is_payment {
                 payment_transactions += 1;
