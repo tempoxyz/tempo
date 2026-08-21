@@ -7,8 +7,9 @@ use std::{
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
+use reth_chainspec::EthChainSpec;
 use reth_cli_commands::download::{
-    DownloadCommand, DownloadPlanArchive, manifest::OutputFileChecksum,
+    DownloadCommand, DownloadDefaults, DownloadPlanArchive, manifest::OutputFileChecksum,
 };
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -19,6 +20,8 @@ use tracing::info;
 use url::Url;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
+
+const SNAPSHOT_API_PATH: &str = "/api/snapshots";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,7 +46,7 @@ pub(crate) struct Args {
     )]
     skip_consensus: bool,
 
-    /// Consensus storage directory. If not set, this will be derived from --datadir.
+    /// Consensus storage directory. If not set, this will be derived from Reth's resolved data dir.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     consensus_datadir: Option<PathBuf>,
 }
@@ -51,17 +54,26 @@ pub(crate) struct Args {
 pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
-    let datadir = matches
-        .get_raw("datadir")
-        .and_then(|mut v| v.next())
-        .map(PathBuf::from)
-        .expect("--datadir must be set");
-
     let manifest_url = matches.get_one::<String>("manifest_url").cloned();
     let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
+    let chain_id = args.inner.env().chain.chain().id();
+    let datadir = args
+        .inner
+        .env()
+        .datadir
+        .clone()
+        .resolve_datadir(args.inner.env().chain.chain())
+        .data_dir()
+        .to_path_buf();
 
     runner.block_on(async move {
+        let manifest_source = if args.skip_consensus {
+            None
+        } else {
+            Some(resolve_manifest_source(manifest_url, manifest_path, chain_id).await?)
+        };
+
         if args.inner.prints_plan_json() {
             let mut plan = args
                 .inner
@@ -70,7 +82,8 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
                 .wrap_err("failed to plan execution layer download")?;
 
             if !args.skip_consensus {
-                let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
+                let loaded_consensus =
+                    load_consensus_manifest(manifest_source.expect("resolved above")).await?;
                 plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
             }
 
@@ -99,7 +112,8 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             .consensus_datadir
             .unwrap_or_else(|| datadir.join("consensus"));
 
-        let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
+        let loaded_consensus =
+            load_consensus_manifest(manifest_source.expect("resolved above")).await?;
         install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
 
         Ok(())
@@ -119,6 +133,103 @@ enum ConsensusArchiveSource {
 enum ManifestSource {
     Url(String),
     Path(PathBuf),
+}
+
+/// Resolves the manifest source from CLI input or snapshot discovery.
+///
+/// This mirrors `reth_cli_commands::download::DownloadCommand::resolve_manifest_source`, which is
+/// private, so Tempo can load its consensus extension from the same manifest Reth selects.
+async fn resolve_manifest_source(
+    manifest_url: Option<String>,
+    manifest_path: Option<PathBuf>,
+    chain_id: u64,
+) -> eyre::Result<String> {
+    if let Some(path) = manifest_path {
+        return Ok(path.display().to_string());
+    }
+
+    match manifest_url {
+        Some(url) => Ok(url),
+        None => discover_manifest_url(chain_id).await,
+    }
+}
+
+fn snapshot_source_url(api_url: &str) -> &str {
+    api_url
+        .trim_end_matches('/')
+        .trim_end_matches(SNAPSHOT_API_PATH)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotApiEntry {
+    #[serde(deserialize_with = "deserialize_string_or_u64")]
+    chain_id: u64,
+    #[serde(deserialize_with = "deserialize_string_or_u64")]
+    block: u64,
+    metadata_url: String,
+}
+
+impl SnapshotApiEntry {
+    fn is_modular(&self) -> bool {
+        self.metadata_url.ends_with("manifest.json")
+    }
+}
+
+async fn discover_manifest_url(chain_id: u64) -> eyre::Result<String> {
+    let defaults = DownloadDefaults::get_global();
+    let api_url = &*defaults.snapshot_api_url;
+    let snapshot_source_url = snapshot_source_url(api_url);
+
+    info!(target: "reth::cli", %api_url, %chain_id, "Discovering latest snapshot manifest");
+
+    let entries: Vec<SnapshotApiEntry> = reqwest::Client::new()
+        .get(api_url)
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .wrap_err_with(|| format!("Failed to fetch snapshot listing from {api_url}"))?
+        .json()
+        .await?;
+    let entry = entries
+        .iter()
+        .filter(|entry| entry.chain_id == chain_id && entry.is_modular())
+        .max_by_key(|entry| entry.block)
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "No modular snapshot manifest found for chain \
+                 {chain_id} at {api_url}\n\n\
+                 You can provide a manifest URL directly with --manifest-url, or\n\
+                 use a direct snapshot URL with -u from:\n\
+                 \t- {snapshot_source_url}\n\n\
+                 Use --list to see all available snapshots."
+            )
+        })?;
+
+    info!(target: "reth::cli",
+        block = entry.block,
+        url = %entry.metadata_url,
+        "Found latest snapshot manifest"
+    );
+
+    Ok(entry.metadata_url.clone())
+}
+
+fn deserialize_string_or_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match &value {
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| serde::de::Error::custom("expected u64")),
+        serde_json::Value::String(string) => string
+            .parse::<u64>()
+            .map_err(|_| serde::de::Error::custom("expected numeric string")),
+        _ => Err(serde::de::Error::custom("expected number or string")),
+    }
 }
 
 fn consensus_download_plan_archive(
@@ -151,20 +262,8 @@ fn consensus_download_plan_archive(
     ))
 }
 
-async fn load_consensus_manifest(
-    manifest_url: Option<String>,
-    manifest_path: Option<PathBuf>,
-) -> eyre::Result<LoadedConsensusManifest> {
-    let (manifest_bytes, source) = match (manifest_path, manifest_url) {
-        (None, None) => {
-            bail!("--manifest-url or --manifest-path must be set");
-        }
-        (Some(path), _) => (
-            fs::read(&path).wrap_err("failed to read manifest file")?,
-            ManifestSource::Path(path),
-        ),
-        (_, Some(source)) => fetch_manifest_bytes_from_source(source).await?,
-    };
+async fn load_consensus_manifest(source: String) -> eyre::Result<LoadedConsensusManifest> {
+    let (manifest_bytes, source) = fetch_manifest_bytes_from_source(source).await?;
 
     let value: serde_json::Value =
         serde_json::from_slice(&manifest_bytes).wrap_err("failed to parse manifest.json")?;
@@ -563,6 +662,30 @@ mod tests {
     }
 
     #[test]
+    fn default_datadir_resolves_for_selected_chain() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--chain",
+            "moderato",
+            "--manifest-url",
+            "https://snap/manifest.json",
+        ])
+        .unwrap();
+
+        let datadir = args
+            .inner
+            .env()
+            .datadir
+            .clone()
+            .resolve_datadir(args.inner.env().chain.chain())
+            .data_dir()
+            .to_path_buf();
+
+        assert!(datadir.is_absolute());
+        assert!(!datadir.ends_with("default"));
+    }
+
+    #[test]
     fn args_accepts_print_plan_json() {
         let args = Args::try_parse_from([
             "tempo",
@@ -641,7 +764,8 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         let manifest =
-            futures::executor::block_on(load_consensus_manifest(None, Some(path))).unwrap();
+            futures::executor::block_on(load_consensus_manifest(path.display().to_string()))
+                .unwrap();
 
         assert_eq!(manifest.manifest.execution_finalized_height, 40);
         assert_eq!(manifest.manifest.tip_finalization_height, 42);
@@ -660,6 +784,30 @@ mod tests {
             }
             ConsensusArchiveSource::Url(_) => panic!("local manifest must resolve local archive"),
         }
+    }
+
+    #[test]
+    fn resolve_manifest_source_prefers_manifest_path() {
+        let source = futures::executor::block_on(resolve_manifest_source(
+            Some("https://snap/manifest.json".to_string()),
+            Some(PathBuf::from("./manifest.json")),
+            4217,
+        ))
+        .unwrap();
+
+        assert_eq!(source, "./manifest.json");
+    }
+
+    #[test]
+    fn resolve_manifest_source_uses_manifest_url() {
+        let source = futures::executor::block_on(resolve_manifest_source(
+            Some("https://snap/manifest.json".to_string()),
+            None,
+            4217,
+        ))
+        .unwrap();
+
+        assert_eq!(source, "https://snap/manifest.json");
     }
 
     #[test]
