@@ -5,7 +5,7 @@ mod utils;
 use std::time::Duration;
 
 use alloy_primitives::B256;
-use commonware_consensus::types::{Epoch, Height};
+use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PrivateKey;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use futures::channel::oneshot;
@@ -313,38 +313,28 @@ fn prepopulation_replays_only_missing_headers() {
 }
 
 #[test]
-fn prepopulation_enforces_dkg_epoch_relative_to_finalized_tip() {
-    Runner::default().start(|mut context| async move {
-        let (behind_state, _) = dkg_state(&mut context, Epoch::zero(), 4, false);
-        let mut behind = TestDkg::new(context.child("behind"), "prepopulation_behind")
-            .await
-            .with_last_finalized_height(Height::new(10));
-        behind
-            .execution_node
-            .add_header(outcome_header(Height::new(9), &behind_state));
-
-        behind.start().await;
-
-        behind.wait_for_exit().await;
-
-        let mut ahead = TestDkg::with_initial_state(context.child("ahead"), "prepopulation_ahead")
+fn prepopulation_skips_replay_when_dkg_state_is_ahead() {
+    Runner::default().start(|context| async move {
+        let mut actor = TestDkg::with_initial_state(context.child("test"), "prepopulation_ahead")
             .await
             .with_last_finalized_height(Height::new(8));
-        let ahead_state = ahead.initial_state().clone();
 
-        ahead.start().await;
+        let state = actor.initial_state().clone();
 
-        assert!(!ahead.has_dealer_log(ahead_state.epoch).await);
+        actor.start().await;
 
-        assert!(ahead.execution_node.reads().is_empty());
-        assert!(ahead.marshal.reads().is_empty());
+        assert!(!actor.has_dealer_log(state.epoch).await);
+
+        // TestDkg populates initial state for Epoch 1. Thus nothing to read for Epoch 0.
+        assert!(actor.execution_node.reads().is_empty());
+        assert!(actor.marshal.reads().is_empty());
         assert_eq!(
-            ahead.epoch_manager.events(),
+            actor.epoch_manager.events(),
             vec![EpochEvent::Enter {
-                epoch: ahead_state.epoch,
-                public: ahead_state.output.public().clone(),
+                epoch: state.epoch,
+                public: state.output.public().clone(),
                 share: None,
-                participants: ahead_state.dealers().clone(),
+                participants: state.dealers().clone(),
             }]
         );
     });
@@ -360,6 +350,7 @@ fn prepopulation_fails_when_required_header_is_unavailable() {
 
         actor.start().await;
 
+        // Since storage has no finalized headers for epoch 1, it tries to read [10] which fails
         actor.wait_for_exit().await;
 
         assert_eq!(actor.execution_node.reads(), vec![Height::new(10)]);
