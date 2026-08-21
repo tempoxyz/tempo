@@ -103,8 +103,8 @@ pub struct TempoPoolUpdates {
     pub multisig_config_changes: AddressSet,
     /// Accounts newly registered as native multisigs by the committed chain segment.
     ///
-    /// Transactions using one of these identities as an access key, explicit fee payer, or
-    /// authorization-list authority must be re-validated against registry restrictions.
+    /// Pending key authorizations that name one of these accounts as `key_id` must be
+    /// revalidated. Multisig signature dependencies are covered by `multisig_config_changes`.
     pub multisig_initializations: AddressSet,
 }
 
