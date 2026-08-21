@@ -661,6 +661,8 @@ pub struct MultisigSignature {
     signatures: Vec<TempoSignature>,
     /// Cached multisig digest for the transaction hash and config version this signature approved.
     cached_digest: OnceLock<(B256, Address, u64, B256)>,
+    /// Stored config size inferred by RPC simulation. This is never serialized or signed.
+    simulation_config_owner_count: Option<usize>,
 }
 
 #[cfg(feature = "serde")]
@@ -745,6 +747,7 @@ impl MultisigSignature {
             address,
             signatures,
             cached_digest: OnceLock::new(),
+            simulation_config_owner_count: None,
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -768,6 +771,28 @@ impl MultisigSignature {
     /// Returns the optional bootstrap config.
     pub fn init(&self) -> Option<&InitMultisig> {
         self.address.init()
+    }
+
+    /// Attaches the registered config size inferred for RPC gas simulation.
+    #[doc(hidden)]
+    pub fn with_simulation_config_owner_count(
+        mut self,
+        owner_count: usize,
+    ) -> Result<Self, &'static str> {
+        if owner_count == 0 || owner_count > MAX_MULTISIG_OWNERS {
+            return Err("invalid multisig simulation owner count");
+        }
+        if self.init().is_some() {
+            return Err("bootstrap multisig signatures cannot have a stored config owner count");
+        }
+        self.simulation_config_owner_count = Some(owner_count);
+        Ok(self)
+    }
+
+    /// Returns the registered config size inferred for RPC gas simulation.
+    #[doc(hidden)]
+    pub const fn simulation_config_owner_count(&self) -> Option<usize> {
+        self.simulation_config_owner_count
     }
 
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.
@@ -1058,7 +1083,7 @@ impl alloy_rlp::Encodable for MultisigSignature {
 /// - `is_zero` and the fixed / low-range precompile cases fix ~152-160 bits (>= ~2^156 work): not
 ///   grindable in practice, kept as cheap defense-in-depth.
 ///
-/// EVM built-in precompiles are checked locally so native multisig does not change the shared
+/// EVM built-in precompiles are checked locally so TIP-1061 does not change the shared
 /// `is_precompile` behavior used by earlier protocol features.
 pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
     !account.is_zero()
@@ -1182,7 +1207,9 @@ mod tests {
     };
     use proptest::prelude::*;
     use sha2::{Digest, Sha256};
-    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, SYSTEM_PRECOMPILES};
+    use tempo_contracts::precompiles::{
+        NATIVE_MULTISIG_ADDRESS, PATH_USD_ADDRESS, SYSTEM_PRECOMPILES,
+    };
 
     fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> InitMultisig {
         let mut owners = owners
@@ -1563,6 +1590,7 @@ mod tests {
     #[test]
     fn multisig_account_eligibility_uses_current_hardfork_precompile_set() {
         let identity_precompile = Address::with_last_byte(0x04);
+        assert!(!identity_precompile.is_precompile(TempoHardfork::T11));
         assert!(!is_valid_multisig_account(
             identity_precompile,
             TempoHardfork::T11
@@ -1575,6 +1603,15 @@ mod tests {
         assert!(!is_valid_multisig_account(
             P256VERIFY_ADDRESS,
             TempoHardfork::T1C
+        ));
+
+        assert!(is_valid_multisig_account(
+            NATIVE_MULTISIG_ADDRESS,
+            TempoHardfork::T7
+        ));
+        assert!(!is_valid_multisig_account(
+            NATIVE_MULTISIG_ADDRESS,
+            TempoHardfork::T11
         ));
         assert!(!is_valid_multisig_account(
             PATH_USD_ADDRESS,

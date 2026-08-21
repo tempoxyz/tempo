@@ -204,6 +204,8 @@ pub fn extend_tempo_precompiles(
             Some(ValidatorConfig::create_precompile(&env))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychain::create_precompile(&env))
+        } else if *address == NATIVE_MULTISIG_ADDRESS && env.cfg.spec.is_t11() {
+            Some(NativeMultisig::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&env))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
@@ -1156,6 +1158,27 @@ mod tests {
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
+        );
+    }
+
+    #[test]
+    fn test_native_multisig_registered_at_t11_only() {
+        let mut t10 = CfgEnv::<TempoHardfork>::default();
+        t10.set_spec_and_mainnet_gas_params(TempoHardfork::T10);
+        assert!(
+            test_tempo_precompiles(&t10)
+                .get(&NATIVE_MULTISIG_ADDRESS)
+                .is_none(),
+            "NativeMultisig should NOT be registered before T11"
+        );
+
+        let mut t11 = CfgEnv::<TempoHardfork>::default();
+        t11.set_spec_and_mainnet_gas_params(TempoHardfork::T11);
+        assert!(
+            test_tempo_precompiles(&t11)
+                .get(&NATIVE_MULTISIG_ADDRESS)
+                .is_some(),
+            "NativeMultisig should be registered at T11"
         );
     }
 
