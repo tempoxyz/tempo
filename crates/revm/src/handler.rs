@@ -2273,24 +2273,12 @@ where
             }
 
             if let Some(multisig_signature) = aa_env.signature.as_multisig() {
-                let account = validate_native_multisig_signature_account(
+                validate_native_multisig_signature_account(
                     multisig_signature,
                     tx.caller,
                     *cfg.spec(),
                     "multisig signature account does not match transaction caller",
                 )?;
-                if aa_env
-                    .tempo_authorization_list
-                    .iter()
-                    .any(|auth| auth.authority() == Some(account))
-                {
-                    return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                        reason: format!(
-                            "native multisig account {account} cannot be used as an authorization-list authority"
-                        ),
-                    }
-                    .into());
-                }
             }
 
             if aa_env.subblock_transaction && has_keychain_fields {
@@ -2311,7 +2299,7 @@ where
 
             if let Some(key_auth) = &aa_env.key_authorization {
                 if let Some(signature) = key_auth.signature.as_multisig() {
-                    let account = validate_native_multisig_signature_account(
+                    validate_native_multisig_signature_account(
                         signature,
                         tx.caller,
                         *cfg.spec(),
@@ -2326,18 +2314,6 @@ where
                         .into());
                     }
                     if signature.init().is_some() {
-                        if aa_env
-                            .tempo_authorization_list
-                            .iter()
-                            .any(|auth| auth.authority() == Some(account))
-                        {
-                            return Err(TempoInvalidTransaction::NativeMultisigInvalidTransaction {
-                                reason: format!(
-                                    "native multisig account {account} cannot be used as an authorization-list authority"
-                                ),
-                            }
-                            .into());
-                        }
                         if aa_env
                             .signature
                             .as_multisig()

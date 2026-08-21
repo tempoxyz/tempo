@@ -5150,7 +5150,7 @@ fn test_t11_standard_auth_list_does_not_gate_registered_address() {
 }
 
 #[test]
-fn test_t11_bootstrap_auth_list_rejects_current_multisig_authority() {
+fn test_t11_bootstrap_allows_skipped_keychain_auth_list_entry() {
     let config = native_multisig_config();
     let account = config.account().unwrap();
     let aa_env = TempoBatchCallEnv {
@@ -5164,23 +5164,15 @@ fn test_t11_bootstrap_auth_list_rejects_current_multisig_authority() {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        tempo_authorization_list: vec![tempo_authorization(account)],
+        tempo_authorization_list: vec![tempo_keychain_authorization(account)],
         ..Default::default()
     };
     let mut test = TestHandlerEvm::aa(TempoHardfork::T11, aa_env, |tx_env| {
         tx_env.inner.caller = account;
     });
 
-    let result = test.validate_env();
-    assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigInvalidTransaction { reason }
-            )) if reason.contains("authorization-list authority")
-        ),
-        "bootstrap multisig account cannot be an authorization-list authority"
-    );
+    test.validate_env()
+        .expect("keychain authorization-list entries are skipped");
 }
 
 #[test]
@@ -5485,7 +5477,7 @@ fn test_t11_outer_bootstrap_config_can_authorize_companion_key_auth() {
 }
 
 #[test]
-fn test_t11_key_authorization_bootstrap_rejects_current_multisig_authority() {
+fn test_t11_key_authorization_bootstrap_allows_skipped_keychain_auth_list_entry() {
     let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
     let access_key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
     let config = single_owner_native_multisig_config(0x44, owner.address());
@@ -5513,7 +5505,7 @@ fn test_t11_key_authorization_bootstrap_rejects_current_multisig_authority() {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        tempo_authorization_list: vec![tempo_authorization(account)],
+        tempo_authorization_list: vec![tempo_keychain_authorization(account)],
         signature_hash,
         ..Default::default()
     };
@@ -5521,16 +5513,8 @@ fn test_t11_key_authorization_bootstrap_rejects_current_multisig_authority() {
         tx_env.inner.caller = account;
     });
 
-    let result = test.validate_env();
-    assert!(
-        matches!(
-            result,
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::NativeMultisigInvalidTransaction { ref reason }
-            )) if reason.contains("authorization-list authority")
-        ),
-        "key-authorization bootstrap account cannot be an authorization-list authority: {result:?}"
-    );
+    test.validate_env()
+        .expect("keychain authorization-list entries are skipped");
 }
 
 #[test]
