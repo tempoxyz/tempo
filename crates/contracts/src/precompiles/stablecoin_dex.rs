@@ -72,10 +72,10 @@ crate::sol! {
         function getOrder(uint128 orderId) external view returns (Order memory);
 
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
-        function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
+        function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
         function nextOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
-        function bookIndexForKey(bytes32 bookKey) external view returns (bool set, uint32 index);
+        function bookIndexForKey(bytes32 bookKey) external view returns (bool exists, uint32 index);
         function bookKeyForIndex(uint32 index) external view returns (bytes32 bookKey);
         function setBookIndex(uint32 index) external;
         function storageCredits(address user) external view returns (uint64 credits);

@@ -2,10 +2,7 @@
 
 use std::{collections::BTreeSet, fs, path::Path};
 
-use alloy_json_abi::{
-    ContractObject, Error, Event, EventParam, Function, JsonAbi, Param, StateMutability,
-};
-use itertools::Itertools;
+use alloy_json_abi::{ContractObject, Error, Event, Function, JsonAbi};
 
 /// List of `(kind, signature)` pairs.
 pub type DiffEntries = Vec<(String, String)>;
@@ -19,12 +16,15 @@ pub struct AbiSurface {
 }
 
 impl AbiSurface {
-    /// Builds a canonical function, error, and event signature set.
+    /// Builds full function and event signature sets and a canonical error signature set.
+    ///
+    /// Function and event parameter names are included to detect swapped same-typed parameters,
+    /// which canonical ABI signatures cannot distinguish.
     pub fn from_abi(abi: &JsonAbi) -> Self {
         Self {
             functions: abi.functions().map(function_signature).collect(),
-            errors: abi.errors().map(error_signature).collect(),
-            events: abi.events().map(event_signature).collect(),
+            errors: abi.errors().map(Error::signature).collect(),
+            events: abi.events().map(Event::full_signature).collect(),
         }
     }
 
@@ -65,6 +65,16 @@ impl AbiSurface {
         }
         (only_self, only_other)
     }
+}
+
+fn function_signature(function: &Function) -> String {
+    let mut function = function.clone();
+    if let [output] = function.outputs.as_slice()
+        && output.ty == "tuple"
+    {
+        function.outputs = output.components.clone();
+    }
+    function.full_signature()
 }
 
 /// Reads the ABI from a Foundry JSON artifact.
@@ -108,82 +118,6 @@ pub fn compare_abi(
     }
 }
 
-fn function_signature(function: &Function) -> String {
-    let inputs = function.inputs.iter().map(param_type).join(",");
-    let mut signature = format!("{}({inputs})", function.name);
-    if !function.outputs.is_empty() {
-        signature.push_str(&format!(
-            " returns ({})",
-            canonical_output_types(&function.outputs)
-        ));
-    }
-    signature.push_str(&format!(
-        " [{}]",
-        state_mutability(function.state_mutability)
-    ));
-    signature
-}
-
-fn error_signature(error: &Error) -> String {
-    format!(
-        "{}({})",
-        error.name,
-        error.inputs.iter().map(param_type).join(",")
-    )
-}
-
-fn event_signature(event: &Event) -> String {
-    let inputs = event.inputs.iter().map(event_param_signature).join(",");
-    let mut signature = format!("{}({inputs})", event.name);
-    if event.anonymous {
-        signature.push_str(" [anonymous]");
-    }
-    signature
-}
-
-fn event_param_signature(param: &EventParam) -> String {
-    let ty = canonical_param_type(&param.ty, &param.components);
-    if param.indexed {
-        format!("indexed {ty}")
-    } else {
-        ty
-    }
-}
-
-fn param_type(param: &Param) -> String {
-    canonical_param_type(&param.ty, &param.components)
-}
-
-fn canonical_output_types(outputs: &[Param]) -> String {
-    match outputs {
-        [output] if output.ty == "tuple" => output.components.iter().map(param_type).join(","),
-        _ => outputs.iter().map(param_type).join(","),
-    }
-}
-
-fn canonical_param_type(ty: &str, components: &[Param]) -> String {
-    if components.is_empty() {
-        return ty.to_string();
-    }
-    let tuple = format!("({})", components.iter().map(param_type).join(","));
-    if ty == "tuple" {
-        tuple
-    } else if let Some(suffix) = ty.strip_prefix("tuple") {
-        format!("{tuple}{suffix}")
-    } else {
-        ty.to_string()
-    }
-}
-
-fn state_mutability(state: StateMutability) -> &'static str {
-    match state {
-        StateMutability::Pure => "pure",
-        StateMutability::View => "view",
-        StateMutability::NonPayable => "nonpayable",
-        StateMutability::Payable => "payable",
-    }
-}
-
 /// Asserts that a Foundry artifact's ABI matches a Rust ABI surface.
 pub fn assert_abi(path: &Path, rust: &AbiSurface) {
     compare_abi(path, rust, &[]).unwrap_or_else(|errors| {
@@ -201,24 +135,70 @@ mod tests {
 
     #[test]
     fn preserves_tuple_returns_mutability_and_events() {
-        let abi = JsonAbi::parse([
+        let mut abi = JsonAbi::parse([
             "function pool() external view returns ((uint128,uint128) reserves)",
             "event Bar(address indexed from, uint256 amount) anonymous",
             "error BadPerson(tuple(string,uint16) person)",
         ])
         .unwrap();
+        let pool = &mut abi.functions.get_mut("pool").unwrap()[0];
+        pool.outputs[0].components[0].name = "reserve0".into();
+        pool.outputs[0].components[1].name = "reserve1".into();
         let surface = AbiSurface::from_abi(&abi);
         assert!(
             surface
                 .functions
-                .contains("pool() returns (uint128,uint128) [view]")
+                .contains("function pool() view returns (uint128 reserve0, uint128 reserve1)")
         );
         assert!(
             surface
                 .events
-                .contains("Bar(indexed address,uint256) [anonymous]")
+                .contains("event Bar(address indexed from, uint256 amount) anonymous")
         );
         assert!(surface.errors.contains("BadPerson((string,uint16))"));
+    }
+
+    #[test]
+    fn function_parameter_names_are_part_of_conformance() {
+        let rust = JsonAbi::parse([
+            "function deliverWithdrawal(address to, address token, uint128 amount, bytes32 memo, uint64 gasLimit, bytes callbackData)",
+        ])
+        .unwrap();
+        let solidity = JsonAbi::parse([
+            "function deliverWithdrawal(address token, address target, uint128 amount, bytes32 senderTag, uint64 gasLimit, bytes data)",
+        ])
+        .unwrap();
+
+        let rust = AbiSurface::from_abi(&rust);
+        let solidity = AbiSurface::from_abi(&solidity);
+
+        assert_ne!(rust, solidity);
+        let (rust_only, solidity_only) = rust.diff(&solidity);
+        assert_eq!(rust_only.len(), 1);
+        assert_eq!(solidity_only.len(), 1);
+        assert_eq!(rust_only[0].0, "function");
+        assert!(rust_only[0].1.contains("address to, address token"));
+        assert!(solidity_only[0].1.contains("address token, address target"));
+    }
+
+    #[test]
+    fn event_parameter_names_are_part_of_conformance() {
+        let rust =
+            JsonAbi::parse(["event Transfer(address indexed from, address indexed to)"]).unwrap();
+        let solidity =
+            JsonAbi::parse(["event Transfer(address indexed sender, address indexed recipient)"])
+                .unwrap();
+
+        let rust = AbiSurface::from_abi(&rust);
+        let solidity = AbiSurface::from_abi(&solidity);
+
+        assert_ne!(rust, solidity);
+        let (rust_only, solidity_only) = rust.diff(&solidity);
+        assert_eq!(rust_only.len(), 1);
+        assert_eq!(solidity_only.len(), 1);
+        assert_eq!(rust_only[0].0, "event");
+        assert!(rust_only[0].1.contains("address indexed from"));
+        assert!(solidity_only[0].1.contains("address indexed sender"));
     }
 
     #[test]
