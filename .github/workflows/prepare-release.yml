@@ -29,6 +29,7 @@ jobs:
     environment: release-pr
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - name: Validate inputs
@@ -312,17 +313,11 @@ jobs:
             echo "| Existing branch reused | \`${REUSED}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Mint scoped app token
+      - name: Fetch GitHub token via STS
         id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: tempoxyz
-          repositories: tempo
-          permission-contents: read
-          permission-pull-requests: write
-          permission-metadata: read
+          policy: release-pr
 
       - name: Open draft pull request
         shell: bash

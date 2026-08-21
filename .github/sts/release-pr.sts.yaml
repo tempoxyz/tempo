@@ -1,0 +1,10 @@
+# Allow the jobs that run in the release-pr environment (Release PR,
+# Prepare Release, and the release version-bump job) to mint a short-lived
+# token to push release automation branches and open or update pull
+# requests. Replaces the release-bot GitHub App credentials previously
+# stored as environment secrets. The release-pr environment's deployment
+# branch policy (main + v* tags) gates which runs can present this subject.
+subject: repo:tempoxyz@211589300/tempo@994992847:environment:release-pr
+permissions:
+  contents: write
+  pull_requests: write

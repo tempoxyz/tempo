@@ -287,19 +287,14 @@ jobs:
     if: ${{ startsWith(needs.get-version.outputs.version, 'v') && !contains(needs.get-version.outputs.version, 'alpha') && !contains(needs.get-version.outputs.version, 'beta') && !contains(needs.get-version.outputs.version, 'rc') }}
     runs-on: depot-ubuntu-latest
     environment: release-pr
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
-      - name: Mint scoped app token
+      - name: Fetch GitHub token via STS
         id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        uses: tempoxyz/gh-actions/actions/github-sts@183a02178c660ce295e9a262edc5857cb7135f06
         with:
-          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          owner: tempoxyz
-          repositories: tempo
-          permission-contents: write
-          permission-pull-requests: write
-          permission-metadata: read
+          policy: release-pr
 
       - name: Checkout main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -327,8 +322,8 @@ jobs:
             exit 0
           fi
 
-          git config user.name "tempo-release-bot[bot]"
-          git config user.email "tempo-release-bot[bot]@users.noreply.github.com"
+          git config user.name "tempo-github-sts[bot]"
+          git config user.email "312736176+tempo-github-sts[bot]@users.noreply.github.com"
           git checkout -B "$branch"
 
           python3 - <<'PY'
