@@ -61,6 +61,39 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
 While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://docs.tempo.xyz/quickstart/evm-compatibility).
 
+## Quickstart (5 min)
+
+> Requires Rust, Cargo, and Just installed.
+
+Get a local Tempo node running in minutes.
+
+### 1. Clone the repo
+```bash
+git clone https://github.com/tempoxyz/tempo
+cd tempo
+```
+
+### 2. Install dependencies
+```bash
+just
+```
+
+### 3. Build the project
+```bash
+just build-all
+```
+
+### 4. Run tests
+```bash
+cargo nextest run
+```
+
+### 5. Start local network
+```bash
+just localnet
+```
+This will spin up a local Tempo environment for development and testing.
+
 ## Getting Started
 
 ### As a user
