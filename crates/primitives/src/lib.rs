@@ -7,7 +7,9 @@
 pub use alloy_consensus::Header;
 
 mod address;
-pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
+pub use address::{
+    MasterId, P256VERIFY_ADDRESS, TempoAddressExt, UserTag, is_evm_precompile, is_tip20_prefix,
+};
 pub mod ed25519;
 
 #[cfg(feature = "evm")]

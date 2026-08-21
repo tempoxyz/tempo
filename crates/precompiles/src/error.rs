@@ -20,11 +20,11 @@ use revm::{
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError, NonceError,
-    ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
-    StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
-    ZoneFactoryError,
+    AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
+    NativeMultisigError, NonceError, ReceivePolicyGuardError, RolesAuthError,
+    SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
+    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+    ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -91,6 +91,10 @@ pub enum TempoPrecompileError {
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
+
+    /// Error from native multisig precompile
+    #[error("Native multisig error: {0:?}")]
+    NativeMultisigError(NativeMultisigError),
 
     /// Error from signature verifier precompile
     #[error("Signature verifier error: {0:?}")]
@@ -172,6 +176,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigError(e) => e.selector(),
             Self::ValidatorConfigV2Error(e) => e.selector(),
             Self::AccountKeychainError(e) => e.selector(),
+            Self::NativeMultisigError(e) => e.selector(),
             Self::SignatureVerifierError(e) => e.selector(),
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::StorageCreditsError(e) => e.selector(),
@@ -204,6 +209,7 @@ impl TempoPrecompileError {
             | Self::ValidatorConfigError(_)
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
+            | Self::NativeMultisigError(_)
             | Self::SignatureVerifierError(_)
             | Self::ReceivePolicyGuardError(_)
             | Self::StorageCreditsError(_)
@@ -267,6 +273,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
+            Self::NativeMultisigError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::StorageCreditsError(e) => e.abi_encode().into(),
@@ -296,17 +303,18 @@ pub fn add_errors_to_registry<T: SolInterface>(
     let converter = Arc::new(converter);
     for selector in T::selectors() {
         let converter = Arc::clone(&converter);
-        registry.insert(
-            selector.into(),
-            Box::new(move |data: &[u8]| {
-                T::abi_decode(data)
-                    .ok()
-                    .map(|error| DecodedTempoPrecompileError {
-                        error: converter(error),
-                        revert_bytes: data,
-                    })
-            }),
-        );
+        let decoder: TempoPrecompileErrorDecoder = Box::new(move |data: &[u8]| {
+            T::abi_decode(data)
+                .ok()
+                .map(|error| DecodedTempoPrecompileError {
+                    error: converter(error),
+                    revert_bytes: data,
+                })
+        });
+        registry
+            .entry(selector.into())
+            .and_modify(|registered| *registered = None)
+            .or_insert(Some(decoder));
     }
 }
 
@@ -316,11 +324,12 @@ pub struct DecodedTempoPrecompileError<'a> {
     pub revert_bytes: &'a [u8],
 }
 
-/// Maps ABI error selectors to their decoder functions.
-pub type TempoPrecompileErrorRegistry = HashMap<
-    Selector,
-    Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>,
->;
+/// Decoder for one unambiguous ABI error selector.
+pub type TempoPrecompileErrorDecoder =
+    Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>;
+
+/// Maps ABI error selectors to unique decoder functions. Colliding selectors map to `None`.
+pub type TempoPrecompileErrorRegistry = HashMap<Selector, Option<TempoPrecompileErrorDecoder>>;
 
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
@@ -342,6 +351,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::NativeMultisigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
@@ -366,6 +376,7 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
     let selector: [u8; 4] = data[0..4].try_into().ok()?;
     ERROR_REGISTRY
         .get(&selector)
+        .and_then(Option::as_ref)
         .and_then(|decoder| decoder(data))
 }
 
@@ -543,5 +554,12 @@ mod tests {
             TempoPrecompileError::TIP20(_) => {}
             other => panic!("Expected TIP20 error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_decode_error_rejects_ambiguous_selector() {
+        let encoded = NativeMultisigError::invalid_owner().abi_encode();
+
+        assert!(decode_error(&encoded).is_none());
     }
 }

@@ -1,4 +1,5 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::TempoSignature};
+use crate::{TempoAddressExt, is_evm_precompile};
 use alloc::{
     string::{String, ToString},
     vec::Vec,
@@ -9,7 +10,7 @@ use core::{
     hash::{Hash, Hasher},
     mem::size_of,
 };
-use tempo_contracts::precompiles::INativeMultisig;
+use tempo_contracts::{TempoHardfork, precompiles::INativeMultisig};
 
 #[cfg(feature = "serde")]
 use serde::{
@@ -1044,6 +1045,29 @@ impl alloy_rlp::Encodable for MultisigSignature {
     }
 }
 
+/// Returns whether an address is eligible to be a native multisig account.
+///
+/// Rejects addresses in reserved namespaces so a derived multisig account cannot collide with
+/// another account type. The account is `keccak256(..)[12:]` over a caller-chosen salt (both the
+/// direct and CREATE2 recovery derivations), so an attacker can grind the salt to aim the derived
+/// address at a pattern; the exclusions differ in how feasible that is:
+/// - `is_virtual` fixes 10 bytes (~2^80 work), while the TIP-20 and ZonePortal namespaces fix a
+///   12-byte prefix (~2^96): these are pattern namespaces a well-resourced attacker could
+///   plausibly grind, so they are the load-bearing checks that keep a multisig account out of
+///   reserved address spaces.
+/// - `is_zero` and the fixed / low-range precompile cases fix ~152-160 bits (>= ~2^156 work): not
+///   grindable in practice, kept as cheap defense-in-depth.
+///
+/// EVM built-in precompiles are checked locally so native multisig does not change the shared
+/// `is_precompile` behavior used by earlier protocol features.
+pub fn is_valid_multisig_account(account: Address, spec: TempoHardfork) -> bool {
+    !account.is_zero()
+        && !account.is_virtual()
+        && !account.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX)
+        && !account.is_precompile(spec)
+        && !is_evm_precompile(account, spec)
+}
+
 /// Computes the digest that native multisig owners approve.
 pub fn multisig_digest(inner_digest: B256, account: Address, config_version: u64) -> B256 {
     let mut input = [0u8; MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8];
@@ -1143,10 +1167,13 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::{
-        KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
-        tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
-        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
+    use crate::{
+        P256VERIFY_ADDRESS,
+        transaction::{
+            KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
+            tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+            tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
+        },
     };
     use alloy_rlp::{Decodable, Encodable};
     use p256::{
@@ -1155,6 +1182,7 @@ mod tests {
     };
     use proptest::prelude::*;
     use sha2::{Digest, Sha256};
+    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, SYSTEM_PRECOMPILES};
 
     fn sorted_secp_config(owners: &[(Address, u8)], threshold: u8) -> InitMultisig {
         let mut owners = owners
@@ -1530,6 +1558,45 @@ mod tests {
             multisig_signature_count_for_threshold([], 1),
             Err(MultisigQuorumError::EmptySignatures)
         );
+    }
+
+    #[test]
+    fn multisig_account_eligibility_uses_current_hardfork_precompile_set() {
+        let identity_precompile = Address::with_last_byte(0x04);
+        assert!(!is_valid_multisig_account(
+            identity_precompile,
+            TempoHardfork::T11
+        ));
+
+        assert!(is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1B
+        ));
+        assert!(!is_valid_multisig_account(
+            P256VERIFY_ADDRESS,
+            TempoHardfork::T1C
+        ));
+        assert!(!is_valid_multisig_account(
+            PATH_USD_ADDRESS,
+            TempoHardfork::Genesis
+        ));
+
+        let mut zone_portal = [0u8; 20];
+        zone_portal[..12].copy_from_slice(&Address::ZONE_PORTAL_PREFIX);
+        zone_portal[19] = 1;
+        assert!(!is_valid_multisig_account(
+            Address::from(zone_portal),
+            TempoHardfork::T11
+        ));
+
+        for &(precompile, activated) in SYSTEM_PRECOMPILES {
+            if activated <= TempoHardfork::T11 {
+                assert!(
+                    !is_valid_multisig_account(precompile, TempoHardfork::T11),
+                    "{precompile} should not be eligible as a native multisig account"
+                );
+            }
+        }
     }
 
     #[test]
