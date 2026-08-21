@@ -530,6 +530,7 @@ impl ExecutionLayer for StubExecutionProvider {
 pub(super) struct StubMarshal {
     blocks: Arc<Mutex<BTreeMap<Height, Block>>>,
     reads: Arc<Mutex<Vec<Height>>>,
+    ancestry_reads: Arc<Mutex<Vec<Digest>>>,
     empty_ancestry: Arc<AtomicBool>,
 }
 
@@ -542,13 +543,17 @@ impl StubMarshal {
         self.reads.lock().unwrap().clone()
     }
 
+    pub(super) fn ancestry_reads(&self) -> Vec<Digest> {
+        self.ancestry_reads.lock().unwrap().clone()
+    }
+
     pub(super) fn return_empty_ancestry(&self) {
         self.empty_ancestry.store(true, Ordering::SeqCst);
     }
 }
 
 impl Marshal for StubMarshal {
-    type Ancestry = futures::stream::Empty<Arc<Block>>;
+    type Ancestry = futures::stream::Iter<std::vec::IntoIter<Arc<Block>>>;
 
     async fn get_block(&self, height: Height) -> Option<Block> {
         self.reads.lock().unwrap().push(height);
@@ -558,15 +563,26 @@ impl Marshal for StubMarshal {
     async fn ancestry<C>(
         &self,
         _clock: Arc<C>,
-        _start: (DigestFallback, Digest),
+        (_, digest): (DigestFallback, Digest),
         _fetch_duration: Timed,
     ) -> Option<Self::Ancestry>
     where
         C: Clock,
     {
-        self.empty_ancestry
-            .load(Ordering::SeqCst)
-            .then(futures::stream::empty)
+        if self.empty_ancestry.load(Ordering::SeqCst) {
+            return Some(futures::stream::iter(Vec::new()));
+        }
+
+        let block = self
+            .blocks
+            .lock()
+            .unwrap()
+            .values()
+            .find(|block| block.digest() == digest)
+            .cloned()?;
+        self.ancestry_reads.lock().unwrap().push(digest);
+        self.reads.lock().unwrap().push(block.height());
+        Some(futures::stream::iter(vec![Arc::new(block)]))
     }
 }
 

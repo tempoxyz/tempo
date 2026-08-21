@@ -960,3 +960,149 @@ fn outcome_requests_use_reshare_fallback_and_require_next_players() {
         );
     });
 }
+
+#[test]
+fn outcome_request_fills_gap_from_notarized_ancestry() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_notarized_gap")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        harness.execution.set_next_players(state.players().clone());
+
+        // Finalized Blocks
+        let mut anchor = None;
+        for height in 0..=5 {
+            let header = header(Height::new(height));
+            harness.execution.add_header(header.clone());
+            if height == 5 {
+                anchor = Some(block(header));
+            }
+        }
+
+        // Notarized Blocks yielded by the AncestryStream
+        let anchor = anchor.unwrap();
+        let mut parent = anchor.digest();
+        harness.marshal.add_block(anchor);
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = parent.0;
+            let block = block(header);
+            parent = block.digest();
+            harness.marshal.add_block(block);
+        }
+
+        harness.start().await;
+
+        let outcome = harness
+            .mailbox()
+            .get_dkg_outcome(parent, Height::new(8))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.output, state.output);
+        assert_eq!(
+            harness.marshal.reads(),
+            vec![
+                Height::new(8),
+                Height::new(7),
+                Height::new(6),
+                Height::new(5),
+            ]
+        );
+    });
+}
+
+#[test]
+fn outcome_request_switches_notarized_ancestry_branches() {
+    Runner::default().start(|context| async move {
+        let mut harness = Harness::builder(context.child("test"), "outcome_notarized_fork")
+            .epoch_length(10)
+            .initial_epoch(0)
+            .finalized_floor(Height::new(5))
+            .build()
+            .await;
+        let state = harness.initial_state().clone();
+        harness.execution.set_next_players(state.players().clone());
+
+        let mut anchor = None;
+        for height in 0..=5 {
+            let header = header(Height::new(height));
+            harness.execution.add_header(header.clone());
+            if height == 5 {
+                anchor = Some(block(header));
+            }
+        }
+
+        let anchor = anchor.unwrap();
+        let anchor_digest = anchor.digest();
+
+        harness.start().await;
+        harness.marshal.add_block(anchor);
+
+        // First Notarized Chain
+        let mut first_parent = anchor_digest;
+        let mut first_chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = first_parent.0;
+            header.inner.timestamp = 1;
+            let block = block(header);
+            first_parent = block.digest();
+            first_chain.push(first_parent);
+            harness.marshal.add_block(block);
+        }
+
+        let first_outcome = harness
+            .mailbox()
+            .get_dkg_outcome(first_parent, Height::new(8))
+            .await
+            .unwrap();
+
+        // Second Notarized Chain
+        let mut second_parent = anchor_digest;
+        let mut second_chain = Vec::new();
+        for height in 6..=8 {
+            let mut header = header(Height::new(height));
+            header.inner.parent_hash = second_parent.0;
+            header.inner.timestamp = 2;
+            let block = block(header);
+            second_parent = block.digest();
+            second_chain.push(second_parent);
+            harness.marshal.add_block(block);
+        }
+
+        let second_outcome = harness
+            .mailbox()
+            .get_dkg_outcome(second_parent, Height::new(8))
+            .await
+            .unwrap();
+
+        assert_eq!(first_outcome.output, state.output);
+        assert_eq!(second_outcome.output, state.output);
+        let ancestry_reads = vec![
+            first_chain[2],
+            first_chain[1],
+            first_chain[0],
+            anchor_digest,
+            second_chain[2],
+            second_chain[1],
+            second_chain[0],
+        ];
+
+        assert_eq!(harness.marshal.ancestry_reads(), ancestry_reads);
+
+        // DKG Outcomes are cached, thus we can request the outcome without re-reading state
+        let cached_first_outcome = harness
+            .mailbox()
+            .get_dkg_outcome(first_parent, Height::new(8))
+            .await
+            .unwrap();
+
+        assert_eq!(cached_first_outcome, first_outcome);
+        assert_eq!(harness.marshal.ancestry_reads(), ancestry_reads);
+    });
+}
