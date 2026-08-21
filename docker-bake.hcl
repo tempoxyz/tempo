@@ -10,6 +10,10 @@ group "default" {
   targets = ["tempo", "tempo-localnet", "tempo-sidecar", "tempo-xtask"]
 }
 
+group "nightly" {
+  targets = ["tempo", "tempo-sidecar", "tempo-xtask", "tempo-partial-persistence"]
+}
+
 target "docker-metadata" {}
 
 # Base image with all dependencies pre-compiled
@@ -47,6 +51,14 @@ target "tempo" {
 target "tempo-localnet" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo-localnet"
+}
+
+target "tempo-partial-persistence" {
+  inherits = ["_common", "docker-metadata"]
+  target = "tempo"
+  args = {
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp,partial-persistence"
+  }
 }
 
 target "tempo-sidecar" {

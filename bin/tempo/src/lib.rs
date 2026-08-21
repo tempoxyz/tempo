@@ -53,7 +53,7 @@ use alloy_genesis::GenesisAccount;
 use alloy_primitives::{Address, B256};
 use alloy_signer_local::MnemonicBuilder;
 use clap::{CommandFactory, FromArgMatches};
-use commonware_runtime::{Metrics, Runner};
+use commonware_runtime::{Runner, Supervisor as _};
 use eyre::{OptionExt, WrapErr as _};
 use futures::{
     FutureExt as _,
@@ -364,7 +364,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
             let mut metrics_server = tempo_consensus::metrics::install(
-                ctx.with_label("metrics"),
+                ctx.child("metrics"),
                 args.consensus.metrics_address,
             )
             .fuse();
@@ -386,7 +386,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     peer_id: format!("{:x}", node.network.peer_id()),
                 };
 
-                install_prometheus_metrics(ctx.with_label("telemetry_metrics"), prometheus_config)
+                install_prometheus_metrics(ctx.child("telemetry_metrics"), prometheus_config)
                     .wrap_err("failed to start Prometheus metrics exporter")?;
             }
 
@@ -396,7 +396,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     .ok_or_eyre("No default follow URL for this chain")?;
 
                 Either::Left(run_follow_stack(
-                    ctx.with_label("follow"),
+                    ctx.child("follow"),
                     args.consensus,
                     follow_url,
                     args.follow_upstream_request_timeout.into_duration(),
@@ -405,7 +405,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 ))
             } else {
                 Either::Right(run_consensus_stack(
-                    ctx.with_label("consensus"),
+                    ctx.child("consensus"),
                     args.consensus,
                     Arc::new(node),
                     cl_feed_state_clone,

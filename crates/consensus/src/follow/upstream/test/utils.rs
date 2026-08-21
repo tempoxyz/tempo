@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, types::Height};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture, stream};
 use parking_lot::Mutex;
@@ -264,7 +265,8 @@ impl StubReporter {
 impl Reporter for StubReporter {
     type Activity = Event;
 
-    async fn report(&mut self, event: Event) {
+    fn report(&mut self, event: Event) -> Feedback {
         self.events.lock().push(event);
+        Feedback::Ok
     }
 }

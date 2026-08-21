@@ -23,7 +23,10 @@ use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManif
 #[derive(Debug, Parser)]
 #[command(
     name = "download",
-    about = "Downloads snapshot archives produced by `tempo snapshot-manifest`."
+    about = "Downloads snapshot archives produced by `tempo snapshot-manifest`.",
+    mut_arg("force", |arg| arg.help(
+        "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+    ))
 )]
 pub(crate) struct Args {
     #[command(flatten)]
@@ -32,7 +35,7 @@ pub(crate) struct Args {
     /// Skip encoding consensus state. This will pass-through directly to Reth.
     #[arg(
         long,
-        default_value_t = true,
+        default_value_t = false,
         default_missing_value = "true",
         hide = true,
         num_args = 0..=1,
@@ -251,18 +254,9 @@ fn resolve_consensus_archive_source(
 
     match source {
         ManifestSource::Url(manifest_url) => {
-            let mut base = Url::parse(manifest_url)?;
+            let base = Url::parse(manifest_url)?;
             match base.scheme() {
-                "http" | "https" => {
-                    {
-                        let mut segments = base.path_segments_mut().map_err(|_| {
-                            eyre::eyre!("manifest URL must have a hierarchical path")
-                        })?;
-                        segments.pop_if_empty();
-                        segments.pop();
-                    }
-                    archive_source_from_url(base.join(archive_file)?)
-                }
+                "http" | "https" => archive_source_from_url(base.join(archive_file)?),
                 "file" => {
                     let mut path = base
                         .to_file_path()
@@ -313,8 +307,12 @@ async fn install_consensus_archive(
         );
     }
 
-    fs::create_dir_all(consensus_dir)
-        .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
+    prepare_consensus_directory(consensus_dir, force).wrap_err_with(|| {
+        format!(
+            "failed to prepare consensus directory at `{}`",
+            consensus_dir.display()
+        )
+    })?;
     extract_zstd_tar_archive(archive_file.path(), consensus_dir, force)?;
     verify_consensus_output_files(
         consensus_dir,
@@ -322,6 +320,21 @@ async fn install_consensus_archive(
     )?;
 
     info!("persisted consensus archive");
+    Ok(())
+}
+
+#[tracing::instrument(
+    parent = None,
+    skip_all,
+    fields(path = %consensus_dir.display())
+)]
+fn prepare_consensus_directory(consensus_dir: &Path, force: bool) -> eyre::Result<()> {
+    if force && consensus_dir.try_exists()? {
+        info!("removing existing consensus state");
+        fs::remove_dir_all(consensus_dir)?;
+    }
+
+    fs::create_dir_all(consensus_dir)?;
     Ok(())
 }
 
@@ -492,6 +505,29 @@ mod tests {
     }
 
     #[test]
+    fn args_defaults_to_include_consensus() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--manifest-url",
+            "https://snap/manifest.json",
+            "--datadir",
+            "/d",
+        ])
+        .unwrap();
+
+        assert!(!args.skip_consensus);
+    }
+
+    #[test]
+    fn help_documents_force_removing_consensus_directory() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains(
+            "Overwrite existing snapshot data by removing db, rocksdb, static_files, reth.toml, and the consensus directory."
+        ));
+    }
+
+    #[test]
     fn args_parses_mixed_reth_and_tempo_flags() {
         // Order interleaves tempo + reth flags to exercise both schemas in
         // the same parse pass.
@@ -627,6 +663,25 @@ mod tests {
     }
 
     #[test]
+    fn consensus_archive_url_resolves_relative_to_remote_manifest() {
+        let manifest_json = serde_json::json!({});
+        let source = ManifestSource::Url(
+            "https://snapshots.example.com/tempo-4217-42/manifest.json".to_string(),
+        );
+
+        let archive =
+            resolve_consensus_archive_source(&manifest_json, &source, "consensus.tar.zst").unwrap();
+
+        match archive {
+            ConsensusArchiveSource::Url(url) => assert_eq!(
+                url,
+                "https://snapshots.example.com/tempo-4217-42/consensus.tar.zst"
+            ),
+            ConsensusArchiveSource::Path(_) => panic!("remote manifest must resolve a URL"),
+        }
+    }
+
+    #[test]
     fn extract_zstd_tar_archive_allows_partition_directory_entries() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
@@ -649,6 +704,32 @@ mod tests {
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
             b"abc"
         );
+    }
+
+    #[test]
+    fn prepare_consensus_directory_removes_existing_state_when_forced() {
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        fs::create_dir_all(consensus_dir.join("nested")).unwrap();
+        fs::write(consensus_dir.join("nested").join("stale"), b"stale").unwrap();
+
+        prepare_consensus_directory(&consensus_dir, true).unwrap();
+
+        assert!(consensus_dir.is_dir());
+        assert!(fs::read_dir(&consensus_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn prepare_consensus_directory_preserves_existing_state_without_force() {
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        fs::create_dir_all(&consensus_dir).unwrap();
+        let existing = consensus_dir.join("existing");
+        fs::write(&existing, b"existing").unwrap();
+
+        prepare_consensus_directory(&consensus_dir, false).unwrap();
+
+        assert_eq!(fs::read(existing).unwrap(), b"existing");
     }
 
     #[test]

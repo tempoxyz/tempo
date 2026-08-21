@@ -17,41 +17,41 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
+use commonware_actor::mailbox;
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
-    simplex::Plan,
-    types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
+    marshal::core::DigestFallback,
+    simplex::{Plan, types::Context},
+    types::{Epocher as _, FixedEpocher, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
+    ContextCell, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
+    telemetry::metrics::{Counter, MetricsExt as _},
 };
-use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
-use futures::{StreamExt as _, channel::mpsc, future::try_join};
-use rand_08::{CryptoRng, Rng};
-use reth_node_builder::ConsensusEngineHandle;
+use rand_core::{CryptoRng, Rng};
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_node::TempoFullNode;
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use reth_provider::{BlockReader as _, BlockSource};
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, info_span, instrument, warn};
+use tracing::{Level, debug, info, instrument, warn};
 
 use super::{
     Mailbox,
-    ingress::{Broadcast, Genesis, Message, Propose, Verify},
+    ingress::{Broadcast, Message, Propose, Verify},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -62,7 +62,7 @@ use crate::{
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     context: ContextCell<TContext>,
-    mailbox: mpsc::Receiver<Message>,
+    mailbox: mailbox::Receiver<Message>,
 
     inner: Inner<TState>,
 }
@@ -105,7 +105,7 @@ where
         + commonware_runtime::Metrics,
 {
     pub(super) async fn init(config: super::Config<TContext>) -> eyre::Result<Self> {
-        let (tx, rx) = mpsc::channel(config.mailbox_size);
+        let (tx, rx) = mailbox::new(config.context.child("mailbox"), config.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
         let metrics = Metrics::init(&config.context);
@@ -180,7 +180,7 @@ where
         + commonware_runtime::Metrics,
 {
     async fn run_until_stopped(mut self) {
-        while let Some(msg) = self.mailbox.next().await {
+        while let Some(msg) = self.mailbox.recv().await {
             self.handle_message(msg);
         }
     }
@@ -188,27 +188,29 @@ where
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Broadcast(broadcast) => {
-                self.context.with_label("broadcast").spawn({
+                self.context.child("broadcast").spawn({
                     let inner = self.inner.clone();
                     move |_| inner.handle_broadcast(*broadcast)
                 });
             }
-            Message::Genesis(genesis) => {
-                self.context.with_label("genesis").spawn({
-                    let inner = self.inner.clone();
-                    move |context| inner.handle_genesis(genesis, context)
-                });
-            }
             Message::Propose(propose) => {
-                self.context.with_label("propose").spawn({
+                if propose.response.is_closed() {
+                    return;
+                }
+
+                self.context.child("propose").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
-                self.context.with_label("verify").spawn({
+                if verify.response.is_closed() {
+                    return;
+                }
+
+                self.context.child("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(*verify, context)
+                    move |_| inner.handle_verify(*verify)
                 });
             }
         }
@@ -238,74 +240,14 @@ struct Inner<TState> {
 }
 
 impl Inner<Init> {
-    #[instrument(
-        skip_all,
-        fields(%digest),
-    )]
+    #[instrument(skip_all, fields(%digest))]
     async fn handle_broadcast(self, Broadcast { digest, plan }: Broadcast) {
         let (round, recipients) = match plan {
             Plan::Propose { round } => (round, Recipients::All),
             Plan::Forward { round, recipients } => (round, recipients),
         };
-        self.marshal.forward(round, digest, recipients).await;
-    }
 
-    #[instrument(
-        skip_all,
-        fields(
-            epoch = %genesis.epoch,
-        ),
-        ret(Display),
-        err(level = Level::ERROR)
-    )]
-    async fn handle_genesis<TContext: commonware_runtime::Clock>(
-        self,
-        mut genesis: Genesis,
-        context: TContext,
-    ) -> eyre::Result<Digest> {
-        // The last block of the previous epoch is the genesis of the current
-        // epoch. Only epoch 0/height 0 is special cased because first height
-        // of epoch 0 == genesis of epoch 0.
-        let boundary = match genesis.epoch.previous() {
-            None => Height::zero(),
-            Some(previous_epoch) => self
-                .epoch_strategy
-                .last(previous_epoch)
-                .expect("epoch strategy is for all epochs"),
-        };
-
-        let mut attempts = 0;
-        let epoch_genesis = loop {
-            attempts += 1;
-            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary.get()) {
-                break Digest(hash);
-            } else if let Some((_, digest)) = self.marshal.get_info(boundary).await {
-                break digest;
-            } else {
-                info_span!("fetch_genesis_digest").in_scope(|| {
-                    info!(
-                        boundary.height = %boundary,
-                        attempts,
-                        "neither marshal actor nor execution layer had the \
-                        boundary block of the previous epoch available; \
-                        waiting 2s before trying again"
-                    );
-                });
-                select!(
-                    () = genesis.response.closed() => {
-                        return Err(eyre!("genesis request was cancelled"));
-                    },
-
-                    _ = context.sleep(Duration::from_secs(2)) => {
-                        continue;
-                    },
-                );
-            }
-        };
-        genesis.response.send(epoch_genesis).map_err(|_| {
-            eyre!("failed returning parent digest for epoch: return channel was already closed")
-        })?;
-        Ok(epoch_genesis)
+        self.marshal.forward(round, digest, recipients);
     }
 
     /// Handles a [`Propose`] request.
@@ -319,7 +261,7 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext: Pacer>(
+    async fn handle_propose<TContext: Pacer + Supervisor>(
         self,
         request: Propose,
         context: TContext,
@@ -331,6 +273,23 @@ impl Inner<Init> {
             leader,
             started_at: propose_start,
         } = request;
+
+        // Report the parent we are asked to build on as the pending head,
+        // so that the executor can get started on bringing the execution
+        // layer to the right state. On the happy path there should always
+        // be enough headroom between this and the eventual request to build
+        // a block.
+        //
+        // If the EL is not (yet) in the correct state to build a block the
+        // build will fail fast.
+        debug!("reporting notarized tip");
+        if let Err(error) = self.executor.report_pending_head(Context {
+            round,
+            leader: leader.clone(),
+            parent: (parent_view, parent_digest),
+        }) {
+            warn!(%error, "failed reporting the proposal parent as the pending head");
+        }
 
         let proposal_block = {
             let mut proposal = Box::pin(async {
@@ -356,7 +315,7 @@ impl Inner<Init> {
                 futures::pin_mut!(already_verified);
 
                 let mut proposal = Box::pin(self.clone().propose(
-                    context.clone(),
+                    &context,
                     BuildProposalArgs {
                         propose_start,
                         parent_view,
@@ -392,7 +351,7 @@ impl Inner<Init> {
 
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
-                    if !self.marshal.proposed(round, block.clone()).await {
+                    if !self.marshal.verified(round, block.clone()).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
                     observe_marshal_persist(
@@ -459,11 +418,7 @@ impl Inner<Init> {
         ),
         err(level = Level::INFO),
     )]
-    async fn handle_verify<TContext: Pacer>(
-        self,
-        verify: Verify,
-        context: TContext,
-    ) -> eyre::Result<()> {
+    async fn handle_verify(self, verify: Verify) -> eyre::Result<()> {
         let Verify {
             parent,
             payload,
@@ -471,11 +426,7 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
-        let VerifyResult {
-            result,
-            block,
-            parent,
-        } = select!(
+        let VerifyResult { result, block } = select!(
             () = response.closed() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
@@ -483,7 +434,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, proposer, round) => {
+            res = self.clone().verify(parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         )?;
@@ -492,14 +443,14 @@ impl Inner<Init> {
             warn!("received dropped channel before verification result could be returned");
         }
         // Keep large block drops out of the pre-response path.
-        drop((block, parent));
+        drop(block);
 
         Ok(())
     }
 
     async fn propose<TContext: Pacer>(
         self,
-        context: TContext,
+        context: &TContext,
         args: BuildProposalArgs,
     ) -> eyre::Result<(Block, Option<ProposalReturn>)> {
         let BuildProposalArgs {
@@ -536,14 +487,15 @@ impl Inner<Init> {
             let parent = if parent.block().header().block_access_list_hash().is_some()
                 && parent.block_access_list().is_none()
             {
-                self.marshal
-                    .subscribe_by_digest(
-                        Some(Round::new(round.epoch(), parent_view)),
-                        parent_digest,
-                    )
+                let round = Round::new(round.epoch(), parent_view);
+                (*self
+                    .marshal
+                    .subscribe_by_digest(parent_digest, DigestFallback::FetchByRound { round })
                     .await
-                    .await
-                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+                    .map_err(|_| {
+                        eyre!("syncer dropped channel before the parent block was sent")
+                    })?)
+                .clone()
             } else {
                 parent
             };
@@ -552,38 +504,6 @@ impl Inner<Init> {
             }
             info!("parent is last height of epoch; re-proposing parent");
             return Ok((parent, None));
-        }
-
-        let is_genesis_parent = parent.height().is_zero()
-            || parent_epoch_info.last() == parent.height()
-                && parent_epoch_info.epoch().next() == round.epoch();
-
-        // Send the proposal parent to execution layer to cover edge cases when
-        // we were not asked to to verify it (and hence are missing it in the
-        // EL).
-        //
-        // If proposing the first block of an epoch, its parent
-        // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
-        if !is_genesis_parent
-            && verify_block(
-                context.clone(),
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-            .is_none()
-        {
-            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -642,7 +562,7 @@ impl Inner<Init> {
         // timestamp is not in the future during EL validation.
         let mut epoch_millis = context.current().epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
-            self.metrics.parent_ahead_of_local_time.inc();
+            self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
         };
 
@@ -693,7 +613,7 @@ impl Inner<Init> {
         let payload = self
             .state
             .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)?
+            .build_proposal(round, parent.height(), parent.digest(), attrs)?
             .await
             .wrap_err(
                 "executor dropped the payload channel: the build failed (the \
@@ -760,32 +680,29 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn verify<TContext: Pacer>(
+    async fn verify(
         self,
-        context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<VerifyResult> {
-        let (block, parent) = try_join(
-            subscribe(&self.execution_node, round, payload, &self.marshal),
-            subscribe(
-                &self.execution_node,
-                Round::new(round.epoch(), parent_view),
-                parent_digest,
-                &self.marshal,
-            ),
-        )
-        .await
-        .wrap_err("failed getting required blocks")?;
+        // Report the parent we are asked to verify against as the pending
+        // head, so that the executor keeps driving the execution layer
+        // towards it even if this verification is aborted.
+        if let Err(error) = self.executor.report_pending_head(Context {
+            round,
+            leader: proposer.clone(),
+            parent: (parent_view, parent_digest),
+        }) {
+            warn!(%error, "failed reporting the verify parent as the pending head");
+        }
+
+        let block = subscribe(&self.execution_node, round, payload, &self.marshal)
+            .await
+            .wrap_err("failed getting proposal block")?;
 
         // Can only repropose at the end of an epoch.
-        //
-        // NOTE: fetching block and parent twice (in the case block == parent)
-        // seems wasteful, but both run concurrently, should finish almost
-        // immediately, and happen very rarely. It's better to optimize for the
-        // general case.
         if payload == parent_digest {
             let epoch_info = self
                 .epoch_strategy
@@ -798,13 +715,11 @@ impl Inner<Init> {
                 return Ok(VerifyResult {
                     result: true,
                     block: None,
-                    parent: Some(parent),
                 });
             } else {
                 return Ok(VerifyResult {
                     result: false,
                     block: Some(block),
-                    parent: Some(parent),
                 });
             }
         }
@@ -823,32 +738,13 @@ impl Inner<Init> {
             return Ok(VerifyResult {
                 result: false,
                 block: Some(block),
-                parent: Some(parent),
             });
         }
 
-        if let Err(error) = self
-            .state
-            .executor
-            .canonicalize_head(parent.height(), parent.digest())
-            .await
-        {
-            tracing::warn!(
-                %error,
-                parent.height = %parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent; trying to go on",
-            );
-        }
-
         let validation_duration = verify_block(
-            context,
-            round.epoch(),
+            round,
             &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            &self.state.executor,
             &block,
             parent_digest,
             &self.scheme_provider,
@@ -869,33 +765,21 @@ impl Inner<Init> {
         }
         let is_good = validation_duration.is_some();
 
-        let block_height = block.height();
-        let block_digest = block.digest();
-
         if is_good {
-            // Persist the block in the marshal actor and execution layer.
+            // Persist the verified block in the marshal actor.
             if !self.marshal.verified(round, block).await {
                 bail!("marshal actor refused to persist verified block");
             }
 
-            // FIXME: move this into the certification step?
-            self.state
-                .executor
-                .canonicalize_head(block_height, block_digest)
-                .await
-                .wrap_err("failed making the verified proposal the head of the canonical chain")?;
-
             return Ok(VerifyResult {
                 result: true,
                 block: None,
-                parent: Some(parent),
             });
         }
 
         Ok(VerifyResult {
             result: false,
             block: Some(block),
-            parent: Some(parent),
         })
     }
 }
@@ -954,42 +838,27 @@ struct VerifyResult {
     result: bool,
     /// The proposed block when it was not moved into the verified marshal state.
     block: Option<Block>,
-    /// The parent block fetched to verify the proposal.
-    parent: Option<Block>,
 }
 
-/// Verifies `block` given its `parent` against the execution layer.
+/// Validates `block` against the execution layer through the executor
+/// actor, which serializes the new-payload request with all other
+/// execution-layer work and records the block's body for the
+/// notarized-chain convergence.
 ///
-/// Returns EL validation duration when validation reached the execution layer
-/// and succeeded, or `None` if the block is invalid. Returns an error if
-/// validation was not possible, for example if communication with the execution
-/// layer failed.
-///
-/// Reason the reason for why a block was not valid is communicated as a
-/// tracing event.
-#[instrument(
-    skip_all,
-    fields(
-        %epoch,
-        epoch_length,
-        block.parent_digest = %block.parent_digest(),
-        block.digest = %block.digest(),
-        block.height = %block.height(),
-        block.timestamp = block.timestamp(),
-        parent.digest = %parent_digest,
-    )
-)]
-async fn verify_block<TContext: Pacer>(
-    context: TContext,
-    epoch: Epoch,
+/// Returns the EL validation duration when validation reached the execution
+/// layer and succeeded, or `None` if the block is invalid. Returns an error
+/// if validation was not possible, for example if the execution layer does
+/// not know the block's parent or the request was superseded by a
+/// newer-round request.
+async fn verify_block(
+    round: Round,
     epoch_strategy: &FixedEpocher,
-    engine: ConsensusEngineHandle<TempoPayloadTypes>,
+    executor: &crate::executor::Mailbox,
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
 ) -> eyre::Result<Option<Duration>> {
-    use alloy_rpc_types_engine::PayloadStatusEnum;
-
+    let epoch = round.epoch();
     let epoch_info = epoch_strategy
         .containing(block.height())
         .expect("epoch strategy is for all heights");
@@ -1007,7 +876,7 @@ async fn verify_block<TContext: Pacer>(
 
     // Scheme registration precedes engine creation, so the scheme must exist
     let scheme = scheme_provider
-        .scoped(epoch)
+        .scheme(epoch)
         .ok_or_eyre("cannot determine participants in the current epoch")?;
 
     let validator_set = Some(
@@ -1017,40 +886,10 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let execution_data = TempoExecutionData {
-        block: block.execution_block().clone(),
-        block_access_list: block.block_access_list().cloned(),
-        validator_set,
-    };
-    let validation_start = Instant::now();
-    let payload_status = engine
-        .new_payload(execution_data)
-        .pace(&context, Duration::from_millis(50))
+
+    executor
+        .verify_block(round, block.clone(), validator_set)
         .await
-        .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
-    match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
-        PayloadStatusEnum::Invalid { validation_error } => {
-            info!(
-                validation_error,
-                "execution layer returned that the block was invalid"
-            );
-            Ok(None)
-        }
-        PayloadStatusEnum::Accepted => {
-            bail!(
-                "failed validating block because payload was accepted, meaning \
-                that this was not actually executed by the execution layer for some reason"
-            );
-        }
-        PayloadStatusEnum::Syncing => {
-            bail!(
-                "failed validating block because payload is still syncing, \
-                this means the parent block was available to the consensus \
-                layer but not the execution layer"
-            );
-        }
-    }
 }
 
 #[instrument(skip_all, err(Display))]
@@ -1158,11 +997,11 @@ async fn subscribe(
         // EL database reads do not include commonware sidecars.
         Block::from_execution_block_unchecked(block, None)
     } else {
-        marshal
-            .subscribe_by_digest(Some(round), digest)
+        (*marshal
+            .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
             .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
+        .clone()
     };
     Ok(block)
 }
@@ -1177,11 +1016,9 @@ impl Metrics {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let parent_ahead_of_local_time = Counter::default();
-        context.register(
+        let parent_ahead_of_local_time = context.counter(
             "parent_ahead_of_local_time",
             "number of times the parent block timestamp was ahead of local time",
-            parent_ahead_of_local_time.clone(),
         );
 
         Self {
