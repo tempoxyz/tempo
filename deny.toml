@@ -89,6 +89,7 @@ unknown-registry = "warn"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-git = [
+  "https://github.com/alloy-rs/core",
   "https://github.com/paradigmxyz/reth",
   "https://github.com/sigp/discv5",
 ]
