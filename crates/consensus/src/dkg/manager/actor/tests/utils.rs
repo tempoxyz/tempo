@@ -52,7 +52,7 @@ use super::super::{
     state::{self, Round, ShareState},
 };
 
-pub(super) struct TestDkg {
+pub(super) struct Harness {
     context: Context,
     partition_prefix: String,
     me: PrivateKey,
@@ -63,12 +63,12 @@ pub(super) struct TestDkg {
     handle: Option<Handle<()>>,
     sender: RecordingSender,
     network: Option<TestNetwork>,
-    pub(super) execution_node: StubExecutionProvider,
+    pub(super) execution: StubExecutionProvider,
     pub(super) marshal: StubMarshal,
     pub(super) epoch_manager: StubEpochManager,
 }
 
-impl TestDkg {
+impl Harness {
     const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).unwrap();
 
     pub(super) fn epoch_strategy() -> FixedEpocher {
@@ -121,7 +121,7 @@ impl TestDkg {
             handle: None,
             sender: RecordingSender::default(),
             network: None,
-            execution_node: StubExecutionProvider::default(),
+            execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
             epoch_manager: StubEpochManager::default(),
         }
@@ -143,8 +143,8 @@ impl TestDkg {
         self
     }
 
-    pub(super) fn with_execution_node(mut self, execution_node: StubExecutionProvider) -> Self {
-        self.execution_node = execution_node;
+    pub(super) fn with_execution(mut self, execution: StubExecutionProvider) -> Self {
+        self.execution = execution;
         self
     }
 
@@ -179,7 +179,7 @@ impl TestDkg {
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
                 partition_prefix: self.partition_prefix.clone(),
-                execution_node: self.execution_node.clone(),
+                execution_node: self.execution.clone(),
                 initial_share: None,
             },
         )
@@ -252,7 +252,7 @@ impl TestDkg {
     }
 }
 
-impl Drop for TestDkg {
+impl Drop for Harness {
     fn drop(&mut self) {
         self.mailbox.take();
         if let Some(handle) = self.handle.take() {
@@ -627,7 +627,7 @@ pub(super) fn dkg_state(
     players: usize,
     is_full_dkg: bool,
 ) -> (State, Vec<PrivateKey>) {
-    // TestDkg uses the seed-0 key by default, so every generated state includes
+    // Harness uses the seed-0 key by default, so every generated state includes
     // that actor as a participant regardless of the ceremony mode.
     let keys = (0..players as u64)
         .map(PrivateKey::from_seed)
