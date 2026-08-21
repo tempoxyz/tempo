@@ -8,4 +8,4 @@ tempo-revm: minor
 tempo-node: minor
 ---
 
-Activates native multisig accounts at T11, including a new multisig precompile, signature-carried `InitMultisig` bootstrap configs, and `MultisigSignature` validation across the EVM, transaction pool, and RPC layers. Native 1-of-1 secp256k1 multisigs pay an 8,400 gas authorization surcharge over equivalent primitive secp256k1 transactions.
+Activates counterfactual native multisig accounts at T11, including signature-carried configuration witnesses, single-slot configuration commitments, owner updates through the multisig precompile, and recursively metered `MultisigSignature` validation across the EVM, transaction pool, and RPC layers.
