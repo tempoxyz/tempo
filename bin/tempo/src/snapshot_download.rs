@@ -75,7 +75,7 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         };
 
         if args.inner.prints_plan_json() {
-            let mut plan = args
+            let (mut plan, _) = args
                 .inner
                 .plan()
                 .await
