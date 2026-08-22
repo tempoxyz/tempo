@@ -79,20 +79,30 @@ pub use tempo_contracts::precompiles::{
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
 
-/// Input per word cost. It covers abi decoding and cloning of input into call data.
+/// Pre-T11 input per word cost. It covers ABI decoding and cloning of input into calldata.
 ///
-/// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
-pub const INPUT_PER_WORD_COST: u64 = 6;
+/// This is priced at twice `COPY_COST` to mitigate different ABI decodings.
+const PRE_T11_INPUT_PER_WORD_COST: u64 = 6;
+
+/// Input per word cost starting at T11.
+const T11_INPUT_PER_WORD_COST: u64 = 30;
 
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
 
-/// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
+/// Returns the gas cost for decoding calldata of the given length at `spec`, rounded up to word
+/// boundaries.
 #[inline]
-pub fn input_cost(calldata_len: usize) -> u64 {
+pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> u64 {
+    let per_word_cost = if spec.is_t11() {
+        T11_INPUT_PER_WORD_COST
+    } else {
+        PRE_T11_INPUT_PER_WORD_COST
+    };
+
     calldata_len
         .div_ceil(32)
-        .saturating_mul(INPUT_PER_WORD_COST as usize) as u64
+        .saturating_mul(per_word_cost as usize) as u64
 }
 
 /// Trait implemented by all Tempo precompile contract types.
@@ -590,7 +600,7 @@ mod tests {
             output.status.is_revert(),
             "uninitialized token should revert"
         );
-        // Gas used should include input_cost(68) = 18 + with_account_info cost
+        // Gas used should include input_cost(T1, 68) = 18 + with_account_info cost.
         assert!(
             output.gas_used > 0,
             "early-return revert should report non-zero gas_used, got {}",
@@ -654,7 +664,8 @@ mod tests {
                 .expect("T1: expected UnknownFunctionSelector error");
         assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
 
-        // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
+        // Verify gas is tracked for both cases (unknown selector may cost slightly more due to its
+        // input length).
         assert!(unknown.gas_used >= empty.gas_used);
 
         // Pre-T1 (T0): invalid calldata should return a halted output
@@ -987,18 +998,24 @@ mod tests {
     }
 
     #[test]
-    fn test_input_cost_returns_non_zero_for_input() {
+    fn test_input_cost_schedule() {
         // Empty input should cost 0
-        assert_eq!(input_cost(0), 0);
+        assert_eq!(input_cost(TempoHardfork::T10, 0), 0);
+        assert_eq!(input_cost(TempoHardfork::T11, 0), 0);
 
-        // 1 byte should cost INPUT_PER_WORD_COST (rounds up to 1 word)
-        assert_eq!(input_cost(1), INPUT_PER_WORD_COST);
+        // 1 byte rounds up to 1 word.
+        assert_eq!(input_cost(TempoHardfork::T10, 1), 6);
 
-        // 32 bytes (1 word) should cost INPUT_PER_WORD_COST
-        assert_eq!(input_cost(32), INPUT_PER_WORD_COST);
+        // 32 bytes is 1 word.
+        assert_eq!(input_cost(TempoHardfork::T10, 32), 6);
 
-        // 33 bytes (2 words) should cost 2 * INPUT_PER_WORD_COST
-        assert_eq!(input_cost(33), INPUT_PER_WORD_COST * 2);
+        // 33 bytes rounds up to 2 words.
+        assert_eq!(input_cost(TempoHardfork::T10, 33), 12);
+
+        // T11 increases the input charge to 30 gas per word.
+        assert_eq!(input_cost(TempoHardfork::T11, 1), 30);
+        assert_eq!(input_cost(TempoHardfork::T11, 32), 30);
+        assert_eq!(input_cost(TempoHardfork::T11, 33), 60);
     }
 
     #[test]
