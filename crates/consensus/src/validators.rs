@@ -12,7 +12,7 @@ use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::ConfigureEvm as _;
-use reth_provider::{BlockReader as _, BlockSource, StateProviderBox, StateProviderFactory as _};
+use reth_provider::{HeaderProvider as _, StateProviderBox, StateProviderFactory as _};
 use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
@@ -46,10 +46,9 @@ impl ExecutionNode for TempoFullNode {
     fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
         // DKG may read a proposal parent's validator state before its FCU makes the block canonical.
         self.provider
-            .find_sealed_or_recovered_block(block_hash, BlockSource::Any)
+            .header(block_hash)
             .map_err(eyre::Report::new)
-            .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
-            .map(|block| block.clone_sealed_header().unseal())
+            .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
     }
 
     fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {

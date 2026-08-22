@@ -125,6 +125,7 @@ pub(crate) enum BlockBuildStopReason {
     RlpBlockSizeLimit,
     TxPoolEmpty,
     BuildBudget,
+    FinalizationRequested,
 }
 
 impl BlockBuildStopReason {
@@ -134,6 +135,7 @@ impl BlockBuildStopReason {
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
             Self::BuildBudget => "build_budget",
+            Self::FinalizationRequested => "finalization_requested",
         }
     }
 }
@@ -211,7 +213,10 @@ reth_storage_api::delegate_impls_to_as_ref!(
 );
 
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
-    fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
         let result = self.inner.hashed_post_state(bundle_state);

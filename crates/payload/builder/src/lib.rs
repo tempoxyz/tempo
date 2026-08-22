@@ -680,6 +680,9 @@ where
 
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < non_shared_gas_limit {
+                    if cancel.is_finalization_requested() {
+                        break BlockBuildStopReason::FinalizationRequested;
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1029,7 +1032,11 @@ where
         {
             hashed_state
         } else {
-            Arc::new(finish_provider.hashed_post_state(&db.bundle_state))
+            Arc::new(
+                finish_provider
+                    .hashed_post_state(&db.bundle_state)
+                    .map_err(PayloadBuilderError::other)?,
+            )
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
