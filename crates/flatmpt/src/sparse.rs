@@ -1206,7 +1206,7 @@ impl Worker {
                     })?
                 };
                 drop(guard); // snapshot + chain are pinned; reads are lock-free
-                tracing::debug!(
+                tracing::info!(
                     target: "flatmpt",
                     n = restore.len(),
                     "restoring streamed slots absent from final ops"
