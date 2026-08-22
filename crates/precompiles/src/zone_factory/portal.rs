@@ -102,6 +102,10 @@ pub struct ZonePortalStorage {
     token_enablement_hash: B256,
     /// Capability-keyed abdication timestamps, stored as a Solidity mapping in slot 27.
     abdication_effective_at: Mapping<u8, u64>,
+    /// Enabled-token prefix confirmed by accepted Zone proofs, stored in slot 28.
+    last_processed_enabled_token_count: u64,
+    /// Whether the token cursor has been initialized, packed into slot 28.
+    token_enablement_cursor_initialized: bool,
 }
 
 impl ZonePortalStorage {
@@ -163,6 +167,9 @@ impl ZonePortalStorage {
         self.token_enable_count_block.write(creation_block)?;
         self.tokens_enabled_in_current_block.write(1)?;
         self.token_enablement_hash.write(token_enablement_hash)?;
+        if self.storage.spec().is_t12() {
+            self.token_enablement_cursor_initialized.write(true)?;
+        }
         for gateway in &params.zoneGateways {
             self.role[*gateway].write(u8::from(ZonePortalRole::CallbackGateway))?;
         }

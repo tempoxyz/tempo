@@ -66,7 +66,7 @@ use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{collections::BTreeMap, sync::Arc, thread};
 use tempo_chainspec::spec::{DEV, TempoChainSpec};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
-use tempo_contracts::precompiles::initial_zone_factory_state;
+use tempo_contracts::precompiles::t12_zone_factory_state;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
@@ -120,7 +120,7 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
 }
 
 fn zone_factory_genesis_alloc(owner: Address) -> [(Address, GenesisAccount); 4] {
-    initial_zone_factory_state(owner).map(|account| {
+    t12_zone_factory_state(owner).map(|account| {
         (
             account.address,
             GenesisAccount {
@@ -650,7 +650,7 @@ mod tests {
             ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME},
+        zones::{T12_ZONE_MESSENGER_RUNTIME, T12_ZONE_PORTAL_RUNTIME, T12_ZONE_VERIFIER_RUNTIME},
     };
 
     fn init_defaults_once() {
@@ -695,9 +695,9 @@ mod tests {
         );
 
         for (address, code) in [
-            (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
-            (ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME),
-            (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
+            (ZONE_PORTAL_IMPL_ADDRESS, T12_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T12_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T12_ZONE_MESSENGER_RUNTIME),
         ] {
             assert_eq!(
                 chain_spec.genesis().alloc.get(&address),
