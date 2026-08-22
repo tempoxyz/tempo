@@ -42,10 +42,6 @@ basic-transfer:
 	#!/bin/bash
 	./basic-transfer.sh
 
-registrar-delegation:
-	#!/bin/bash
-	./registrar-delegation.sh
-
 create-tip20-token:
 	#!/bin/bash
 	./create-tip20-token.sh
