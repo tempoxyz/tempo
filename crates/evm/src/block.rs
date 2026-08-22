@@ -166,6 +166,32 @@ impl TxResult for TempoTxResult {
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
 /// logic on top: section-based transaction ordering (`BlockSection`), subblock
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
+///
+/// # Reuse of the inner [`EthBlockExecutor`]
+///
+/// Transaction execution, gas accounting, receipt building and state commits are delegated to
+/// the inner executor, as are the Ethereum system calls:
+///
+/// - Pre-block ([`apply_pre_execution_changes`](BlockExecutor::apply_pre_execution_changes)):
+///   the inner executor transacts the [EIP-2935] blockhashes and [EIP-4788] beacon root calls
+///   (Cancun and Prague are active at genesis, and Tempo headers set a zero
+///   `parent_beacon_block_root`). Only the EIP-2935 call is currently effective: the history
+///   contract is deployed on Tempo networks (at genesis on dev, post-genesis on live
+///   networks), while the EIP-4788 contract has no code, making that call a no-op.
+/// - Post-block ([`finish`](BlockExecutor::finish)): the inner executor transacts the
+///   [EIP-7002] withdrawal requests and [EIP-7251] consolidation requests calls and parses
+///   [EIP-6110] deposits — all no-ops on Tempo because these system contracts are not
+///   deployed, so the resulting requests are empty. The same applies to the [EIP-8282]
+///   builder request calls if Amsterdam is ever activated, unless its predeploys are deployed
+///   first. Tempo's own post-block system call, the `CurrentCommittee` epoch rotation, runs
+///   before this delegation.
+///
+/// [EIP-2935]: https://eips.ethereum.org/EIPS/eip-2935
+/// [EIP-4788]: https://eips.ethereum.org/EIPS/eip-4788
+/// [EIP-6110]: https://eips.ethereum.org/EIPS/eip-6110
+/// [EIP-7002]: https://eips.ethereum.org/EIPS/eip-7002
+/// [EIP-7251]: https://eips.ethereum.org/EIPS/eip-7251
+/// [EIP-8282]: https://eips.ethereum.org/EIPS/eip-8282
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
