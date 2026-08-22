@@ -82,10 +82,10 @@ pub use account_keychain::AuthorizedKey;
 /// Pre-T11 input per word cost. It covers ABI decoding and cloning of input into calldata.
 ///
 /// This is priced at twice `COPY_COST` to mitigate different ABI decodings.
-pub const INPUT_PER_WORD_COST: u64 = 6;
+const PRE_T11_INPUT_PER_WORD_COST: u64 = 6;
 
 /// Input per word cost starting at T11.
-pub const T11_INPUT_PER_WORD_COST: u64 = 30;
+const T11_INPUT_PER_WORD_COST: u64 = 30;
 
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
@@ -97,7 +97,7 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> u64 {
     let per_word_cost = if spec.is_t11() {
         T11_INPUT_PER_WORD_COST
     } else {
-        INPUT_PER_WORD_COST
+        PRE_T11_INPUT_PER_WORD_COST
     };
 
     calldata_len
@@ -600,7 +600,7 @@ mod tests {
             output.status.is_revert(),
             "uninitialized token should revert"
         );
-        // Gas used should include input_cost(68) = 18 + with_account_info cost
+        // Gas used should include input_cost(T1, 68) = 18 + with_account_info cost.
         assert!(
             output.gas_used > 0,
             "early-return revert should report non-zero gas_used, got {}",
@@ -664,7 +664,8 @@ mod tests {
                 .expect("T1: expected UnknownFunctionSelector error");
         assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
 
-        // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
+        // Verify gas is tracked for both cases (unknown selector may cost slightly more due to its
+        // input length).
         assert!(unknown.gas_used >= empty.gas_used);
 
         // Pre-T1 (T0): invalid calldata should return a halted output
@@ -1002,22 +1003,19 @@ mod tests {
         assert_eq!(input_cost(TempoHardfork::T10, 0), 0);
         assert_eq!(input_cost(TempoHardfork::T11, 0), 0);
 
-        // 1 byte should cost INPUT_PER_WORD_COST (rounds up to 1 word)
-        assert_eq!(input_cost(TempoHardfork::T10, 1), INPUT_PER_WORD_COST);
+        // 1 byte rounds up to 1 word.
+        assert_eq!(input_cost(TempoHardfork::T10, 1), 6);
 
-        // 32 bytes (1 word) should cost INPUT_PER_WORD_COST
-        assert_eq!(input_cost(TempoHardfork::T10, 32), INPUT_PER_WORD_COST);
+        // 32 bytes is 1 word.
+        assert_eq!(input_cost(TempoHardfork::T10, 32), 6);
 
-        // 33 bytes (2 words) should cost 2 * INPUT_PER_WORD_COST
-        assert_eq!(input_cost(TempoHardfork::T10, 33), INPUT_PER_WORD_COST * 2);
+        // 33 bytes rounds up to 2 words.
+        assert_eq!(input_cost(TempoHardfork::T10, 33), 12);
 
         // T11 increases the input charge to 30 gas per word.
-        assert_eq!(input_cost(TempoHardfork::T11, 1), T11_INPUT_PER_WORD_COST);
-        assert_eq!(input_cost(TempoHardfork::T11, 32), T11_INPUT_PER_WORD_COST);
-        assert_eq!(
-            input_cost(TempoHardfork::T11, 33),
-            T11_INPUT_PER_WORD_COST * 2
-        );
+        assert_eq!(input_cost(TempoHardfork::T11, 1), 30);
+        assert_eq!(input_cost(TempoHardfork::T11, 32), 30);
+        assert_eq!(input_cost(TempoHardfork::T11, 33), 60);
     }
 
     #[test]
