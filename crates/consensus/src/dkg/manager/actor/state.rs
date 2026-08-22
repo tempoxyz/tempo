@@ -82,16 +82,6 @@ where
         self.storage.current.as_ref()
     }
 
-    /// Creates a player for a persisted round, replaying any dealings loaded
-    /// from the journal while opening storage.
-    pub(super) fn create_player_for_round(
-        &self,
-        me: PrivateKey,
-        round: &Round,
-    ) -> eyre::Result<Option<Player>> {
-        self.storage.create_player_for_round(me, round)
-    }
-
     pub(super) async fn init_verified(self, state: State) -> eyre::Result<Storage<TContext>> {
         let Self { mut storage } = self;
         storage
