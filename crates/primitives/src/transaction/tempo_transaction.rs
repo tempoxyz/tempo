@@ -433,6 +433,13 @@ impl TempoTransaction {
         keccak256(&buf)
     }
 
+    /// Returns `true` if the fee payer signature is the [`FEE_PAYER_SIGNATURE_MARKER`]
+    /// placeholder, indicating the transaction still needs to be signed by a fee payer.
+    #[inline]
+    pub fn has_fee_payer_signature_marker(&self) -> bool {
+        self.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER)
+    }
+
     /// Recovers the fee payer for this transaction.
     ///
     /// This returns the given sender if the transaction doesn't include a fee payer signature
