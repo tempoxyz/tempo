@@ -51,16 +51,14 @@ use futures::{
     stream::FuturesUnordered,
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
-use reth_node_builder::PayloadKind;
-use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
-use tempo_node::{TempoExecutionData, TempoFullNode};
+use reth_ethereum::rpc::eth::primitives::BlockNumHash;
+use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
 use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn};
 
 use super::{
-    Config,
+    Config, ExecutionLayer, Marshal,
     ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
@@ -78,12 +76,12 @@ use notarized_tree::{LocalState, NextToForward, NotarizedTree};
 /// withheld before it is retried.
 const FINALIZED_BLOCK_POSTPONE_DELAY: Duration = Duration::from_secs(1);
 
-pub(crate) struct Actor<TContext> {
+pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     context: ContextCell<TContext>,
 
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    execution_node: Arc<TempoFullNode>,
+    execution_node: TExecutionLayer,
 
     /// Highest finalized height the executor should backfill to on startup so
     /// that CL and EL have a consistent view.
@@ -95,7 +93,7 @@ pub(crate) struct Actor<TContext> {
 
     /// The mailbox of the marshal actor. Used to backfill finalized blocks
     /// on startup and to fetch missing notarized block bodies.
-    marshal: crate::alias::marshal::Mailbox,
+    marshal: TMarshal,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -212,13 +210,15 @@ impl Metrics {
     }
 }
 
-impl<TContext> Actor<TContext>
+impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
 where
     TContext: Clock + RuntimeMetrics + Pacer + Spawner,
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
 {
     pub(super) fn init(
         context: TContext,
-        config: super::Config,
+        config: super::Config<TExecutionLayer, TMarshal>,
         mailbox: UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
         let Config {
@@ -229,13 +229,16 @@ where
             fcu_heartbeat_interval,
             public_key,
         } = config;
+        ensure!(
+            finalized_tip.1 >= finalized_floor,
+            "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",
+            finalized_tip.1,
+        );
         let metrics = Metrics::init(&context);
 
-        let canonical_state = execution_node.provider.canonical_in_memory_state();
-
-        let execution_finalized_num_hash = canonical_state
-            .get_finalized_num_hash()
-            .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
+        let execution_finalized_num_hash = execution_node
+            .finalized_num_hash()
+            .unwrap_or_else(|| BlockNumHash::new(0, execution_node.genesis_hash()));
 
         // The finalized point the executor starts from. Normally this is the
         // execution layer's own finalized tip, from which the startup
@@ -249,8 +252,7 @@ where
         // [`forward_finalized`]).
         let finalized = if finalized_floor.get() < execution_finalized_num_hash.number {
             let digest = execution_node
-                .provider
-                .block_hash(finalized_floor.get())
+                .canonical_block_hash(finalized_floor.get())
                 .wrap_err_with(|| {
                     format!(
                         "failed reading canonical execution block hash at the \
@@ -688,11 +690,7 @@ where
             "body of notarized block is missing; fetching it from the marshal actor",
         );
         self.pending_notarized_block
-            .replace(PendingNotarizedBlock::new(
-                self.marshal.clone(),
-                round,
-                digest,
-            ));
+            .replace(PendingNotarizedBlock::new(&self.marshal, round, digest));
     }
 
     /// Records a fetched notarized block body in the tree.
@@ -862,8 +860,8 @@ where
 
 #[instrument(skip_all, fields(height), err)]
 async fn get_block(
-    marshal: crate::alias::marshal::Mailbox,
-    execution_node: Arc<TempoFullNode>,
+    marshal: impl Marshal,
+    execution_node: impl ExecutionLayer,
     height: Height,
 ) -> eyre::Result<Block> {
     if let Some(block) = marshal.get_block(height).await {
@@ -882,12 +880,9 @@ async fn get_block(
         %digest,
         "found finalized digest for block height; checking execution layer",
     );
-    let Some(block) = execution_node
-        .provider
-        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
-        .wrap_err_with(|| {
-            format!("failed querying execution layer for backfill block `{digest}`")
-        })?
+    let Some(block) = execution_node.block_by_digest(digest).wrap_err_with(|| {
+        format!("failed querying execution layer for backfill block `{digest}`")
+    })?
     else {
         warn!(%digest, "execution layer did not have missing backfill block");
         bail!(
@@ -896,7 +891,7 @@ async fn get_block(
         );
     };
 
-    Ok(Block::from_execution_block_unchecked(block, None))
+    Ok(block)
 }
 
 struct FinalizedBlockRequest {
@@ -918,11 +913,8 @@ struct PendingNotarizedBlock {
 }
 
 impl PendingNotarizedBlock {
-    fn new(marshal: crate::alias::marshal::Mailbox, round: Round, digest: Digest) -> Self {
-        let fetch = marshal.subscribe_by_digest(
-            digest,
-            commonware_consensus::marshal::core::DigestFallback::FetchByRound { round },
-        );
+    fn new(marshal: &impl Marshal, round: Round, digest: Digest) -> Self {
+        let fetch = marshal.subscribe_by_digest(digest, round);
         Self {
             digest,
             round,
@@ -953,12 +945,14 @@ enum ConsensusRequest {
 /// Queues `request` into `slot` unless the slot already holds a request from
 /// the same or a newer round.
 ///
-/// Propose and verify are mutually exclusive within a round, but the
-/// application's handlers run concurrently, so a request sent by a dying
-/// older-round task can arrive after a newer one; the round guard keeps it
-/// from clobbering the newer request. Dropping a request - superseded or
-/// stale - drops its response channel, signalling the failure to the
-/// subscriber.
+/// Propose and verify are mutually exclusive within a round. Because Simplex
+/// views are strictly monotonically increasing, a request at or below the
+/// queued round cannot represent later consensus progress and must not replace
+/// the request already queued. The application's handlers run concurrently,
+/// so a request sent by a dying older-round task can still arrive after a newer
+/// one; the round guard keeps it from clobbering the newer request. Dropping a
+/// request - superseded or stale - drops its response channel, signalling the
+/// failure to the subscriber.
 fn queue_consensus_request(
     slot: &mut Option<(Round, ConsensusRequest)>,
     round: Round,
@@ -1137,7 +1131,7 @@ struct StartPayloadJob {
 )]
 async fn execute_heartbeat<TContext>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     canonicalized: LocalState,
     cause: Span,
 ) -> ExecutionTaskOutcome
@@ -1170,24 +1164,20 @@ where
 /// the forkchoice update re-affirms the head instead of moving it; the
 /// Engine API requires the update regardless, because builds can only be
 /// registered through forkchoice updates. The update is still submitted
-/// when the build is dropped as canceled or stale below - a no-op
-/// re-affirmation, doubling as a head refresh.
+/// when the build is dropped as canceled below - a no-op re-affirmation,
+/// doubling as a head refresh.
 #[instrument(
     skip_all,
     parent = &cause,
-    fields(
-        %height,
-        %digest,
-    ),
+    fields(%digest),
 )]
 async fn execute_build<TContext>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     canonicalized: LocalState,
     cause: Span,
     Build {
         round: _,
-        height,
         digest,
         attributes,
         response,
@@ -1196,25 +1186,12 @@ async fn execute_build<TContext>(
 where
     TContext: Pacer,
 {
-    let new_canonicalized = canonicalized.update_head(height, digest);
-
     let mut build_attributes = Some((*attributes, response));
     if build_attributes
         .as_ref()
         .is_some_and(|(_, response)| response.is_canceled())
     {
         info!("dropping payload build request: the subscriber went away while it was queued");
-        build_attributes.take();
-    }
-
-    // Only build on top of the most recent head. If the requested parent
-    // could not be made the head (because a block above it was already
-    // finalized), the build is stale, and submitting its attributes anyway
-    // would register a build on top of the wrong block. Taking the
-    // attributes drops the response channel, which signals the failure to
-    // the subscriber.
-    if build_attributes.is_some() && new_canonicalized.head.1 != digest {
-        info!("dropping payload build request: its parent cannot be made the head");
         build_attributes.take();
     }
 
@@ -1227,7 +1204,7 @@ where
         &execution_node,
         &context,
         cause.clone(),
-        new_canonicalized,
+        canonicalized,
         attributes,
         ForkchoiceUpdateKind::Canonicalize {
             head_or_finalized: HeadOrFinalized::Head,
@@ -1249,7 +1226,7 @@ where
                 (None, _) => None,
             };
             ExecutionTaskOutcome::Completed {
-                canonicalized: Some(new_canonicalized),
+                canonicalized: Some(canonicalized),
                 payload_job,
             }
         }
@@ -1275,7 +1252,7 @@ where
 )]
 async fn execute_finalization<TContext>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     public_key: Option<PublicKey>,
     metrics: Metrics,
     canonicalized: LocalState,
@@ -1318,7 +1295,7 @@ where
 )]
 async fn execute_notarization<TContext>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     on_top_of: LocalState,
     step: NextToForward,
     validator_set: Option<Vec<B256>>,
@@ -1380,7 +1357,7 @@ where
 )]
 async fn execute_validation<TContext>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     request: VerifyBlockRequest,
 ) -> ExecutionTaskOutcome
 where
@@ -1445,7 +1422,7 @@ where
 /// possible.
 async fn validate_block<TContext>(
     context: &TContext,
-    execution_node: &Arc<TempoFullNode>,
+    execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
     validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<Option<Duration>>
@@ -1457,8 +1434,6 @@ where
     let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
     let validation_start = Instant::now();
     let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
         .new_payload(TempoExecutionData {
             block,
             block_access_list,
@@ -1508,7 +1483,7 @@ where
 )]
 async fn run_payload_job<TContext: Pacer>(
     context: TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     StartPayloadJob {
         cause,
         payload_id,
@@ -1517,8 +1492,7 @@ async fn run_payload_job<TContext: Pacer>(
 ) -> Option<Arc<Block>> {
     let payload = select! {
         payload = execution_node
-            .payload_builder_handle
-            .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .resolve_payload(payload_id)
             .pace(&context, Duration::from_millis(20))
         => payload,
 
@@ -1551,7 +1525,7 @@ async fn run_payload_job<TContext: Pacer>(
         }
         Some(Err(error)) => {
             warn!(
-                error = %eyre::Report::new(error),
+                %error,
                 "payload build job failed",
             );
             None
@@ -1575,7 +1549,7 @@ async fn run_payload_job<TContext: Pacer>(
     ),
 )]
 async fn submit_forkchoice_update<TContext: Pacer>(
-    execution_node: &TempoFullNode,
+    execution_node: &impl ExecutionLayer,
     context: &TContext,
     cause: Span,
     canonicalized: LocalState,
@@ -1595,15 +1569,11 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     // the execution layer's own is stale in its entirety and is not
     // submitted. Callers treat the skip as a no-op; a payload-build request
     // affected by it fails through the missing payload ID.
-    if let Some(execution_finalized) = execution_node
-        .provider
-        .canonical_in_memory_state()
-        .get_finalized_num_hash()
+    if let Some(execution_finalized) = execution_node.finalized_num_hash()
         && execution_finalized.number >= canonicalized.finalized.0.get()
     {
         let canonical_digest = execution_node
-            .provider
-            .block_hash(canonicalized.finalized.0.get())
+            .canonical_block_hash(canonicalized.finalized.0.get())
             .wrap_err_with(|| {
                 format!(
                     "failed reading canonical execution block hash at the tracked \
@@ -1642,8 +1612,6 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     }
 
     let fcu_response = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
         .fork_choice_updated(canonicalized.to_forkchoice_state(), attrs)
         .pace(context, Duration::from_millis(20))
         .await
@@ -1670,7 +1638,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
 }
 
 fn finalization_target(
-    execution_node: &TempoFullNode,
+    execution_node: &impl ExecutionLayer,
     canonicalized: LocalState,
     block: &Block,
 ) -> eyre::Result<LocalState> {
@@ -1711,8 +1679,7 @@ fn finalization_target(
     }
 
     let canonical_hash = execution_node
-        .provider
-        .block_hash(block.height().get())
+        .canonical_block_hash(block.height().get())
         .wrap_err_with(|| {
             format!(
                 "failed reading canonical execution block hash at finalized block height `{}`",
@@ -1741,7 +1708,7 @@ fn finalization_target(
 )]
 async fn forward_finalized<TContext: Pacer + Clock>(
     context: &TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     public_key: Option<PublicKey>,
     metrics: Metrics,
     target: LocalState,
@@ -1757,8 +1724,6 @@ async fn forward_finalized<TContext: Pacer + Clock>(
 
     let (execution_block, block_access_list) = (*block).clone().into_parts();
     let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
         .new_payload(TempoExecutionData {
             block: execution_block,
             block_access_list,
@@ -1865,7 +1830,7 @@ impl std::fmt::Debug for ForwardFinalized {
 )]
 async fn forward_notarized<TContext: Pacer>(
     context: &TContext,
-    execution_node: Arc<TempoFullNode>,
+    execution_node: impl ExecutionLayer,
     on_top_of: LocalState,
     target: LocalState,
     step: NextToForward,
@@ -1874,8 +1839,6 @@ async fn forward_notarized<TContext: Pacer>(
     if let NextToForward::Block(block) = step {
         let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
         let payload_status = execution_node
-            .add_ons_handle
-            .beacon_engine_handle
             .new_payload(TempoExecutionData {
                 block,
                 block_access_list,

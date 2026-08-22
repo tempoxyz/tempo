@@ -13472,6 +13472,7 @@ dependencies = [
  "reth-consensus-common",
  "reth-engine-primitives",
  "reth-ethereum",
+ "reth-ethereum-engine-primitives",
  "reth-evm",
  "reth-node-builder",
  "reth-node-core",

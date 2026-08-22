@@ -87,6 +87,9 @@ url.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 
+# Constructing `TempoBuiltPayload` values in the executor test harness.
+reth-ethereum-engine-primitives.workspace = true
+
 age.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
