@@ -1154,6 +1154,77 @@ impl Worker {
             }
         }
 
+        // Streamed-slot restore. Exec passes apply streamed (post-tx) values
+        // as real leaf updates while the EVM runs, but the stream is lossy
+        // (bounded channel, try_send) AND finish preempts any still-queued
+        // batches via the fast lane. A slot an exec pass set to an
+        // INTERMEDIATE value whose later writes net the block back to the
+        // parent value has NO op in `ops` — nothing in this function would
+        // ever correct the leaf, and the intermediate value silently poisons
+        // the root (100G repro: builder root 0x76cf… for block 7 vs the
+        // flat-cross-checked 0x9e24…; only 4 reveal targets because the trie
+        // was stream-warm). Restore every streamed slot the final ops do not
+        // cover to its PARENT-state value, read through the same
+        // snapshot+pending-overlay view the proof path uses. For unpoisoned
+        // slots this writes back the identical value — harmless.
+        {
+            let mut op_slots: B256Map<B256Set> = B256Map::default();
+            for (key, op) in &ops {
+                match op {
+                    StateOp::SetStorage { slot, .. } | StateOp::DeleteStorage { slot } => {
+                        op_slots
+                            .entry(B256::from(*key))
+                            .or_default()
+                            .insert(B256::from(*slot));
+                    }
+                    _ => {}
+                }
+            }
+            let mut restore: Vec<(B256, B256)> = Vec::new();
+            for (acct, slots) in &self.streamed_storage {
+                if pending_accounts.get(acct) == Some(&None) {
+                    continue; // destroyed wholesale above
+                }
+                for slot in slots.keys() {
+                    if !op_slots.get(acct).is_some_and(|s| s.contains(slot)) {
+                        restore.push((*acct, *slot));
+                    }
+                }
+            }
+            if !restore.is_empty() {
+                let guard = self.shadow.read();
+                let snap = guard.db().snapshot();
+                let chain = if guard.at_parent(self.parent_root) {
+                    Vec::new()
+                } else {
+                    crate::follower::pending_chain(
+                        B256::from(guard.current_root()),
+                        self.parent_root,
+                    )
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("streamed-slot restore: parent state unreachable")
+                    })?
+                };
+                drop(guard); // snapshot + chain are pinned; reads are lock-free
+                tracing::debug!(
+                    target: "flatmpt",
+                    n = restore.len(),
+                    "restoring streamed slots absent from final ops"
+                );
+                for (acct, slot) in restore {
+                    let v = crate::follower::overlay_storage(&chain, &snap, &acct.0, &slot.0)?;
+                    let value = match v {
+                        Some(v) if !v.is_zero() => mpt_flat_poc::eth::storage_value_rlp(v),
+                        _ => Vec::new(),
+                    };
+                    self.storage_updates
+                        .entry(acct)
+                        .or_default()
+                        .insert(slot, LeafUpdate::Changed(value));
+                }
+            }
+        }
+
         // Drain storage updates and pre-reveal account paths (needed both for
         // old storage roots and for the account leaf writes below). No
         // up-front flat-at-parent wait: with a warm pool most blocks need no
