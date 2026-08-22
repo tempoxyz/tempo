@@ -79,20 +79,30 @@ pub use tempo_contracts::precompiles::{
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
 
-/// Input per word cost. It covers abi decoding and cloning of input into call data.
+/// Pre-T11 input per word cost. It covers ABI decoding and cloning of input into calldata.
 ///
-/// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
+/// This is priced at twice `COPY_COST` to mitigate different ABI decodings.
 pub const INPUT_PER_WORD_COST: u64 = 6;
+
+/// Input per word cost starting at T11.
+pub const T11_INPUT_PER_WORD_COST: u64 = 30;
 
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
 
-/// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
+/// Returns the gas cost for decoding calldata of the given length at `spec`, rounded up to word
+/// boundaries.
 #[inline]
-pub fn input_cost(calldata_len: usize) -> u64 {
+pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> u64 {
+    let per_word_cost = if spec.is_t11() {
+        T11_INPUT_PER_WORD_COST
+    } else {
+        INPUT_PER_WORD_COST
+    };
+
     calldata_len
         .div_ceil(32)
-        .saturating_mul(INPUT_PER_WORD_COST as usize) as u64
+        .saturating_mul(per_word_cost as usize) as u64
 }
 
 /// Trait implemented by all Tempo precompile contract types.
@@ -987,18 +997,27 @@ mod tests {
     }
 
     #[test]
-    fn test_input_cost_returns_non_zero_for_input() {
+    fn test_input_cost_schedule() {
         // Empty input should cost 0
-        assert_eq!(input_cost(0), 0);
+        assert_eq!(input_cost(TempoHardfork::T10, 0), 0);
+        assert_eq!(input_cost(TempoHardfork::T11, 0), 0);
 
         // 1 byte should cost INPUT_PER_WORD_COST (rounds up to 1 word)
-        assert_eq!(input_cost(1), INPUT_PER_WORD_COST);
+        assert_eq!(input_cost(TempoHardfork::T10, 1), INPUT_PER_WORD_COST);
 
         // 32 bytes (1 word) should cost INPUT_PER_WORD_COST
-        assert_eq!(input_cost(32), INPUT_PER_WORD_COST);
+        assert_eq!(input_cost(TempoHardfork::T10, 32), INPUT_PER_WORD_COST);
 
         // 33 bytes (2 words) should cost 2 * INPUT_PER_WORD_COST
-        assert_eq!(input_cost(33), INPUT_PER_WORD_COST * 2);
+        assert_eq!(input_cost(TempoHardfork::T10, 33), INPUT_PER_WORD_COST * 2);
+
+        // T11 increases the input charge to 30 gas per word.
+        assert_eq!(input_cost(TempoHardfork::T11, 1), T11_INPUT_PER_WORD_COST);
+        assert_eq!(input_cost(TempoHardfork::T11, 32), T11_INPUT_PER_WORD_COST);
+        assert_eq!(
+            input_cost(TempoHardfork::T11, 33),
+            T11_INPUT_PER_WORD_COST * 2
+        );
     }
 
     #[test]
