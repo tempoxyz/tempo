@@ -430,7 +430,16 @@ impl Follower {
         // TEMPO_FLATMPT_DUMP_OPS=<dir>: persist each block's canonical ops
         // (bincode) for offline divergence replay.
         if let Ok(dir) = std::env::var("TEMPO_FLATMPT_DUMP_OPS") {
-            let path = format!("{dir}/ops-{:08}.bin", parent_number + 1);
+            // Distinct file per candidate AND per process: sibling candidates
+            // at one height share parent_number, and both localnet nodes may
+            // share the dump dir — either would silently overwrite the dump
+            // a divergence investigation needs.
+            let path = format!(
+                "{dir}/ops-{:08}-{}-{}.bin",
+                parent_number + 1,
+                &format!("{expected_root:x}")[..8],
+                std::process::id(),
+            );
             match bincode::serialize(&(parent_number, parent_root, &ops, expected_root)) {
                 Ok(bytes) => {
                     if let Err(e) = std::fs::write(&path, bytes) {
