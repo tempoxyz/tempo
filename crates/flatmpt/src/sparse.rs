@@ -595,20 +595,41 @@ fn chunked_proofs(
                         // Bug #8: proof_v2 copies tree/hash masks verbatim from
                         // whatever BranchNodeCompact the cursor serves. Flat's
                         // stored compacts follow the persistence convention
-                        // (hash_mask = every hash-ref child), but the overlay's
-                        // compacts come from a partially-revealed sparse trie
-                        // that only retains hashes for children it did not
-                        // materialize — a strict subset. Revealing with those
-                        // under-set masks silently corrupts the one subtree the
-                        // mask lies about. Fresh branches already ship
-                        // masks=None and reveal treats that conservatively, so
-                        // strip masks from every overlay-bridged node.
+                        // (hash_mask = every hash-ref child, tree_mask = 0);
+                        // the overlay's compacts come from a partially
+                        // revealed sparse trie that only retains hashes for
+                        // children it did not materialize — an under-set
+                        // hash_mask. Revealing with those loses blind-child
+                        // mask bits at update regeneration, and stripping
+                        // masks entirely breaks collapse bookkeeping (empty
+                        // masks read as "never persisted"). Normalize instead:
+                        // derive hash_mask from the assembled RLP itself —
+                        // hash-ref children — which reproduces flat's own
+                        // convention exactly (no-op for flat-served nodes).
+                        let normalize = |n: &mut ProofTrieNodeV2| {
+                            if let TrieNodeV2::Branch(b) = &n.node {
+                                let mut hash_mask = TrieMask::default();
+                                let mut stack_iter = b.stack.iter();
+                                for nibble in 0..16u8 {
+                                    if b.state_mask.is_bit_set(nibble)
+                                        && let Some(child) = stack_iter.next()
+                                        && child.is_hash()
+                                    {
+                                        hash_mask.set_bit(nibble);
+                                    }
+                                }
+                                n.masks = Some(BranchNodeMasks {
+                                    hash_mask,
+                                    tree_mask: TrieMask::default(),
+                                });
+                            }
+                        };
                         for n in &mut p.account_proofs {
-                            n.masks = None;
+                            normalize(n);
                         }
                         for ns in p.storage_proofs.values_mut() {
                             for n in ns {
-                                n.masks = None;
+                                normalize(n);
                             }
                         }
                         p
