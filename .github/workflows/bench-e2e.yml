@@ -873,15 +873,15 @@ jobs:
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
           BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
           FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
-          # txgen buffers per-tx samples into a TMPDIR NDJSON that reaches
-          # ~50 GB per 30-min phase and is never cleaned up — three such runs
-          # filled the runner's /tmp and killed the sender mid-phase
-          # (bench-core sample.rs ENOSPC, exit 1). Point it at the schelk
-          # scratch, which is large and wiped by the snapshot restore.
-          TMPDIR: /reth-bench-a/.bench-tmp
         run: |
-          mkdir -p "$TMPDIR"
-          rm -f /tmp/txgen-samples-* "$TMPDIR"/txgen-samples-* 2>/dev/null || true
+          # txgen buffers per-tx samples into a /tmp NDJSON that reaches
+          # ~50 GB per 30-min phase and is never cleaned up — accumulated
+          # files from prior runs filled the runner's /tmp and killed the
+          # sender mid-phase (bench-core sample.rs ENOSPC, exit 1). One run's
+          # worth fits; sweep the leftovers. (Do NOT point TMPDIR at the
+          # schelk scratch: the per-phase snapshot restore deletes it out
+          # from under the sender.)
+          rm -f /tmp/txgen-samples-* 2>/dev/null || true
           if [ "$BENCH_OTLP" != "true" ]; then
             unset TEMPO_TELEMETRY_URL
             unset GRAFANA_TEMPO
