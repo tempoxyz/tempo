@@ -882,6 +882,7 @@ jobs:
           # schelk scratch: the per-phase snapshot restore deletes it out
           # from under the sender.)
           rm -f /tmp/txgen-samples-* 2>/dev/null || true
+          mkdir -p /tmp/flatmpt-ops-dump && rm -f /tmp/flatmpt-ops-dump/* 2>/dev/null || true
           if [ "$BENCH_OTLP" != "true" ]; then
             unset TEMPO_TELEMETRY_URL
             unset GRAFANA_TEMPO
@@ -1062,6 +1063,19 @@ jobs:
           if [ -n "${VALSCOPE_REPORTS_BASE_URL:-}" ]; then
             echo "url=${VALSCOPE_REPORTS_BASE_URL%/}/${BENCHMARK_ID}/" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Collect divergence forensics
+        if: ${{ !cancelled() }}
+        run: |
+          # Ops dumps (when TEMPO_FLATMPT_DUMP_OPS pointed here) and the tail
+          # of each node's log: enough to replay a flat/sparse divergence
+          # offline when the run fails before the summary.
+          mkdir -p bench-results/forensics
+          cp /tmp/flatmpt-ops-dump/* bench-results/forensics/ 2>/dev/null || true
+          for f in localnet/logs-*/*.log; do
+            [ -f "$f" ] && tail -c 20000000 "$f" > "bench-results/forensics/$(echo "$f" | tr '/' '_')" 2>/dev/null || true
+          done
+          ls -la bench-results/forensics/ | head -20 || true
 
       - name: Upload results
         if: ${{ !cancelled() }}

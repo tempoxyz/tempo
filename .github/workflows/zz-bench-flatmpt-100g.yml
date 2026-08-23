@@ -45,5 +45,8 @@ jobs:
       # took the runner offline mid-bench. Re-enable for short profile runs.
       samply: "false"
       otlp: "true"
+      # Divergence forensics: per-candidate ops dumps, collected into the
+      # results artifact by the forensics step.
+      feature-env: "TEMPO_FLATMPT_DUMP_OPS=/tmp/flatmpt-ops-dump"
       feature-flatmpt: "true"
     secrets: inherit
