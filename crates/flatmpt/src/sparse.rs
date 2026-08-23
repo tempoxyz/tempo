@@ -590,7 +590,29 @@ fn chunked_proofs(
                         InMemoryTrieCursorFactory::new(FlatTrieCursorFactory { mpt: db }, tu),
                         HashedPostStateCursorFactory::new(FlatHashedCursorFactory { mpt: db }, hps),
                     )
-                    .multiproof_v2(t),
+                    .multiproof_v2(t)
+                    .map(|mut p| {
+                        // Bug #8: proof_v2 copies tree/hash masks verbatim from
+                        // whatever BranchNodeCompact the cursor serves. Flat's
+                        // stored compacts follow the persistence convention
+                        // (hash_mask = every hash-ref child), but the overlay's
+                        // compacts come from a partially-revealed sparse trie
+                        // that only retains hashes for children it did not
+                        // materialize — a strict subset. Revealing with those
+                        // under-set masks silently corrupts the one subtree the
+                        // mask lies about. Fresh branches already ship
+                        // masks=None and reveal treats that conservatively, so
+                        // strip masks from every overlay-bridged node.
+                        for n in &mut p.account_proofs {
+                            n.masks = None;
+                        }
+                        for ns in p.storage_proofs.values_mut() {
+                            for n in ns {
+                                n.masks = None;
+                            }
+                        }
+                        p
+                    }),
                 })
             })
             .collect();
