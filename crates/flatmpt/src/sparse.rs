@@ -1367,6 +1367,45 @@ impl Worker {
             .root_with_updates(TrieNodeEpoch::new(self.snap_seq.saturating_add(1)))
             .map_err(|e| anyhow::anyhow!("sparse root: {e}"))?;
         self.stats.fin_root_ms = t_phase.elapsed().as_millis() as u64;
+        // Divergence autopsy: on cross-node root disagreement the logs of the
+        // two nodes are diffed per account subtree, so the contaminated
+        // storage trie (and hence the reveal that lied) can be identified
+        // offline. Cheap for small touched sets; skipped for wide blocks.
+        {
+            let touched: Vec<B256> = self
+                .storage_updates
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if touched.len() <= 16 {
+                let epoch = TrieNodeEpoch::new(self.snap_seq.saturating_add(1));
+                let roots: Vec<String> = touched
+                    .iter()
+                    .map(|acct| {
+                        let r = self
+                            .trie
+                            .storage_root(acct, epoch)
+                            .map(|r| format!("{r:x}"))
+                            .unwrap_or_else(|| "?".into());
+                        format!("{:x}:{}", acct, &r[..r.len().min(16)])
+                    })
+                    .collect();
+                tracing::info!(
+                    target: "flatmpt",
+                    parent = %format!("{:x}", self.parent_root),
+                    root = %format!("{root:x}"),
+                    pool_hit = self.stats.pool_hit,
+                    snap_at_parent = self.snap_at_parent,
+                    wait_parent_ms = self.stats.wait_parent_ms,
+                    proof_ms = self.stats.proof_ms,
+                    reveal_ms = self.stats.reveal_ms,
+                    storage_roots = ?roots,
+                    "finish autopsy"
+                );
+            }
+        }
         // Overlay build (post-state from ops + sorted trie updates) is only
         // needed by proof fetches of descendant blocks, which at warm state
         // are rare and, when they race this thread, fall back to the safe
