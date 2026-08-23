@@ -1756,8 +1756,8 @@ impl Worker {
                                             kind = k.0,
                                             acct = %format!("{:x}", k.1),
                                             path = ?k.2,
-                                            truth = %&tv[..tv.len().min(200)],
-                                            bridged = %other.map(|s| s[..s.len().min(200)].to_string()).unwrap_or_else(|| "<missing>".into()),
+                                            truth_tail = %&tv[tv.len().saturating_sub(300)..],
+                                            bridged_tail = %other.map(|s| s[s.len().saturating_sub(300)..].to_string()).unwrap_or_else(|| "<missing>".into()),
                                             overlay = %&oe[..oe.len().min(300)],
                                             "BRIDGE-VERIFY MISMATCH"
                                         );
