@@ -1654,7 +1654,106 @@ impl Worker {
                     continue;
                 };
 
-                chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?
+                let bridged =
+                    chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?;
+                // TEMPO_FLATMPT_BRIDGE_VERIFY=1 (bug-#8 debug): recompute the
+                // same proofs directly against flat-at-parent and diff them
+                // node-by-node, naming the first path the overlay bridge got
+                // wrong. Blocks on the follower — debug runs only.
+                if overlay.is_some()
+                    && std::env::var("TEMPO_FLATMPT_BRIDGE_VERIFY").as_deref() == Ok("1")
+                {
+                    drop(guard);
+                    let deadline = Instant::now() + Duration::from_secs(60);
+                    let truth = loop {
+                        {
+                            let g = self.shadow.read();
+                            if g.at_parent(self.parent_root) {
+                                break Some(chunked_proofs(
+                                    &g,
+                                    None,
+                                    &acct_targets,
+                                    &storage_targets,
+                                )?);
+                            }
+                        }
+                        if Instant::now() > deadline {
+                            tracing::warn!(
+                                target: "flatmpt",
+                                "bridge-verify: follower never reached parent; skipping"
+                            );
+                            break None;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    };
+                    if let Some(truth) = truth {
+                        let flatten = |ps: &[DecodedMultiProofV2]| {
+                            let mut m: std::collections::BTreeMap<String, String> =
+                                Default::default();
+                            for p in ps {
+                                for n in &p.account_proofs {
+                                    m.insert(
+                                        format!("acct/{:?}", n.path),
+                                        format!("{:?}|{:?}", n.node, n.masks),
+                                    );
+                                }
+                                for (a, ns) in &p.storage_proofs {
+                                    for n in ns {
+                                        m.insert(
+                                            format!("stor/{a:x}/{:?}", n.path),
+                                            format!("{:?}|{:?}", n.node, n.masks),
+                                        );
+                                    }
+                                }
+                            }
+                            m
+                        };
+                        let bm = flatten(&bridged);
+                        let tm = flatten(&truth);
+                        let mut diffs = 0;
+                        for (k, tv) in &tm {
+                            match bm.get(k) {
+                                Some(bv) if bv == tv => {}
+                                other => {
+                                    diffs += 1;
+                                    if diffs <= 5 {
+                                        tracing::warn!(
+                                            target: "flatmpt",
+                                            path = %k,
+                                            truth = %&tv[..tv.len().min(220)],
+                                            bridged = %other.map(|s| s[..s.len().min(220)].to_string()).unwrap_or_else(|| "<missing>".into()),
+                                            "BRIDGE-VERIFY MISMATCH"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        for k in bm.keys() {
+                            if !tm.contains_key(k) {
+                                diffs += 1;
+                                if diffs <= 5 {
+                                    tracing::warn!(
+                                        target: "flatmpt",
+                                        path = %k,
+                                        "BRIDGE-VERIFY EXTRA NODE (bridged only)"
+                                    );
+                                }
+                            }
+                        }
+                        if diffs > 0 {
+                            tracing::warn!(
+                                target: "flatmpt",
+                                diffs,
+                                total_true = tm.len(),
+                                "bridge-verify: proof sets differ"
+                            );
+                        }
+                    }
+                    // The guard was dropped for the wait; the bridged proofs
+                    // stay in use regardless so the divergence (if any) still
+                    // reproduces downstream with the mismatch logged above.
+                }
+                bridged
             };
             self.stats.proof_ms += t_proof.elapsed().as_millis() as u64;
 
