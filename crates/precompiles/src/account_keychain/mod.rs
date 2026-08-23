@@ -41,6 +41,16 @@ const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
 
+/// Additional cost for each 32-byte word decoded as RLP by `setAllowedCalls`.
+const RLP_INPUT_PER_WORD_COST: u64 = 50;
+
+#[inline]
+fn rlp_input_cost(input_len: usize) -> u64 {
+    input_len
+        .div_ceil(32)
+        .saturating_mul(RLP_INPUT_PER_WORD_COST as usize) as u64
+}
+
 /// (T7+) Alias for zero remaining periodic spend, used to avoid clearing the storage slot.
 const ZERO_PERIODIC_REMAINING_SENTINEL: U256 = U256::MAX;
 
@@ -575,6 +585,8 @@ impl AccountKeychain {
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
+        self.storage.deduct_gas(rlp_input_cost(call.scopes.len()))?;
+
         let mut encoded_scopes = call.scopes.as_ref();
         let scopes = Vec::<RlpCallScope>::decode(&mut encoded_scopes)
             .map_err(|_| AccountKeychainError::invalid_call_scope())?;
@@ -1627,6 +1639,14 @@ mod tests {
         DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType,
         legacySetAllowedCallsCall as setAllowedCallsCall,
     };
+
+    #[test]
+    fn test_rlp_input_cost() {
+        assert_eq!(rlp_input_cost(0), 0);
+        assert_eq!(rlp_input_cost(1), 50);
+        assert_eq!(rlp_input_cost(32), 50);
+        assert_eq!(rlp_input_cost(33), 100);
+    }
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
