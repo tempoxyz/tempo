@@ -1656,37 +1656,39 @@ impl Worker {
 
                 let bridged =
                     chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?;
-                // TEMPO_FLATMPT_BRIDGE_VERIFY=1 (bug-#8 debug): recompute the
-                // same proofs directly against flat-at-parent and diff them
-                // node-by-node, naming the first path the overlay bridge got
-                // wrong. Blocks on the follower — debug runs only.
+                // TEMPO_FLATMPT_BRIDGE_VERIFY=1 (bug-#8 debug): re-derive the
+                // same proofs against flat-at-parent on a background thread
+                // (zero interference with build timing) and diff node-by-node.
                 if overlay.is_some()
                     && std::env::var("TEMPO_FLATMPT_BRIDGE_VERIFY").as_deref() == Ok("1")
                 {
-                    drop(guard);
-                    let deadline = Instant::now() + Duration::from_secs(60);
-                    let truth = loop {
-                        {
-                            let g = self.shadow.read();
-                            if g.at_parent(self.parent_root) {
-                                break Some(chunked_proofs(
-                                    &g,
-                                    None,
-                                    &acct_targets,
-                                    &storage_targets,
-                                )?);
+                    let shadow = self.shadow;
+                    let parent_root = self.parent_root;
+                    let acct_t = acct_targets.clone();
+                    let stor_t = storage_targets.clone();
+                    let bridged_c = bridged.clone();
+                    std::thread::spawn(move || {
+                        let deadline = Instant::now() + Duration::from_secs(120);
+                        let truth = loop {
+                            {
+                                let g = shadow.read();
+                                if g.at_parent(parent_root) {
+                                    break chunked_proofs(&g, None, &acct_t, &stor_t).ok();
+                                }
                             }
-                        }
-                        if Instant::now() > deadline {
+                            if Instant::now() > deadline {
+                                break None;
+                            }
+                            std::thread::sleep(Duration::from_millis(5));
+                        };
+                        let Some(truth) = truth else {
                             tracing::warn!(
                                 target: "flatmpt",
-                                "bridge-verify: follower never reached parent; skipping"
+                                parent = %format!("{parent_root:x}"),
+                                "bridge-verify: no truth (parent never reached / proof err)"
                             );
-                            break None;
-                        }
-                        std::thread::sleep(Duration::from_millis(5));
-                    };
-                    if let Some(truth) = truth {
+                            return;
+                        };
                         let flatten = |ps: &[DecodedMultiProofV2]| {
                             let mut m: std::collections::BTreeMap<String, String> =
                                 Default::default();
@@ -1708,7 +1710,7 @@ impl Worker {
                             }
                             m
                         };
-                        let bm = flatten(&bridged);
+                        let bm = flatten(&bridged_c);
                         let tm = flatten(&truth);
                         let mut diffs = 0;
                         for (k, tv) in &tm {
@@ -1719,6 +1721,7 @@ impl Worker {
                                     if diffs <= 5 {
                                         tracing::warn!(
                                             target: "flatmpt",
+                                            parent = %format!("{parent_root:x}"),
                                             path = %k,
                                             truth = %&tv[..tv.len().min(220)],
                                             bridged = %other.map(|s| s[..s.len().min(220)].to_string()).unwrap_or_else(|| "<missing>".into()),
@@ -1734,24 +1737,21 @@ impl Worker {
                                 if diffs <= 5 {
                                     tracing::warn!(
                                         target: "flatmpt",
+                                        parent = %format!("{parent_root:x}"),
                                         path = %k,
                                         "BRIDGE-VERIFY EXTRA NODE (bridged only)"
                                     );
                                 }
                             }
                         }
-                        if diffs > 0 {
-                            tracing::warn!(
-                                target: "flatmpt",
-                                diffs,
-                                total_true = tm.len(),
-                                "bridge-verify: proof sets differ"
-                            );
-                        }
-                    }
-                    // The guard was dropped for the wait; the bridged proofs
-                    // stay in use regardless so the divergence (if any) still
-                    // reproduces downstream with the mismatch logged above.
+                        tracing::info!(
+                            target: "flatmpt",
+                            parent = %format!("{parent_root:x}"),
+                            diffs,
+                            total_true = tm.len(),
+                            "bridge-verify done"
+                        );
+                    });
                 }
                 bridged
             };
