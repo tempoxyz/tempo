@@ -853,8 +853,14 @@ impl Worker {
         // Reuse the previous block's revealed trie when stacking directly on
         // its root — the steady-state case. Anything else (first block,
         // rebuild candidate, post-cancel) starts blind.
+        // TEMPO_FLATMPT_NO_POOL=1: force every finish onto the cold path
+        // (fresh blind trie), standing in for the sibling-fork pool misses of
+        // the CI regime (bug #8). Bench/debug only.
+        let no_pool = std::env::var("TEMPO_FLATMPT_NO_POOL").as_deref() == Ok("1");
         let (mut trie, pool_hit, anchor) = match TRIE_POOL.lock().take() {
-            Some((root, anchor, trie)) if root == parent_root => (trie, true, anchor),
+            Some((root, anchor, trie)) if root == parent_root && !no_pool => {
+                (trie, true, anchor)
+            }
             // Fresh trie: its blind regions are only pinned to the parent
             // state from here on, so arbitrary-lineage reveals are unsound
             // until the follower reaches this root (see `Anchor`).

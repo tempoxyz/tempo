@@ -493,6 +493,14 @@ fn run(
                 expected_root,
             } => {
                 let t = Instant::now();
+                // TEMPO_FLATMPT_APPLY_DELAY_MS: artificial per-block apply lag
+                // for reproducing the CI cold-trie + lagged-follower regime
+                // (bug #8) on fast local disks. Bench/debug only.
+                if let Ok(ms) = std::env::var("TEMPO_FLATMPT_APPLY_DELAY_MS")
+                    && let Ok(ms) = ms.parse::<u64>()
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
                 let n_ops = ops.len();
                 let res = shadow.write().root_for(parent_number, parent_root, ops);
                 let queued = depth.fetch_sub(1, Ordering::SeqCst) - 1;
