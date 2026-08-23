@@ -431,6 +431,7 @@ mod tests {
     use revm::{
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
+        precompile::{PrecompileHalt, PrecompileStatus},
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
@@ -1056,7 +1057,10 @@ mod tests {
         };
 
         let output = AlloyEvmPrecompile::call(&precompile, input).expect("expected OOG output");
-        assert!(output.is_halt());
+        assert!(matches!(
+            output.status,
+            PrecompileStatus::Halt(PrecompileHalt::OutOfGas)
+        ));
     }
 
     #[test]
