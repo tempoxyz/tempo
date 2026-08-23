@@ -1658,8 +1658,11 @@ impl Worker {
                     chunked_proofs(&guard, overlay.as_ref(), &acct_targets, &storage_targets)?;
                 // TEMPO_FLATMPT_BRIDGE_VERIFY=1 (bug-#8 debug): re-derive the
                 // same proofs against flat-at-parent on a background thread
-                // (zero interference with build timing) and diff node-by-node.
-                if overlay.is_some()
+                // (zero interference with build timing), diff node-by-node,
+                // and for each mismatch report whether the overlay's
+                // TrieUpdates actually contained the path (lookup-miss vs
+                // stale-content discrimination).
+                if let Some(ov) = overlay.as_ref()
                     && std::env::var("TEMPO_FLATMPT_BRIDGE_VERIFY").as_deref() == Ok("1")
                 {
                     let shadow = self.shadow;
@@ -1667,6 +1670,7 @@ impl Worker {
                     let acct_t = acct_targets.clone();
                     let stor_t = storage_targets.clone();
                     let bridged_c = bridged.clone();
+                    let ov = (ov.0.clone(), ov.1.clone());
                     std::thread::spawn(move || {
                         let deadline = Instant::now() + Duration::from_secs(120);
                         let truth = loop {
@@ -1689,26 +1693,52 @@ impl Worker {
                             );
                             return;
                         };
+                        type K = (u8, B256, Nibbles);
                         let flatten = |ps: &[DecodedMultiProofV2]| {
-                            let mut m: std::collections::BTreeMap<String, String> =
-                                Default::default();
+                            let mut m: std::collections::BTreeMap<K, String> = Default::default();
                             for p in ps {
                                 for n in &p.account_proofs {
                                     m.insert(
-                                        format!("acct/{:?}", n.path),
+                                        (0, B256::ZERO, n.path),
                                         format!("{:?}|{:?}", n.node, n.masks),
                                     );
                                 }
                                 for (a, ns) in &p.storage_proofs {
                                     for n in ns {
                                         m.insert(
-                                            format!("stor/{a:x}/{:?}", n.path),
+                                            (1, *a, n.path),
                                             format!("{:?}|{:?}", n.node, n.masks),
                                         );
                                     }
                                 }
                             }
                             m
+                        };
+                        let overlay_entry = |k: &K| -> String {
+                            let (kind, acct, path) = k;
+                            if *kind == 0 {
+                                match ov.0.account_nodes_ref().binary_search_by(|(p, _)| p.cmp(path)) {
+                                    Ok(i) => match &ov.0.account_nodes_ref()[i].1 {
+                                        Some(n) => format!("present: {:?}", n),
+                                        None => "removed".into(),
+                                    },
+                                    Err(_) => "ABSENT".into(),
+                                }
+                            } else {
+                                match ov.0.storage_tries_ref().get(acct) {
+                                    None => "no-storage-trie-entry".into(),
+                                    Some(st) => {
+                                        let del = st.is_deleted();
+                                        match st.storage_nodes_ref().binary_search_by(|(p, _)| p.cmp(path)) {
+                                            Ok(i) => match &st.storage_nodes_ref()[i].1 {
+                                                Some(n) => format!("present(del={del}): {:?}", n),
+                                                None => format!("removed(del={del})"),
+                                            },
+                                            Err(_) => format!("ABSENT(del={del})"),
+                                        }
+                                    }
+                                }
+                            }
                         };
                         let bm = flatten(&bridged_c);
                         let tm = flatten(&truth);
@@ -1719,12 +1749,16 @@ impl Worker {
                                 other => {
                                     diffs += 1;
                                     if diffs <= 5 {
+                                        let oe = overlay_entry(k);
                                         tracing::warn!(
                                             target: "flatmpt",
                                             parent = %format!("{parent_root:x}"),
-                                            path = %k,
-                                            truth = %&tv[..tv.len().min(220)],
-                                            bridged = %other.map(|s| s[..s.len().min(220)].to_string()).unwrap_or_else(|| "<missing>".into()),
+                                            kind = k.0,
+                                            acct = %format!("{:x}", k.1),
+                                            path = ?k.2,
+                                            truth = %&tv[..tv.len().min(200)],
+                                            bridged = %other.map(|s| s[..s.len().min(200)].to_string()).unwrap_or_else(|| "<missing>".into()),
+                                            overlay = %&oe[..oe.len().min(300)],
                                             "BRIDGE-VERIFY MISMATCH"
                                         );
                                     }
@@ -1738,7 +1772,9 @@ impl Worker {
                                     tracing::warn!(
                                         target: "flatmpt",
                                         parent = %format!("{parent_root:x}"),
-                                        path = %k,
+                                        kind = k.0,
+                                        acct = %format!("{:x}", k.1),
+                                        path = ?k.2,
                                         "BRIDGE-VERIFY EXTRA NODE (bridged only)"
                                     );
                                 }
