@@ -11,6 +11,7 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
+exclude = ["crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",
@@ -27,6 +28,7 @@ members = [
   "crates/e2e",
   "crates/faucet",
   "crates/node",
+  "crates/nitro-attestation",
   "crates/payload/builder",
   "crates/payload/types",
   "crates/precompiles",
@@ -123,9 +125,10 @@ panic = "abort"
 incremental = false
 
 [workspace.dependencies]
-aws-lc-rs = { version = "1.16.2", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
+tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
@@ -309,8 +312,6 @@ serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc", "raw_value"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
-minicbor = { version = "2.1.1", features = ["alloc", "std"] }
-x509-cert = { version = "0.2.5", features = ["std"] }
 tar = "0.4.46"
 tempfile = "3.24.0"
 thiserror = "2.0.18"
