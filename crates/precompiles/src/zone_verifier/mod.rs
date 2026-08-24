@@ -59,7 +59,11 @@ impl ZoneVerifier {
             return Ok(false);
         };
         if !approved_pcrs.iter().enumerate().all(|(index, expected)| {
-            attestation.pcrs[index].as_deref() == Some(expected.as_slice())
+            attestation
+                .pcrs
+                .iter()
+                .find(|pcr| usize::from(pcr.index) == index)
+                .is_some_and(|pcr| pcr.value.as_slice() == expected)
         }) {
             return Ok(false);
         }
