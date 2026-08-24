@@ -607,7 +607,17 @@ fn chunked_proofs(
                         // hash-ref children — which reproduces flat's own
                         // convention exactly (no-op for flat-served nodes).
                         let normalize = |n: &mut ProofTrieNodeV2| {
-                            if let TrieNodeV2::Branch(b) = &n.node {
+                            // Only cached-branch nodes carry masks; leave
+                            // freshly-built branches (masks None) untouched —
+                            // forcing masks onto them corrupts the collapse
+                            // "was persisted" bookkeeping the other way.
+                            // tree_mask passes through: flat stores real tree
+                            // bits (nonzero on deep tries) and zeroing them
+                            // poisons pooled tries blocks later (cycle-7
+                            // block-37 warm-path divergence).
+                            if let Some(masks) = n.masks
+                                && let TrieNodeV2::Branch(b) = &n.node
+                            {
                                 let mut hash_mask = TrieMask::default();
                                 let mut stack_iter = b.stack.iter();
                                 for nibble in 0..16u8 {
@@ -620,7 +630,7 @@ fn chunked_proofs(
                                 }
                                 n.masks = Some(BranchNodeMasks {
                                     hash_mask,
-                                    tree_mask: TrieMask::default(),
+                                    tree_mask: masks.tree_mask,
                                 });
                             }
                         };
