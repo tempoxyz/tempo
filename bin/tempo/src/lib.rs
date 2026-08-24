@@ -86,6 +86,9 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
+#[cfg(all(feature = "localnet", unix))]
+use nix as _;
+
 const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
@@ -500,13 +503,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 validator_key,
             )))
             .apply(|mut builder: WithLaunchContext<_>| {
-                // Enable discv5 peer discovery
-                builder
-                    .config_mut()
-                    .network
-                    .discovery
-                    .enable_discv5_discovery = true;
-
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
                     let follow_url = args

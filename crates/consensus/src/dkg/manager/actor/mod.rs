@@ -54,6 +54,7 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},
+    dkg::manager::actor::state::ShareState,
     validators::{read_active_and_known_peers_at_block_hash, read_validator_config_at_block_hash},
 };
 
@@ -186,44 +187,25 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let Ok(mut storage) = state::builder()
+        // NOTE: The instrumented fns emits on error events
+
+        let Ok(opened) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
-            .initial_state({
-                let mut context = self.context.child("initial_state");
-                let execution_node = self.config.execution_node.clone();
-                let initial_share = self.config.initial_share.clone();
-                let epoch_strategy = self.config.epoch_strategy.clone();
-                let last_finalized_height = self.config.last_finalized_height;
-                let mut marshal = self.config.marshal.clone();
-                async move {
-                    establish_initial_state(
-                        &mut context,
-                        &execution_node,
-                        initial_share.clone(),
-                        &epoch_strategy,
-                        last_finalized_height,
-                        &mut marshal,
-                    )
-                    .await
-                }
-            })
-            .init(self.context.child("state"))
+            .init_unverified(self.context.child("state"))
             .await
         else {
-            // NOTE: Builder::init emits en error event.
             return;
         };
 
-        if let Err(reason) = self
+        let Ok(mut storage) = self.heal(opened).await else {
+            return;
+        };
+
+        if self
             .prepopulate_to_last_finalized_height(&mut storage)
             .await
+            .is_err()
         {
-            tracing::warn_span!("dkg_actor").in_scope(|| {
-                warn!(
-                    %reason,
-                    "failed prepopulating DKG state",
-                );
-            });
             return;
         }
 
@@ -233,6 +215,7 @@ where
             receiver,
             self.config.mailbox_size.into(),
         );
+
         mux.start();
 
         let reason = loop {
@@ -265,7 +248,6 @@ where
         let state = storage.current();
 
         self.metrics.reset();
-
         self.metrics
             .dealers
             .metric()
@@ -521,6 +503,62 @@ where
         }
     }
 
+    /// Turns freshly opened storage into storage that is guaranteed to hold a
+    /// state matching the finalized floor:
+    ///
+    /// 1. The persisted state is up-to-date: it is used as-is.
+    /// 2. The persisted state is stale: the state is re-initialized from the
+    ///    chain, reusing the stale share if it still matches the on-chain
+    ///    outcome, or recovering it from persisted or revealed dealings
+    ///    otherwise.
+    /// 3. No state is persisted: like 2., but without a stale share to fall
+    ///    back on.
+    #[instrument(skip_all, err)]
+    async fn heal<TStorageContext>(
+        &mut self,
+        storage: state::Unverified<TStorageContext>,
+    ) -> eyre::Result<state::Storage<TStorageContext>>
+    where
+        TStorageContext: commonware_runtime::BufferPooler
+            + commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage,
+    {
+        let mut share_candidate = ShareState::unset_plaintext();
+        if let Some(state) = storage.state() {
+            let epoch_info = self
+                .config
+                .epoch_strategy
+                .containing(self.config.last_finalized_height.next())
+                .expect("epoch strategy is covering all heights");
+            let round = state::Round::from_state(state, &self.config.namespace);
+            if round.epoch() < epoch_info.epoch() {
+                warn!(
+                    "latest DKG state is for `{}`, but the next block will be \
+                    for epoch `{}`. Resetting DKG initial state",
+                    round.epoch(),
+                    epoch_info.epoch(),
+                );
+                share_candidate = state.share.clone();
+            } else {
+                let state = state.clone();
+                return storage
+                    .init_verified(state)
+                    .await
+                    .wrap_err("failed writing initial state back to storage");
+            }
+        };
+        let initial_state = self
+            .establish_initial_state(&storage, share_candidate)
+            .await
+            .wrap_err("failed constructing initial state")?;
+
+        storage
+            .init_verified(initial_state)
+            .await
+            .wrap_err("failed setting initial state")
+    }
+
     #[instrument(skip_all, err)]
     async fn prepopulate_to_last_finalized_height<TStorageContext>(
         &self,
@@ -541,28 +579,10 @@ where
             .containing(target_height.next())
             .expect("epoch strategy is covering all heights");
 
-        match round.epoch().cmp(&epoch_info.epoch()) {
-            std::cmp::Ordering::Less => {
-                bail!(
-                    "latest DKG state is for `{}`, but the next block will be \
-                    for epoch `{}`; this is a contract violation and the \
-                    state is invalid",
-                    round.epoch(),
-                    epoch_info.epoch(),
-                );
-            }
-            std::cmp::Ordering::Greater => {
-                warn!(
-                    "ignoring block for prior epoch; older blocks are replayed \
-                    against DKG when a node was shut down right after a \
-                    boundary block completed an epoch, but before it was fully \
-                    processed by other actors"
-                );
-                return Ok(());
-            }
-            std::cmp::Ordering::Equal => {
-                // Normal, expected behavior.
-            }
+        // The DKG actor may have persisted the new epoch before the finalized floor caught up
+        // during shutdown. Do not replay prior-epoch headers against the newer DKG round.
+        if round.epoch() > epoch_info.epoch() {
+            return Ok(());
         }
 
         let mut height = storage
@@ -1257,59 +1277,231 @@ where
             .exit(state.epoch)
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
-}
 
-#[instrument(skip_all, err)]
-async fn establish_initial_state<TContext>(
-    context: &mut TContext,
-    node: &TempoFullNode,
-    share: Option<Share>,
-    epoch_strategy: &FixedEpocher,
-    last_finalized_height: Height,
-    marshal: &mut crate::alias::marshal::Mailbox,
-) -> eyre::Result<State>
-where
-    TContext: Clock + CryptoRng,
-{
-    let latest_boundary = latest_boundary_at_or_before(epoch_strategy, last_finalized_height);
-    info!(
-        %latest_boundary,
-        last_finalized = %last_finalized_height,
-        "marshal reported finalized floor at startup, reading on-chain DKG \
-        outcome from last boundary height"
-    );
+    /// Constructs a fresh state from the on-chain DKG outcome at the last
+    /// finalized boundary.
+    ///
+    /// The share is sourced, in order of preference, from the configured
+    /// initial share, from `share_candidate` (salvaged from a stale persisted
+    /// state), or by recovering it from publicly revealed dealings. The first
+    /// two are only used if they match the polynomial of the on-chain
+    /// outcome.
+    #[instrument(skip_all, err)]
+    async fn establish_initial_state<TStorageContext>(
+        &mut self,
+        storage: &state::Unverified<TStorageContext>,
+        share_candidate: ShareState,
+    ) -> eyre::Result<State>
+    where
+        TStorageContext: commonware_runtime::BufferPooler
+            + commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage,
+    {
+        let latest_boundary = latest_boundary_at_or_before(
+            &self.config.epoch_strategy,
+            self.config.last_finalized_height,
+        );
+        info!(
+            %latest_boundary,
+            last_finalized = %self.config.last_finalized_height,
+            "marshal reported finalized floor at startup, reading on-chain DKG \
+            outcome from last boundary height"
+        );
 
-    let onchain_outcome = read_outcome_from_boundary(node, marshal, latest_boundary).await?;
+        let onchain_outcome = read_outcome_from_boundary(
+            &self.config.execution_node,
+            &self.config.marshal,
+            latest_boundary,
+        )
+        .await?;
 
-    let share = state::ShareState::Plaintext('verify_initial_share: {
-        let Some(share) = share else {
-            break 'verify_initial_share None;
-        };
-        let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
-            warn!(
-                "the index of the provided share exceeds the polynomial of the \
-                on-chain DKG outcome; ignoring the share"
-            );
-            break 'verify_initial_share None;
-        };
-        if share.public::<MinSig>() != partial {
-            warn!(
-                "the provided share does not match the polynomial of the \
-                on-chain DKG outcome; ignoring the share"
-            );
-            break 'verify_initial_share None;
+        // The configured initial share takes precedence over the candidate
+        // salvaged from a stale state. Either is only usable if it matches
+        // the polynomial of the on-chain DKG outcome.
+        let mut share = None;
+        for candidate in [
+            self.config.initial_share.clone(),
+            share_candidate.into_inner(),
+        ] {
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            let Ok(partial) = onchain_outcome.sharing().partial_public(candidate.index) else {
+                warn!(
+                    "the index of the provided share exceeds the polynomial of the \
+                    on-chain DKG outcome; ignoring the share"
+                );
+                continue;
+            };
+            if candidate.public::<MinSig>() != partial {
+                warn!(
+                    "the provided share does not match the polynomial of the \
+                    on-chain DKG outcome; ignoring the share"
+                );
+                continue;
+            }
+            share = Some(candidate);
+            break;
         }
-        Some(share)
-    });
 
-    Ok(State {
-        epoch: onchain_outcome.epoch,
-        seed: Summary::random(context),
-        output: onchain_outcome.output.clone(),
-        share,
-        players: onchain_outcome.next_players,
-        is_full_dkg: onchain_outcome.is_next_full_dkg,
-    })
+        let mut state = State {
+            epoch: onchain_outcome.epoch,
+            seed: Summary::random(&mut self.context),
+            output: onchain_outcome.output.clone(),
+            share: state::ShareState::Plaintext(share),
+            players: onchain_outcome.next_players,
+            is_full_dkg: onchain_outcome.is_next_full_dkg,
+        };
+
+        if let state::ShareState::Plaintext(None) = &state.share
+            && let Ok(Some(share)) = self.maybe_recover_share(storage, &state).await
+        {
+            info!(epoch = %state.epoch, "recovered share from persisted or public dealings");
+            state.share = state::ShareState::Plaintext(Some(share));
+        }
+
+        Ok(state)
+    }
+
+    /// Attempts to reconstruct our current threshold share from dealings persisted during the
+    /// previous epoch and dealer logs finalized on-chain. Publicly revealed dealings in those logs
+    /// allow recovery when no persisted player state is available.
+    #[instrument(skip_all, fields(epoch = %state.epoch), err)]
+    async fn maybe_recover_share<TStorageContext>(
+        &mut self,
+        storage: &state::Unverified<TStorageContext>,
+        state: &State,
+    ) -> eyre::Result<Option<Share>>
+    where
+        TStorageContext: commonware_runtime::BufferPooler
+            + commonware_runtime::Metrics
+            + Clock
+            + commonware_runtime::Storage,
+    {
+        let public_key = self.config.me.public_key();
+        if state.output.players().position(&public_key).is_none()
+        // TODO: currently unreliable; use once fixed
+        // || state.output.revealed().position(&public_key).is_none()
+        {
+            return Ok(None);
+        }
+
+        let Some(ceremony_epoch) = state.epoch.previous() else {
+            return Ok(None);
+        };
+
+        let ceremony_boundary = ceremony_epoch.previous().map_or(Height::zero(), |epoch| {
+            self.config
+                .epoch_strategy
+                .last(epoch)
+                .expect("epoch strategy is valid for all epochs")
+        });
+
+        let ceremony_outcome = read_outcome_from_boundary(
+            &self.config.execution_node,
+            &self.config.marshal,
+            ceremony_boundary,
+        )
+        .await
+        .wrap_err("failed reading outcome for ceremony boundary")?;
+
+        ensure!(
+            ceremony_outcome.epoch == ceremony_epoch,
+            "boundary outcome is for epoch `{}`, expected ceremony epoch `{ceremony_epoch}`",
+            ceremony_outcome.epoch,
+        );
+
+        // A failed ceremony carries its input output forward. In that case, the current share was
+        // produced by an older ceremony, not by the dealer logs from the immediately previous epoch.
+        // Do not attempt an unbounded search through earlier epochs here.
+        if ceremony_outcome.output == state.output {
+            return Ok(None);
+        }
+
+        let ceremony_state = State {
+            epoch: ceremony_outcome.epoch,
+            seed: state.seed,
+            output: ceremony_outcome.output,
+            share: state::ShareState::Plaintext(None),
+            players: ceremony_outcome.next_players,
+            is_full_dkg: ceremony_outcome.is_next_full_dkg,
+        };
+
+        let round = state::Round::from_state(&ceremony_state, &self.config.namespace);
+        ensure!(
+            round.players().position(&public_key).is_some(),
+            "our identity is in the current output but was not a player in ceremony epoch \
+        `{ceremony_epoch}`"
+        );
+
+        let selected_dealers = state.output.dealers();
+        let first = self
+            .config
+            .epoch_strategy
+            .first(ceremony_epoch)
+            .ok_or_eyre("ceremony epoch has no first height")?;
+        let last = self
+            .config
+            .epoch_strategy
+            .last(ceremony_epoch)
+            .ok_or_eyre("ceremony epoch has no last height")?;
+
+        // Honest dealers do not finalize logs before the midpoint, but block validation does not
+        // enforce that timing, so scan the entire ceremony epoch.
+        let mut height = first;
+        let mut dealer_logs = BTreeMap::new();
+        while height < last && dealer_logs.len() < selected_dealers.len() {
+            let header = get_header(&self.config.execution_node, &self.config.marshal, height)
+                .await
+                .wrap_err("failed reading finalized header")?;
+
+            if !header.extra_data().is_empty()
+                && let Ok((dealer, log)) = read_dealer_log(header.extra_data().as_ref(), &round)
+                && selected_dealers.position(&dealer).is_some()
+            {
+                dealer_logs.entry(dealer).or_insert(log);
+            }
+
+            height = height.next();
+        }
+
+        ensure!(
+            dealer_logs.len() == selected_dealers.len(),
+            "found only {} of {} selected dealer logs in finalized headers for ceremony epoch `{ceremony_epoch}`",
+            dealer_logs.len(),
+            selected_dealers.len(),
+        );
+
+        let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+        for (dealer, log) in dealer_logs {
+            logs.record(dealer, log);
+        }
+
+        let Some(player) = storage
+            .create_player_for_round(self.config.me.clone(), &round)
+            .wrap_err("failed creating player to recover share")?
+        else {
+            return Ok(None);
+        };
+
+        let (recovered_output, share) = match player.finalize(&mut self.context, logs, &Sequential)
+        {
+            Ok(recovered) => recovered,
+            Err(dkg::Error::MissingPlayerDealing) => return Ok(None),
+            Err(error) => {
+                return Err(eyre::Report::new(error))
+                    .wrap_err("failed finalizing revealed share from dealer logs");
+            }
+        };
+
+        ensure!(
+            recovered_output == state.output,
+            "recovered output does not match the on-chain output"
+        );
+
+        Ok(Some(share))
+    }
 }
 
 fn latest_boundary_at_or_before(epoch_strategy: &FixedEpocher, height: Height) -> Height {

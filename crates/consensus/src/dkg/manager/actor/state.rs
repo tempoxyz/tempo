@@ -28,8 +28,8 @@ use commonware_parallel::Strategy;
 use commonware_runtime::{BufferPooler, Clock, Metrics, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, ordered};
-use eyre::{OptionExt, WrapErr as _, bail, eyre};
-use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
+use eyre::{OptionExt, WrapErr as _, bail};
+use futures::StreamExt as _;
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
@@ -58,8 +58,50 @@ where
     states: metadata::Metadata<TContext, u64, State>,
     events: segmented::variable::Journal<TContext, Event>,
 
-    current: State,
+    current: Option<State>,
     cache: BTreeMap<Epoch, Events>,
+}
+
+/// Storage as read from disk, holding a state that has not yet been checked
+/// against the finalized floor (or no state at all).
+///
+/// [`Unverified::init_verified`] persists the verified state and turns this
+/// into a usable [`Storage`].
+pub(super) struct Unverified<TContext>
+where
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+{
+    storage: Storage<TContext>,
+}
+
+impl<TContext> Unverified<TContext>
+where
+    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+{
+    pub(super) fn state(&self) -> Option<&State> {
+        self.storage.current.as_ref()
+    }
+
+    /// Creates a player for a persisted round, replaying any dealings loaded
+    /// from the journal while opening storage.
+    pub(super) fn create_player_for_round(
+        &self,
+        me: PrivateKey,
+        round: &Round,
+    ) -> eyre::Result<Option<Player>> {
+        self.storage.create_player_for_round(me, round)
+    }
+
+    pub(super) async fn init_verified(self, state: State) -> eyre::Result<Storage<TContext>> {
+        let Self { mut storage } = self;
+        storage
+            .states
+            .put_sync(state.epoch.get(), state.clone())
+            .await
+            .wrap_err("unable to write initial state to metadata")?;
+        storage.current = Some(state);
+        Ok(storage)
+    }
 }
 
 impl<TContext> Storage<TContext>
@@ -101,7 +143,7 @@ where
 
     /// Returns the DKG outcome for the current epoch.
     pub(super) fn current(&self) -> State {
-        self.current.clone()
+        self.current.clone().expect("invariant: state must be set")
     }
 
     /// Persists the outcome of a DKG ceremony to state
@@ -110,7 +152,7 @@ where
             warn!(epoch = %old.epoch, "overwriting existing state");
         }
         self.states.sync().await.wrap_err("failed writing state")?;
-        self.current = state;
+        self.current = Some(state);
         Ok(())
     }
 
@@ -473,45 +515,32 @@ where
 
 #[derive(Default)]
 pub(super) struct Builder {
-    initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
 }
 
 impl Builder {
-    pub(super) fn initial_state(
-        self,
-        initial_state: impl Future<Output = eyre::Result<State>> + Send + 'static,
-    ) -> Self {
-        Self {
-            initial_state: Some(initial_state.boxed()),
-            ..self
-        }
-    }
-
     pub(super) fn partition_prefix(self, partition_prefix: &str) -> Self {
         Self {
             partition_prefix: Some(partition_prefix.to_string()),
-            ..self
         }
     }
 
     #[instrument(skip_all, err)]
-    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
+    pub(super) async fn init_unverified<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Unverified<TContext>>
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
-        let Self {
-            initial_state,
-            partition_prefix,
-        } = self;
+        let Self { partition_prefix } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
         let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
 
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
-
-        let mut states = metadata::Metadata::init(
+        let states: metadata::Metadata<TContext, u64, State> = metadata::Metadata::init(
             context.child("states"),
             metadata::Config {
                 partition: states_metadata_partition,
@@ -521,33 +550,12 @@ impl Builder {
         .await
         .wrap_err("unable to initialize DKG states metadata")?;
 
-        if states.keys().max().is_none() {
-            let initial_state = match initial_state {
-                None => {
-                    return Err(eyre!(
-                        "states metadata was empty and initializer was not set"
-                    ));
-                }
-                Some(initial_state) => initial_state
-                    .await
-                    .wrap_err("failed constructing initial state to populate storage")?,
-            };
+        let current = states.keys().max().map(|epoch| {
             states
-                .put_sync(initial_state.epoch.get(), initial_state)
-                .await
-                .wrap_err("unable to write initial state to metadata")?;
-        }
-
-        let current = states
-            .keys()
-            .max()
-            .map(|epoch| {
-                states
-                    .get(epoch)
-                    .expect("state at keys iterator must exist")
-                    .clone()
-            })
-            .expect("states storage must contain a state after initialization");
+                .get(epoch)
+                .expect("state at keys iterator must exist")
+                .clone()
+        });
 
         let mut events = segmented::variable::Journal::init(
             context.child("events"),
@@ -580,11 +588,17 @@ impl Builder {
             }
         }
 
-        Ok(Storage {
-            states,
-            events,
-            current,
-            cache,
+        eyre::ensure!(
+            current.is_some() || cache.is_empty(),
+            "DKG states metadata is empty, but events journal contains retained events",
+        );
+        Ok(Unverified {
+            storage: Storage {
+                states,
+                events,
+                current,
+                cache,
+            },
         })
     }
 }
@@ -602,6 +616,10 @@ pub(super) enum ShareState {
 }
 
 impl ShareState {
+    pub(super) fn unset_plaintext() -> Self {
+        Self::Plaintext(None)
+    }
+
     pub(super) fn into_inner(self) -> Option<Share> {
         match self {
             Self::Plaintext(share) => share,
@@ -1220,7 +1238,7 @@ mod tests {
         transcript::Summary,
     };
     use commonware_math::algebra::Random as _;
-    use commonware_runtime::{Runner as _, deterministic};
+    use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
     use commonware_utils::TryFromIterator as _;
 
     fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
@@ -1310,5 +1328,82 @@ mod tests {
 
         let share = shares.into_iter().next().unwrap().1;
         assert_roundtrip(&ShareState::Plaintext(Some(share)));
+    }
+
+    #[test]
+    fn empty_storage_requires_an_initial_state() {
+        let executor = deterministic::Runner::default();
+        executor.start(|mut context| async move {
+            let unverified = builder()
+                .partition_prefix("empty_storage_requires_an_initial_state")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap();
+            assert!(
+                unverified.state().is_none(),
+                "new storage must not contain a state"
+            );
+
+            let state = make_test_state(&mut context, 0);
+            let storage = unverified.init_verified(state.clone()).await.unwrap();
+            assert_eq!(storage.current(), state);
+            drop(storage);
+
+            let reopened = builder()
+                .partition_prefix("empty_storage_requires_an_initial_state")
+                .init_unverified(context.child("reopened"))
+                .await
+                .unwrap();
+            assert_eq!(
+                reopened.state(),
+                Some(&state),
+                "storage with an initial state must reopen with it"
+            );
+        });
+    }
+
+    #[test]
+    fn empty_states_reject_retained_events() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let mut unverified = builder()
+                .partition_prefix("empty_states_reject_retained_events")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap();
+            assert!(
+                unverified.state().is_none(),
+                "new storage must not contain a state"
+            );
+
+            unverified
+                .storage
+                .events
+                .append(
+                    0,
+                    &Event::Finalized {
+                        digest: Digest(alloy_primitives::B256::with_last_byte(1)),
+                        parent: Digest(alloy_primitives::B256::ZERO),
+                        height: Height::zero(),
+                    },
+                )
+                .await
+                .unwrap();
+            unverified.storage.events.sync(0).await.unwrap();
+            drop(unverified);
+
+            let result = builder()
+                .partition_prefix("empty_states_reject_retained_events")
+                .init_unverified(context.child("reopened"))
+                .await;
+            let Err(error) = result else {
+                panic!("retained events without state metadata must be rejected");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("states metadata is empty, but events journal contains")
+            );
+        });
     }
 }
