@@ -1694,9 +1694,21 @@ impl Worker {
                 // against flat-at-its-current-root plus the overlay stack of
                 // the intervening un-applied blocks; only an unknown lineage
                 // (deep lag, rebuild race) still waits for the follower.
+                // Bug #8 postmortem: the overlay proof bridge is structurally
+                // unsound — the sparse trie's published TrieUpdates are not a
+                // complete node overlay (blind-subtree hashes live inside
+                // parent compacts, not as entries), so the V2 walker rebuilds
+                // wide branches with flat's STALE child hashes wherever the
+                // overlay has a gap, and rebuilt branches lose their masks.
+                // 100G bridge-verify caught both content and mask corruption.
+                // Default: cold finishes under lag wait for the follower
+                // (sound, slower only in lag episodes). The bridge stays
+                // available for rework behind TEMPO_FLATMPT_PROOF_OVERLAY=1.
                 let overlay = if guard.at_parent(self.parent_root) {
                     None
-                } else if let Some(chain) = overlay_chain(guard.current_root(), self.parent_root) {
+                } else if std::env::var("TEMPO_FLATMPT_PROOF_OVERLAY").as_deref() == Ok("1")
+                    && let Some(chain) = overlay_chain(guard.current_root(), self.parent_root)
+                {
                     Some(chain)
                 } else {
                     if !must_complete {
