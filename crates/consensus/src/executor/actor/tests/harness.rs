@@ -482,8 +482,12 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
-    fn finalized_num_hash(&self) -> Option<BlockNumHash> {
-        self.inner.state.lock().finalized
+    fn finalized_num_hash(&self) -> BlockNumHash {
+        self.inner
+            .state
+            .lock()
+            .finalized
+            .unwrap_or_else(|| BlockNumHash::new(0, self.genesis_hash()))
     }
 
     fn genesis_hash(&self) -> B256 {

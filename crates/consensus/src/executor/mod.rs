@@ -37,8 +37,9 @@ use crate::consensus::{Digest, block::Block};
 /// Implementations are cheap-clone handles: clones are moved into the
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
-    /// The execution layer's finalized block, if any block was finalized yet.
-    fn finalized_num_hash(&self) -> Option<BlockNumHash>;
+    /// The execution layer's finalized block, falling back to genesis if no
+    /// block has been explicitly finalized yet.
+    fn finalized_num_hash(&self) -> BlockNumHash;
 
     /// The hash of the genesis block.
     fn genesis_hash(&self) -> B256;
@@ -98,10 +99,11 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
-    fn finalized_num_hash(&self) -> Option<BlockNumHash> {
+    fn finalized_num_hash(&self) -> BlockNumHash {
         self.provider
             .canonical_in_memory_state()
             .get_finalized_num_hash()
+            .unwrap_or_else(|| BlockNumHash::new(0, self.genesis_hash()))
     }
 
     fn genesis_hash(&self) -> B256 {

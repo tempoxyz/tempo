@@ -51,7 +51,6 @@ use futures::{
     stream::FuturesUnordered,
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
@@ -236,9 +235,7 @@ where
         );
         let metrics = Metrics::init(&context);
 
-        let execution_finalized_num_hash = execution_node
-            .finalized_num_hash()
-            .unwrap_or_else(|| BlockNumHash::new(0, execution_node.genesis_hash()));
+        let execution_finalized_num_hash = execution_node.finalized_num_hash();
 
         // The finalized point the executor starts from. Normally this is the
         // execution layer's own finalized tip, from which the startup
@@ -1560,9 +1557,8 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     // the execution layer's own is stale in its entirety and is not
     // submitted. Callers treat the skip as a no-op; a payload-build request
     // affected by it fails through the missing payload ID.
-    if let Some(execution_finalized) = execution_node.finalized_num_hash()
-        && execution_finalized.number >= canonicalized.finalized.0.get()
-    {
+    let execution_finalized = execution_node.finalized_num_hash();
+    if execution_finalized.number >= canonicalized.finalized.0.get() {
         let canonical_digest = execution_node
             .canonical_block_hash(canonicalized.finalized.0.get())
             .wrap_err_with(|| {
