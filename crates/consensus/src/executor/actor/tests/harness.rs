@@ -38,7 +38,7 @@ use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
-use reth_stages_types::{StageCheckpoint, StageId};
+use reth_stages_types::StageCheckpoint;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
@@ -46,7 +46,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{Config, ExecutionLayer, Mailbox, Marshal, init},
+    executor::{Config, ExecutionLayer, Mailbox, Marshal, StageCheckpoints, init},
 };
 
 /// The genesis digest all harness chains hang off.
@@ -254,6 +254,8 @@ struct FakeExecutionInner {
     canonical_hash_overrides: ScriptedResults<u64, Result<Option<B256>, &'static str>>,
     /// Scripted block lookup outcomes keyed by digest.
     block_overrides: ScriptedResults<B256, Result<Option<Block>, &'static str>>,
+    /// Scripted persisted-checkpoint outcomes.
+    stage_checkpoint_overrides: ScriptedResults<(), Result<Option<StageCheckpoints>, &'static str>>,
     /// Rejects every FCU while set.
     reject_all_fcus: AtomicBool,
     /// Accepts attribute-carrying FCUs without registering a payload build.
@@ -321,6 +323,7 @@ impl FakeExecution {
                 fcu_overrides: ScriptedResults::new(),
                 canonical_hash_overrides: ScriptedResults::new(),
                 block_overrides: ScriptedResults::new(),
+                stage_checkpoint_overrides: ScriptedResults::new(),
                 reject_all_fcus: AtomicBool::new(false),
                 suppress_payload_ids: AtomicBool::new(false),
                 omit_payload_job: AtomicBool::new(false),
@@ -428,6 +431,14 @@ impl FakeExecution {
         outcome: Result<Option<Block>, &'static str>,
     ) {
         self.inner.block_overrides.push(digest.0, outcome);
+    }
+
+    /// Appends a persisted-checkpoint response to its scripted sequence.
+    pub(super) fn script_stage_checkpoints(
+        &self,
+        outcome: Result<Option<StageCheckpoints>, &'static str>,
+    ) {
+        self.inner.stage_checkpoint_overrides.push((), outcome);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -581,8 +592,19 @@ impl FakeExecution {
 }
 
 impl ExecutionLayer for FakeExecution {
-    fn stage_checkpoint(&self, _stage: StageId) -> eyre::Result<Option<StageCheckpoint>> {
-        Ok(Some(StageCheckpoint::new(0)))
+    fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>> {
+        match self.inner.stage_checkpoint_overrides.next_scripted(&()) {
+            NextScriptedResult::Scripted(outcome) => outcome
+                .map_err(Report::msg)
+                .wrap_err("scripted stage checkpoint lookup failed"),
+            NextScriptedResult::Unscripted => Ok(Some(StageCheckpoints::new(
+                StageCheckpoint::new(0),
+                StageCheckpoint::new(0),
+            ))),
+            NextScriptedResult::Exhausted => {
+                panic!("stage checkpoint lookup exceeded its scripted outcome sequence")
+            }
+        }
     }
 
     fn finalized_num_hash(&self) -> BlockNumHash {

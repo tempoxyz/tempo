@@ -7,11 +7,13 @@
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
+use reth_stages_types::StageCheckpoint;
 
 use super::harness::{
     FakeExecution, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions,
     make_block, round,
 };
+use crate::executor::StageCheckpoints;
 
 #[test_traced]
 fn no_backfill_when_already_at_the_floor() {
@@ -409,7 +411,7 @@ fn rejected_forkchoice_update_fails_startup_backfill() {
 }
 
 #[test_traced]
-fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
+fn index_rebuild_stalls_backfill_until_stage_checkpoints_match() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
@@ -417,10 +419,14 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
         let marshal = FakeMarshal::new();
         marshal.add_block(b1);
         let execution = FakeExecution::new();
-        // The execution layer is not ready once (e.g. rebuilding indices),
-        // then accepts the explicit retry.
-        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        execution.script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints::new(
+            StageCheckpoint::new(1),
+            StageCheckpoint::new(0),
+        ))));
+        execution.script_stage_checkpoints(Ok(Some(StageCheckpoints::new(
+            StageCheckpoint::new(1),
+            StageCheckpoint::new(1),
+        ))));
 
         let h = Harness::builder()
             .execution(execution)
@@ -436,8 +442,8 @@ fn syncing_execution_layer_stalls_the_backfill_until_it_recovers() {
             .await;
         assert_eq!(
             h.execution.new_payloads(),
-            vec![d1, d1],
-            "the backfill must retry the postponed block until it is accepted",
+            vec![d1],
+            "backfill must begin only after the execution indices are rebuilt",
         );
     });
 }

@@ -237,13 +237,9 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
         let b2 = make_block(2, 2, b1.digest());
         let (d1, d2) = (b1.digest(), b2.digest());
 
-        // A SYNCING status parks the finalization of b1 in its postpone
-        // pause (1s), keeping the single execution-task slot occupied over
-        // a long stretch of virtual time.
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        let release_finalization = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let w1 = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -269,9 +265,11 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
             "the in-flight task must be the only execution-layer activity",
         );
 
-        // The postponed finalization retries and completes; the queued
-        // validation is latency-critical and wins the next slot over the
-        // queued finalization of b2.
+        // Releasing finalization makes the slot available; the queued
+        // validation is latency-critical and wins it over finalization of b2.
+        release_finalization
+            .send(())
+            .expect("finalization should still be gated");
         w1.await.expect("first block should be acknowledged");
         let verdict = verify.await.expect("verification should complete");
         assert!(verdict.is_some());
@@ -280,7 +278,6 @@ fn one_execution_task_at_a_time_and_consensus_requests_win_the_next_slot() {
         assert_eq!(
             h.execution.calls(),
             vec![
-                ElCall::NewPayload(d1),
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
@@ -306,15 +303,11 @@ fn consensus_work_takes_priority_over_ready_convergence() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
-        // Deliberately trigger the retry-on-SYNCING mechanism that tolerates
-        // Reth rebuilding its indexes, using its retry pause to hold the
-        // execution-task slot with a postponed finalization of b1.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        let release_finalization = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let finalized = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -342,6 +335,9 @@ fn consensus_work_takes_priority_over_ready_convergence() {
             Either::Right(((), verify)) => verify,
         };
 
+        release_finalization
+            .send(())
+            .expect("finalization should still be gated");
         finalized.await.expect("first block should be acknowledged");
         assert!(
             verify
@@ -355,7 +351,6 @@ fn consensus_work_takes_priority_over_ready_convergence() {
         assert_eq!(
             h.execution.calls(),
             vec![
-                ElCall::NewPayload(d1),
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
@@ -383,15 +378,9 @@ fn convergence_takes_priority_over_queued_finalization() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        // This deliberately exploits an implementation detail of the current
-        // retry-on-SYNCING path: finalization stalls internally before it
-        // returns its postponed outcome, retaining the execution-task slot
-        // while both kinds of work are queued. Replace this setup once that
-        // retry relinquishes the slot before waiting.
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        let release_finalization = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
@@ -412,6 +401,9 @@ fn convergence_takes_priority_over_queued_finalization() {
         let redelivery = h.deliver_finalized(b1);
         h.run_for(Duration::from_millis(10)).await;
 
+        release_finalization
+            .send(())
+            .expect("finalization should still be gated");
         first_finalization
             .await
             .expect("first delivery should be acknowledged");
@@ -420,7 +412,6 @@ fn convergence_takes_priority_over_queued_finalization() {
         assert_eq!(
             h.execution.calls(),
             vec![
-                ElCall::NewPayload(d1),
                 ElCall::NewPayload(d1),
                 ElCall::Fcu {
                     head: d1,
@@ -458,12 +449,9 @@ fn heartbeats_are_disarmed_while_work_is_active_or_queued() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        // Temporarily exploit finalization retaining the execution slot while
-        // it stalls internally before returning its postponed SYNCING outcome.
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        let release_finalization = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let finalized = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])
@@ -488,6 +476,9 @@ fn heartbeats_are_disarmed_while_work_is_active_or_queued() {
             "heartbeats must remain disarmed while execution work is active or queued",
         );
 
+        release_finalization
+            .send(())
+            .expect("finalization should still be gated");
         finalized
             .await
             .expect("finalization should eventually complete");
@@ -608,12 +599,11 @@ fn actor_exits_when_its_mailbox_closes_during_an_execution_task() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
-        // SYNCING moves finalization into its one-second retry pause, keeping
-        // the execution-task slot occupied without an unresolved EL future.
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+        let _release_finalization = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
         h.deliver_tip(round(1), 1, d1);
         let acknowledgement = h.deliver_finalized(b1);
         h.wait_until(|| h.execution.new_payloads() == vec![d1])

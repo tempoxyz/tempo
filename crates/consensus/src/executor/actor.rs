@@ -58,15 +58,13 @@ use futures::{
     stream::FuturesUnordered,
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
-use reth_stages_types::{StageCheckpoint, StageId};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tempo_telemetry_util::display_option;
 use tokio::select;
 use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn};
 
 use super::{
-    Config, ExecutionLayer, Marshal,
+    Config, ExecutionLayer, Marshal, StageCheckpoints,
     ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
@@ -82,18 +80,6 @@ use notarized_tree::{LocalState, NextToForward, NotarizedTree};
 
 /// How often to check whether reth has rebuilt its indices up to the headers checkpoint.
 const INDEX_REBUILD_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-fn rebuilt_index_checkpoint(
-    headers: Option<StageCheckpoint>,
-    finish: Option<StageCheckpoint>,
-) -> Option<u64> {
-    match (headers, finish) {
-        (Some(headers), Some(finish)) if headers.block_number == finish.block_number => {
-            Some(headers.block_number)
-        }
-        _ => None,
-    }
-}
 
 pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     context: ContextCell<TContext>,
@@ -331,7 +317,7 @@ where
             error_span!("shutdown").in_scope(|| {
                 error!(
                     %error,
-                    "executor failed waiting for execution index rebuild",
+                    "failed waiting for execution layer index rebuild",
                 )
             });
             return;
@@ -489,32 +475,31 @@ where
     /// Waits for reth's startup index rebuild to catch the Finish stage up to Headers.
     async fn wait_for_index_rebuild(&mut self) -> eyre::Result<()> {
         for attempts in 1_u64.. {
-            let attempt_span = info_span!("is_execution_index_ready", attempts);
-            let headers = self
-                .execution_node
-                .stage_checkpoint(StageId::Headers)
-                .wrap_err("failed reading reth Headers stage checkpoint")?;
-            let finish = self
-                .execution_node
-                .stage_checkpoint(StageId::Finish)
-                .wrap_err("failed reading reth Finish stage checkpoint")?;
-            let headers_height = headers.map(|checkpoint| checkpoint.block_number);
-            let finish_height = finish.map(|checkpoint| checkpoint.block_number);
-
-            if let Some(checkpoint) = rebuilt_index_checkpoint(headers, finish) {
-                attempt_span.in_scope(|| info!(checkpoint, "execution indices are rebuilt"));
+            if check_stagepoint_progress(&self.execution_node, attempts)? {
                 break;
             }
 
-            attempt_span.in_scope(|| {
-                info!(
-                    headers = %display_option(&headers_height),
-                    finish = %display_option(&finish_height),
-                    "waiting for execution indices to rebuild"
-                );
-            });
-
             self.context.sleep(INDEX_REBUILD_POLL_INTERVAL).await;
+        }
+
+        #[instrument(skip_all, fields(attempts = _attempts), err)]
+        fn check_stagepoint_progress(
+            execution_node: &impl ExecutionLayer,
+            _attempts: u64,
+        ) -> eyre::Result<bool> {
+            let checkpoints = execution_node
+                .stage_checkpoints()
+                .wrap_err("failed reading reth stage checkpoints")?;
+
+            if let Some(checkpoints) = checkpoints.filter(StageCheckpoints::is_rebuilt) {
+                info!(
+                    checkpoint = checkpoints.headers.block_number,
+                    "execution indices are rebuilt"
+                );
+                return Ok(true);
+            }
+
+            Ok(false)
         }
 
         Ok(())
@@ -552,7 +537,6 @@ where
                 finalization_target(&self.execution_node, canonicalized, request.block.as_ref())?;
 
             let canonicalized = forward_finalized(
-                self.context.as_present(),
                 self.execution_node.clone(),
                 self.public_key.clone(),
                 self.metrics.clone(),
@@ -866,7 +850,6 @@ where
                 ExecutionTaskType::Finalize,
                 on_top_of,
                 execute_finalization(
-                    self.context.child("finalize"),
                     self.execution_node.clone(),
                     self.public_key.clone(),
                     self.metrics.clone(),
@@ -1253,31 +1236,18 @@ async fn execute_build(
         block.height = %request.block.height(),
     ),
 )]
-async fn execute_finalization<TContext>(
-    context: TContext,
+async fn execute_finalization(
     execution_node: impl ExecutionLayer,
     public_key: Option<PublicKey>,
     metrics: Metrics,
     canonicalized: LocalState,
     request: FinalizedBlockRequest,
-) -> ExecutionTaskOutcome
-where
-    TContext: Clock,
-{
+) -> ExecutionTaskOutcome {
     let target = match finalization_target(&execution_node, canonicalized, request.block.as_ref()) {
         Ok(target) => target,
         Err(error) => return ExecutionTaskOutcome::Fatal { error },
     };
-    match forward_finalized(
-        &context,
-        execution_node,
-        public_key,
-        metrics,
-        target,
-        request,
-    )
-    .await
-    {
+    match forward_finalized(execution_node, public_key, metrics, target, request).await {
         Ok(target) => ExecutionTaskOutcome::Completed {
             canonicalized: Some(target),
             payload_job: None,
@@ -1680,8 +1650,7 @@ fn finalization_target(
     err(level = Level::WARN),
     ret,
 )]
-async fn forward_finalized<TContext: Clock>(
-    context: &TContext,
+async fn forward_finalized(
     execution_node: impl ExecutionLayer,
     public_key: Option<PublicKey>,
     metrics: Metrics,

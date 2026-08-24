@@ -7,9 +7,9 @@ use commonware_consensus::Heightable as _;
 
 use super::{
     ConsensusRequest, ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, VerifyBlockRequest,
-    notarized_tree::LocalState, queue_consensus_request, rebuilt_index_checkpoint,
+    notarized_tree::LocalState, queue_consensus_request,
 };
-use crate::consensus::Digest;
+use crate::{consensus::Digest, executor::StageCheckpoints};
 
 mod harness;
 
@@ -26,25 +26,10 @@ use harness::{make_block, round};
 
 #[test]
 fn indices_are_only_rebuilt_when_finish_reaches_headers() {
-    assert_eq!(
-        rebuilt_index_checkpoint(
-            Some(StageCheckpoint::new(10)),
-            Some(StageCheckpoint::new(10)),
-        ),
-        Some(10)
+    assert!(StageCheckpoints::new(StageCheckpoint::new(10), StageCheckpoint::new(10)).is_rebuilt());
+    assert!(
+        !StageCheckpoints::new(StageCheckpoint::new(11), StageCheckpoint::new(10)).is_rebuilt()
     );
-    assert_eq!(
-        rebuilt_index_checkpoint(
-            Some(StageCheckpoint::new(11)),
-            Some(StageCheckpoint::new(10)),
-        ),
-        None
-    );
-    assert_eq!(
-        rebuilt_index_checkpoint(Some(StageCheckpoint::new(10)), None),
-        None
-    );
-    assert_eq!(rebuilt_index_checkpoint(None, None), None);
 }
 
 #[test]

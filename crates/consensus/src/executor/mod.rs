@@ -17,6 +17,7 @@ use reth_provider::{
 use reth_stages_types::{StageCheckpoint, StageId};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_telemetry_util::display_option;
 use tokio::sync::oneshot;
 
 mod actor;
@@ -29,6 +30,23 @@ pub(crate) use ingress::Mailbox;
 
 use crate::consensus::{Digest, block::Block};
 
+/// Persisted checkpoints that determine whether reth's indices are rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StageCheckpoints {
+    headers: StageCheckpoint,
+    finish: StageCheckpoint,
+}
+
+impl StageCheckpoints {
+    const fn new(headers: StageCheckpoint, finish: StageCheckpoint) -> Self {
+        Self { headers, finish }
+    }
+
+    const fn is_rebuilt(&self) -> bool {
+        self.headers.block_number == self.finish.block_number
+    }
+}
+
 /// The execution-layer surface the executor actor drives.
 ///
 /// The abstraction sits at the transport level - engine-API requests and
@@ -40,8 +58,8 @@ use crate::consensus::{Digest, block::Block};
 /// Implementations are cheap-clone handles: clones are moved into the
 /// actor's spawned execution tasks.
 pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
-    /// Returns the persisted checkpoint for a reth pipeline stage.
-    fn stage_checkpoint(&self, stage: StageId) -> eyre::Result<Option<StageCheckpoint>>;
+    /// Returns the persisted Headers and Finish stage checkpoints once both exist.
+    fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>>;
 
     /// The execution layer's finalized block, falling back to genesis if no
     /// block has been explicitly finalized yet.
@@ -105,10 +123,18 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
-    fn stage_checkpoint(&self, stage: StageId) -> eyre::Result<Option<StageCheckpoint>> {
-        self.provider
-            .get_stage_checkpoint(stage)
-            .map_err(Into::into)
+    fn stage_checkpoints(&self) -> eyre::Result<Option<StageCheckpoints>> {
+        let provider = self.provider.consistent_provider()?;
+        let headers = provider.get_stage_checkpoint(StageId::Headers)?;
+        let finish = provider.get_stage_checkpoint(StageId::Finish)?;
+        tracing::info!(
+            headers = %display_option(&headers.as_ref().map(|checkpoint| checkpoint.block_number)),
+            finish = %display_option(&finish.as_ref().map(|checkpoint| checkpoint.block_number)),
+            "read stage checkpoints from execution layer"
+        );
+        Ok(headers
+            .zip(finish)
+            .map(|(headers, finish)| StageCheckpoints::new(headers, finish)))
     }
 
     fn finalized_num_hash(&self) -> BlockNumHash {

@@ -73,7 +73,7 @@ fn finalized_blocks_are_forwarded_in_order() {
 }
 
 #[test_traced]
-fn syncing_finalized_block_is_postponed_and_retried_in_order() {
+fn syncing_finalized_block_is_fatal() {
     deterministic::Runner::default().start(|context| async move {
         let mut h = Harness::start_at_genesis(&context);
 
@@ -81,27 +81,24 @@ fn syncing_finalized_block_is_postponed_and_retried_in_order() {
         let b2 = make_block(2, 2, b1.digest());
         let (d1, d2) = (b1.digest(), b2.digest());
 
-        // The execution layer reports SYNCING once (e.g. while rebuilding
-        // indices); the block must be retried, and the block queued behind
-        // it must stay behind it.
         h.execution
             .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
-        h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Valid));
 
         h.deliver_tip(round(2), 2, d2);
         let w1 = h.deliver_finalized(b1);
         let w2 = h.deliver_finalized(b2);
         w1.await
-            .expect("postponed block should still be acknowledged");
-        w2.await.expect("queued block should be acknowledged");
+            .expect_err("a syncing finalized block must not be acknowledged");
+        w2.await
+            .expect_err("shutdown must cancel the queued finalization");
+        h.actor
+            .await
+            .expect("actor should shut down cleanly on a fatal error");
 
-        assert_eq!(
-            h.execution.new_payloads(),
-            vec![d1, d1, d2],
-            "the postponed block is retried before the queued one is forwarded",
-        );
-        assert_eq!(h.execution.finalized(), Some((2, d2)));
+        assert_eq!(h.execution.new_payloads(), vec![d1]);
+        assert!(h.execution.fcus().is_empty());
+        assert_eq!(h.execution.finalized(), None);
+        assert!(!h.execution.knows_block(d2));
     });
 }
 
