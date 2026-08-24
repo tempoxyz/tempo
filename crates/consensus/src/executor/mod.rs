@@ -181,14 +181,14 @@ impl Marshal for crate::alias::marshal::Mailbox {
     }
 }
 
-pub(crate) fn init<TContext, E, M>(
+pub(crate) fn init<TContext, TExecutionLayer, TMarshal>(
     context: TContext,
-    config: Config<E, M>,
-) -> eyre::Result<(Actor<TContext, E, M>, Mailbox)>
+    config: Config<TExecutionLayer, TMarshal>,
+) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
 where
     TContext: Clock + Metrics + Pacer + Spawner,
-    E: ExecutionLayer,
-    M: Marshal,
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
 {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox { inner: tx };
@@ -196,10 +196,10 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<E = Arc<TempoFullNode>, M = crate::alias::marshal::Mailbox> {
+pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    pub(crate) execution_node: E,
+    pub(crate) execution_node: TExecutionLayer,
 
     /// Marshal sync floor. This is the sync target the executor actor will try
     /// to reach because the marshal actor will only send finalized heights
@@ -211,7 +211,7 @@ pub(crate) struct Config<E = Arc<TempoFullNode>, M = crate::alias::marshal::Mail
     pub(crate) finalized_tip: (Round, Height, Digest),
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
-    pub(crate) marshal: M,
+    pub(crate) marshal: TMarshal,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
