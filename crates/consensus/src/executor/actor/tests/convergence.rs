@@ -151,9 +151,12 @@ fn rejected_notarized_block_is_withheld_then_retried() {
         let d1 = b1.digest();
         h.execution.script_new_payload(
             d1,
-            Ok(PayloadStatusEnum::Invalid {
-                validation_error: "transient".into(),
-            }),
+            [
+                Ok(PayloadStatusEnum::Invalid {
+                    validation_error: "transient".into(),
+                }),
+                Ok(PayloadStatusEnum::Valid),
+            ],
         );
 
         h.report_pending_head(2, 1, d1);
@@ -190,7 +193,8 @@ fn new_payload_transport_error_is_withheld_then_retried() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_new_payload(d1, Err("connection closed"));
+        h.execution
+            .script_new_payload(d1, [Err("connection closed"), Ok(PayloadStatusEnum::Valid)]);
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
@@ -304,7 +308,7 @@ fn syncing_notarized_payload_is_rejected_without_updating_forkchoice() {
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Syncing));
+            .script_new_payload(d1, [Ok(PayloadStatusEnum::Syncing)]);
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
@@ -334,7 +338,7 @@ fn accepted_notarized_payload_is_rejected_without_updating_forkchoice() {
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
         h.execution
-            .script_new_payload(d1, Ok(PayloadStatusEnum::Accepted));
+            .script_new_payload(d1, [Ok(PayloadStatusEnum::Accepted)]);
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))

@@ -142,6 +142,12 @@ struct ElState {
 
 struct ScriptedResults<K, T>(Mutex<HashMap<K, VecDeque<Result<T, &'static str>>>>);
 
+enum NextScriptedResult<T> {
+    Unscripted,
+    Scripted(Result<T, &'static str>),
+    Exhausted,
+}
+
 impl<K, T> ScriptedResults<K, T>
 where
     K: Eq + Hash,
@@ -154,8 +160,28 @@ where
         self.0.lock().entry(key).or_default().push_back(result);
     }
 
+    fn script(&self, key: K, results: impl IntoIterator<Item = Result<T, &'static str>>) {
+        let results = results.into_iter().collect::<VecDeque<_>>();
+        assert!(!results.is_empty(), "a scripted sequence must not be empty");
+        assert!(
+            self.0.lock().insert(key, results).is_none(),
+            "a script must provide the complete sequence in one call",
+        );
+    }
+
     fn pop(&self, key: &K) -> Option<Result<T, &'static str>> {
         self.0.lock().get_mut(key).and_then(VecDeque::pop_front)
+    }
+
+    fn next_scripted(&self, key: &K) -> NextScriptedResult<T> {
+        let mut scripts = self.0.lock();
+        let Some(results) = scripts.get_mut(key) else {
+            return NextScriptedResult::Unscripted;
+        };
+        match results.pop_front() {
+            Some(result) => NextScriptedResult::Scripted(result),
+            None => NextScriptedResult::Exhausted,
+        }
     }
 }
 
@@ -163,7 +189,9 @@ struct FakeExecutionInner {
     genesis: B256,
     state: Mutex<ElState>,
     calls: Mutex<Vec<ElCall>>,
-    /// Scripted new-payload outcomes keyed by block hash, consumed in order.
+    /// Complete new-payload outcome sequences keyed by block hash. A digest
+    /// absent from this map uses the fake's stateful default behavior; a
+    /// digest present in it must not receive more calls than scripted.
     /// A scripted `Ok(Valid)` still marks the block as known to the execution layer.
     payload_overrides: ScriptedResults<B256, PayloadStatusEnum>,
     /// Validator sets received with new-payload requests, keyed by block hash.
@@ -282,18 +310,22 @@ impl FakeExecution {
 
     // ---- fault injection ----
 
-    /// Scripts the outcome of the next new-payload request carrying the block
-    /// with `digest`. Scripted outcomes stack in FIFO order and take precedence
-    /// over the default parent-known behavior. `Ok(PayloadStatusEnum::Invalid)`
-    /// models a successfully delivered Engine API response that rejects the
-    /// payload, while `Err` models a request or transport failure before the
-    /// execution layer returns any payload status.
+    /// Scripts the complete sequence of new-payload outcomes for `digest`.
+    /// Each request consumes one outcome in FIFO order; a request beyond the
+    /// supplied sequence fails the test instead of falling back to default
+    /// behavior. The whole sequence must be installed in one call.
+    ///
+    /// A digest without a script uses the stateful default: `Valid` if its
+    /// parent is known to the fake execution layer, otherwise `Syncing`.
+    /// `Ok(PayloadStatusEnum::Invalid)` models a successfully delivered Engine
+    /// API response that rejects the payload, while `Err` models a request or
+    /// transport failure before the execution layer returns any payload status.
     pub(super) fn script_new_payload(
         &self,
         digest: Digest,
-        outcome: Result<PayloadStatusEnum, &'static str>,
+        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
     ) {
-        self.inner.payload_overrides.push(digest.0, outcome);
+        self.inner.payload_overrides.script(digest.0, outcomes);
     }
 
     /// Scripts the outcome of the next forkchoice update, whatever its target.
@@ -529,14 +561,20 @@ impl ExecutionLayer for FakeExecution {
             .lock()
             .push((Digest(digest), validator_set));
 
-        let scripted = self.inner.payload_overrides.pop(&digest);
-        let outcome = scripted.unwrap_or_else(|| {
-            Ok(if self.inner.state.lock().blocks.contains_key(&parent) {
-                PayloadStatusEnum::Valid
-            } else {
-                PayloadStatusEnum::Syncing
-            })
-        });
+        let outcome = match self.inner.payload_overrides.next_scripted(&digest) {
+            NextScriptedResult::Scripted(outcome) => outcome,
+            NextScriptedResult::Unscripted => {
+                Ok(if self.inner.state.lock().blocks.contains_key(&parent) {
+                    PayloadStatusEnum::Valid
+                } else {
+                    PayloadStatusEnum::Syncing
+                })
+            }
+            NextScriptedResult::Exhausted => panic!(
+                "new-payload request for `{}` exceeded its scripted outcome sequence",
+                Digest(digest),
+            ),
+        };
         let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {
             format!(
                 "scripted new-payload request failed for `{}`",
@@ -1034,5 +1072,30 @@ where
         self.mailbox
             .build_proposal(round, parent, attributes)
             .expect("actor should accept the build request")
+    }
+}
+
+#[cfg(test)]
+mod scripted_results_tests {
+    use super::{NextScriptedResult, ScriptedResults};
+
+    #[test]
+    fn absent_and_exhausted_scripts_are_distinct() {
+        let results = ScriptedResults::<u8, u8>::new();
+
+        assert!(matches!(
+            results.next_scripted(&1),
+            NextScriptedResult::Unscripted
+        ));
+
+        results.script(1, [Ok(7)]);
+        assert!(matches!(
+            results.next_scripted(&1),
+            NextScriptedResult::Scripted(Ok(7))
+        ));
+        assert!(matches!(
+            results.next_scripted(&1),
+            NextScriptedResult::Exhausted
+        ));
     }
 }
