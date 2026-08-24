@@ -4,12 +4,7 @@ on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] -- only trusted same-repository PRs reach the reusable benchmark workflow
     types: [labeled, reopened, synchronize]
 
-permissions:
-  contents: read
-  id-token: write
-  issues: write # allows the reusable workflow to report benchmark progress
-  pull-requests: write # allows the reusable workflow to report benchmark progress
-  statuses: write # zizmor: ignore[excessive-permissions] -- allows the reusable workflow to complete the benchmark gate
+permissions: {}
 
 concurrency:
   group: automatic-benchmark-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -23,6 +18,11 @@ jobs:
       contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
       contains(github.event.pull_request.labels.*.name, 'benchmark') &&
       (github.event.action != 'labeled' || github.event.label.name == 'benchmark')
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
     uses: ./.github/workflows/bench-e2e.yml
     with:
       pr: ${{ github.event.pull_request.number }}
@@ -40,3 +40,43 @@ jobs:
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+
+  complete-benchmark-gate:
+    needs: benchmark
+    if: ${{ always() && needs.benchmark.result != 'skipped' }}
+    name: Complete benchmark gate
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Report benchmark result for the pinned revision
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_RESULT: ${{ needs.benchmark.result }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const expectedSha = process.env.PR_HEAD_SHA;
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            if (pull.head.sha !== expectedSha) {
+              core.info(`Skipping stale benchmark result for ${expectedSha}; current head is ${pull.head.sha}`);
+              return;
+            }
+
+            const result = process.env.BENCH_RESULT;
+            const state = result === 'success' ? 'success' : result === 'cancelled' ? 'error' : 'failure';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: expectedSha,
+              state,
+              context: 'Benchmark run',
+              description: result === 'success' ? 'Benchmark completed for this revision' : `Benchmark ${result}`,
+              target_url: runUrl,
+            });
