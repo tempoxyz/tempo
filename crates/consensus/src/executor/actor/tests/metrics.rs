@@ -2,11 +2,11 @@
 //! tree unit tests cover the arithmetic; these tests prove that the actor
 //! publishes the measures after processing real messages and EL outcomes.
 
-use alloy_rpc_types_engine::PayloadStatusEnum;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
-use super::harness::{GENESIS, Harness, make_block, round};
+use super::harness::{ForkchoiceStateExt as _, GENESIS, Harness, make_block, round};
 
 fn gauge(h: &Harness, name: &str) -> i64 {
     let name = format!("executor_{name}");
@@ -131,9 +131,12 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
         // Keep the re-anchor from completing so the signed distance remains
         // observable: the pending head is b1 at height 1 while the accepted
         // local head remains b2 at height 2.
-        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "re-anchor rejected by test".into(),
-        }));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, d1),
+            [Ok(PayloadStatusEnum::Invalid {
+                validation_error: "re-anchor rejected by test".into(),
+            })],
+        );
         h.report_pending_head(4, 1, d1);
         h.wait_until(|| gauge(&h, "convergence_depth") == -1).await;
         assert_eq!(h.execution.head(), d2);

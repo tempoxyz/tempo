@@ -5,11 +5,13 @@
 
 use std::time::Duration;
 
-use alloy_rpc_types_engine::PayloadStatusEnum;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
-use super::harness::{GENESIS, Harness, HarnessOptions, make_block, round};
+use super::harness::{
+    ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, make_block, round,
+};
 
 #[test_traced]
 fn pending_head_with_known_body_is_forwarded() {
@@ -222,9 +224,12 @@ fn rejected_notarized_fcu_does_not_advance_the_tracked_state() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "rejected".into(),
-        }));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, d1),
+            [Ok(PayloadStatusEnum::Invalid {
+                validation_error: "rejected".into(),
+            })],
+        );
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
@@ -276,9 +281,15 @@ fn rejected_notarized_fcu_is_withheld_then_retried() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "transient".into(),
-        }));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, d1),
+            [
+                Ok(PayloadStatusEnum::Invalid {
+                    validation_error: "transient".into(),
+                }),
+                Ok(PayloadStatusEnum::Valid),
+            ],
+        );
 
         h.report_pending_head(2, 1, d1);
         h.wait_until(|| h.marshal.fulfill_subscription(d1, b1.clone()))
@@ -294,7 +305,7 @@ fn rejected_notarized_fcu_is_withheld_then_retried() {
         );
         assert_eq!(h.execution.head(), GENESIS);
 
-        h.run_for(Duration::from_secs(6)).await;
+        h.run_for(Duration::from_secs(4)).await;
         h.wait_until(|| h.execution.head() == d1).await;
         assert_eq!(h.execution.new_payloads(), vec![d1, d1]);
     });
@@ -407,9 +418,12 @@ fn failed_repoint_is_fatal() {
 
         // A repoint targets an ancestor the execution layer provably has;
         // failure means consensus and execution disagree fundamentally.
-        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "corrupt".into(),
-        }));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
+            [Ok(PayloadStatusEnum::Invalid {
+                validation_error: "corrupt".into(),
+            })],
+        );
         h.report_pending_head(5, 0, GENESIS);
 
         h.actor
@@ -436,7 +450,10 @@ fn repoint_transport_error_is_fatal() {
         h.report_pending_head(2, 1, da1);
         h.wait_until(|| h.execution.head() == da1).await;
 
-        h.execution.script_fcu(Err("connection closed"));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
+            [Err("connection closed")],
+        );
         h.report_pending_head(5, 0, GENESIS);
 
         h.actor

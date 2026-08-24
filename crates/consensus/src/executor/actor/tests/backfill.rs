@@ -4,12 +4,13 @@
 //! the execution layer itself), and handles snapshot-restored states whose
 //! floor sits below the execution layer's finality.
 
-use alloy_rpc_types_engine::PayloadStatusEnum;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{
-    FakeExecution, FakeMarshal, GENESIS, Harness, HarnessOptions, make_block, round,
+    FakeExecution, FakeMarshal, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions,
+    make_block, round,
 };
 
 #[test_traced]
@@ -380,9 +381,12 @@ fn rejected_forkchoice_update_fails_startup_backfill() {
         let marshal = FakeMarshal::new();
         marshal.add_block(b1);
         let execution = FakeExecution::new();
-        execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "rejected backfill forkchoice".into(),
-        }));
+        execution.script_fcu(
+            ForkchoiceState::from_finalized_head(d1, d1),
+            [Ok(PayloadStatusEnum::Invalid {
+                validation_error: "rejected backfill forkchoice".into(),
+            })],
+        );
 
         let h = Harness::builder()
             .execution(execution)

@@ -14,7 +14,6 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
-    hash::Hash,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -130,6 +129,23 @@ pub(super) enum ElCall {
     Resolve(PayloadId),
 }
 
+/// Test constructor for the executor's forkchoice-state convention.
+pub(super) trait ForkchoiceStateExt {
+    /// Constructs a state from its `(finalized, head)` pair, setting safe to
+    /// finalized as the executor does.
+    fn from_finalized_head(finalized: Digest, head: Digest) -> Self;
+}
+
+impl ForkchoiceStateExt for ForkchoiceState {
+    fn from_finalized_head(finalized: Digest, head: Digest) -> Self {
+        Self {
+            head_block_hash: head.0,
+            safe_block_hash: finalized.0,
+            finalized_block_hash: finalized.0,
+        }
+    }
+}
+
 struct ElState {
     /// Blocks known to the execution layer: hash -> (height, parent hash).
     blocks: HashMap<B256, (u64, B256)>,
@@ -140,7 +156,10 @@ struct ElState {
     finalized: Option<BlockNumHash>,
 }
 
-struct ScriptedResults<K, T>(Mutex<HashMap<K, VecDeque<Result<T, &'static str>>>>);
+type ScriptedResult<T> = Result<T, &'static str>;
+type ScriptedSequence<T> = VecDeque<ScriptedResult<T>>;
+
+struct ScriptedResults<K, T>(Mutex<Vec<(K, ScriptedSequence<T>)>>);
 
 enum NextScriptedResult<T> {
     Unscripted,
@@ -150,32 +169,43 @@ enum NextScriptedResult<T> {
 
 impl<K, T> ScriptedResults<K, T>
 where
-    K: Eq + Hash,
+    K: Eq,
 {
     fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self(Mutex::new(Vec::new()))
     }
 
     fn push(&self, key: K, result: Result<T, &'static str>) {
-        self.0.lock().entry(key).or_default().push_back(result);
+        let mut scripts = self.0.lock();
+        if let Some((_, results)) = scripts.iter_mut().find(|(existing, _)| existing == &key) {
+            results.push_back(result);
+        } else {
+            scripts.push((key, VecDeque::from([result])));
+        }
     }
 
     fn script(&self, key: K, results: impl IntoIterator<Item = Result<T, &'static str>>) {
         let results = results.into_iter().collect::<VecDeque<_>>();
         assert!(!results.is_empty(), "a scripted sequence must not be empty");
+        let mut scripts = self.0.lock();
         assert!(
-            self.0.lock().insert(key, results).is_none(),
+            !scripts.iter().any(|(existing, _)| existing == &key),
             "a script must provide the complete sequence in one call",
         );
+        scripts.push((key, results));
     }
 
     fn pop(&self, key: &K) -> Option<Result<T, &'static str>> {
-        self.0.lock().get_mut(key).and_then(VecDeque::pop_front)
+        self.0
+            .lock()
+            .iter_mut()
+            .find(|(existing, _)| existing == key)
+            .and_then(|(_, results)| results.pop_front())
     }
 
     fn next_scripted(&self, key: &K) -> NextScriptedResult<T> {
         let mut scripts = self.0.lock();
-        let Some(results) = scripts.get_mut(key) else {
+        let Some((_, results)) = scripts.iter_mut().find(|(existing, _)| existing == key) else {
             return NextScriptedResult::Unscripted;
         };
         match results.pop_front() {
@@ -198,8 +228,10 @@ struct FakeExecutionInner {
     payload_validator_sets: Mutex<Vec<(Digest, Option<Vec<B256>>)>>,
     /// Payload attributes received with forkchoice-update requests.
     payload_attributes: Mutex<Vec<TempoPayloadAttributes>>,
-    /// Scripted FCU outcomes consumed in order before default behavior.
-    fcu_overrides: Mutex<VecDeque<Result<PayloadStatusEnum, &'static str>>>,
+    /// Complete FCU outcome sequences keyed by forkchoice state. An absent
+    /// state uses the fake's stateful default; a present state must not receive
+    /// more calls than scripted.
+    fcu_overrides: ScriptedResults<ForkchoiceState, PayloadStatusEnum>,
     /// Scripted canonical-hash lookup outcomes keyed by height.
     canonical_hash_overrides: ScriptedResults<u64, Option<B256>>,
     /// Scripted block lookup outcomes keyed by digest.
@@ -268,7 +300,7 @@ impl FakeExecution {
                 payload_overrides: ScriptedResults::new(),
                 payload_validator_sets: Mutex::new(Vec::new()),
                 payload_attributes: Mutex::new(Vec::new()),
-                fcu_overrides: Mutex::new(VecDeque::new()),
+                fcu_overrides: ScriptedResults::new(),
                 canonical_hash_overrides: ScriptedResults::new(),
                 block_overrides: ScriptedResults::new(),
                 reject_all_fcus: AtomicBool::new(false),
@@ -328,12 +360,23 @@ impl FakeExecution {
         self.inner.payload_overrides.script(digest.0, outcomes);
     }
 
-    /// Scripts the outcome of the next forkchoice update, whatever its target.
-    /// `Ok(PayloadStatusEnum::Invalid)` models an Engine API response that
-    /// rejects the update, while `Err` models a request or transport failure
-    /// before the execution layer returns a payload status.
-    pub(super) fn script_fcu(&self, outcome: Result<PayloadStatusEnum, &'static str>) {
-        self.inner.fcu_overrides.lock().push_back(outcome);
+    /// Scripts the complete sequence of outcomes for `state`.
+    /// Each matching request consumes one outcome in FIFO order; a matching
+    /// request beyond the supplied sequence fails the test instead of falling
+    /// back to default behavior. Payload attributes do not participate in
+    /// matching; another forkchoice state uses the stateful default.
+    ///
+    /// The default applies the requested forkchoice state, returning `Valid`
+    /// when the head is known and `Syncing` otherwise. A scripted `Ok(Valid)`
+    /// also applies the state, keeping the fake's response and state coherent.
+    /// `Ok(Invalid)` models a delivered Engine API rejection, while `Err`
+    /// models a request or transport failure before a status is returned.
+    pub(super) fn script_fcu(
+        &self,
+        state: ForkchoiceState,
+        outcomes: impl IntoIterator<Item = Result<PayloadStatusEnum, &'static str>>,
+    ) {
+        self.inner.fcu_overrides.script(state, outcomes);
     }
 
     /// Scripts the outcome of the next canonical block lookup at `height`.
@@ -615,15 +658,27 @@ impl ExecutionLayer for FakeExecution {
                 .push(attributes.clone());
         }
 
-        let scripted = self.inner.fcu_overrides.lock().pop_front();
         let outcome = if self.inner.reject_all_fcus.load(Ordering::SeqCst) {
             Ok(PayloadStatusEnum::Invalid {
                 validation_error: "rejected by test".into(),
             })
-        } else if let Some(outcome) = scripted {
-            outcome
         } else {
-            Ok(self.apply_forkchoice(&state))
+            match self.inner.fcu_overrides.next_scripted(&state) {
+                NextScriptedResult::Scripted(Ok(PayloadStatusEnum::Valid)) => {
+                    let applied = self.apply_forkchoice(&state);
+                    assert_eq!(
+                        applied,
+                        PayloadStatusEnum::Valid,
+                        "scripted VALID FCU could not be applied to the fake state: {state:?}",
+                    );
+                    Ok(PayloadStatusEnum::Valid)
+                }
+                NextScriptedResult::Scripted(outcome) => outcome,
+                NextScriptedResult::Unscripted => Ok(self.apply_forkchoice(&state)),
+                NextScriptedResult::Exhausted => {
+                    panic!("FCU request exceeded its scripted outcome sequence: {state:?}")
+                }
+            }
         };
 
         let outcome = outcome.map_err(Report::msg).wrap_err_with(|| {

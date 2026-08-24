@@ -3,13 +3,14 @@
 //! `newPayload` + `forkchoiceUpdated` pairs, in order, and acknowledged
 //! only once the execution layer accepted them.
 
-use alloy_rpc_types_engine::PayloadStatusEnum;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use tempo_primitives::ed25519::PublicKey;
 
 use super::harness::{
-    ElCall, GENESIS, Harness, HarnessOptions, make_block, make_block_with_proposer, round,
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, make_block,
+    make_block_with_proposer, round,
 };
 
 fn finalized_blocks_proposed_by_self(h: &Harness) -> u64 {
@@ -209,9 +210,12 @@ fn rejected_finalization_forkchoice_update_is_fatal() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "rejected".into(),
-        }));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(d1, d1),
+            [Ok(PayloadStatusEnum::Invalid {
+                validation_error: "rejected".into(),
+            })],
+        );
 
         // newPayload succeeds by default. Rejecting the following FCU must
         // still cancel, rather than resolve, the acknowledgement waiter.
@@ -239,7 +243,10 @@ fn forkchoice_update_transport_error_is_fatal() {
 
         let b1 = make_block(1, 1, GENESIS);
         let d1 = b1.digest();
-        h.execution.script_fcu(Err("connection closed"));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(d1, d1),
+            [Err("connection closed")],
+        );
 
         h.deliver_tip(round(1), 1, d1);
         h.deliver_finalized(b1)

@@ -4,13 +4,15 @@
 use std::time::Duration;
 
 use alloy_primitives::{B256, Bytes};
-use alloy_rpc_types_engine::PayloadStatusEnum;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
 
-use super::harness::{ElCall, GENESIS, Harness, built_payload, make_block, round};
+use super::harness::{
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, built_payload, make_block, round,
+};
 use crate::consensus::Digest;
 
 #[test_traced]
@@ -346,9 +348,12 @@ fn rejected_build_forkchoice_update_fails_the_build_without_shutdown() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        h.execution.script_fcu(Ok(PayloadStatusEnum::Invalid {
-            validation_error: "rejected".into(),
-        }));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
+            [Ok(PayloadStatusEnum::Invalid {
+                validation_error: "rejected".into(),
+            })],
+        );
         let rx = h.build(round(1), GENESIS);
         rx.await.expect_err("the failed FCU must fail the build");
 
@@ -367,7 +372,10 @@ fn forkchoice_update_transport_error_fails_the_build_without_shutdown() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
-        h.execution.script_fcu(Err("connection closed"));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
+            [Err("connection closed")],
+        );
         let rx = h.build(round(1), GENESIS);
         rx.await
             .expect_err("an FCU transport error must fail the build");

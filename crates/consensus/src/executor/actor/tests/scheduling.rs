@@ -4,14 +4,17 @@
 
 use std::time::Duration;
 
-use alloy_rpc_types_engine::PayloadStatusEnum;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Runner as _, Spawner as _, Supervisor as _, deterministic, tokio as commonware_tokio,
 };
 use futures::future::Either;
 
-use super::harness::{ElCall, GENESIS, Harness, HarnessOptions, built_payload, make_block, round};
+use super::harness::{
+    ElCall, ForkchoiceStateExt as _, GENESIS, Harness, HarnessOptions, built_payload, make_block,
+    round,
+};
 
 #[test_traced]
 fn slow_marshal_fetch_does_not_block_validation() {
@@ -586,12 +589,16 @@ fn idle_actor_survives_heartbeat_transport_error() {
                 ..Default::default()
             })
             .start(&context);
-        h.execution.script_fcu(Err("connection closed"));
+        h.execution.script_fcu(
+            ForkchoiceState::from_finalized_head(GENESIS, GENESIS),
+            [Err("connection closed"), Ok(PayloadStatusEnum::Valid)],
+        );
 
-        h.run_for(Duration::from_secs(1)).await;
-        assert!(
-            h.execution.fcus().len() >= 2,
-            "a failed heartbeat must not stop later heartbeats",
+        h.wait_until(|| h.execution.fcus().len() == 2).await;
+        assert_eq!(
+            h.execution.fcus(),
+            vec![(GENESIS, GENESIS, false), (GENESIS, GENESIS, false)],
+            "a failed heartbeat must not stop the explicitly accepted next heartbeat",
         );
 
         let b1 = make_block(1, 1, GENESIS);
