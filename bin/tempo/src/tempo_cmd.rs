@@ -1005,20 +1005,20 @@ pub struct GenerateSigningKey {
 /// an unencrypted key is only as protected as this file's permissions, and even an encrypted
 /// key benefits from not being world-readable ciphertext.
 fn open_signing_key_file(output: &Path, force: bool) -> std::io::Result<std::fs::File> {
-    let mut options = OpenOptions::new();
-    options
+    let file = OpenOptions::new()
         .write(true)
         .create_new(!force)
         .create(force)
-        .truncate(force);
+        .truncate(force)
+        .open(output)?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
 
-    options.open(output)
+    Ok(file)
 }
 
 impl GenerateSigningKey {
@@ -1606,6 +1606,25 @@ mod tests {
         assert_eq!(
             mode, 0o600,
             "signing key file must not be group- or world-readable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_signing_key_file_tightens_permissions_on_an_existing_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing-key");
+        std::fs::write(&path, b"stale").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let file = open_signing_key_file(&path, true).unwrap();
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o600,
+            "reopening an existing signing key file with --force must still restrict permissions"
         );
     }
 
