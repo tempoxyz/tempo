@@ -13295,6 +13295,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "nix 0.30.1",
  "opentelemetry-otlp 0.31.1",
  "pyroscope",
  "pyroscope_pprofrs",

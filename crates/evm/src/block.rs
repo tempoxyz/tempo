@@ -29,8 +29,9 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
+    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    initial_zone_factory_state,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -253,37 +254,57 @@ where
         let [factory, portal, verifier, messenger] =
             initial_zone_factory_state(INITIAL_FACTORY_OWNER);
 
-        let runtime_state = {
-            let db = self.inner.evm.db_mut();
-            let factory_info = db
-                .basic(factory.address)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            // Genesis allocations are authoritative, and the marker also records a completed
-            // post-genesis installation.
-            if !factory_info.is_empty_code_hash() {
-                return Ok(());
-            }
-
-            let mut state = EvmState::default();
-            for account in [portal, verifier, messenger] {
-                let destination = account.address;
-                let code = Bytecode::new_legacy(account.code);
-                let info = db
-                    .basic(destination)
-                    .map_err(BlockExecutionError::other)?
-                    .unwrap_or_default();
-                let mut account = Account::from(info);
-                account.info.code_hash = code.hash_slow();
-                account.info.code = Some(code);
-                account.mark_touch();
-                state.insert(destination, account);
-            }
-            state
-        };
+        let db = self.inner.evm.db_mut();
+        let factory_info = db
+            .basic(factory.address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        // Genesis allocations are authoritative, and the marker also records a completed
+        // post-genesis installation.
+        if !factory_info.is_empty_code_hash() {
+            return Ok(());
+        }
 
         self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
-        self.inner.evm.db_mut().commit(runtime_state);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])?;
+        Ok(())
+    }
+
+    /// Exercises the shared runtime upgrade path at T12.
+    ///
+    /// The selected runtimes intentionally remain identical to T10 until the T12 contracts land.
+    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = initial_zone_factory_state(INITIAL_FACTORY_OWNER);
+        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
+    }
+
+    /// Installs shared Zone runtimes without modifying their existing storage.
+    fn install_zone_runtimes_at_boundary(
+        &mut self,
+        runtimes: [InitialZoneFactoryAccount; 3],
+    ) -> Result<(), BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let mut state = EvmState::default();
+        for runtime in runtimes {
+            let destination = runtime.address;
+            let code = Bytecode::new_legacy(runtime.code);
+            let code_hash = code.hash_slow();
+            let info = db
+                .basic(destination)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            if info.code_hash == code_hash {
+                continue;
+            }
+            let mut account = Account::from(info);
+            account.info.code_hash = code_hash;
+            account.info.code = Some(code);
+            account.mark_touch();
+            state.insert(destination, account);
+        }
+        if !state.is_empty() {
+            db.commit(state);
+        }
         Ok(())
     }
 
@@ -630,6 +651,9 @@ where
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.inner.spec.is_t12_active_at_timestamp(timestamp) {
+            self.upgrade_zone_runtimes_at_boundary()?;
         }
 
         Ok(())
@@ -2107,6 +2131,8 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
         drop(executor);
 
         let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();
@@ -2144,7 +2170,7 @@ mod tests {
         assert_eq!(
             calls.len(),
             2,
-            "T10 installation must dispatch both updates"
+            "the identical T12 runtimes must not dispatch another update"
         );
         assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
         for address in [

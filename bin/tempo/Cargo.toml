@@ -116,12 +116,22 @@ pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", features = ["signal"], optional = true }
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"
 
+[[bin]]
+name = "tempo-localnet"
+path = "src/localnet.rs"
+required-features = ["localnet"]
+
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
+
+localnet = ["dep:nix"]
 
 bal = ["tempo-consensus/bal", "tempo-node/bal"]
 
