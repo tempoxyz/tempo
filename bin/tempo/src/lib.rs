@@ -667,6 +667,27 @@ mod tests {
         node_cmd.ext.follow
     }
 
+    #[test]
+    fn parses_tempo_api_rpc_args() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--tempo-api-rpc",
+            "--tempo-api-rpc.addr=0.0.0.0",
+            "--tempo-api-rpc.port=9000",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        let args = node_cmd.ext.node_args;
+        assert!(args.tempo_api_rpc);
+        assert_eq!(args.tempo_api_rpc_addr.to_string(), "0.0.0.0");
+        assert_eq!(args.tempo_api_rpc_port, 9000);
+    }
+
     fn apply_node_overrides(args: &[&str]) -> Arc<TempoChainSpec> {
         init_defaults_once();
 

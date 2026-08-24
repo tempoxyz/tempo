@@ -29,7 +29,9 @@ use reth_node_builder::{
 };
 use reth_primitives_traits::SealedHeader;
 use reth_provider::providers::ProviderFactoryBuilder;
-use reth_rpc_builder::{Identity, RethRpcModule};
+use reth_rpc_builder::{
+    Identity, RethRpcModule, RpcServerConfig, TransportRpcModules, config::RethRpcServerConfig,
+};
 use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
@@ -41,7 +43,10 @@ use reth_transaction_pool::{
     TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
@@ -66,6 +71,21 @@ pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
+    /// Enable the restricted HTTP RPC endpoint intended for Tempo API traffic.
+    #[arg(long = "tempo-api-rpc", default_value_t = false)]
+    pub tempo_api_rpc: bool,
+
+    /// Address on which to serve the restricted Tempo API RPC endpoint.
+    #[arg(
+        long = "tempo-api-rpc.addr",
+        default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST)
+    )]
+    pub tempo_api_rpc_addr: IpAddr,
+
+    /// Port on which to serve the restricted Tempo API RPC endpoint.
+    #[arg(long = "tempo-api-rpc.port", default_value_t = 8547)]
+    pub tempo_api_rpc_port: u16,
+
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -112,6 +132,9 @@ pub struct TempoNodeArgs {
 impl Default for TempoNodeArgs {
     fn default() -> Self {
         Self {
+            tempo_api_rpc: false,
+            tempo_api_rpc_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            tempo_api_rpc_port: 8547,
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
@@ -216,6 +239,8 @@ pub struct TempoNode {
     validator_key: Option<B256>,
     /// Network builder with optional `tempo/1` support.
     network_builder: TempoNetworkBuilder,
+    /// Address for the restricted Tempo API RPC endpoint, when enabled.
+    tempo_api_rpc_addr: Option<SocketAddr>,
 }
 
 impl TempoNode {
@@ -226,6 +251,9 @@ impl TempoNode {
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
+            tempo_api_rpc_addr: args
+                .tempo_api_rpc
+                .then(|| SocketAddr::new(args.tempo_api_rpc_addr, args.tempo_api_rpc_port)),
         }
     }
 
@@ -331,6 +359,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         Identity,
     >,
     validator_key: Option<B256>,
+    tempo_api_rpc_addr: Option<SocketAddr>,
 }
 
 impl<N> TempoAddOns<N>
@@ -349,8 +378,29 @@ where
                 Default::default(),
             ),
             validator_key,
+            tempo_api_rpc_addr: None,
         }
     }
+
+    /// Sets the address for the restricted Tempo API RPC endpoint.
+    pub const fn with_tempo_api_rpc_addr(mut self, addr: Option<SocketAddr>) -> Self {
+        self.tempo_api_rpc_addr = addr;
+        self
+    }
+}
+
+fn is_tempo_api_rpc_method(name: &str) -> bool {
+    matches!(name, "zone_getEncryptionKey" | "zone_getZoneInfo")
+        || [
+            "debug_getRaw",
+            "eth_",
+            "debug_trace",
+            "trace_",
+            "web3_",
+            "net_",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
@@ -363,13 +413,26 @@ where
         self,
         ctx: AddOnsContext<'_, NodeAdapter<N>>,
     ) -> eyre::Result<Self::Handle> {
+        let Self {
+            inner,
+            validator_key,
+            tempo_api_rpc_addr,
+        } = self;
+        let tempo_api_server_config = tempo_api_rpc_addr.map(|addr| {
+            RpcServerConfig::http(ctx.config.rpc.http_ws_server_builder())
+                .with_http_address(addr)
+                .with_http_disable_compression(ctx.config.rpc.http_disable_compression)
+                .with_rpc_metrics_enabled(ctx.config.rpc.rpc_metrics_enabled())
+        });
+        let task_executor = ctx.node.task_executor().clone();
+        let mut tempo_api_module = None;
         let eth_config = EthConfigHandler::new(
             ctx.node.provider.clone(),
             ctx.node.components.evm_config.clone(),
         );
 
-        self.inner
-            .launch_add_ons_with(ctx, move |container| {
+        let handle = inner
+            .launch_add_ons_with(ctx, |container| {
                 let reth_node_builder::rpc::RpcModuleContainer {
                     modules, registry, ..
                 } = container;
@@ -378,7 +441,7 @@ where
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api.clone());
                 let simulate = TempoSimulate::new(eth_api);
-                let admin = TempoAdminApi::new(self.validator_key);
+                let admin = TempoAdminApi::new(validator_key);
                 let operator = TempoOperatorRpc::new(registry.admin_api());
                 let fork_schedule =
                     TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
@@ -394,9 +457,31 @@ where
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
+                if tempo_api_server_config.is_some() {
+                    let mut module = jsonrpsee::RpcModule::new(());
+                    module.merge(modules.methods_by(is_tempo_api_rpc_method))?;
+                    tempo_api_module = Some(module);
+                }
+
                 Ok(())
             })
-            .await
+            .await?;
+
+        if let (Some(server_config), Some(module)) = (tempo_api_server_config, tempo_api_module) {
+            let modules = TransportRpcModules::default().with_http(module);
+            let server = server_config.start(&modules).await?;
+            let addr = server
+                .http_local_addr()
+                .expect("Tempo API RPC server is configured for HTTP");
+            info!(target: "reth::cli", url = %addr, "Tempo API RPC server started");
+
+            task_executor.spawn_task(async move {
+                let _server = server;
+                std::future::pending::<()>().await;
+            });
+        }
+
+        Ok(handle)
     }
 }
 
@@ -446,7 +531,38 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key).with_tempo_api_rpc_addr(self.tempo_api_rpc_addr)
+    }
+}
+
+#[cfg(test)]
+mod tempo_api_rpc_tests {
+    use super::is_tempo_api_rpc_method;
+
+    #[test]
+    fn tempo_api_rpc_method_allowlist() {
+        for method in [
+            "zone_getEncryptionKey",
+            "zone_getZoneInfo",
+            "debug_getRawBlock",
+            "eth_getBalance",
+            "debug_traceTransaction",
+            "trace_transaction",
+            "web3_clientVersion",
+            "net_version",
+        ] {
+            assert!(is_tempo_api_rpc_method(method), "{method}");
+        }
+
+        for method in [
+            "zone_getValidators",
+            "admin_nodeInfo",
+            "operator_connectPeer",
+            "txpool_content",
+            "rpc_modules",
+        ] {
+            assert!(!is_tempo_api_rpc_method(method), "{method}");
+        }
     }
 }
 
