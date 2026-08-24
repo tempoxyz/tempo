@@ -20,8 +20,10 @@ env:
 jobs:
   clippy:
     name: clippy
-    runs-on: depot-ubuntu-latest-4
-    timeout-minutes: 30
+    runs-on: depot-ubuntu-latest-32
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 8
     permissions:
       contents: read
     steps:
@@ -35,8 +37,16 @@ jobs:
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: v0.15.0
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features --locked
+      - name: Run clippy on runtime targets
+        run: cargo clippy --workspace --lib --bins --all-features --locked
+        env:
+          RUSTFLAGS: -D warnings
+      - name: Run clippy on test targets
+        run: cargo clippy --workspace --tests --all-features --locked
+        env:
+          RUSTFLAGS: -D warnings
+      - name: Run clippy on bench and example targets
+        run: cargo clippy --workspace --benches --examples --all-features --locked
         env:
           RUSTFLAGS: -D warnings
 
@@ -82,7 +92,7 @@ jobs:
   docs:
     if: ${{ github.repository == 'tempoxyz/tempo' }}
     name: docs
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
       contents: read
