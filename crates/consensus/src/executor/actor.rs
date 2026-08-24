@@ -1557,8 +1557,9 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     // the execution layer's own is stale in its entirety and is not
     // submitted. Callers treat the skip as a no-op; a payload-build request
     // affected by it fails through the missing payload ID.
-    let execution_finalized = execution_node.finalized_num_hash();
-    if execution_finalized.number >= canonicalized.finalized.0.get() {
+    if let execution_finalized = execution_node.finalized_num_hash()
+        && execution_finalized.number >= canonicalized.finalized.0.get()
+    {
         let canonical_digest = execution_node
             .canonical_block_hash(canonicalized.finalized.0.get())
             .wrap_err_with(|| {
