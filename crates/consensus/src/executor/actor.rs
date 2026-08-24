@@ -19,6 +19,13 @@
 //! Requests to verify or build blocks work in a similar manner: a request to
 //! verify or build a block on top of some `$PARENT` will only pass if the the
 //! local tracked tip is at `$PARENT`.
+//!
+//! # Notarizations are retried, finalizations are fatal
+//!
+//! A notarized block rejected by the execution layer is retried while it
+//! remains above the network finalized tip. Once that tip advances to or past
+//! the block's height, the notarized block is ejected. In contrast, an
+//! `INVALID` finalized block is a hard failure that shuts down the node.
 
 use std::{
     collections::VecDeque,
