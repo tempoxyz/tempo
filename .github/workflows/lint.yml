@@ -23,7 +23,7 @@ jobs:
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 45
     env:
-      CARGO_BUILD_JOBS: 8
+      CARGO_BUILD_JOBS: 4
     permissions:
       contents: read
     steps:
