@@ -337,6 +337,7 @@ jobs:
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
           SHA_EVENT_OUTCOME: ${{ steps.publish-sha-event.outcome }}
           NIGHTLY_EVENT_OUTCOME: ${{ steps.publish-nightly-event.outcome }}
+          BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -369,16 +370,20 @@ jobs:
             echo
             echo "## Images"
             echo
-            echo "| Image | Package | Tags |"
-            echo "| --- | --- | --- |"
+            echo "| Image | Package | Tags | Digest |"
+            echo "| --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          summarize_tags() {
+          summarize_image() {
             local image="$1"
             local package_url="$2"
             local tags="$3"
+            local target="$4"
             local formatted=""
+            local digest
             local tag
+
+            digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA" 2>/dev/null || true)"
 
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
@@ -389,14 +394,14 @@ jobs:
               fi
             done <<< "$tags"
 
-            echo "| ${image} | [GHCR package](${package_url}) | ${formatted:-None} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| ${image} | [GHCR package](${package_url}) | ${formatted:-None} | \`${digest:-None}\` |" >> "$GITHUB_STEP_SUMMARY"
           }
 
-          summarize_tags "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TAGS"
-          summarize_tags "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS"
-          summarize_tags "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS"
-          summarize_tags "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS"
-          summarize_tags "tempo partial persistence" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_PARTIAL_PERSISTENCE_TAGS"
+          summarize_image "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TAGS" "tempo"
+          summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
+          summarize_image "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS" "tempo-sidecar"
+          summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
+          summarize_image "tempo partial persistence" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_PARTIAL_PERSISTENCE_TAGS" "tempo-partial-persistence"
 
           {
             echo
