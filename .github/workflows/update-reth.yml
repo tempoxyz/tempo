@@ -690,14 +690,17 @@ jobs:
             EMOJI="✅"
             STATUS="succeeded"
             COLOR="#2eb67d"
+            MENTION=""
           elif [ "$JOB_STATUS" = "cancelled" ]; then
             EMOJI="⚠️"
             STATUS="cancelled"
             COLOR="#e0a523"
+            MENTION="<!subteam^S09KMRP46D7|reth>"
           else
             EMOJI="❌"
             STATUS="failed"
             COLOR="#e01e5a"
+            MENTION="<!subteam^S09KMRP46D7|reth>"
           fi
 
           # Build detail lines
@@ -733,6 +736,7 @@ jobs:
           PAYLOAD=$(jq -n \
             --arg emoji "$EMOJI" \
             --arg status "$STATUS" \
+            --arg mention "$MENTION" \
             --arg details "$DETAILS_TEXT" \
             --arg color "$COLOR" \
             '{
@@ -743,7 +747,7 @@ jobs:
                     type: "section",
                     text: {
                       type: "mrkdwn",
-                      text: ($emoji + " *Reth update " + $status + "*" + $details)
+                      text: ($emoji + " *Reth update " + $status + "*" + (if $mention == "" then "" else "\n" + $mention end) + $details)
                     }
                   }
                 ]
