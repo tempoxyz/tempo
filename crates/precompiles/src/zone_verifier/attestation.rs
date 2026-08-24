@@ -1,59 +1,33 @@
-//! Bounded AWS Nitro attestation validation.
+//! Gas-metered AWS Nitro attestation verification for the Zone verifier.
 
-use aws_lc_rs::signature::{ECDSA_P384_SHA384_ASN1, ECDSA_P384_SHA384_FIXED, UnparsedPublicKey};
-use minicbor::{Decoder, Encoder, data::Type};
-use x509_cert::{
-    Certificate, Version,
-    der::{Decode, Encode, asn1::ObjectIdentifier, oid::AssociatedOid},
-    ext::pkix::{BasicConstraints, KeyUsage},
+use aws_lc_rs::{
+    digest::{Digest as AwsLcDigest, SHA384 as AWS_LC_SHA384, digest as aws_lc_digest},
+    signature::{
+        ECDSA_P384_SHA384_ASN1, ECDSA_P384_SHA384_FIXED, ParsedPublicKey as AwsLcParsedPublicKey,
+    },
+};
+use tempo_nitro_attestation::{
+    MAX_DOCUMENT_SIZE, NitroAttestation, P384_FIXED_SIGNATURE_SIZE, P384_PUBLIC_KEY_SIZE,
+    P384Verifier, SHA384_SIZE, Sha384Hasher, parse_attestation, verify_parsed,
 };
 
 use crate::storage::StorageCtx;
 
-pub(super) const MAX_DOCUMENT_LEN: usize = 24_576;
-const MAX_PAYLOAD_LEN: usize = 16_384;
-const MAX_CERT_LEN: usize = 1_024;
-const MAX_CA_BUNDLE: usize = 32;
-const MAX_PCRS: usize = 32;
-const MAX_DEPTH: usize = 16;
+pub(super) const MAX_DOCUMENT_LEN: usize = MAX_DOCUMENT_SIZE;
 pub(super) const BASE_GAS: u64 = 40_000;
 pub(super) const SIGNATURE_GAS: u64 = 35_000;
 
-const ECDSA_SHA384_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
-const EC_PUBLIC_KEY_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
-const P384_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.34");
-
-/// AWS Nitro Enclaves commercial-partition root G1, extracted from AWS's published archive.
-pub(super) const AWS_NITRO_ROOT_DER: &[u8] = &alloy::primitives::hex!(
+/// AWS Nitro Enclaves commercial-partition root certificate (G1), in DER form.
+///
+/// SHA-256: `641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b`.
+pub(super) const AWS_NITRO_ROOT_DER: &[u8; 533] = &alloy::primitives::hex!(
     "3082021130820196a003020102021100f93175681b90afe11d46ccb4e4e7f856300a06082a8648ce3d0403033049310b3009060355040613025553310f300d060355040a0c06416d617a6f6e310c300a060355040b0c03415753311b301906035504030c126177732e6e6974726f2d656e636c61766573301e170d3139313032383133323830355a170d3439313032383134323830355a3049310b3009060355040613025553310f300d060355040a0c06416d617a6f6e310c300a060355040b0c03415753311b301906035504030c126177732e6e6974726f2d656e636c617665733076301006072a8648ce3d020106052b8104002203620004fc0254eba608c1f36870e29ada90be46383292736e894bfff672d989444b5051e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b66e752cf7dd1dd095f6f1370f4170843d9dc100121e4cf63012809664487c9796284304dc53ff4a3423040300f0603551d130101ff040530030101ff301d0603551d0e041604149025b50dd90547e796c396fa729dcf99a9df4b96300e0603551d0f0101ff040403020186300a06082a8648ce3d0403030369003066023100a37f2f91a1c9bd5ee7b8627c1698d255038e1f0343f95b63a9628c3d39809545a11ebcbf2e3b55d8aeee71b4c3d6adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4fbde8fe0061d6a53197f9cdaf5d943bc61fc2beb03cb6fee8d2302f3dff6"
 );
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum AttestationError {
-    Format,
-    Certificate,
-    Signature,
+    Validation,
     OutOfGas,
-}
-
-pub(super) struct VerifiedAttestation {
-    pub timestamp: u64,
-    pub pcrs: [Option<Vec<u8>>; 3],
-    pub user_data: Vec<u8>,
-}
-
-struct CoseDocument {
-    protected: Vec<u8>,
-    payload: Vec<u8>,
-    signature: Vec<u8>,
-}
-
-struct ParsedAttestation {
-    timestamp: u64,
-    pcrs: [Option<Vec<u8>>; 3],
-    certificate: Vec<u8>,
-    cabundle: Vec<Vec<u8>>,
-    user_data: Vec<u8>,
 }
 
 pub(super) fn verify_attestation_with_root(
@@ -61,513 +35,92 @@ pub(super) fn verify_attestation_with_root(
     document: &[u8],
     block_timestamp: u64,
     root_der: &[u8],
-) -> core::result::Result<VerifiedAttestation, AttestationError> {
-    if document.len() > MAX_DOCUMENT_LEN {
-        return Err(AttestationError::Format);
+) -> Result<NitroAttestation, AttestationError> {
+    if document.len() > MAX_DOCUMENT_SIZE {
+        return Err(AttestationError::Validation);
     }
     storage
         .deduct_gas(BASE_GAS)
         .map_err(|_| AttestationError::OutOfGas)?;
 
-    let cose = parse_cose(document)?;
-    let parsed = parse_payload(&cose.payload)?;
-    let verification_count = parsed
-        .cabundle
-        .len()
-        .checked_add(1)
-        .ok_or(AttestationError::Format)?;
+    let parsed = parse_attestation(document).map_err(|_| AttestationError::Validation)?;
+    let verification_gas = u64::try_from(parsed.signature_count())
+        .unwrap_or(u64::MAX)
+        .saturating_mul(SIGNATURE_GAS);
     storage
-        .deduct_gas(SIGNATURE_GAS.saturating_mul(verification_count as u64))
+        .deduct_gas(verification_gas)
         .map_err(|_| AttestationError::OutOfGas)?;
 
-    let leaf_key = validate_certificate_chain(
-        &parsed.certificate,
-        &parsed.cabundle,
-        block_timestamp,
-        root_der,
-    )?;
-    verify_cose_signature(&leaf_key, &cose)?;
-
-    Ok(VerifiedAttestation {
-        timestamp: parsed.timestamp,
-        pcrs: parsed.pcrs,
-        user_data: parsed.user_data,
-    })
+    verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384)
+        .map_err(|_| AttestationError::Validation)
 }
 
-fn parse_cose(document: &[u8]) -> Result<CoseDocument, AttestationError> {
-    let mut decoder = Decoder::new(document);
-    if decoder.datatype().map_err(format_error)? == Type::Tag
-        && decoder.tag().map_err(format_error)?.as_u64() != 18
-    {
-        return Err(AttestationError::Format);
-    }
-    let array_len = decoder.array().map_err(format_error)?;
-    if array_len.is_some_and(|len| len != 4) {
-        return Err(AttestationError::Format);
-    }
+struct AwsLcP384;
 
-    let protected = read_bytes(&mut decoder, 64)?;
-    validate_protected_header(&protected)?;
-    if !matches!(
-        decoder.datatype().map_err(format_error)?,
-        Type::Map | Type::MapIndef
-    ) {
-        return Err(AttestationError::Format);
-    }
-    skip_value(&mut decoder, 1)?;
-    let payload = read_bytes(&mut decoder, MAX_PAYLOAD_LEN)?;
-    if payload.is_empty() {
-        return Err(AttestationError::Format);
-    }
-    let signature = read_bytes(&mut decoder, 96)?;
-    if signature.len() != 96 {
-        return Err(AttestationError::Format);
-    }
-    if array_len.is_none() {
-        if decoder.datatype().map_err(format_error)? != Type::Break {
-            return Err(AttestationError::Format);
-        }
-        decoder.skip().map_err(format_error)?;
-    }
-    if decoder.position() != document.len() {
-        return Err(AttestationError::Format);
-    }
-    Ok(CoseDocument {
-        protected,
-        payload,
-        signature,
-    })
-}
-
-fn validate_protected_header(protected: &[u8]) -> Result<(), AttestationError> {
-    let mut decoder = Decoder::new(protected);
-    let len = decoder.map().map_err(format_error)?;
-    if len.is_some_and(|len| len != 1) {
-        return Err(AttestationError::Format);
-    }
-    if decoder.i64().map_err(format_error)? != 1 || decoder.i64().map_err(format_error)? != -35 {
-        return Err(AttestationError::Format);
-    }
-    if len.is_none() {
-        if decoder.datatype().map_err(format_error)? != Type::Break {
-            return Err(AttestationError::Format);
-        }
-        decoder.skip().map_err(format_error)?;
-    }
-    if decoder.position() != protected.len() {
-        return Err(AttestationError::Format);
-    }
-    Ok(())
-}
-
-fn parse_payload(payload: &[u8]) -> Result<ParsedAttestation, AttestationError> {
-    let mut decoder = Decoder::new(payload);
-    let map_len = decoder.map().map_err(format_error)?;
-    let mut remaining = map_len;
-    let mut seen = 0u16;
-    let mut module_id = None;
-    let mut digest = None;
-    let mut timestamp = None;
-    let mut pcrs = None;
-    let mut certificate = None;
-    let mut cabundle = None;
-    let mut user_data = Vec::new();
-
-    while container_has_item(&mut decoder, &mut remaining)? {
-        let key = read_text(&mut decoder, 64)?;
-        let field = match key.as_str() {
-            "module_id" => Some(0),
-            "digest" => Some(1),
-            "timestamp" => Some(2),
-            "pcrs" => Some(3),
-            "certificate" => Some(4),
-            "cabundle" => Some(5),
-            "public_key" => Some(6),
-            "user_data" => Some(7),
-            "nonce" => Some(8),
-            _ => None,
-        };
-        if let Some(field) = field {
-            let bit = 1u16 << field;
-            if seen & bit != 0 || matches!(decoder.datatype().map_err(format_error)?, Type::Null) {
-                return Err(AttestationError::Format);
-            }
-            seen |= bit;
-        }
-
-        match key.as_str() {
-            "module_id" => module_id = Some(read_text(&mut decoder, MAX_PAYLOAD_LEN)?),
-            "digest" => digest = Some(read_text(&mut decoder, 16)?),
-            "timestamp" => timestamp = Some(decoder.u64().map_err(format_error)?),
-            "pcrs" => pcrs = Some(parse_pcrs(&mut decoder)?),
-            "certificate" => certificate = Some(read_nonempty_bytes(&mut decoder, MAX_CERT_LEN)?),
-            "cabundle" => cabundle = Some(parse_cabundle(&mut decoder)?),
-            "public_key" => {
-                read_nonempty_bytes(&mut decoder, MAX_CERT_LEN)?;
-            }
-            "user_data" => user_data = read_bytes(&mut decoder, 512)?,
-            "nonce" => {
-                read_bytes(&mut decoder, 512)?;
-            }
-            _ => skip_value(&mut decoder, 1)?,
-        }
-    }
-    if decoder.position() != payload.len()
-        || module_id.as_ref().is_none_or(String::is_empty)
-        || digest.as_deref() != Some("SHA384")
-        || timestamp.is_none_or(|value| value == 0)
-        || pcrs.is_none()
-        || certificate.is_none()
-        || cabundle.is_none()
-    {
-        return Err(AttestationError::Format);
-    }
-
-    Ok(ParsedAttestation {
-        timestamp: timestamp.expect("checked above"),
-        pcrs: pcrs.expect("checked above"),
-        certificate: certificate.expect("checked above"),
-        cabundle: cabundle.expect("checked above"),
-        user_data,
-    })
-}
-
-fn parse_pcrs(decoder: &mut Decoder<'_>) -> Result<[Option<Vec<u8>>; 3], AttestationError> {
-    let map_len = decoder.map().map_err(format_error)?;
-    if map_len.is_some_and(|len| len == 0 || len > MAX_PCRS as u64) {
-        return Err(AttestationError::Format);
-    }
-    let mut remaining = map_len;
-    let mut count = 0usize;
-    let mut seen = [false; MAX_PCRS];
-    let mut selected: [Option<Vec<u8>>; 3] = [None, None, None];
-    while container_has_item(decoder, &mut remaining)? {
-        count += 1;
-        if count > MAX_PCRS {
-            return Err(AttestationError::Format);
-        }
-        let index = decoder.u8().map_err(format_error)? as usize;
-        if index >= MAX_PCRS || seen[index] {
-            return Err(AttestationError::Format);
-        }
-        seen[index] = true;
-        let value = read_bytes(decoder, 64)?;
-        if !matches!(value.len(), 32 | 48 | 64) {
-            return Err(AttestationError::Format);
-        }
-        if index < selected.len() {
-            selected[index] = Some(value);
-        }
-    }
-    if count == 0 {
-        return Err(AttestationError::Format);
-    }
-    Ok(selected)
-}
-
-fn parse_cabundle(decoder: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, AttestationError> {
-    let array_len = decoder.array().map_err(format_error)?;
-    if array_len.is_some_and(|len| len == 0 || len > MAX_CA_BUNDLE as u64) {
-        return Err(AttestationError::Format);
-    }
-    let mut remaining = array_len;
-    let mut certificates = Vec::new();
-    while container_has_item(decoder, &mut remaining)? {
-        if certificates.len() == MAX_CA_BUNDLE {
-            return Err(AttestationError::Format);
-        }
-        certificates.push(read_nonempty_bytes(decoder, MAX_CERT_LEN)?);
-    }
-    if certificates.is_empty() {
-        return Err(AttestationError::Format);
-    }
-    Ok(certificates)
-}
-
-fn validate_certificate_chain(
-    leaf_der: &[u8],
-    cabundle: &[Vec<u8>],
-    block_timestamp: u64,
-    root_der: &[u8],
-) -> Result<Vec<u8>, AttestationError> {
-    if cabundle.first().map(Vec::as_slice) != Some(root_der) {
-        return Err(AttestationError::Certificate);
-    }
-    let mut chain = Vec::new();
-    for der in cabundle
-        .iter()
-        .map(Vec::as_slice)
-        .chain(core::iter::once(leaf_der))
-    {
-        let certificate = Certificate::from_der(der).map_err(|_| AttestationError::Certificate)?;
-        if certificate
-            .to_der()
-            .map_err(|_| AttestationError::Certificate)?
-            != der
-        {
-            return Err(AttestationError::Certificate);
-        }
-        validate_certificate_profile(&certificate, block_timestamp)?;
-        chain.push(certificate);
-    }
-
-    for (index, certificate) in chain.iter().enumerate() {
-        let is_leaf = index + 1 == chain.len();
-        validate_constraints(certificate, is_leaf, chain.len().saturating_sub(index + 2))?;
-        if index > 0 {
-            let parent = &chain[index - 1];
-            if certificate
-                .tbs_certificate
-                .issuer
-                .to_der()
-                .map_err(|_| AttestationError::Certificate)?
-                != parent
-                    .tbs_certificate
-                    .subject
-                    .to_der()
-                    .map_err(|_| AttestationError::Certificate)?
-            {
-                return Err(AttestationError::Certificate);
-            }
-            verify_certificate_signature(certificate, parent)?;
-        }
-    }
-    public_key_bytes(chain.last().expect("cabundle is non-empty"))
-}
-
-fn validate_certificate_profile(
-    certificate: &Certificate,
-    block_timestamp: u64,
-) -> Result<(), AttestationError> {
-    if certificate.tbs_certificate.version != Version::V3
-        || certificate.signature_algorithm.oid != ECDSA_SHA384_OID
-        || certificate.signature_algorithm.parameters.is_some()
-        || certificate.tbs_certificate.signature.oid != ECDSA_SHA384_OID
-        || certificate.tbs_certificate.signature.parameters.is_some()
-        || certificate
-            .tbs_certificate
-            .subject_public_key_info
-            .algorithm
-            .oid
-            != EC_PUBLIC_KEY_OID
-    {
-        return Err(AttestationError::Certificate);
-    }
-    let curve = certificate
-        .tbs_certificate
-        .subject_public_key_info
-        .algorithm
-        .parameters
-        .as_ref()
-        .ok_or(AttestationError::Certificate)?
-        .decode_as::<ObjectIdentifier>()
-        .map_err(|_| AttestationError::Certificate)?;
-    if curve != P384_OID {
-        return Err(AttestationError::Certificate);
-    }
-    let validity = &certificate.tbs_certificate.validity;
-    if validity.not_before.to_unix_duration().as_secs() > block_timestamp
-        || validity.not_after.to_unix_duration().as_secs() < block_timestamp
-    {
-        return Err(AttestationError::Certificate);
-    }
-    let extensions = certificate
-        .tbs_certificate
-        .extensions
-        .as_deref()
-        .unwrap_or_default();
-    if extensions.iter().enumerate().any(|(index, extension)| {
-        extensions[..index]
-            .iter()
-            .any(|previous| previous.extn_id == extension.extn_id)
-    }) || extensions.iter().any(|extension| {
-        extension.critical
-            && extension.extn_id != BasicConstraints::OID
-            && extension.extn_id != KeyUsage::OID
-    }) {
-        return Err(AttestationError::Certificate);
-    }
-    Ok(())
-}
-
-fn validate_constraints(
-    certificate: &Certificate,
-    is_leaf: bool,
-    ca_below: usize,
-) -> Result<(), AttestationError> {
-    let basic = certificate
-        .tbs_certificate
-        .get::<BasicConstraints>()
-        .map_err(|_| AttestationError::Certificate)?;
-    let key_usage = certificate
-        .tbs_certificate
-        .get::<KeyUsage>()
-        .map_err(|_| AttestationError::Certificate)?
-        .ok_or(AttestationError::Certificate)?;
-    if is_leaf {
-        if basic.is_some_and(|(_, value)| value.ca || value.path_len_constraint.is_some())
-            || !key_usage.1.digital_signature()
-        {
-            return Err(AttestationError::Certificate);
-        }
-    } else {
-        let (critical, basic) = basic.ok_or(AttestationError::Certificate)?;
-        if !critical
-            || !basic.ca
-            || basic
-                .path_len_constraint
-                .is_some_and(|limit| ca_below > limit as usize)
-            || !key_usage.1.key_cert_sign()
-        {
-            return Err(AttestationError::Certificate);
-        }
-    }
-    Ok(())
-}
-
-fn verify_certificate_signature(
-    certificate: &Certificate,
-    parent: &Certificate,
-) -> Result<(), AttestationError> {
-    let key = public_key_bytes(parent)?;
-    let message = certificate
-        .tbs_certificate
-        .to_der()
-        .map_err(|_| AttestationError::Certificate)?;
-    let signature = certificate
-        .signature
-        .as_bytes()
-        .ok_or(AttestationError::Certificate)?;
-    UnparsedPublicKey::new(&ECDSA_P384_SHA384_ASN1, key)
-        .verify(&message, signature)
-        .map_err(|_| AttestationError::Signature)
-}
-
-fn public_key_bytes(certificate: &Certificate) -> Result<Vec<u8>, AttestationError> {
-    let key = certificate
-        .tbs_certificate
-        .subject_public_key_info
-        .subject_public_key
-        .as_bytes()
-        .ok_or(AttestationError::Certificate)?;
-    if key.len() != 97 || key.first() != Some(&4) {
-        return Err(AttestationError::Certificate);
-    }
-    Ok(key.to_vec())
-}
-
-fn verify_cose_signature(key: &[u8], cose: &CoseDocument) -> Result<(), AttestationError> {
-    let mut encoder = Encoder::new(Vec::new());
-    encoder.array(4).map_err(format_error)?;
-    encoder.str("Signature1").map_err(format_error)?;
-    encoder.bytes(&cose.protected).map_err(format_error)?;
-    encoder.bytes(&[]).map_err(format_error)?;
-    encoder.bytes(&cose.payload).map_err(format_error)?;
-    let structure = encoder.into_writer();
-    UnparsedPublicKey::new(&ECDSA_P384_SHA384_FIXED, key)
-        .verify(&structure, &cose.signature)
-        .map_err(|_| AttestationError::Signature)
-}
-
-fn read_nonempty_bytes(
-    decoder: &mut Decoder<'_>,
-    max_len: usize,
-) -> Result<Vec<u8>, AttestationError> {
-    let bytes = read_bytes(decoder, max_len)?;
-    if bytes.is_empty() {
-        return Err(AttestationError::Format);
-    }
-    Ok(bytes)
-}
-
-fn read_bytes(decoder: &mut Decoder<'_>, max_len: usize) -> Result<Vec<u8>, AttestationError> {
-    let mut output = Vec::new();
-    for chunk in decoder.bytes_iter().map_err(format_error)? {
-        let chunk = chunk.map_err(format_error)?;
-        if output.len().saturating_add(chunk.len()) > max_len {
-            return Err(AttestationError::Format);
-        }
-        output.extend_from_slice(chunk);
-    }
-    Ok(output)
-}
-
-fn read_text(decoder: &mut Decoder<'_>, max_len: usize) -> Result<String, AttestationError> {
-    let mut output = String::new();
-    for chunk in decoder.str_iter().map_err(format_error)? {
-        let chunk = chunk.map_err(format_error)?;
-        if output.len().saturating_add(chunk.len()) > max_len {
-            return Err(AttestationError::Format);
-        }
-        output.push_str(chunk);
-    }
-    Ok(output)
-}
-
-fn container_has_item(
-    decoder: &mut Decoder<'_>,
-    remaining: &mut Option<u64>,
-) -> Result<bool, AttestationError> {
-    match remaining {
-        Some(0) => Ok(false),
-        Some(count) => {
-            *count -= 1;
-            Ok(true)
-        }
-        None if decoder.datatype().map_err(format_error)? == Type::Break => {
-            decoder.skip().map_err(format_error)?;
-            Ok(false)
-        }
-        None => Ok(true),
+impl Sha384Hasher for AwsLcP384 {
+    fn sha384(&self, input: &[u8]) -> [u8; SHA384_SIZE] {
+        aws_lc_digest(&AWS_LC_SHA384, input)
+            .as_ref()
+            .try_into()
+            .expect("SHA-384 has a fixed 48-byte output")
     }
 }
 
-fn skip_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), AttestationError> {
-    if depth > MAX_DEPTH {
-        return Err(AttestationError::Format);
+impl P384Verifier for AwsLcP384 {
+    fn validate_public_key(&self, public_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> bool {
+        AwsLcParsedPublicKey::new(&ECDSA_P384_SHA384_ASN1, public_key).is_ok()
     }
-    match decoder.datatype().map_err(format_error)? {
-        Type::Array | Type::ArrayIndef => {
-            let mut remaining = decoder.array().map_err(format_error)?;
-            while container_has_item(decoder, &mut remaining)? {
-                skip_value(decoder, depth + 1)?;
-            }
-        }
-        Type::Map | Type::MapIndef => {
-            let mut remaining = decoder.map().map_err(format_error)?;
-            while container_has_item(decoder, &mut remaining)? {
-                skip_value(decoder, depth + 1)?;
-                skip_value(decoder, depth + 1)?;
-            }
-        }
-        Type::Tag => {
-            decoder.tag().map_err(format_error)?;
-            skip_value(decoder, depth + 1)?;
-        }
-        Type::Break => return Err(AttestationError::Format),
-        _ => decoder.skip().map_err(format_error)?,
+
+    fn verify_der(
+        &self,
+        public_key: &[u8; P384_PUBLIC_KEY_SIZE],
+        digest: &[u8; SHA384_SIZE],
+        signature_der: &[u8],
+    ) -> bool {
+        verify_digest(&ECDSA_P384_SHA384_ASN1, public_key, digest, signature_der)
     }
-    Ok(())
+
+    fn verify_fixed(
+        &self,
+        public_key: &[u8; P384_PUBLIC_KEY_SIZE],
+        digest: &[u8; SHA384_SIZE],
+        signature: &[u8; P384_FIXED_SIGNATURE_SIZE],
+    ) -> bool {
+        verify_digest(&ECDSA_P384_SHA384_FIXED, public_key, digest, signature)
+    }
 }
 
-fn format_error<E>(_error: E) -> AttestationError {
-    AttestationError::Format
+fn verify_digest(
+    algorithm: &'static aws_lc_rs::signature::EcdsaVerificationAlgorithm,
+    public_key: &[u8; P384_PUBLIC_KEY_SIZE],
+    digest: &[u8; SHA384_SIZE],
+    signature: &[u8],
+) -> bool {
+    let Ok(public_key) = AwsLcParsedPublicKey::new(algorithm, public_key) else {
+        return false;
+    };
+    let Ok(digest) = AwsLcDigest::import_less_safe(digest, &AWS_LC_SHA384) else {
+        return false;
+    };
+    public_key.verify_digest_sig(&digest, signature).is_ok()
 }
 
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use base64::Engine;
+    use minicbor::Encoder;
     use p384::ecdsa::{DerSignature, Signature, SigningKey, signature::Signer};
-    use sha2::{Digest, Sha256};
     use std::{
         str::FromStr,
         time::{Duration, UNIX_EPOCH},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use x509_cert::{
+        Certificate,
         builder::{Builder, CertificateBuilder, Profile},
+        der::{Decode, Encode},
         name::Name,
         serial_number::SerialNumber,
         spki::SubjectPublicKeyInfoOwned,
@@ -575,6 +128,56 @@ pub(super) mod tests {
     };
 
     pub(in crate::zone_verifier) const BLOCK_TIMESTAMP: u64 = 1_800_000_000;
+    const PRODUCTION_FIXTURE_TIME: u64 = 1_767_472_867;
+    const P384_HALF_ORDER: [u8; 48] = alloy::primitives::hex!(
+        "7fffffffffffffffffffffffffffffffffffffffffffffffe3b1a6c0fa1b96efac0d06d9245853bd76760cb5666294b9"
+    );
+
+    fn production_fixture() -> Vec<u8> {
+        let encoded: String =
+            include_str!("../../../nitro-attestation/testdata/aws_attestation_2026_01_03.b64")
+                .split_whitespace()
+                .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("valid fixture base64")
+    }
+
+    fn verify_production_document_at(
+        document: &[u8],
+        timestamp: u64,
+    ) -> Result<NitroAttestation, AttestationError> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || {
+            verify_attestation_with_root(
+                &mut StorageCtx::default(),
+                document,
+                timestamp,
+                AWS_NITRO_ROOT_DER,
+            )
+        })
+    }
+
+    fn replace_unique(haystack: &mut [u8], needle: &[u8], replacement: &[u8]) {
+        assert_eq!(needle.len(), replacement.len());
+        let offsets = haystack
+            .windows(needle.len())
+            .enumerate()
+            .filter_map(|(offset, candidate)| (candidate == needle).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 1, "mutation target must occur exactly once");
+        haystack[offsets[0]..offsets[0] + needle.len()].copy_from_slice(replacement);
+    }
+
+    fn mutate_leaf_certificate(document: &mut [u8], mutate: impl FnOnce(&mut Vec<u8>)) {
+        let original = parse_attestation(document)
+            .expect("production fixture parses")
+            .certificate;
+        let mut modified = original.clone();
+        mutate(&mut modified);
+        Certificate::from_der(&modified).expect("mutation must preserve certificate DER");
+        replace_unique(document, &original, &modified);
+    }
 
     fn signing_key(byte: u8) -> SigningKey {
         SigningKey::from_slice(&[byte; 48]).unwrap()
@@ -651,7 +254,7 @@ pub(super) mod tests {
         let pcrs = [[0x10; 48], [0x11; 48], [0x12; 48]];
 
         let mut payload = Encoder::new(Vec::new());
-        payload.map(7).unwrap();
+        payload.map(9).unwrap();
         payload
             .str("module_id")
             .unwrap()
@@ -670,7 +273,9 @@ pub(super) mod tests {
         payload.str("certificate").unwrap().bytes(&leaf).unwrap();
         payload.str("cabundle").unwrap().array(2).unwrap();
         payload.bytes(&root).unwrap().bytes(&intermediate).unwrap();
+        payload.str("public_key").unwrap().null().unwrap();
         payload.str("user_data").unwrap().bytes(user_data).unwrap();
+        payload.str("nonce").unwrap().null().unwrap();
         let payload = payload.into_writer();
 
         let mut protected = Encoder::new(Vec::new());
@@ -695,127 +300,163 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn pinned_root_is_stable_and_parses() {
-        assert_eq!(AWS_NITRO_ROOT_DER.len(), 533);
-        assert_eq!(
-            Sha256::digest(AWS_NITRO_ROOT_DER).as_slice(),
-            alloy::primitives::hex!(
-                "641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b"
-            )
-        );
-        let root = Certificate::from_der(AWS_NITRO_ROOT_DER).unwrap();
-        assert_eq!(root.tbs_certificate.issuer, root.tbs_certificate.subject);
-        validate_certificate_profile(&root, BLOCK_TIMESTAMP).unwrap();
-        validate_constraints(&root, false, 0).unwrap();
-    }
+    fn verifies_production_attestation_and_accepts_high_s() {
+        let document = production_fixture();
+        let parsed = parse_attestation(&document).expect("production fixture parses");
+        assert!(parsed.signature[48..] > P384_HALF_ORDER[..]);
 
-    #[test]
-    fn verifies_complete_synthetic_attestation() {
-        let user_data = [0x44; 32];
-        let (document, root, pcrs) = fixture(&user_data);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
         StorageCtx::enter(&mut storage, || {
             let verified = verify_attestation_with_root(
                 &mut StorageCtx::default(),
                 &document,
-                BLOCK_TIMESTAMP,
-                &root,
+                PRODUCTION_FIXTURE_TIME,
+                AWS_NITRO_ROOT_DER,
             )
             .unwrap();
-            assert_eq!(verified.timestamp, BLOCK_TIMESTAMP * 1_000);
-            assert_eq!(verified.user_data, user_data);
-            for (index, pcr) in pcrs.iter().enumerate() {
-                assert_eq!(verified.pcrs[index].as_deref(), Some(pcr.as_slice()));
-            }
-        });
-    }
-
-    #[test]
-    fn accepts_untagged_and_indefinite_outer_cose() {
-        let (tagged, root, _) = fixture(&[0x44; 32]);
-        assert_eq!(tagged[0], 0xd2);
-        let untagged = tagged[1..].to_vec();
-        let mut indefinite = untagged.clone();
-        assert_eq!(indefinite[0], 0x84);
-        indefinite[0] = 0x9f;
-        indefinite.push(0xff);
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            for document in [&untagged, &indefinite] {
-                verify_attestation_with_root(
-                    &mut StorageCtx::default(),
-                    document,
-                    BLOCK_TIMESTAMP,
-                    &root,
+            assert_eq!(verified.timestamp, 1_767_472_867_402);
+            assert_eq!(verified.pcrs.len(), 16);
+            assert!(verified.public_key.is_empty());
+            assert!(verified.nonce.is_empty());
+            assert_eq!(
+                verified.leaf_cert_hash,
+                alloy::primitives::hex!(
+                    "37dbbf810aba51d3423c84f6999b6bd0fcf008d9af094ae419134647bd41aa07"
                 )
+            );
+        });
+    }
+
+    #[test]
+    fn pinned_root_has_expected_sha256() {
+        assert_eq!(
+            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, AWS_NITRO_ROOT_DER).as_ref(),
+            alloy::primitives::hex!(
+                "641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b"
+            )
+        );
+    }
+
+    #[test]
+    fn production_leaf_validity_boundaries_are_inclusive() {
+        let document = production_fixture();
+        let parsed = parse_attestation(&document).unwrap();
+        let leaf = Certificate::from_der(&parsed.certificate).unwrap();
+        let not_before = leaf
+            .tbs_certificate
+            .validity
+            .not_before
+            .to_unix_duration()
+            .as_secs();
+        let not_after = leaf
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs();
+
+        for timestamp in [not_before, not_after] {
+            verify_production_document_at(&document, timestamp).unwrap();
+        }
+        for timestamp in [not_before - 1, not_after + 1] {
+            assert_eq!(
+                verify_production_document_at(&document, timestamp).unwrap_err(),
+                AttestationError::Validation
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_curve_and_compressed_leaf_key() {
+        const P384_OID_DER: [u8; 7] = alloy::primitives::hex!("06052b81040022");
+        const P521_OID_DER: [u8; 7] = alloy::primitives::hex!("06052b81040023");
+        const UNCOMPRESSED_KEY_HEADER: [u8; 4] = alloy::primitives::hex!("03620004");
+        const COMPRESSED_KEY_HEADER: [u8; 4] = alloy::primitives::hex!("03620002");
+
+        for (needle, replacement) in [
+            (P384_OID_DER.as_slice(), P521_OID_DER.as_slice()),
+            (
+                UNCOMPRESSED_KEY_HEADER.as_slice(),
+                COMPRESSED_KEY_HEADER.as_slice(),
+            ),
+        ] {
+            let mut document = production_fixture();
+            mutate_leaf_certificate(&mut document, |leaf| {
+                replace_unique(leaf, needle, replacement);
+            });
+            assert_eq!(
+                verify_production_document_at(&document, PRODUCTION_FIXTURE_TIME).unwrap_err(),
+                AttestationError::Validation
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_broken_issuer_and_unknown_critical_extension() {
+        const CRITICAL_BASIC_CONSTRAINTS: [u8; 8] = alloy::primitives::hex!("0603551d130101ff");
+        const CRITICAL_UNKNOWN_EXTENSION: [u8; 8] = alloy::primitives::hex!("0603551d7f0101ff");
+
+        let mut broken_issuer = production_fixture();
+        mutate_leaf_certificate(&mut broken_issuer, |leaf| {
+            let certificate = Certificate::from_der(leaf).unwrap();
+            let issuer = certificate.tbs_certificate.issuer.to_der().unwrap();
+            let mut changed = issuer.clone();
+            let character = changed
+                .iter_mut()
+                .rfind(|byte| byte.is_ascii_lowercase())
                 .unwrap();
-            }
+            *character = if *character == b'z' {
+                b'y'
+            } else {
+                *character + 1
+            };
+            replace_unique(leaf, &issuer, &changed);
         });
-    }
+        assert_eq!(
+            verify_production_document_at(&broken_issuer, PRODUCTION_FIXTURE_TIME).unwrap_err(),
+            AttestationError::Validation
+        );
 
-    #[test]
-    fn certificate_validity_boundaries_are_inclusive() {
-        let (document, root, _) = fixture(&[0x44; 32]);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            for timestamp in [1_700_000_000, 1_900_000_000] {
-                verify_attestation_with_root(
-                    &mut StorageCtx::default(),
-                    &document,
-                    timestamp,
-                    &root,
-                )
-                .unwrap();
-            }
-            for timestamp in [1_699_999_999, 1_900_000_001] {
-                assert!(matches!(
-                    verify_attestation_with_root(
-                        &mut StorageCtx::default(),
-                        &document,
-                        timestamp,
-                        &root,
-                    ),
-                    Err(AttestationError::Certificate)
-                ));
-            }
+        let mut unknown_critical = production_fixture();
+        mutate_leaf_certificate(&mut unknown_critical, |leaf| {
+            replace_unique(
+                leaf,
+                &CRITICAL_BASIC_CONSTRAINTS,
+                &CRITICAL_UNKNOWN_EXTENSION,
+            );
         });
+        assert_eq!(
+            verify_production_document_at(&unknown_critical, PRODUCTION_FIXTURE_TIME).unwrap_err(),
+            AttestationError::Validation
+        );
     }
 
     #[test]
-    fn rejects_corrupted_document_signature() {
-        let (mut document, root, _) = fixture(&[0x44; 32]);
-        *document.last_mut().unwrap() ^= 1;
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            assert!(matches!(
-                verify_attestation_with_root(
-                    &mut StorageCtx::default(),
-                    &document,
-                    BLOCK_TIMESTAMP,
-                    &root,
-                ),
-                Err(AttestationError::Signature)
-            ));
+    fn rejects_wrong_root_and_corrupt_signatures() {
+        let mut wrong_root = production_fixture();
+        let root = parse_attestation(&wrong_root).unwrap().cabundle[0].clone();
+        let mut replacement = root.clone();
+        *replacement.last_mut().unwrap() ^= 1;
+        replace_unique(&mut wrong_root, &root, &replacement);
+        assert_eq!(
+            verify_production_document_at(&wrong_root, PRODUCTION_FIXTURE_TIME).unwrap_err(),
+            AttestationError::Validation
+        );
+
+        let mut corrupt_document = production_fixture();
+        *corrupt_document.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            verify_production_document_at(&corrupt_document, PRODUCTION_FIXTURE_TIME).unwrap_err(),
+            AttestationError::Validation
+        );
+
+        let mut corrupt_leaf = production_fixture();
+        mutate_leaf_certificate(&mut corrupt_leaf, |leaf| {
+            *leaf.last_mut().unwrap() ^= 1;
         });
-    }
-
-    #[test]
-    fn parser_rejects_wrong_tag_and_trailing_bytes() {
-        assert!(matches!(
-            parse_cose(&[0xd3, 0x80]),
-            Err(AttestationError::Format)
-        ));
-        assert!(matches!(
-            parse_cose(&[0x84, 0x41, 0xa0, 0xa0, 0x41, 0xa0, 0x58, 0x60]),
-            Err(AttestationError::Format)
-        ));
-    }
-
-    #[test]
-    fn skip_enforces_depth_limit() {
-        let nested = [0x81; MAX_DEPTH + 1];
-        let mut decoder = Decoder::new(&nested);
-        assert_eq!(skip_value(&mut decoder, 1), Err(AttestationError::Format));
+        assert_eq!(
+            verify_production_document_at(&corrupt_leaf, PRODUCTION_FIXTURE_TIME).unwrap_err(),
+            AttestationError::Validation
+        );
     }
 }

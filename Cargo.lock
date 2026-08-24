@@ -7033,9 +7033,9 @@ dependencies = [
 
 [[package]]
 name = "minicbor"
-version = "2.3.0"
+version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c12b4033ffaa92fbf9df03df38d19324f52bad130dd223f811734a8006dd2d69"
+checksum = "1b7a5041e12946f8b7d3f5a9d96383a19d694b9335457c522be7815b9abafb02"
 
 [[package]]
 name = "minimal-lexical"
@@ -13761,6 +13761,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-nitro-attestation"
+version = "1.13.0"
+dependencies = [
+ "minicbor",
+ "sha2 0.10.9",
+ "x509-cert",
+]
+
+[[package]]
 name = "tempo-node"
 version = "1.13.2"
 dependencies = [
@@ -13908,6 +13917,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "aws-lc-rs",
+ "base64 0.22.1",
  "bitflags 2.11.1",
  "codspeed-criterion-compat",
  "commonware-codec",
@@ -13930,6 +13940,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
+ "tempo-nitro-attestation",
  "tempo-precompiles-macros",
  "tempo-primitives",
  "tempo-revm",
