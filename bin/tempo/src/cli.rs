@@ -90,6 +90,10 @@ pub struct TempoArgs {
     #[command(flatten)]
     pub(crate) faucet_args: FaucetArgs,
 
+    /// Start a bare dev node without the canonical faucet or liquidity bootstrap.
+    #[arg(long = "dev.no-bootstrap", requires = "dev")]
+    pub(crate) dev_no_bootstrap: bool,
+
     #[command(flatten)]
     pub(crate) node_args: TempoNodeArgs,
 

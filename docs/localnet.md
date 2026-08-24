@@ -1,6 +1,6 @@
 # Tempo localnet container
 
-`tempo-localnet` is a batteries-included Tempo network for application development and CI. It starts a deterministic development node, waits for RPC, and prepares the payment features commonly needed by SDK and backend tests.
+`tempo-localnet` packages `tempo node --dev` for application development and CI. Dev mode starts a deterministic node and prepares the payment features commonly needed by SDK and backend tests; the container adds readiness checks and persistence conventions.
 
 ```bash
 docker run --rm -p 127.0.0.1:8545:8545 ghcr.io/tempoxyz/tempo-localnet:latest

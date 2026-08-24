@@ -28,6 +28,8 @@ use opentelemetry_otlp as _;
 
 pub mod cli;
 mod defaults;
+#[doc(hidden)]
+pub mod dev;
 mod follow;
 pub mod init_state;
 mod overrides;
@@ -64,7 +66,12 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{collections::BTreeMap, sync::Arc, thread};
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    thread,
+};
 use tempo_chainspec::spec::{DEV, TempoChainSpec};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::initial_zone_factory_state;
@@ -451,7 +458,24 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
-        let faucet_args = args.faucet_args.clone();
+        let is_default_dev_chain =
+            builder.config().dev.dev && builder.config().chain.chain().id() == DEV.chain().id();
+        let bootstrap_dev = is_default_dev_chain && !args.dev_no_bootstrap;
+        let rpc_addr = match builder.config().rpc.http_addr {
+            IpAddr::V4(addr) if addr.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(addr) if addr.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            addr => addr,
+        };
+        let dev_rpc_url = format!(
+            "http://{}",
+            SocketAddr::new(rpc_addr, builder.config().rpc.http_port)
+        );
+        let dev_block_time = builder.config().dev.block_time;
+        let faucet_args = if bootstrap_dev && !args.faucet_args.enabled {
+            dev::faucet_args(dev_rpc_url.clone())
+        } else {
+            args.faucet_args.clone()
+        };
         let validator_key = args
             .consensus
             .public_key()
@@ -540,6 +564,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
+
+        if bootstrap_dev {
+            dev::bootstrap(&dev_rpc_url, dev_block_time)
+                .await
+                .wrap_err("failed bootstrapping Tempo dev chain")?;
+            info!("Tempo dev chain bootstrap complete");
+        }
 
         // Fetch bootnodes from the endpoint in a background task and inject
         // them into the already-running discovery services.
@@ -1010,5 +1041,19 @@ mod tests {
                 .payload_builder_builder()
                 .enable_prewarming
         );
+    }
+
+    #[test]
+    fn dev_bootstrap_can_be_disabled_explicitly() {
+        init_defaults_once();
+
+        let cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--dev.no-bootstrap"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.dev_no_bootstrap);
+
+        assert!(TempoCli::try_parse_from(["tempo", "node", "--dev.no-bootstrap"]).is_err());
     }
 }
