@@ -12,6 +12,7 @@ use crate::{
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
+use reth_execution_cache::PayloadExecutionCache;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
@@ -216,6 +217,8 @@ pub struct TempoNode {
     validator_key: Option<B256>,
     /// Network builder with optional `tempo/1` support.
     network_builder: TempoNetworkBuilder,
+    /// Execution cache shared between the engine and startup warmers.
+    execution_cache: PayloadExecutionCache,
 }
 
 impl TempoNode {
@@ -226,7 +229,13 @@ impl TempoNode {
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
+            execution_cache: PayloadExecutionCache::default(),
         }
+    }
+
+    /// Returns the execution cache shared with the engine validator.
+    pub fn execution_cache(&self) -> PayloadExecutionCache {
+        self.execution_cache.clone()
     }
 
     /// Announces `tempo/1` for finalization certificate gossip on every session.
@@ -338,13 +347,13 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    pub fn new(validator_key: Option<B256>, execution_cache: PayloadExecutionCache) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                BasicEngineValidatorBuilder::default().with_execution_cache(execution_cache),
                 Identity::default(),
                 Default::default(),
             ),
@@ -446,7 +455,7 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.execution_cache.clone())
     }
 }
 

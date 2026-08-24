@@ -30,6 +30,7 @@ thiserror.workspace = true
 
 reth-chainspec.workspace = true
 reth-errors.workspace = true
+reth-execution-cache.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true

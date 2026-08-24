@@ -59,12 +59,19 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
+use reth_chainspec::ChainSpecProvider as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+use reth_execution_cache::{CachedStateProvider, PayloadExecutionCache};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{collections::BTreeMap, sync::Arc, thread};
-use tempo_chainspec::spec::{DEV, TempoChainSpec};
+use reth_primitives_traits::AlloyBlockHeader as _;
+use reth_storage_api::{BlockReaderIdExt as _, StateProvider as _, StateProviderFactory as _};
+use std::{collections::BTreeMap, sync::Arc, thread, time::Instant};
+use tempo_chainspec::{
+    TempoHardforks as _,
+    spec::{DEV, TempoChainSpec},
+};
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::initial_zone_factory_state;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
@@ -83,6 +90,7 @@ use tempo_node::{
         install_prometheus_metrics,
     },
 };
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
@@ -91,6 +99,47 @@ use nix as _;
 
 const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+
+fn spawn_expiring_nonce_ring_prewarm(node: &TempoFullNode, execution_cache: PayloadExecutionCache) {
+    let provider = node.provider.clone();
+    node.tasks()
+        .spawn_blocking_named("expiring-nonce-ring-prewarm", move || {
+            let started_at = Instant::now();
+            let result = (|| -> eyre::Result<u32> {
+                let latest_header = provider
+                    .latest_header()?
+                    .ok_or_eyre("latest block header is unavailable")?;
+                let capacity = provider
+                    .chain_spec()
+                    .tempo_hardfork_at(latest_header.timestamp())
+                    .expiring_nonce_set_capacity();
+                let cache = execution_cache
+                    .get_cache_for(latest_header.hash())
+                    .ok_or_eyre("shared execution cache is unavailable")?;
+                let state =
+                    CachedStateProvider::new_prewarm(provider.latest()?, cache.cache().clone());
+                let nonce_manager = NonceManager::new();
+
+                for idx in 0..capacity {
+                    state.storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        nonce_manager.expiring_nonce_ring[idx].slot().into(),
+                    )?;
+                }
+
+                Ok(capacity)
+            })();
+
+            match result {
+                Ok(capacity) => info!(
+                    capacity,
+                    elapsed = ?started_at.elapsed(),
+                    "Prewarmed expiring nonce ring"
+                ),
+                Err(err) => warn!(%err, "Failed to prewarm expiring nonce ring"),
+            }
+        });
+}
 
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     if let Commands::Node(node_cmd) = &mut cli.command
@@ -494,14 +543,17 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        let tempo_node = overrides.apply_tempo_node(TempoNode::new(
+            &args.node_args,
+            validator_key,
+        ));
+        let execution_cache = tempo_node.execution_cache();
+
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
-            .node(overrides.apply_tempo_node(TempoNode::new(
-                &args.node_args,
-                validator_key,
-            )))
+            .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
@@ -535,6 +587,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     Ok(())
                 })
+            })
+            .on_node_started(move |node| {
+                spawn_expiring_nonce_ring_prewarm(&node, execution_cache);
+                Ok(())
             })
             .launch_with_debug_capabilities()
             .await
